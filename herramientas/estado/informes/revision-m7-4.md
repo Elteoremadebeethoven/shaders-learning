@@ -99,8 +99,9 @@ Nuevo: `herramientas/estado/lab/rev-m7-4-tiempos.mjs` (ver (c)).
    candidatos son la caja de `WEBGL_polygon_mode`, la tabla de cuatro modos de iluminación (repite las viñetas del
    ejemplo 7.4.4) y el quiz de `drawArrays` + baricéntricas.
 5. **Capturas del verificador**: varios playgrounds JS de esta lección salen negros o «en pausa (fuera de pantalla)»
-   en las capturas de `verificar.mjs` (ver (d)); con mi script de capturas (ventana de 1400 px de alto y 3,5 s de
-   espera) se ven bien. No es un fallo de la lección.
+   en las capturas de `verificar.mjs` (ver (d)) y también en mi primer script (ventana de 1000 px); los que sí se
+   capturaron se ven bien, y en los blancos la línea `info` del iframe demuestra que el código corre. El script con
+   ventana de 1400 px no llegó a ejecutarse (parada). Muy probablemente no es un fallo de la lección.
 
 ## (c) Pendientes de medir en el M1
 
@@ -130,7 +131,8 @@ y profundidad, `readPixels` al final de cada tanda, mediana de 7 tandas de 10) y
    (el playground apilado mide ~1 030 px, más que la ventana; al capturar un elemento más alto que la ventana
    Puppeteer redimensiona/desplaza y el `IntersectionObserver` de `playground-js.js` duerme o recrea el iframe).
    Propuesta: ventana de captura de 1 400 px de alto (o `captureBeyondViewport: false` y capturar por tramos) y una
-   espera mayor por defecto con SwiftShader (`--espera 3000`); con mi script (1 400 px, 3,5 s) se ven todas.
+   espera mayor por defecto con SwiftShader (`--espera 3000`). Hipótesis no confirmada: mi script de 1 400 px no
+   llegó a ejecutarse.
 2. **A.1 Bestiario (`modulos/08-anexos/01-bestiario.html`, «Diagnóstico rápido por síntoma»)**: no enlaza ningún
    caso `m7-4-*` (pendiente conocido §3.4). Propuesta de ubicación en (e).
 3. **A.4 Glosario (`modulos/08-anexos/04-glosario.html`)**: el comentario `<!-- M7-PENDIENTE: enlazar también 7.4
@@ -148,7 +150,7 @@ y profundidad, `readPixels` al final de cada tanda, mediana de 7 tandas de 10) y
    es correcto para N elementos por fila, pero un lector que lo aplique a vértices de una rejilla de N × N celdas
    necesita N + 1. No es un error; si se toca, añadir «(N elementos por fila)».
 5. **m7kit.js**: sin bugs que afecten a 7.4. Otro agente ha añadido `dtMax` al comentario de `crearApp` y una guarda
-   en `destruir()` sin WebGL2: compatible con 7.4 (comprobado tras el cambio con la verificación final).
+   en `destruir()` sin WebGL2: compatible con 7.4 por lectura del diff (no llegué a verificarlo en Chrome tras ese cambio).
 6. **GLKit (`assets/js/glkit.js`)**: nada que corregir; nota menor: `crearTextura` devuelve `UNPACK_FLIP_Y_WEBGL` a
    `false` (7.4 lo explica y lo usa bien en el ejemplo 7.4.8).
 
@@ -203,4 +205,77 @@ comprobados con su función `slug`). Ninguno existe aún en A.4.
 
 ## (g) Verificación final
 
-PENDIENTE_G
+- **Antes de corregir** (`verificar.mjs … --soluciones --capturas`, Chromium 141 + SwiftShader): ✓ sin problemas;
+  glsl=0 js=13 demo=1 ejemplos=8 ejercicios=5 quiz=5 anotado=6 callouts=19 bestiario=9 senior=5 h2=12,
+  ~20 000 palabras, 5 soluciones que se ejecutan sin error. Mínimos de la guía §6: cumplidos de sobra.
+- Capturas revisadas (verificador y mi primer script, ventana de 1000 px): 7.4.3 (los cuatro modos), 7.4.4, 7.4.6 y soluciones de 7.4.1,
+  7.4.2 (negro = bien), 7.4.3 (0 de 288) y 7.4.5 (anillos en la geometría; consola 1, 2, 3) se ven como dice el
+  texto; demo 2D correcta. Las de 7.4.1, 7.4.2, 7.4.5, 7.4.7 y 7.4.8 salieron en blanco por el problema de capturas
+  descrito en (d) 1, no por la lección (la línea `info` del iframe sí se actualiza: 7.4.1 «625 vértices…»,
+  con N = 300 + Uint16 «90601 vértices · 180000 triángulos · 540000 índices en Uint16Array»; 7.4.7 «búfer 736×360 …
+  19600 puntos» y a la mitad «368×180 · 0.50»).
+- `enlaces.mjs` tras la mayoría de las correcciones: 62 enlaces internos, 0 rotos (incluidos los nuevos a 6.6
+  `#medir-coste-shader`, 7.5 `#enfoque-3-transform-feedback`, 4.4 `#m4-indice-65535` y 4.5 `#gl-vertexid-dibujar-sin-buffers`).
+- **Comprobado en este Chromium** (scripts en `herramientas/estado/lab/rev-m7-4-exp-*.mjs`): `Uint16Array([65535,
+  65536, 70000])` → `[65535, 0, 4464]`; rejilla plana N = 300 con Uint16 en 256 × 256 → 47 305 píxeles (el M1
+  midió 47 306), con Uint32 65 536, sin `getError`; N = 255 con Uint16 forzado → 65 535 (falta exactamente el
+  triángulo del vértice 65 535); `gl_VertexID` con `drawElements` e índices [5, 9, 2] → 5, 9, 2; mensaje de enlace
+  «Precisions of uniform 'u_modo' differ between VERTEX and FRAGMENT shaders.» idéntico y `highp int` lo arregla;
+  en el VS `texture()` lee el nivel 0, `textureLod` 1 y 2 leen los niveles 1 y 2, `texture(t, uv, 1.0)` no compila
+  («'texture' : no matching overloaded function found»), textura incompleta → (0,0,0,1) y `texelFetch` → ceros,
+  R32F+LINEAR sin `OES_texture_float_linear` → 0 y con ella 0,5, R16F filtra sin extensión; vértice provocador =
+  el último (drawArrays → vértice 2; índices [1,2,0] → vértice 0); `gl_FrontFacing` true antihorario / false
+  horario y `cross(dFdx, dFdy)` apunta a la cámara en los dos; `gl_PointSize = 10` en un canvas 256×256 mostrado a
+  128×128 CSS → 100 píxeles del búfer; aviso de consola de `WEBGL_polygon_mode` idéntico al citado.
+- **Después de corregir: NO hay verificación final con `verificar.mjs` ni `movil.mjs`** (parada ordenada del
+  coordinador mientras esperaba turno de Chrome). Ver «Dónde me quedé».
+
+## Dónde me quedé (sesión 3)
+
+**(a) Hecho y verificado.** Revisión completa de la lección (texto, código, cuentas, enlaces, promesas de otras
+lecciones, bestiarios, coherencia con 3.2/3.5/4.4/4.5/5.3/5.6/6.3/6.6/7.1/7.2/7.3/7.5). Verificación inicial sin
+problemas y experimentos de (g) hechos. `enlaces.mjs` (0 rotos) pasado tras casi todas las ediciones.
+
+**(b) Hecho pero SIN verificar tras la última edición.** `modulos/07-integracion/04-vertex-animacion.html` (todas las
+ediciones de (a); las últimas, sin pasar ni `enlaces.mjs`: requisitos «+ 7.2», `N / (N + 1)` en el anotado de
+`crearRejilla`, párrafo «Ojo con lo de "uno por texel"» del ejemplo 7.4.8, KaTeX `$T \cdot R\,\vec v$` en la
+solución del ejercicio 7.4.4, caja senior de l74kit con `{ sinUV: true }`, `WEBGL_polygon_mode` «reciente») y
+`modulos/07-integracion/recursos/l74kit.js` (solo comentarios de cabecera; el código no se tocó). Las ediciones son
+de texto dentro de `<p>`, `<li>` y `<td>` ya existentes; no he dejado ninguna a medias.
+Para cerrar: `cd herramientas && node enlaces.mjs ../modulos/07-integracion/04-vertex-animacion.html` y
+`node verificar.mjs ../modulos/07-integracion/04-vertex-animacion.html --soluciones --tema light --capturas <dir>`
+(+ `node movil.mjs …`). Esperado: 0 problemas (los cambios no tocan código ejecutable). Para mirar los playgrounds JS
+usar `herramientas/estado/lab/rev-m7-4-capturas.mjs` (ventana de 1400 px; pasada oscura con interacciones, clara y
+390 px), no las capturas del verificador ((d) 1).
+
+**(c) Pendiente, en orden.**
+1. Verificación final de (b) (comandos arriba) y mirar las capturas en claro y a 390 px (no llegué a verlas).
+2. En el M1: `node herramientas/estado/lab/rev-m7-4-tiempos.mjs --json /tmp/t74.json` y sustituir en 7.4 las cifras de
+   GPU según la tabla de (c): primera tabla de «La silueta no miente» (columna «Vertex shader: dibujo completo» y el
+   párrafo siguiente, que ahora dice «orientativa»), tabla A/B/C de «Geometría sin buffers» (+ párrafo «La variante B
+   empata…» y frase «Vale la advertencia…») y las dos viñetas del resumen («1,1 ms con nuestro método…», «unas 2,5
+   veces más lento…»). Ojo: el script usa un plano de 6 × 6 y una cámara propia; si se quiere la escena exacta del
+   autor, no existe (su script se perdió).
+3. Tabla del ε (sección «Diferencias finitas»): re-medir en el M1 con las ondas de la lección (ver (b) 2) o añadir
+   que es otra superficie de tres senos más empinada.
+4. Bandera (ejemplo 7.4.5, paso 2 del «Paso a paso»): la estimación «unos pocos grados tras una hora» es mía;
+   confirmar con transform feedback en el M1 (t = 3600, función `bandera`) y poner la cifra.
+5. Coherencia m7 (§3.6): decidir si `m7-4-indices-uint16` pasa a `callout nota` (duplica `m4-indice-65535`).
+6. A.1: enlazar los nueve `m7-4-*` en el «Diagnóstico rápido» según la tabla de (e). A.4: añadir los términos de (f)
+   y los enlaces a 7.4 de (d) 3.
+7. Comprobar desde el Mac el enlace externo a codeflow.org ((b) 3).
+
+**(d) Scripts y resultados** (el SCRATCH se borrará; copiados a `herramientas/estado/lab/`):
+- `rev-m7-4-tiempos.mjs`: laboratorio de tiempos para el M1 (método fiable + antiguo + CPU). Terminado y con la
+  sintaxis comprobada (`node --check`); **no llegué a ejecutarlo ni con `--rapido`** (cola de Chrome), así que puede
+  tener algún fallo de ejecución: probarlo primero con `--rapido`.
+- `rev-m7-4-exp-semantica.mjs` y `rev-m7-4-exp-vertexid-polygonmode.mjs`: experimentos de semántica de (g)
+  (ejecutados; resultados en (g)). En el primero, la prueba de `gl_VertexID` con transform feedback + `drawElements`
+  da INVALID_OPERATION (WebGL2 no permite `drawElements` con transform feedback activo): por eso existe el segundo,
+  que lo comprueba con puntos.
+- `rev-m7-4-eps-memoria.mjs` (node, sin Chrome): error de truncamiento con las ondas de la lección y tabla de
+  memoria por N.
+- `rev-m7-4-capturas.mjs`: capturas con interacciones (7.4.1 con N = 300 + Uint16 y N = 8, k = 10; modos de 7.4.2,
+  7.4.3, 7.4.4, 7.4.5 y 7.4.7; soluciones), pasada en tema claro (diagramas, tablas, demo, callouts) y a 390 px.
+  Las rutas de importación son absolutas a `/home/user/shaders-learning` y al Chromium del contenedor; ejecución:
+  `node rev-m7-4-capturas.mjs <dir> dark 1280 1400`. La última ejecución se interrumpió por la parada.
