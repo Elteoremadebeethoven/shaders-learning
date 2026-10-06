@@ -221,7 +221,20 @@ Lo comprobé ejecutando `gpu-juguete.js` en Node con los dos órdenes: con B y C
 
 `verificar.mjs --soluciones --capturas` (Chromium 141 + SwiftShader), en tandas de 3–4, después de la última edición de cada archivo:
 
-VERIFICACION_PENDIENTE
+| Tanda | Archivos | Resultado |
+|---|---|---|
+| 1 | 1.1, 2.1, 2.4, 2.6 | ✓ 4/4 sin problemas |
+| 2 | 2.7, 3.3, 3.7, 4.3 (antes del cambio de `demo-raster.js`) | ✓ 4/4 |
+| 3 | 4.1, 4.2, 4.6 | ✓ 3/3 (4.1 y 4.2 tardan unos 4–5 min cada una con SwiftShader) |
+| 4 | 4.3 (después del cambio de `demo-raster.js`), 5.3, 5.4 | ✓ 3/3 |
+| 5 | 5.6, 5.10 | ✓ 2/2, con todas las soluciones ejecutadas |
+
+Única edición posterior a su verificación: un signo de puntuación en el párrafo nuevo de la caja de isnan de 5.10, «producción.)». Es solo texto.
+
+**Observaciones que solo dependen de SwiftShader** (no son fallos de la lección; las anoto para quien verifique aquí):
+- **Ejemplo 5.10.4.** La cara oscura no sale negra: la lectura da `dot(n, l) = −0,194` y color final `(0,402, 0,272, 0,162)`. SwiftShader calcula `pow(x, y)` con base negativa como `pow(|x|, y)` y no da NaN (0,1346^(1/2,2) = 0,402, comprobado).
+- **Ejercicio 5.10.2.** Ni la versión original ni la nueva dan píxeles negros ni magenta en SwiftShader: 0 de 156 000 en las dos, `exp/e5102.mjs`. Así que el sufijo `Math.random()` no cambia nada aquí.
+- **Captura inicial del ejercicio 5.10.2.** Sale toda negra en `verificar.mjs`. Ese playground dibuja una sola vez, y renderizado aparte se ve bien. Es un artefacto de la captura, no una excepción.
 
 Enlaces: `node herramientas/enlaces.mjs` sobre m0–m5 → 39 archivos, 754 enlaces internos, 0 rotos.
 Laboratorio: `pend-m0-m5-tiempos.mjs` en modo rápido con SwiftShader → 17 pruebas sin errores, salida 0.
@@ -232,3 +245,42 @@ Laboratorio: `pend-m0-m5-tiempos.mjs` en modo rápido con SwiftShader → 17 pru
 - **Comentario único en tres playgrounds de 5.10.** Hace la demo robusta, a cambio de una compilación sin caché por ejecución, que es barata. La alternativa era explicar que la vista de NaN «puede no funcionar la segunda vez», cosa que no está medida.
 - **El párrafo de 4.2 cita «entre 3 y 30 veces por debajo»**, cifras del módulo 6 (revision-m6b), no del módulo 4. Lo digo así en el texto («al revisar el módulo 6 encontramos…»).
 - **5.10.5 (el laboratorio) sigue usando el temporizador.** Cambiarlo a pasadas aisladas exigiría `readPixels` en el bucle de animación, que es justo lo que la lección enseña a no hacer. He explicado en el texto qué mide y cuánto fiarse.
+
+## Dónde me quedé (sesión 3)
+
+Parada ordenada a petición del coordinador.
+
+**(a) Hecho y verificado** (`verificar.mjs --soluciones`, Chromium 141 + SwiftShader; enlaces con `enlaces.mjs`, 0 rotos):
+- todo lo descrito en A.4 y en B.1–B.7, en los 16 archivos listados al principio;
+- el laboratorio `herramientas/estado/lab/pend-m0-m5-tiempos.mjs` + `.html`, probado en modo rápido con SwiftShader: 17 pruebas sin errores.
+
+**(b) Hecho pero sin verificar tras la última edición:**
+- `05-webgl/10-depuracion.html`: solo el cambio de puntuación «producción.)». Es texto; no hace falta otra tanda, pero entra en la pasada final del lead.
+
+**(c) Pendiente, en orden:**
+1. **Ejecutar el laboratorio en el M1** (`node herramientas/estado/lab/pend-m0-m5-tiempos.mjs`) y actualizar las cifras que difieran. Los sitios están en la columna «Afirmación»:
+   - 4.1: 0,9 TFLOPS;
+   - 4.2: hack y senior;
+   - 5.8: hack de picking;
+   - 5.10: «¿Me frena…?», «Las causas habituales» y el recuadro de overdraw.
+   Mira sobre todo la **última fila (isnan en caché)**. Si la 2.ª compilación da 0 detecciones de NaN, añade un aviso en:
+   - 3.7: bestiario `m3-nan-pixel-negro`, en su receta `any(isnan(v)) ? magenta : …`;
+   - 5.10: nota `m5-nan-negro` y párrafo «La función isnan() de GLSL lo detecta»;
+   - 6.2: tabla «Depurar con color»;
+   - A.2/A.3 (fuera de mis archivos).
+
+   El aviso: en WebGL propio, la vista de NaN solo es fiable con un comentario único en el shader.
+2. **5.10, párrafo tras el ejemplo 5.10.4** («En la vista normal, la cara oscura es negro puro…», ~l.432). Añadir una frase:
+   - qué está mal: no avisa de que el NaN depende de la implementación;
+   - texto propuesto: «Es lo que da la GPU de pruebas: `pow` con base negativa es indefinido, y con SwiftShader, el render por software de Chrome, comprobamos que devuelve `pow(|x|, y)`: la cara oscura sale marrón, la vista de NaN no marca nada y la lectura da (0,402, 0,272, 0,162). El diagnóstico es el mismo: `dot(n, l)` negativo.»
+
+   Comprobado en Chromium 141 (captura `10-depuracion-04.png` de la tanda 5).
+3. **Ejecutar `node herramientas/indexar.mjs`** (lo hace el lead). Cambié texto de los bestiarios `m3-isnan-heisenbug` y `m3-hash-roto` y prosa indexable.
+4. **Propuestas para archivos ajenos** (sección «Problemas en archivos ajenos»): una línea en la cabecera de `glkit.js` y un añadido a la guía §5.6 sobre el comentario único en playgrounds JS con `isnan`.
+
+**(d) Scripts** (copiados a `herramientas/estado/lab/`; el SCRATCH se borra):
+- `pend-m0-m5-tiempos.mjs` + `.html`: el laboratorio de A.5, completo. Falta ejecutarlo en el M1.
+- `pend-m0-m5-titulos.mjs`: compara los títulos de bestiario citados con su `data-titulo`. Uso: `node pend-m0-m5-titulos.mjs "/0[0-5]-[a-z]+/"`; el argumento es una expresión regular sobre la ruta.
+- `pend-m0-m5-bloques.mjs`: lista los bloques JS con `performance.now` y `draw*`/`readPixels`/temporizador. Uso: `node pend-m0-m5-bloques.mjs modulos/0*/*.html` desde la raíz.
+- `pend-m0-m5-rueda.mjs` + `.html`: el experimento de `wheel` pasivo de B.1. Lanza Chromium con la ruta de esta máquina; en el Mac, cambiar `executablePath`.
+- Sin copiar (resultado ya en este informe): `exp/e5102*.html` y `e5102.mjs` del SCRATCH, la prueba del ejercicio 5.10.2 en SwiftShader.

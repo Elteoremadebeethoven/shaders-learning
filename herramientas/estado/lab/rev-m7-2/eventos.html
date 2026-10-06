@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>body{margin:0;height:3000px}#z{position:absolute;left:0;top:100px;width:600px;height:400px;background:#345;touch-action:none}</style></head>
+<body><div id="z"></div>
+<script>
+window.frame = 0; window.reg = []; window.rafT = [];
+const z = document.getElementById('z');
+function raf(t){ window.frame++; window.rafT.push([window.frame, performance.now(), t]); requestAnimationFrame(raf); }
+requestAnimationFrame(raf);
+for (const tipo of ['pointermove','pointerrawupdate','pointerleave','pointerenter','pointerover','pointerout','mousemove','pointerdown','pointerup','pointercancel','scroll','wheel']) {
+  const destino = tipo === 'scroll' ? window : (tipo === 'pointerrawupdate' ? window : z);
+  destino.addEventListener(tipo, (e) => {
+    window.reg.push({ tipo, frame: window.frame, t: performance.now(), n: e.getCoalescedEvents ? e.getCoalescedEvents().length : null,
+      pred: e.getPredictedEvents ? e.getPredictedEvents().length : null, id: e.pointerId, prim: e.isPrimary, x: e.clientX, y: e.clientY, sy: scrollY });
+  }, { passive: true });
+}
+window.secure = isSecureContext; window.tieneRaw = 'onpointerrawupdate' in window;
+</script></body></html>

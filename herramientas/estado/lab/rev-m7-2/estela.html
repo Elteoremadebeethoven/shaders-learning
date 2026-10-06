@@ -1,0 +1,62 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+#info { position: absolute; left: 8px; bottom: 6px; color: #b4bccb; font: 12px ui-monospace, monospace; }
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="info">mueve el puntero sobre el lienzo</div>
+
+<script src="file:///home/user/shaders-learning/assets/js/glkit.js"></script><script src="file:///home/user/shaders-learning/assets/js/texturas.js"></script><script src="file:///home/user/shaders-learning/modulos/07-integracion/recursos/m7kit.js"></script>
+<script>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_mouse;        // px del búfer, origen abajo
+uniform vec2 u_vel;          // px del búfer por segundo (y hacia arriba)
+uniform float u_escala;      // px del búfer por px CSS
+uniform float u_intensidad;  // 0 fuera del lienzo, 1 dentro
+out vec4 fragColor;
+void main() {
+  vec2 d = gl_FragCoord.xy - u_mouse;
+  float v = length(u_vel);
+  vec2 dir = v > 1.0 ? u_vel / v : vec2(1.0, 0.0);
+  float s = dot(d, dir);                         // a lo largo del movimiento (+ delante)
+  float q = dot(d, vec2(-dir.y, dir.x));         // a lo ancho
+  float ancho = 26.0 * u_escala;
+  float largo = ancho + v * 0.09;                // detrás, la estela crece con la velocidad
+  float a = s < 0.0 ? s / largo : s / ancho;
+  float g = exp(-(a * a + (q / ancho) * (q / ancho)));
+  vec3 frio = vec3(0.25, 0.82, 0.91), calido = vec3(1.0, 0.42, 0.71);
+  vec3 col = mix(frio, calido, clamp(v / (1500.0 * u_escala), 0.0, 1.0));
+  fragColor = vec4(vec3(0.05, 0.06, 0.09) + col * g * u_intensidad, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const puntero = new M7.Puntero(canvas, { semivida: 0.05 });
+const app = M7.crearApp(canvas, {
+  estado: { intensidad: 0 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    puntero.actualizar(app.reloj.dtReal);                        // responde al usuario: tiempo real
+    e.intensidad = M7.suavizar(e.intensidad, puntero.dentro ? 1 : 0, 0.12, app.reloj.dtReal);
+  },
+  dibujar(gl, e, app) {
+    const k = app.ancho / puntero.ancho;                         // px del búfer por px CSS
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_mouse, puntero.aGL(canvas));
+    GLKit.ponerUniform(gl, app.gpu.u.u_vel, [puntero.vx * k, -puntero.vy * k]);   // y hacia arriba
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    GLKit.ponerUniform(gl, app.gpu.u.u_intensidad, e.intensidad);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (puntero.visto) info.textContent = 'velocidad: ' + Math.hypot(puntero.vx, puntero.vy).toFixed(0) + ' px CSS/s';
+  },
+});
+</script></body></html>
