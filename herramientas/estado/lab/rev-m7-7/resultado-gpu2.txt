@@ -1,0 +1,47 @@
+[consola error] Failed to load resource: the server responded with a status of 404 (Not Found)
+{
+ "gpu": true,
+ "adapter": true,
+ "info": {
+  "vendor": "google",
+  "arch": "swiftshader",
+  "fb": true,
+  "sgmin": 4
+ },
+ "lim": {
+  "bg": 4,
+  "inv": 256,
+  "sto": 1073741824
+ },
+ "langFeatures": [
+  "packed_4x8_integer_dot_product",
+  "pointer_composite_access",
+  "readonly_and_readwrite_storage_textures",
+  "unrestricted_pointer_parameters"
+ ],
+ "devLim": {
+  "inv": 256,
+  "sto": 134217728,
+  "bg": 4
+ },
+ "casos": {
+  "p0": [
+   "17:26 invalid character found"
+  ],
+  "p1": [
+   "19:18 expected '{' for if statement"
+  ],
+  "p2": [
+   "15:16 unresolved call target 'mod'"
+  ],
+  "p3": [
+   "16:30 no matching call to 'atan(f32, f32)'"
+  ]
+ },
+ "mod": [
+  -0.5,
+  -0.25,
+  -1,
+  1
+ ]
+}

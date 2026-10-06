@@ -1,0 +1,54 @@
+<!doctype html><html><body><script>
+(async () => {
+  const R = { gpu: !!navigator.gpu };
+  try {
+    let a = navigator.gpu && await navigator.gpu.requestAdapter();
+    if (!a && navigator.gpu) { a = await navigator.gpu.requestAdapter({ forceFallbackAdapter: true }); R.fallback = !!a; }
+    R.adapter = !!a;
+    if (a) {
+      R.info = { vendor: a.info.vendor, arch: a.info.architecture, fb: a.info.isFallbackAdapter, sgmin: a.info.subgroupMinSize };
+      R.lim = { bg: a.limits.maxBindGroups, inv: a.limits.maxComputeInvocationsPerWorkgroup, sto: a.limits.maxStorageBufferBindingSize };
+      R.langFeatures = [...navigator.gpu.wgslLanguageFeatures].sort();
+      const d = await a.requestDevice();
+      R.devLim = { inv: d.limits.maxComputeInvocationsPerWorkgroup, sto: d.limits.maxStorageBufferBindingSize, bg: d.limits.maxBindGroups };
+      const msgs = async (code) => (await d.createShaderModule({ code }).getCompilationInfo()).messages.filter(m => m.type === 'error').map(m => m.lineNum + ':' + m.linePos + ' ' + m.message.split('\n')[0]);
+      const casos = window.CASOS;
+      R.casos = {};
+      for (const k in casos) R.casos[k] = await msgs(casos[k]);
+      // % vs mod en la GPU
+      const code = `@group(0) @binding(0) var<storage, read_write> o: array<f32, 4>;
+@group(0) @binding(1) var<uniform> u: vec4f;
+@compute @workgroup_size(1) fn main() { o[0] = u.x % u.y; o[1] = u.z % u.w; o[2] = f32(i32(u.x * 14.0) % 3); o[3] = smoothstep(u.y, u.w, u.x); }`;
+      const pipe = d.createComputePipeline({ layout: 'auto', compute: { module: d.createShaderModule({ code }), entryPoint: 'main' } });
+      const ob = d.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      const ub = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      d.queue.writeBuffer(ub, 0, new Float32Array([-0.5, 2.0, -3.25, 1.0]));
+      const rb = d.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const g = d.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ob } }, { binding: 1, resource: { buffer: ub } }] });
+      const e = d.createCommandEncoder(); const p = e.beginComputePass(); p.setPipeline(pipe); p.setBindGroup(0, g); p.dispatchWorkgroups(1); p.end();
+      e.copyBufferToBuffer(ob, 0, rb, 0, 16); d.queue.submit([e.finish()]);
+      await rb.mapAsync(GPUMapMode.READ); R.mod = [...new Float32Array(rb.getMappedRange())];
+    }
+  } catch (e) { R.exc = e.message; }
+  window.__R = R;
+})();
+</script>
+<script>
+window.CASOS = {
+  float: 'fn f() { var x: float = 1.0; }',
+  letAssign: 'fn f() { let x = 1.0; x = 2.0; }',
+  fragCoord: '@fragment fn fs() -> @location(0) vec4f { return gl_FragCoord; }',
+  texture: '@group(0) @binding(0) var t: texture_2d<f32>; @group(0) @binding(1) var s: sampler; @fragment fn fs() -> @location(0) vec4f { return texture(t, vec2f(0.0)); }',
+  ternario: 'fn f(c: bool) -> f32 { return c ? 1.0 : 0.0; }',
+  atan: 'fn f(y: f32, x: f32) -> f32 { return atan(y, x); }',
+  mod: 'fn f(x: f32) -> f32 { return mod(x, 2.0); }',
+  dFdx: '@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f { return vec4f(dFdx(p.x)); }',
+  ifSinLlaves: 'fn f(c: bool) -> f32 { var x = 0.0; if (c) x = 1.0; return x; }',
+  abstractos: 'fn f(p: vec2f) -> f32 { let x: f32 = 2; return 2 * p.x + x; }',
+  i32af32: 'fn f() -> f32 { let i = 2; let g: f32 = i; return g; }',
+  swizzle: 'fn f() -> vec4f { var c = vec4f(0.0); let p = vec2f(1.0); c.xy = p.xy; return c; }',
+  uniformidad: '@group(0) @binding(0) var t: texture_2d<f32>; @group(0) @binding(1) var s: sampler; @fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f { var c = vec4f(0.0); if (p.x > 100.0) { c = textureSample(t, s, p.xy); } return c; }',
+  smoothConst: 'fn f() -> f32 { return smoothstep(0.05, 0.0, 0.01); }',
+  smoothIguales: 'fn f() -> f32 { return smoothstep(0.5, 0.5, 0.01); }',
+};
+</script></body></html>

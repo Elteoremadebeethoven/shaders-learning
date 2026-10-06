@@ -216,4 +216,63 @@ precisión y añado anclas y los términos que faltaban. Todas las anclas son de
 
 ## (g) Verificación final
 
-(pendiente: se completa abajo)
+- `node enlaces.mjs ../modulos/07-integracion/07-siguientes-pasos.html` → **136 enlaces internos, 0 rotos** (tras la
+  última edición).
+- `node verificar.mjs … --soluciones --capturas` (tema oscuro, tras todas las ediciones salvo la de la pista 1 del
+  ejercicio 7.7.1, que solo cambia texto y un ancla): `glsl=0 js=6 graficador=1 demo=1 ejemplos=3 ejercicios=4 quiz=3
+  anotado=7 callouts=15 bestiario=9 senior=3 h2=9 palabras=16004 soluciones=4`. **Único problema: «js-5 (Ejercicio
+  7.7.3) marcado data-error-esperado pero NO falló»**, más 17 avisos «Failed to create WebGPU Context Provider»: los dos
+  se deben a que el Chromium del verificador no tiene adaptador WebGPU (ver (b)3 y (d)1). Las cuatro soluciones pasan;
+  capturas revisadas (Tres.js dibuja las tres tarjetas; el GLSL del ejemplo 7.7.3 con `1.0 - smoothstep` se ve igual
+  que antes; ejercicios 7.7.1, 7.7.2 y 7.7.4 imprimen solo ✓ con la solución y ✗ con el código de partida).
+- Con WebGPU activado (`exp/leccion-gpu*.mjs`, lección servida en `http://localhost`): ejemplo 7.7.3 «WebGPU listo» y
+  los dos lienzos idénticos (captura `herramientas/estado/lab/rev-m7-7/ejemplo-7-7-3-webgl-vs-webgpu.png`); ejercicio
+  7.7.3: partida → `WGSL 17:26 invalid character found`, solución → «píxeles distintos: 0.0 % · ✓»; ejercicio 7.7.4:
+  partida ✗ (y la GPU lo desmiente), solución ✓ (la GPU confirma 0/16/28/32/48).
+- La primera pasada (antes de editar) también se hizo con `--pagina` (45 tramos de página, revisados todos) en tema
+  oscuro. **No llegaron a terminar** la pasada con `--tema light` ni `movil.mjs` (la sesión de Chrome se cerró por la
+  parada ordenada).
+
+## Dónde me quedé (sesión 3)
+
+**(a) Hecho y verificado.** Los 13 cambios de (a) en `modulos/07-integracion/07-siguientes-pasos.html` y la cabecera de
+`recursos/l77-tresjs.js`. Verificado: enlaces (0 rotos), `verificar.mjs --soluciones` en tema oscuro (solo el problema
+de entorno de WebGPU), y las partes WebGPU con mi script (`leccion-gpu*.mjs`). Las afirmaciones de Three.js r186 y de
+WGSL/Tint, comprobadas como se explica al principio.
+
+**(b) Hecho pero SIN verificar tras la última edición.**
+- `07-siguientes-pasos.html`, pista 1 del ejercicio 7.7.1 (texto «gracias a su closure» + ancla
+  `#closures-funciones-con-memoria`): solo comprobado con `enlaces.mjs` (0 rotos); es texto dentro de un `<details>`.
+- Falta la pasada en **tema claro** (`node verificar.mjs ../modulos/07-integracion/07-siguientes-pasos.html --tema light
+  --capturas <dir>`) y **móvil** (`node movil.mjs ../modulos/07-integracion/07-siguientes-pasos.html`). Mis cambios no
+  tocan CSS ni marcado de diseño (solo texto, enlaces y código dentro de playgrounds), y el autor ya las pasó en la
+  sesión 2, así que no espero problemas; pero no están hechas.
+
+**(c) Pendiente, en orden.**
+1. Pasada `--tema light` y `movil.mjs` de 7.7 (ver (b)). Esperado: los mismos problemas de entorno WebGPU que en oscuro.
+2. `herramientas/verificar.mjs` l.62 y l.222 (archivo del lead): argumentos de WebGPU y filtro del aviso «Failed to
+   create WebGPU Context Provider»; `data-error-esperado` condicionado a WebGPU; tratar `✗` de `console.log` como fallo
+   (detalle en (d)1).
+3. `modulos/08-anexos/04-glosario.html` (agente del glosario): términos de la tabla (f), enlazar `g-webgpu` a 7.7 y
+   ampliar `g-alineacion`, `g-pipeline`, `g-command-buffer`, `g-warp`, `g-reversed-z`.
+4. `modulos/08-anexos/01-bestiario.html` (lead, tras `indexar.mjs`): añadir los 9 casos de 7.7 al diagnóstico rápido
+   según la tabla (e); renombrar «Mensajes de WebGL en la consola» a «… de WebGL o WebGPU …».
+5. `modulos/07-integracion/recursos/m7.css` l.31 (revisor de m7kit): borrar `table.m7-equivalencias` (sin uso).
+6. Opcional (decisión del dueño): recortar la longitud de 7.7 (≈16 000 palabras con código), empezando por «Three.js
+   sobre WebGPU» y la tabla «Qué se transfiere y qué no».
+7. Opcional: confirmar en el M1 las cifras de (b)2 (sobre todo «Chrome 154» y `createRenderPipelineAsync` 15,6 ms).
+
+**(d) Experimentos y scripts** (copiados a `herramientas/estado/lab/rev-m7-7/`; el SCRATCH se borrará):
+- `three.html` + `run-three.mjs`: carga Three.js r186 en Chromium e imprime llamadas, prefijos, errores, colores,
+  `onBeforeRender`, `onBeforeCompile`, aspecto, culling. **Necesita el paquete** (no copiado): `mkdir three-pkg && cd
+  three-pkg && npm pack three@0.186.1 && mkdir x && tar -xzf three-0.186.1.tgz -C x`, y ajustar la constante `BUILD`
+  de `run-three.mjs` (apunta a `../three-pkg/x/package/build` relativo al script). Resultado: `resultado-three.txt`.
+- `gpu.html`, `gpu2.html` + `run-gpu.mjs`: WebGPU por SwiftShader en `http://localhost:9` (intercepción de puppeteer;
+  `navigator.gpu` exige contexto seguro), mensajes de Tint de la tabla y orden de errores del ejercicio 7.7.3.
+  Resultados: `resultado-gpu.txt`, `resultado-gpu2.txt`. Uso: `node run-gpu.mjs gpu.html` (sirve los archivos de la
+  carpeta del script).
+- `leccion-gpu.mjs` / `leccion-gpu2.mjs`: abre la lección entera con WebGPU y lee la consola de los playgrounds
+  7.7.2–7.7.4 (partida y solución); el 2 guarda capturas de ventana. Uso: `node leccion-gpu.mjs <dirCapturas>`.
+  Resultado: `resultado-leccion-gpu.txt` y `ejemplo-7-7-3-webgl-vs-webgpu.png`. Nada a medio hacer.
+- `anclas.mjs`: imprime, para cada enlace con ancla de una lección, el contexto y el texto de la sección de destino
+  (para comprobar que «lo viste en X» apunta a donde debe). Uso: `node anclas.mjs <lección.html>`.

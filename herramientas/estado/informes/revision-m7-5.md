@@ -4,7 +4,7 @@ Archivos revisados y tocados: `modulos/07-integracion/05-particulas-gpu.html` y 
 
 Máquina de esta revisión: contenedor Linux sin GPU, Chromium 141 headless con WebGL por **SwiftShader**. No he sustituido ninguna cifra del M1. Lo que he comprobado aquí es semántica de WebGL/GLSL/JS, cálculos que no dependen de la GPU (el gemelo en JavaScript del campo) y que todo compila, se ejecuta y se ve bien.
 
-**Resultado final:** VERIFICACION_FINAL
+**Resultado final:** la lección pasa `verificar.mjs --soluciones --capturas` en tema oscuro **sin problemas**, con el estado final (la verificación empezó después de la última edición). Las cuatro soluciones funcionan y, en tres ejercicios, el código de partida falla su prueba como debe; en el cuarto (7.5.3), el fallo de partida solo se vio en la captura (ver g). Enlaces: 61 internos, 0 rotos. Móvil (390 px): sin desbordamiento. Tema claro: revisado con capturas propias de diagramas, tablas y cajas. La verificación completa `--tema light` no llegó a terminar (ver g).
 
 ---
 
@@ -208,4 +208,64 @@ Entradas existentes a las que añadir 7.5: ver (d).2. «tone mapping» puede cit
 
 ## (g) Verificación final
 
-VERIFICACION_DETALLE
+```
+✓ ../modulos/07-integracion/05-particulas-gpu.html  (297477 ms)
+   glsl=1 js=8 graficador=0 demo=0 ejemplos=4 ejercicios=4 quiz=4 anotado=8 callouts=19 bestiario=8 senior=7 h2=9 pres=3 palabras=18679 soluciones=4
+1/1 páginas sin problemas
+```
+
+**Otras comprobaciones**
+
+- **`node enlaces.mjs ../modulos/07-integracion/05-particulas-gpu.html`:** 61 enlaces internos, 0 rotos (incluidas las anclas nuevas).
+- **`node movil.mjs`:** `✓ 05-particulas-gpu.html scrollWidth=390 / 390`.
+- **Prueba de ejercicios y ejemplos** (`lab/rev-m7-5-pruebas.mjs`; resultado en `lab/rev-m7-5-pruebas-resultado.txt`), en SwiftShader:
+
+  | Playground | Código de partida | Solución |
+  |---|---|---|
+  | Ejercicio 7.5.1 | ✗ «la simulación ha dejado la partícula en (0, 0)» | ✓ |
+  | Ejercicio 7.5.2 | ✗ 2,4 % → 2,3 % | ✓ 2,3 % → 28,7 % |
+  | Ejercicio 7.5.3 | ✗ en la captura de la verificación: 1 posición distinta | ✓ 2000/2000 |
+  | Ejercicio 7.5.4 | negro (captura) | ✓ brillo 0,295 |
+
+  - Ejemplo 7.5.2: el cambio a `RGBA16F` va sin errores.
+  - Ejemplo 7.5.4: los tres métodos y «medir GPU» van sin errores.
+  - Sin errores ni avisos de consola.
+- **Sin `EXT_color_buffer_float`** (`getExtension` parcheado en todos los marcos):
+  - 7.5.2 muestra el mensaje en el panel;
+  - 7.5.3 funciona;
+  - 7.5.4 pasa a transform feedback con el aviso;
+  - el ejercicio 7.5.1 muestra `Error: sin EXT_color_buffer_float` (el `TypeError` de la prueba que aparecía después ya está corregido con la guarda, pero esa prueba sin extensión no se repitió).
+- **Temas:** capturas propias en claro y oscuro de los dos SVG, las 7 tablas, el anotado nuevo y el bestiario aditivo: todo legible.
+- **Capturas de la verificación vistas** (antes de los cambios): los 9 playgrounds y las 4 soluciones se ven como dice el texto. Excepción: `-sol-2.png` sale en blanco porque el verificador captura a los 1,8 s (ver d.1).
+
+---
+
+## Dónde me quedé (sesión 3)
+
+**(a) Hecho y verificado**
+- Todos los cambios del apartado (a), en `modulos/07-integracion/05-particulas-gpu.html` y `recursos/l75-particulas.js`.
+- Verificación final en tema oscuro con `--soluciones` (0 problemas), iniciada después de la última edición (archivo modificado a las 20:22:46; capturas de 20:28).
+- Enlaces y prueba móvil correctos.
+
+**(b) Hecho pero sin verificar tras la última edición**
+- La guarda `if (!app.gpu) return;` en las pruebas de los ejercicios 7.5.1 y 7.5.2 y la nota `data-l="8-9"` del anotado de `L75.PASO`. Las cubre la verificación final (empezó después), pero no se repitió la prueba sin extensión ni la de ✓/✗ de los ejercicios.
+- `verificar.mjs --tema light --capturas` completo: se cortó (cola de Chrome y parada). El tema claro solo está revisado con `rev-m7-5-pruebas.mjs` (diagramas, tablas, anotado, bestiario).
+- `herramientas/estado/lab/rev-m7-5-medir.html` solo se ha probado en SwiftShader con `?rapido`.
+
+**(c) Pendiente, en orden**
+1. **En el M1:** abrir `herramientas/estado/lab/rev-m7-5-medir.html` y pulsar «medir». Con el resultado, corregir en 7.5:
+   - sección «Comparativa: medir antes de elegir», tercera viñeta: 2,4 / 2,8 / 8,2 ms con 1 M, y 9,5 / 35 ms con 4 M;
+   - la misma sección, «0,6 ms fuera de pantalla»;
+   - el resumen final: «8,2 ms … 2,4 ms»;
+   - la solución del ejercicio 7.5.4: «5,5 ms frente a 8,4 ms»; si no se confirma, borrar la frase y dejar «la pasada extra cuesta poco».
+2. Opcional: `verificar.mjs --tema light --capturas` (sin `--pagina`, que no termina en 10 min con SwiftShader).
+3. Glosario A.4 y bestiario A.1: aplicar los apartados (d), (e) y (f) de este informe (lo hace el lead).
+4. `01-web/06-binario.html` l. 384: matizar la promesa de SoA en 7.5 (propuesta en d.4).
+5. Decidir si el ejercicio 7.5.4 debe arrancar con menos partículas (b.1).
+
+**(d) Scripts y experimentos** (copiados a `herramientas/estado/lab/`, prefijo `rev-m7-5-`; el SCRATCH se borrará)
+- `rev-m7-5-medir.html`: laboratorio de tiempos para el M1, terminado.
+- `rev-m7-5-exp1.html` + `rev-m7-5-exp.mjs` (uso: `node rev-m7-5-exp.mjs <ruta absoluta a rev-m7-5-exp1.html>`): experimentos de semántica WebGL. Resultado en `rev-m7-5-exp1-resultado.txt`. Terminado.
+- `rev-m7-5-curl-stats.mjs` (uso: `node rev-m7-5-curl-stats.mjs rot grad inercia np`, sin Chrome): estadísticas de rotacional frente a gradiente. Resultado en `rev-m7-5-curl-stats-resultado.txt`. Terminado.
+- `rev-m7-5-deriva.mjs`: sentido del desplazamiento de las octavas. **Ojo: la etiqueta que imprime tiene el signo invertido**; el desplazamiento real del dibujo es (0, −0,11) y (−0,085, 0). Terminado.
+- `rev-m7-5-pruebas.mjs`: ejercicios ✓/✗, controles de los ejemplos, prueba sin extensión, `medir.html?rapido` y capturas de temas, todo en un solo Chrome. Resultado en `rev-m7-5-pruebas-resultado.txt`. La constante `S` apunta al SCRATCH (para las capturas de temas): cámbiala antes de usarlo. Las esperas son cortas para SwiftShader: en los ejercicios 7.5.3 y 7.5.4 no llegó a leer la consola del código de partida.
