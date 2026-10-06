@@ -215,3 +215,37 @@ capturas recortadas (todas se ven como dice el texto), las pruebas de consola de
 y solución) y los experimentos de (a)/«Comprobado». El script de medida para el M1
 (`herramientas/estado/lab/rev-m7-3-tiempos.mjs`) se ha probado aquí y funciona (cifras de SwiftShader descartadas).
 No he ejecutado `indexar.mjs` (lo hace el lead).
+
+## Dónde me quedé (sesión 3)
+
+**(a) Hecho y verificado.** Los 9 cambios de (a) en `modulos/07-integracion/03-transiciones-shader.html`; tras la
+última edición: `verificar.mjs --soluciones` ✓ (0 problemas), `--tema light --pagina` ✓, `movil.mjs` ✓ (390/390),
+`enlaces.mjs` ✓ (55, 0 rotos). `recursos/l73-kit.js` revisado, sin cambios. Informe completo (este archivo).
+
+**(b) Hecho pero sin verificar tras la última edición.** Nada: la última edición del HTML (solución del ejercicio
+7.3.5 y frase de 6.4) es anterior a las verificaciones finales. El script `herramientas/estado/lab/rev-m7-3-tiempos.mjs`
+solo se ha probado en SwiftShader (funciona; sus cifras no valen).
+
+**(c) Pendiente, en orden.**
+1. Medir en el M1 el tiempo de GPU del catálogo: `cd herramientas && node estado/lab/rev-m7-3-tiempos.mjs`; si se
+   quiere una cifra en 7.3, añadirla en el párrafo «Unos 46 ms de CPU por segundo…» (sección Rendimiento, l.~1316),
+   con hardware y método («un dibujo por pasada»).
+2. (Opcional) 7.3.3 catálogo, funciones `cortinilla`/`radial` (l.~523–535): `float w = max(u_ancho, 1e-4)` o
+   deslizador `borde` con mínimo 0,002, para no caer en `smoothstep(e, e, x)` indefinido; si se cambia, actualizar
+   igual los bloques anotados de «Cortinilla con borde suave» y «Revelados radiales».
+3. (Opcional) Ejercicio 7.3.2, enunciado (l.~1537): añadir «el corte duro de partida cumple el contrato por
+   casualidad; en cuanto añadas la franja de fuego, ya no».
+4. Fuera de mi encargo (ver (d)): m7kit `M7.Puntero` antes del primer evento (si se cambia, retocar 7.3 l.~1426 y la
+   solución de 7.3.5 l.~2052); documentar `bajoDemanda` en `crearApp`; capturas de playgrounds JS en `verificar.mjs`;
+   casos m7-3 en el diagnóstico de A.1 (tabla (e)); términos y enlaces de A.4 (tabla (f) y lista (d)5).
+
+**(d) Scripts y resultados** (copiados del scratch a `herramientas/estado/lab/`):
+- `rev-m7-3-tiempos.mjs`: medida fiable para el M1 (listo, falta ejecutarlo en el Mac).
+- `rev-m7-3-qa1.mjs`: playgrounds JS en marcha (capturas recortadas con `page.screenshot({clip, captureBeyondViewport:false})`)
+  y consola de los ejercicios 7.3.3–7.3.5. Ojo: escribe capturas en la ruta del scratch (`const S = …`): cámbiala antes de usarlo.
+  La última prueba de qa1 (7.3.5 sin `puntero.visto`) fallaba por leer el `<script data-solucion>` ya retirado del DOM; la versión buena está en qa2.
+- `rev-m7-3-qa2.mjs`: opacidad CSS, APIs de HTML-en-canvas, toque emulado por CDP, distribución del fbm y tabla de la
+  disolución, ejercicio 7.3.5 sin `puntero.visto`.
+- `rev-m7-3-muelles.cjs`: simulación de muelles/suavizado/sumas con el propio m7kit en Node (`node rev-m7-3-muelles.cjs`).
+- `rev-m7-3-resultados.txt`: salidas de qa1, qa2 y de la prueba del script de tiempos (SwiftShader).
+Nada queda a medio hacer.

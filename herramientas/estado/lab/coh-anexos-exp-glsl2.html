@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+<script>
+// Comprobación de mensajes del compilador citados en A.2 (front-end de ANGLE: igual en cualquier backend)
+const gl = document.createElement('canvas').getContext('webgl2');
+const H = '#version 300 es\nprecision highp float;\nout vec4 o;\n';
+const FS = (cuerpo, glob = '') => H + glob + '\nvoid main() {\n' + cuerpo + '\n o = vec4(1.0);\n}';
+const VS = (cuerpo, glob = '') => '#version 300 es\n' + glob + '\nvoid main() {\n' + cuerpo + '\n gl_Position = vec4(0.0);\n}';
+function compilar(tipo, src) {
+  const s = gl.createShader(tipo === 'vs' ? gl.VERTEX_SHADER : gl.FRAGMENT_SHADER);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  const ok = gl.getShaderParameter(s, gl.COMPILE_STATUS);
+  return { ok, log: (gl.getShaderInfoLog(s) || '').trim() };
+}
+const T = [
+  ['# usado', 'fs', FS('float a = 1.0; float b = S(a);', '#define S(x) #x\n')],
+  ['## usado', 'fs', FS('float ab = 1.0; float b = C(a, b);', '#define C(x, y) x##y\n')],
+  ['## sin usar', 'fs', FS('', '#define C(x, y) x##y\n')],
+  ['case 1.0', 'fs', FS('int x = 1; switch (x) { case 1.0: break; }')],
+  ['última etiqueta case vacía', 'fs', FS('int x = 1; switch (x) { case 1: break; case 2: }')],
+  ['1.00: leer a[n]', 'fs', 'precision highp float;\nuniform int n;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; float b = a[n]; gl_FragColor = vec4(b); }'],
+  ['1.00: a[i + n] en bucle', 'fs', 'precision highp float;\nuniform int n;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; float b = 0.0; for (int i = 0; i < 2; i++) b += a[i + n]; gl_FragColor = vec4(b); }'],
+  ['1.00: inverse', 'fs', 'precision highp float;\nvoid main(){ mat2 m = inverse(mat2(1.0)); gl_FragColor = vec4(m[0][0]); }'],
+  ['1.00: isnan', 'fs', 'precision highp float;\nvoid main(){ bool b = isnan(1.0); gl_FragColor = vec4(1.0); }'],
+];
+const res = [];
+for (const [nombre, tipo, src] of T) {
+  const r = compilar(tipo, src);
+  res.push({ nombre, ok: r.ok, log: r.log.replace(/\s+/g, ' ').slice(0, 220) });
+}
+// versiones distintas al enlazar
+{
+  const p = gl.createProgram();
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, 'attribute vec2 a; void main(){ gl_Position = vec4(a, 0.0, 1.0); }'); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, H + 'void main(){ o = vec4(1.0); }'); gl.compileShader(fs);
+  gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  res.push({ nombre: 'enlace versiones distintas', ok: gl.getProgramParameter(p, gl.LINK_STATUS), log: gl.getProgramInfoLog(p).replace(/\s+/g, ' ').slice(0, 220) });
+}
+// precisiones distintas de un uniform
+{
+  const p = gl.createProgram();
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, '#version 300 es\nuniform highp float u_x;\nvoid main(){ gl_Position = vec4(u_x); }'); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, '#version 300 es\nprecision highp float;\nuniform mediump float u_x;\nout vec4 o;\nvoid main(){ o = vec4(u_x); }'); gl.compileShader(fs);
+  gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  res.push({ nombre: 'enlace precisión uniform distinta', ok: gl.getProgramParameter(p, gl.LINK_STATUS), log: gl.getProgramInfoLog(p).replace(/\s+/g, ' ').slice(0, 220) });
+}
+// interpolación distinta
+{
+  const p = gl.createProgram();
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, '#version 300 es\nflat out float v;\nvoid main(){ v = 1.0; gl_Position = vec4(0.0); }'); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, '#version 300 es\nprecision highp float;\nsmooth in float v;\nout vec4 o;\nvoid main(){ o = vec4(v); }'); gl.compileShader(fs);
+  gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  res.push({ nombre: 'enlace interpolación distinta', ok: gl.getProgramParameter(p, gl.LINK_STATUS), log: gl.getProgramInfoLog(p).replace(/\s+/g, ' ').slice(0, 220) });
+}
+window.__res = res;
+</script>
+</body>

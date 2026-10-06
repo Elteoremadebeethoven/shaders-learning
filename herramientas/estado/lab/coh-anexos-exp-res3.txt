@@ -1,0 +1,12 @@
+=== exp-glsl3.html
+ERR webgl2: FS local a[n]                      | ERROR: 0:3: '[]' : Index expression must be constant 
+ERR webgl2: FS a[i+n] bucle                    | ERROR: 0:3: '[]' : Index expression must be constant 
+ERR webgl2: FS uniform u[n]                    | ERROR: 0:4: '[]' : Index expression must be constant 
+ERR webgl2: VS local a[n]                      | ERROR: 0:2: '[]' : Index expression must be constant 
+OK  webgl2: VS uniform u[n]                    | 
+ERR webgl: FS local a[n]                       | ERROR: 0:3: '[]' : Index expression must be constant 
+ERR webgl: FS a[i+n] bucle                     | ERROR: 0:3: '[]' : Index expression must be constant 
+ERR webgl: FS uniform u[n]                     | ERROR: 0:4: '[]' : Index expression must be constant 
+ERR webgl: VS local a[n]                       | ERROR: 0:2: '[]' : Index expression must be constant 
+OK  webgl: VS uniform u[n]                     | 
+FIN

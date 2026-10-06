@@ -1,0 +1,16 @@
+<!doctype html><meta charset="utf-8"><body><script>
+const res = [];
+for (const ctxName of ['webgl2', 'webgl']) {
+  const gl = document.createElement('canvas').getContext(ctxName);
+  const c = (tipo, src) => { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); return { ok: gl.getShaderParameter(s, gl.COMPILE_STATUS), log: (gl.getShaderInfoLog(s) || '').replace(/\s+/g, ' ').slice(0, 200) }; };
+  const T = [
+    ['FS local a[n]', gl.FRAGMENT_SHADER, 'precision highp float;\nuniform int n;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; gl_FragColor = vec4(a[n]); }'],
+    ['FS a[i+n] bucle', gl.FRAGMENT_SHADER, 'precision highp float;\nuniform int n;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; float b=0.0; for (int i = 0; i < 2; i++) b += a[i + n]; gl_FragColor = vec4(b); }'],
+    ['FS uniform u[n]', gl.FRAGMENT_SHADER, 'precision highp float;\nuniform int n;\nuniform float u[3];\nvoid main(){ gl_FragColor = vec4(u[n]); }'],
+    ['VS local a[n]', gl.VERTEX_SHADER, 'uniform int n;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; gl_Position = vec4(a[n]); }'],
+    ['VS uniform u[n]', gl.VERTEX_SHADER, 'uniform int n;\nuniform float u[3];\nvoid main(){ gl_Position = vec4(u[n]); }'],
+  ];
+  for (const [n, t, s] of T) { const r = c(t, s); res.push({ nombre: ctxName + ': ' + n, ok: r.ok, log: r.log }); }
+}
+window.__res = res;
+</script>

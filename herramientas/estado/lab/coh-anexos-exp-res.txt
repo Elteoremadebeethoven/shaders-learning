@@ -1,0 +1,169 @@
+=== exp-glsl.html
+OK  version con espacios delante               | 
+ERR version tras línea vacía                   | ERROR: 0:2: ' ' : #version directive must occur on the first line of the shader ERROR: 0:4: 'out' : storage qualifier supported in GLSL ES 3.00 and above only 
+ERR version 310 es                             | ERROR: unsupported shader version 
+ERR version 330                                | ERROR: 0:1: ' ' : invalid version directive ERROR: 0:3: 'out' : storage qualifier supported in GLSL ES 3.00 and above only 
+OK  # operador en macro                        | 
+ERR macro GL_                                  | ERROR: 0:4: 'GL_FOO' : macro name is reserved 
+ERR #if nombre no definido                     | ERROR: 0:4: 'NO_DEFINIDO' : unexpected token after conditional expression 
+OK  #pragma desconocido                        | WARNING: 0:4: 'loquesea' : unrecognized pragma 
+ERR #include                                   | ERROR: 0:4: 'include' : invalid directive name 
+OK  __VERSION__ y GL_ES                        | 
+OK  continuación de línea                      | 
+ERR if (int)                                   | ERROR: 0:6: '' : boolean expression expected 
+ERR uint u = 3                                 | ERROR: 0:6: '=' : cannot convert from 'const int' to 'mediump uint' 
+ERR sampler local                              | ERROR: 0:6: 'sampler2D' : sampler2Ds must be uniform ERROR: 0:6: '=' : Invalid operation for variables with an opaque type ERROR: 0:6: '=' : cannot convert from 'uniform lowp sampler2D' to 'lowp sampler2D' 
+ERR array samplers índice dinámico             | ERROR: 0:6: '[' : array index for samplers must be constant integral expressions 
+ERR struct anidado                             | ERROR: 0:4: 'struct' : Embedded struct definitions are not allowed 
+ERR array de arrays                            | ERROR: 0:6: '[]' : arrays of arrays supported in GLSL ES 3.10 and above only 
+ERR array tamaño uniform                       | ERROR: 0:4: '' : constant expression required ERROR: 0:4: '' : array size must be a constant integer expression 
+ERR float x = 1                                | ERROR: 0:6: '=' : cannot convert from 'const int' to 'highp float' 
+OK  1.0f                                       | 
+ERR 09                                         | ERROR: 0:6: '09' : invalid number ERROR: 0:6: ';' : syntax error 
+OK  3000000000                                 | 
+ERR 5000000000                                 | ERROR: 0:6: '5000000000' : Integer overflow 
+ERR vec3(1.0, 2.0)                             | ERROR: 0:6: 'constructor' : not enough data provided for construction 
+ERR vec2(v3, 1.0)                              | ERROR: 0:6: 'constructor' : too many arguments 
+OK  vec4(v3, v3)                               | 
+ERR swizzle mezcla                             | ERROR: 0:6: 'xg' : illegal - vector component fields not from the same set ERROR: 0:6: '=' : dimension mismatch ERROR: 0:6: '=' : cannot convert from 'highp float' to 'highp 2-component vector of float' 
+ERR swizzle fuera                              | ERROR: 0:6: 'xyz' : vector field selection out of range ERROR: 0:6: '=' : dimension mismatch ERROR: 0:6: '=' : cannot convert from 'highp float' to 'highp 3-component vector of float' 
+ERR swizzle 5                                  | ERROR: 0:6: 'xyzwx' : illegal vector field selection ERROR: 0:6: 'x' : field selection requires structure, vector, or interface block on left hand side 
+ERR swizzle destino repetido                   | ERROR: 0:6: 'assign' : l-value of swizzle cannot have duplicate components 
+ERR swizzle de float                           | ERROR: 0:6: 'xx' : field selection requires structure, vector, or interface block on left hand side ERROR: 0:6: '=' : dimension mismatch ERROR: 0:6: '=' : cannot convert from 'highp float' to 'highp 2-component vector of
+ERR v.length()                                 | ERROR: 0:6: 'length' : length can only be called on arrays 
+ERR comparar vectores <                        | ERROR: 0:6: '<' : comparison operator only defined for scalars ERROR: 0:6: '<' : wrong operand types - no operation '<' exists that takes a left-hand operand of type 'highp 2-component vector of float' and a right operan
+OK  i << 1u                                    | 
+ERR uint & int                                 | ERROR: 0:6: '&' : wrong operand types - no operation '&' exists that takes a left-hand operand of type 'mediump uint' and a right operand of type 'mediump int' (or there is no acceptable conversion) 
+ERR ternario tipos distintos                   | ERROR: 0:6: '?:' : mismatching ternary operator operand types 'const float and 'const int' ERROR: 0:6: '=' : cannot convert from 'const int' to 'highp float' 
+ERR ternario con arrays                        | ERROR: 0:6: '?:' : ternary operator is not allowed for arrays in ESSL 1.0 and webgl 
+ERR inicializador global no constante          | ERROR: 0:4: '=' : global variable initializers must be constant expressions 
+OK  const con built-in                         | 
+ERR uniform con inicializador                  | ERROR: 0:4: 'uniform' : cannot initialize this type of qualifier 
+ERR escribir uniform                           | ERROR: 0:6: 'assign' : l-value required (can't modify a uniform "u") 
+ERR atributo bool                              | ERROR: 0:2: 'in' : cannot be bool 
+ERR atributo array                             | ERROR: 0:2: 'in' : cannot declare arrays of this qualifier 
+ERR varying int sin flat                       | ERROR: 0:2: 'out' : must use 'flat' interpolation here 
+ERR out FS matriz                              | ERROR: 0:3: 'out' : cannot be matrix 
+ERR layout location en uniform                 | ERROR: 0:4: 'location' : invalid layout qualifier: only valid on program inputs and outputs 
+ERR layout binding                             | ERROR: 0:4: 'binding' : invalid layout qualifier: not supported ERROR: 0:4: 'binding' : invalid layout qualifier: only valid when used with pixel local storage 
+ERR packed                                     | ERROR: 0:4: 'packed' : Only std140 layout is allowed in WebGL 
+ERR bloque in                                  | ERROR: 0:4: 'in' : invalid qualifier: interface blocks must be uniform in version lower than GLSL ES 3.10 
+ERR noperspective                              | ERROR: 0:4: 'noperspective' : Illegal use of reserved word 
+ERR precision highp vec3                       | ERROR: 0:4: 'float' : illegal type argument for default precision qualifier 
+ERR discard en VS                              | ERROR: 0:4: 'discard' : discard supported in fragment shaders only 
+ERR recursión                                  | ERROR: Recursive function call in the following call chain:f) -> f) 
+ERR redefinir built-in                         | ERROR: 0:4: 'sin' : Name of a built-in function cannot be redeclared as function 
+ERR out param constante                        | ERROR: 0:6: 'assign' : l-value required (can't modify a const) ERROR: 0:6: 'g' : Constant value cannot be passed for 'out' or 'inout' parameters. 
+ERR attribute en 300                           | ERROR: 0:2: 'attribute' : Illegal use of reserved word ERROR: 0:2: 'attribute' : syntax error 
+ERR gl_ prefijo                                | ERROR: 0:6: 'gl_' : reserved built-in name 
+ERR array índice constante fuera               | ERROR: 0:6: '[]' : array index out of range 
+ERR float a[] sin tamaño                       | ERROR: 0:6: 'a' : implicitly sized arrays only allowed for tessellation shaders or geometry shader inputs 
+ERR switch float                               | ERROR: 0:6: 'switch' : init-expression in a switch statement must be a scalar integer 
+ERR switch última etiqueta vacía               | ERROR: 0:6: 'switch' : no statement between the last label and the end of the switch statement 
+ERR bitfieldExtract                            | ERROR: 0:6: 'bitfieldExtract' : no matching overloaded function found ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'mediump int' 
+ERR frexp                                      | ERROR: 0:6: 'frexp' : no matching overloaded function found 
+ERR fma                                        | ERROR: 0:6: 'fma' : no matching overloaded function found 
+ERR packUnorm4x8                               | ERROR: 0:6: 'packUnorm4x8' : no matching overloaded function found ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'mediump uint' 
+ERR textureGather                              | ERROR: 0:6: 'textureGather' : no matching overloaded function found ERROR: 0:6: '=' : dimension mismatch ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'highp 4-component vector of float' 
+ERR textureSize sin lod                        | ERROR: 0:6: 'textureSize' : no matching overloaded function found ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'mediump 2-component vector of int' 
+ERR texture bias en VS                         | ERROR: 0:4: 'texture' : no matching overloaded function found ERROR: 0:4: '=' : dimension mismatch ERROR: 0:4: '=' : cannot convert from 'const mediump float' to 'highp 4-component vector of float' 
+ERR dFdx en VS                                 | ERROR: 0:4: 'dFdx' : no matching overloaded function found 
+ERR abs(uint)                                  | ERROR: 0:6: 'abs' : no matching overloaded function found ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'mediump uint' 
+ERR mix(int)                                   | ERROR: 0:6: 'mix' : no matching overloaded function found ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'mediump int' 
+ERR not(true)                                  | ERROR: 0:6: 'not' : no matching overloaded function found ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'bool' 
+ERR lessThan escalares                         | ERROR: 0:6: 'lessThan' : no matching overloaded function found ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'bool' 
+ERR max(0.5, v)                                | ERROR: 0:6: 'max' : no matching overloaded function found ERROR: 0:6: '=' : dimension mismatch ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'highp 2-component vector of float' 
+ERR pow(vec3, float)                           | ERROR: 0:6: 'pow' : no matching overloaded function found ERROR: 0:6: '=' : dimension mismatch ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'highp 3-component vector of float' 
+ERR mod(5,3)                                   | ERROR: 0:6: 'mod' : no matching overloaded function found ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'mediump int' 
+ERR textureOffset fuera de rango               | ERROR: 0:6: '8' : Texture offset value out of valid range 
+OK  textureOffset 7                            | 
+ERR sampler3D sin precisión                    | ERROR: 0:4: 'sampler3D' : No precision specified 
+ERR FS sin precisión float                     | ERROR: 0:2: '' : No precision specified for (float) 
+ERR dos salidas sin layout                     | ERROR: 0:3: 'a' : must explicitly specify all locations when using multiple fragment outputs ERROR: 0:4: 'b' : must explicitly specify all locations when using multiple fragment outputs 
+ERR 1.00: bucle no constante                   | ERROR: 0:3: 'i' : Loop index cannot be compared with non-constant expression 
+ERR 1.00: while                                | ERROR: 0:2: 'while' : This type of loop is not allowed 
+ERR 1.00: índice no constante                  | ERROR: 0:3: '[]' : Index expression must be constant 
+ERR 1.00: % entero                             | ERROR: 0:2: '%' : integer modulus operator supported in GLSL ES 3.00 and above only 
+ERR 1.00: switch                               | ERROR: 0:2: 'switch' : Illegal use of reserved word ERROR: 0:2: 'switch' : syntax error 
+ERR 1.00: sufijo f                             | ERROR: 0:2: '1.0f' : Floating-point suffix unsupported prior to GLSL ES 3.00 ERROR: 0:2: '1.0f' : syntax error 
+ERR 1.00: constructor array                    | ERROR: 0:2: '[]' : array constructor supported in GLSL ES 3.00 and above only ERROR: 0:2: '[]' : first-class arrays (array initializer) supported in GLSL ES 3.00 and above only ERROR: 0:2: '=' : Invalid operation for arr
+ERR 1.00: round                                | ERROR: 0:2: 'round' : no matching overloaded function found 
+ERR 1.00: flat                                 | ERROR: 0:2: 'flat' : Illegal use of reserved word 
+ERR 1.00: out                                  | ERROR: 0:2: 'out' : storage qualifier supported in GLSL ES 3.00 and above only 
+OK  1.00: inicializador global no constante    | WARNING: 0:3: '=' : global variable initializers should be constant expressions (uniforms and globals are allowed in global initializers for legacy compatibility) 
+ERR 1.00: OES_standard_derivatives             | WARNING: 0:1: 'GL_OES_standard_derivatives' : extension is not supported ERROR: 0:3: 'dFdx' : no matching overloaded function found 
+ERR 1.00: texture2DLod en FS                   | ERROR: 0:3: 'texture2DLod' : no matching overloaded function found ERROR: 0:3: '=' : dimension mismatch ERROR: 0:3: 'assign' : cannot convert from 'const mediump float' to 'FragColor mediump 4-component vector of float' 
+ERR 1.00: gl_FragData[1]                       | ERROR: 0:2: '[]' : array index for gl_FragData must be zero when GL_EXT_draw_buffers is disabled 
+ERR 3.00: gl_FragColor                         | ERROR: 0:6: 'gl_FragColor' : undeclared identifier ERROR: 0:6: 'assign' : l-value required (can't modify a const) ERROR: 0:6: '=' : dimension mismatch ERROR: 0:6: 'assign' : cannot convert from 'const 4-component vector 
+ERR 3.00: texture2D                            | ERROR: 0:6: 'texture2D' : no matching overloaded function found ERROR: 0:6: '=' : dimension mismatch ERROR: 0:6: '=' : cannot convert from 'const mediump float' to 'highp 4-component vector of float' 
+ERR #extension NV_noperspective sin getExtension | ERROR: 0:2: 'GL_NV_shader_noperspective_interpolation' : extension is not supported ERROR: 0:4: 'noperspective' : Illegal use of reserved word 
+ERR double                                     | ERROR: 0:6: 'double' : Illegal use of reserved word ERROR: 0:6: 'double' : syntax error 
+OK  smoothstep constante invertido             | WARNING: 0:6: 'smoothstep' : operation result is undefined for the values passed in 
+OK  shift constante 32                         | WARNING: 0:6: '<<' : Undefined shift (operand out of range) 
+ERR enlace versiones distintas                 | Fragment shader version does not match other shader versions. 
+ERR enlace precisión uniform distinta          | Precisions of uniform 'u_x' differ between VERTEX and FRAGMENT shaders. 
+ERR enlace interpolación distinta              | Interpolation types of varying 'v' differ between VERTEX and FRAGMENT shaders. FRAGMENT varying v does not match any VERTEX varying 
+[consola] WebGL: INVALID_OPERATION: getAttribLocation: program not linked
+[consola] WebGL: INVALID_OPERATION: uniform1f: location has been invalidated
+[consola] WebGL: INVALID_OPERATION: readBuffer: invalid read buffer
+[consola] WebGL: INVALID_ENUM: enable: invalid capability
+[consola] WebGL: INVALID_OPERATION: depthRange: zNear > zFar
+[consola] WebGL: INVALID_ENUM: activeTexture: texture unit out of range
+[consola] WebGL: INVALID_OPERATION: blendFunc: incompatible src and dst
+[consola] WebGL: INVALID_OPERATION: useProgram: program not valid
+[consola] WebGL: INVALID_OPERATION: clientWaitSync: timeout > MAX_CLIENT_WAIT_TIMEOUT_WEBGL
+[consola] [.WebGL-0x3bd400150800] GL_INVALID_VALUE: glLineWidth: Invalid width.
+[consola] [.WebGL-0x3bd400150800] GL_INVALID_VALUE: glLineWidth: Invalid width.
+[consola] [.WebGL-0x3bd400150800] GL_INVALID_VALUE: glVertexAttribPointer: Stride is over the maximum stride allowed by WebGL.
+[consola] [.WebGL-0x3bd400150800] GL_INVALID_OPERATION: glVertexAttribPointer: Stride must be a multiple of the passed in datatype.
+=== exp-api.html
+atributos                        {"alpha":true,"antialias":true,"depth":true,"desynchronized":false,"failIfMajorPerformanceCaveat":false,"powerPreference":"default","premultipliedAlpha":true,"preserveDrawingBuffer":false,"stencil":false,"xrCompatible":false}
+drawingBufferStorage             true
+chrome                           "Chrome/141.0.0.0"
+renderer                         "WebKit WebGL"
+isProgram_borradoEnUso           true
+deleteStatus                     true
+isProgram_trasSoltar             false
+isBuffer_trasBorrar              false
+getAttribLocation_sinEnlazar     [-1,"0x502"]
+bufferData_Array                 [0,0]
+relink_uniformVale               0
+relink_locVieja                  "0x502"
+uniform_null                     0
+clearColor                       [2,-1,0.5,1]
+copiaNueva                       true
+clearDepth                       1
+blendColor                       [2,-1,0.5,1]
+fbo_tamanosDistintos_color       "0x8cd9"
+fbo_tamanosDistintos_profundidad "0x8cd9"
+drawBuffer1_inicial              "0x0"
+drawBuffer0_canvas               "0x405"
+readBuffer_canvas_attach0        "0x502"
+flipY_typedArray_sin             [[255,0,0,255,0,255,0,255],0]
+flipY_typedArray_con             [[0,255,0,255,255,0,0,255],0]
+premult_typedArray               [[0,0,128,128],0]
+tex_inicial                      ["TEXTURE_MIN_FILTER=0x2702","TEXTURE_MAG_FILTER=0x2601","TEXTURE_WRAP_S=0x2901","TEXTURE_BASE_LEVEL=0","TEXTURE_MAX_LEVEL=0x3e8","TEXTURE_MIN_LOD=-1000","TEXTURE_MAX_LOD=0x3e8","TEXTURE_COMPARE_MODE=0","TEXTURE_COMPARE_FUNC=0x203"]
+unpack_inicial                   ["UNPACK_FLIP_Y_WEBGL=false","UNPACK_PREMULTIPLY_ALPHA_WEBGL=false","UNPACK_COLORSPACE_CONVERSION_WEBGL=0x9244","UNPACK_ALIGNMENT=4","PACK_ALIGNMENT=4","UNPACK_ROW_LENGTH=0"]
+estado                           ["DEPTH_FUNC=0x201","DEPTH_WRITEMASK=true","DEPTH_RANGE=[0,1]","BLEND_SRC_RGB=1","BLEND_DST_RGB=0","BLEND_EQUATION_RGB=0x8006","CULL_FACE_MODE=0x405","FRONT_FACE=0x901","STENCIL_BITS=0","DEPTH_BITS=24","LINE_WIDTH=1","SAMPLE_COVERAGE_VALUE=1","GENERATE_MIPMAP_HINT=0x1100","ACTIVE_TEXTURE=0x84c0","DITHER=true","STENCIL_FUNC=0x207","STENCIL_WRITEMASK=0xffffffff","STENCIL_VALUE_MASK=0xffffffff","SAMPLES=4","MAX_CLIENT_WAIT_TIMEOUT_WEBGL=0"]
+enable_primitiveRestart          "0x500"
+lineWidth_NaN                    "0x501"
+lineWidth_0                      "0x501"
+lineWidth_5                      5
+depthRange_invertido             "0x502"
+depthRange_recorte               [0,1]
+activeTexture_1                  "0x500"
+blend_constColorAlpha            "0x502"
+stride_256                       "0x501"
+stride_6                         "0x502"
+useProgram_sinEnlazar            "0x502"
+compile_error_getError           0
+viewport_trasResize              [0,0,300,150]
+query_disponible                 false
+fence_estado                     "UNSIGNALED"
+clientWait_0                     "0x911b"
+clientWait_1                     ["0x911d","0x502"]
+deleteTexture_unidad3            null
+deleteTexture_unidad0            null
+bindBufferBase_generico          true
+swiftshader_finish_ms            "0.00"
+swiftshader_readPixels_ms        "48.20"

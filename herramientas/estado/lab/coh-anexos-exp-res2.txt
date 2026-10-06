@@ -1,0 +1,14 @@
+=== exp-glsl2.html
+ERR # usado                                    | ERROR: 0:7: '#' : invalid character 
+ERR ## usado                                   | ERROR: 0:7: '#' : invalid character ERROR: 0:7: '#' : invalid character ERROR: 0:7: 'a' : undeclared identifier ERROR: 0:7: 'b' : syntax error 
+OK  ## sin usar                                | 
+ERR case 1.0                                   | ERROR: 0:6: 'case' : case label must be a scalar integer ERROR: 0:6: 'case' : case label type does not match switch init-expression type 
+ERR última etiqueta case vacía                 | ERROR: 0:6: 'switch' : no statement between the last label and the end of the switch statement 
+ERR 1.00: leer a[n]                            | ERROR: 0:3: '[]' : Index expression must be constant 
+ERR 1.00: a[i + n] en bucle                    | ERROR: 0:3: '[]' : Index expression must be constant 
+ERR 1.00: inverse                              | ERROR: 0:2: 'inverse' : no matching overloaded function found ERROR: 0:2: '=' : dimension mismatch ERROR: 0:2: '=' : cannot convert from 'const mediump float' to 'highp 2X2 matrix of float' 
+ERR 1.00: isnan                                | ERROR: 0:2: 'isnan' : no matching overloaded function found ERROR: 0:2: '=' : cannot convert from 'const mediump float' to 'bool' 
+ERR enlace versiones distintas                 | Fragment shader version does not match other shader versions. 
+ERR enlace precisión uniform distinta          | Precisions of uniform 'u_x' differ between VERTEX and FRAGMENT shaders. 
+ERR enlace interpolación distinta              | Interpolation types of varying 'v' differ between VERTEX and FRAGMENT shaders. FRAGMENT varying v does not match any VERTEX varying 
+FIN

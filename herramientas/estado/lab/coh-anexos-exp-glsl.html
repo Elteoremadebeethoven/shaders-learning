@@ -1,0 +1,150 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+<script>
+// Comprobación de mensajes del compilador citados en A.2 (front-end de ANGLE: igual en cualquier backend)
+const gl = document.createElement('canvas').getContext('webgl2');
+const H = '#version 300 es\nprecision highp float;\nout vec4 o;\n';
+const FS = (cuerpo, glob = '') => H + glob + '\nvoid main() {\n' + cuerpo + '\n o = vec4(1.0);\n}';
+const VS = (cuerpo, glob = '') => '#version 300 es\n' + glob + '\nvoid main() {\n' + cuerpo + '\n gl_Position = vec4(0.0);\n}';
+function compilar(tipo, src) {
+  const s = gl.createShader(tipo === 'vs' ? gl.VERTEX_SHADER : gl.FRAGMENT_SHADER);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  const ok = gl.getShaderParameter(s, gl.COMPILE_STATUS);
+  return { ok, log: (gl.getShaderInfoLog(s) || '').trim() };
+}
+const T = [
+  ['version con espacios delante', 'fs', '   ' + FS('')],
+  ['version tras línea vacía', 'fs', '\n' + FS('')],
+  ['version 310 es', 'fs', FS('').replace('300 es', '310 es')],
+  ['version 330', 'fs', FS('').replace('300 es', '330')],
+  ['# operador en macro', 'fs', FS('float x = 1.0;', '#define S(x) #x\n')],
+  ['macro GL_', 'fs', FS('', '#define GL_FOO 1\n')],
+  ['#if nombre no definido', 'fs', FS('', '#if NO_DEFINIDO\n#endif\n')],
+  ['#pragma desconocido', 'fs', FS('', '#pragma loquesea(on)\n')],
+  ['#include', 'fs', FS('', '#include "a.glsl"\n')],
+  ['__VERSION__ y GL_ES', 'fs', FS('', '#if __VERSION__ != 300 || GL_ES != 1\n#error mal\n#endif\n')],
+  ['continuación de línea', 'fs', FS('float x = 1.0 + \\\n 2.0;')],
+  ['if (int)', 'fs', FS('int i = 1; if (i) {}')],
+  ['uint u = 3', 'fs', FS('uint u = 3;')],
+  ['sampler local', 'fs', FS('sampler2D s2 = s;', 'uniform sampler2D s;')],
+  ['array samplers índice dinámico', 'fs', FS('int i = int(u); vec4 c = texture(s[i], vec2(0.0));', 'uniform sampler2D s[2]; uniform float u;')],
+  ['struct anidado', 'fs', FS('', 'struct A { struct B { float x; } b; };')],
+  ['array de arrays', 'fs', FS('float a[2][2];')],
+  ['array tamaño uniform', 'fs', FS('', 'uniform int n; float a[n];')],
+  ['float x = 1', 'fs', FS('float x = 1;')],
+  ['1.0f', 'fs', FS('float x = 1.0f;')],
+  ['09', 'fs', FS('int x = 09;')],
+  ['3000000000', 'fs', FS('int x = 3000000000; o = vec4(float(x));')],
+  ['5000000000', 'fs', FS('int x = 5000000000;')],
+  ['vec3(1.0, 2.0)', 'fs', FS('vec3 v = vec3(1.0, 2.0);')],
+  ['vec2(v3, 1.0)', 'fs', FS('vec3 a = vec3(1.0); vec2 v = vec2(a, 1.0);')],
+  ['vec4(v3, v3)', 'fs', FS('vec3 a = vec3(1.0); vec4 v = vec4(a, a);')],
+  ['swizzle mezcla', 'fs', FS('vec4 v = vec4(1.0); vec2 w = v.xg;')],
+  ['swizzle fuera', 'fs', FS('vec2 v = vec2(1.0); vec3 w = v.xyz;')],
+  ['swizzle 5', 'fs', FS('vec4 v = vec4(1.0); float w = v.xyzwx.x;')],
+  ['swizzle destino repetido', 'fs', FS('vec4 v = vec4(1.0); v.xx = vec2(1.0);')],
+  ['swizzle de float', 'fs', FS('float f = 1.0; vec2 w = f.xx;')],
+  ['v.length()', 'fs', FS('vec4 v = vec4(1.0); int n = v.length();')],
+  ['comparar vectores <', 'fs', FS('vec2 a = vec2(1.0); bool b = a < vec2(2.0);')],
+  ['i << 1u', 'fs', FS('int i = 1; int j = i << 1u;')],
+  ['uint & int', 'fs', FS('uint a = 1u; int b = 1; uint c = a & b;')],
+  ['ternario tipos distintos', 'fs', FS('float x = true ? 1.0 : 1;')],
+  ['ternario con arrays', 'fs', FS('float a[2] = float[2](1.0, 2.0); float b[2] = float[2](1.0, 2.0); float c[2] = true ? a : b;')],
+  ['inicializador global no constante', 'fs', FS('', 'uniform float u_a; float g = u_a * 2.0;')],
+  ['const con built-in', 'fs', FS('', 'const float K = sin(1.0) * 2.0;')],
+  ['uniform con inicializador', 'fs', FS('', 'uniform float u = 1.0;')],
+  ['escribir uniform', 'fs', FS('u = 2.0;', 'uniform float u;')],
+  ['atributo bool', 'vs', VS('', 'in bool a;')],
+  ['atributo array', 'vs', VS('', 'in float a[2];')],
+  ['varying int sin flat', 'vs', VS('', 'out int v;')],
+  ['out FS matriz', 'fs', '#version 300 es\nprecision highp float;\nout mat2 o;\nvoid main(){}'],
+  ['layout location en uniform', 'fs', FS('', 'layout(location = 0) uniform float u;')],
+  ['layout binding', 'fs', FS('', 'layout(binding = 0) uniform sampler2D s;')],
+  ['packed', 'fs', FS('', 'layout(packed) uniform B { float x; };')],
+  ['bloque in', 'fs', FS('', 'in B { float x; };')],
+  ['noperspective', 'fs', FS('', 'noperspective in float v;')],
+  ['precision highp vec3', 'fs', FS('', 'precision highp vec3;')],
+  ['discard en VS', 'vs', VS('discard;')],
+  ['recursión', 'fs', FS('', 'float f(float x); float f(float x) { return f(x); }')],
+  ['redefinir built-in', 'fs', FS('', 'float sin(float x) { return x; }')],
+  ['out param constante', 'fs', FS('g(1.0);', 'void g(out float x) { x = 1.0; }')],
+  ['attribute en 300', 'vs', VS('', 'attribute vec2 a;')],
+  ['gl_ prefijo', 'fs', FS('float gl_x = 1.0;')],
+  ['array índice constante fuera', 'fs', FS('float a[3]; a[3] = 1.0;')],
+  ['float a[] sin tamaño', 'fs', FS('float a[];')],
+  ['switch float', 'fs', FS('float x = 1.0; switch (x) { case 1: break; }')],
+  ['switch última etiqueta vacía', 'fs', FS('int x = 1; switch (x) { case 1: break; default: }')],
+  ['bitfieldExtract', 'fs', FS('int x = bitfieldExtract(1, 0, 1);')],
+  ['frexp', 'fs', FS('int e; float m = frexp(1.0, e);')],
+  ['fma', 'fs', FS('float m = fma(1.0, 1.0, 1.0);')],
+  ['packUnorm4x8', 'fs', FS('uint p = packUnorm4x8(vec4(1.0));')],
+  ['textureGather', 'fs', FS('vec4 c = textureGather(s, vec2(0.0));', 'uniform sampler2D s;')],
+  ['textureSize sin lod', 'fs', FS('ivec2 t = textureSize(s);', 'uniform sampler2D s;')],
+  ['texture bias en VS', 'vs', VS('vec4 c = texture(s, vec2(0.0), 1.0);', 'uniform highp sampler2D s;')],
+  ['dFdx en VS', 'vs', VS('float d = dFdx(1.0);')],
+  ['abs(uint)', 'fs', FS('uint a = abs(1u);')],
+  ['mix(int)', 'fs', FS('int a = mix(1, 2, 0.5);')],
+  ['not(true)', 'fs', FS('bool b = not(true);')],
+  ['lessThan escalares', 'fs', FS('bool b = lessThan(1.0, 2.0);')],
+  ['max(0.5, v)', 'fs', FS('vec2 v = vec2(1.0); vec2 w = max(0.5, v);')],
+  ['pow(vec3, float)', 'fs', FS('vec3 c = vec3(1.0); vec3 w = pow(c, 2.0);')],
+  ['mod(5,3)', 'fs', FS('int a = mod(5, 3);')],
+  ['textureOffset fuera de rango', 'fs', FS('vec4 c = textureOffset(s, vec2(0.0), ivec2(8, 0));', 'uniform sampler2D s;')],
+  ['textureOffset 7', 'fs', FS('vec4 c = textureOffset(s, vec2(0.0), ivec2(7, -8));', 'uniform sampler2D s;')],
+  ['sampler3D sin precisión', 'fs', FS('', 'uniform sampler3D s;')],
+  ['FS sin precisión float', 'fs', '#version 300 es\nout vec4 o;\nvoid main(){ o = vec4(1.0); }'],
+  ['dos salidas sin layout', 'fs', '#version 300 es\nprecision highp float;\nout vec4 a;\nout vec4 b;\nvoid main(){ a = vec4(1.0); b = a; }'],
+  ['1.00: bucle no constante', 'fs', 'precision highp float;\nuniform int n;\nvoid main(){ for (int i = 0; i < n; i++) {} gl_FragColor = vec4(1.0); }'],
+  ['1.00: while', 'fs', 'precision highp float;\nvoid main(){ int i = 0; while (i < 3) { i++; } gl_FragColor = vec4(1.0); }'],
+  ['1.00: índice no constante', 'fs', 'precision highp float;\nuniform int n;\nvoid main(){ float a[3]; a[n] = 1.0; gl_FragColor = vec4(1.0); }'],
+  ['1.00: % entero', 'fs', 'precision highp float;\nvoid main(){ int a = 5 % 3; gl_FragColor = vec4(1.0); }'],
+  ['1.00: switch', 'fs', 'precision highp float;\nvoid main(){ int a = 1; switch (a) { default: break; } gl_FragColor = vec4(1.0); }'],
+  ['1.00: sufijo f', 'fs', 'precision highp float;\nvoid main(){ float a = 1.0f; gl_FragColor = vec4(1.0); }'],
+  ['1.00: constructor array', 'fs', 'precision highp float;\nvoid main(){ float a[2] = float[2](1.0, 2.0); gl_FragColor = vec4(1.0); }'],
+  ['1.00: round', 'fs', 'precision highp float;\nvoid main(){ float a = round(1.5); gl_FragColor = vec4(a); }'],
+  ['1.00: flat', 'fs', 'precision highp float;\nflat varying float v;\nvoid main(){ gl_FragColor = vec4(v); }'],
+  ['1.00: out', 'fs', 'precision highp float;\nout vec4 o;\nvoid main(){ o = vec4(1.0); }'],
+  ['1.00: inicializador global no constante', 'fs', 'precision highp float;\nuniform float u;\nfloat g = u * 2.0;\nvoid main(){ gl_FragColor = vec4(g); }'],
+  ['1.00: OES_standard_derivatives', 'fs', '#extension GL_OES_standard_derivatives : enable\nprecision highp float;\nvoid main(){ gl_FragColor = vec4(dFdx(1.0)); }'],
+  ['1.00: texture2DLod en FS', 'fs', 'precision highp float;\nuniform sampler2D s;\nvoid main(){ gl_FragColor = texture2DLod(s, vec2(0.0), 0.0); }'],
+  ['1.00: gl_FragData[1]', 'fs', 'precision highp float;\nvoid main(){ gl_FragData[1] = vec4(1.0); }'],
+  ['3.00: gl_FragColor', 'fs', FS('gl_FragColor = vec4(1.0);')],
+  ['3.00: texture2D', 'fs', FS('vec4 c = texture2D(s, vec2(0.0));', 'uniform sampler2D s;')],
+  ['#extension NV_noperspective sin getExtension', 'fs', '#version 300 es\n#extension GL_NV_shader_noperspective_interpolation : require\nprecision highp float;\nnoperspective in float v;\nout vec4 o;\nvoid main(){ o = vec4(v); }'],
+  ['double', 'fs', FS('double d = 1.0;')],
+  ['smoothstep constante invertido', 'fs', FS('o = vec4(smoothstep(1.0, 0.0, 0.25));')],
+  ['shift constante 32', 'fs', FS('int a = 1 << 32;')],
+];
+const res = [];
+for (const [nombre, tipo, src] of T) {
+  const r = compilar(tipo, src);
+  res.push({ nombre, ok: r.ok, log: r.log.replace(/\s+/g, ' ').slice(0, 220) });
+}
+// versiones distintas al enlazar
+{
+  const p = gl.createProgram();
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, 'attribute vec2 a; void main(){ gl_Position = vec4(a, 0.0, 1.0); }'); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, H + 'void main(){ o = vec4(1.0); }'); gl.compileShader(fs);
+  gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  res.push({ nombre: 'enlace versiones distintas', ok: gl.getProgramParameter(p, gl.LINK_STATUS), log: gl.getProgramInfoLog(p).replace(/\s+/g, ' ').slice(0, 220) });
+}
+// precisiones distintas de un uniform
+{
+  const p = gl.createProgram();
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, '#version 300 es\nuniform highp float u_x;\nvoid main(){ gl_Position = vec4(u_x); }'); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, '#version 300 es\nprecision highp float;\nuniform mediump float u_x;\nout vec4 o;\nvoid main(){ o = vec4(u_x); }'); gl.compileShader(fs);
+  gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  res.push({ nombre: 'enlace precisión uniform distinta', ok: gl.getProgramParameter(p, gl.LINK_STATUS), log: gl.getProgramInfoLog(p).replace(/\s+/g, ' ').slice(0, 220) });
+}
+// interpolación distinta
+{
+  const p = gl.createProgram();
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, '#version 300 es\nflat out float v;\nvoid main(){ v = 1.0; gl_Position = vec4(0.0); }'); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, '#version 300 es\nprecision highp float;\nsmooth in float v;\nout vec4 o;\nvoid main(){ o = vec4(v); }'); gl.compileShader(fs);
+  gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  res.push({ nombre: 'enlace interpolación distinta', ok: gl.getProgramParameter(p, gl.LINK_STATUS), log: gl.getProgramInfoLog(p).replace(/\s+/g, ' ').slice(0, 220) });
+}
+window.__res = res;
+</script>
+</body>
