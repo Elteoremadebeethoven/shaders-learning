@@ -1,0 +1,71 @@
+[turno-chrome] esperando turno: solo se permiten 2 Chrome headless a la vez…
+✓ 1440 DPR 1: el canvas aparece (.listo) tras su primer frame
+✓ 1440 DPR 1: búfer 1440×900 (dprMax 1 → 1440×900)
+✓ 1440 DPR 1: titular 01 visible y diapositiva 02 oculta
+✓ 1440 DPR 1: sin scroll horizontal (1440/1440)
+  · color medio del hero: {"r":17.2,"g":19.8,"b":44.4,"hash":3521724832}
+✓ 1440 DPR 1: sin excepciones, errores ni avisos inesperados
+✓ 1440 DPR 2: el canvas aparece (.listo) tras su primer frame
+✓ 1440 DPR 2: búfer 1440×900 (dprMax 1 → 1440×900)
+✓ 1440 DPR 2: titular 01 visible y diapositiva 02 oculta
+✓ 1440 DPR 2: sin scroll horizontal (1440/1440)
+  · color medio del hero: {"r":17.1,"g":19.7,"b":44.3,"hash":1200551094}
+✓ 1440 DPR 2: sin excepciones, errores ni avisos inesperados
+✓ bucle en marcha con el tiempo corriendo (8 rAF en 1 s)
+  · el reloj y el contador de la página: 12 rAF desde la carga
+✓ «02»: diapositiva 02 entera (0/1) y la alternativa CSS al mismo progreso (1)
+✓ «02»: inert true,false · aria-pressed false,true
+✓ «02»: el fondo pasa a la paleta Brasas (rojo medio 25.4 → 47.7)
+✓ «02»: la diapositiva 01 (inert) no acepta el foco
+✓ interrupción 02→01→02: termina limpia en 02
+✓ pausa: texto «Reanudar animación», clase «hero-pausa pausado», sin aria-pressed
+✓ pausa + puntero quieto: el bucle se duerme (en 3013 ms)
+✗ pausa: dos capturas separadas 1 s, idénticas
+✓ pausa: mover el puntero despierta al bucle (16 rAF en 0,6 s)
+✓ reanudar: texto «Pausar animación»
+✓ scroll de media pantalla: el contenido lleva parallax (matrix(1, 0, 0, 1, 0, 7))
+✓ hero fuera de pantalla: 0 rAF en 2 s
+✓ al volver: el bucle sigue (22 rAF en 1 s)
+✓ contexto perdido: clase gl-perdido y el bucle de la página sigue (41 rAF en 0,8 s)
+  · color medio con el contexto perdido (se ve la alternativa CSS): {"r":23.9,"g":31.6,"b":55.7,"hash":3491088161}
+✓ contexto recuperado: vuelve a dibujar (clase «hero»)
+✓ comportamiento: sin excepciones, errores ni avisos inesperados
+✓ ?depurar: panel visible («búfer 800×500 · calidad 1.00 · 26 fps · t = 0.10 s · escala 1 · frames 1»)
+✓ ?depurar · perder: «contexto perdido · 15 fps · t = 0.43 s · escala 1 · frames 6»
+✓ ?depurar · recuperar: «búfer 800×500 · calidad 1.00 · 30 fps · t = 0.92 s · escala 1 · frames 27»
+✓ ?depurar: sin excepciones, errores ni avisos inesperados
+✓ 390: sin scroll horizontal (390/390)
+✗ 390 a DPR 2: búfer 204×441 = caja CSS 390×844 × calidad 0.52 (dprMax 1)
+✓ 390: ningún elemento se sale por la derecha
+✓ 390: touch-action sin «none» en el hero (auto,auto,auto): el dedo puede desplazar la página
+✓ móvil 390: sin excepciones, errores ni avisos inesperados
+✓ reducido: el titular está en su sitio desde el principio (opacidad 1 a los 0,3 s)
+✓ reducido: la flecha sin animación CSS
+✓ reducido: con todo quieto, el bucle se duerme (en 1504 ms) y no pide frames
+✓ reducido: el fondo está quieto (capturas idénticas a 1,2 s)
+✓ reducido: «02» funciona (fundido) y llega a la 02
+✓ reducido: el texto de la diapositiva no se desplaza
+✓ reducido: tras la transición se duerme (en 4529 ms)
+✓ reducido: sin parallax en el contenido (matrix(1, 0, 0, 1, 0, 0))
+✓ cambio de preferencia: el texto que ya estaba no vuelve a hacer la entrada (opacidad mínima del titular en 1,5 s: 1)
+✓ cambio de preferencia: la flecha CSS recreada se recaptura en pausa (paused@1500)
+✓ cambio de preferencia: el flujo vuelve a moverse (13 rAF en 1 s)
+✗ y de vuelta a reducido: flecha sin animación, texto visible
+✓ movimiento reducido: sin excepciones, errores ni avisos inesperados
+✓ ?reducir: titular visible y flecha quieta en 0 (paused@0)
+✓ ?reducir: el bucle se duerme (en 1505 ms)
+✓ ?reducir: sin excepciones, errores ni avisos inesperados
+✓ sin WebGL: clase sin-webgl y canvas retirado
+✓ sin WebGL: el titular hace su entrada
+✓ sin WebGL: un único aviso «[capa GL] sin WebGL2» en la consola
+✓ sin WebGL: «02» funde la alternativa y el texto con el mismo muelle
+✓ sin WebGL: sin excepciones, errores ni avisos inesperados
+✓ ?sinwebgl: alternativa y texto visible
+  · ?sinwebgl, aviso de consola: warn: [capa GL] sin WebGL2 (Canvas has an existing context of a different type)
+✓ ?sinwebgl: sin excepciones, errores ni avisos inesperados
+✓ sin JS: titular 01 visible y 02 oculta
+✓ sin JS: selector y pausa ocultos
+✓ sin JavaScript: sin excepciones, errores ni avisos inesperados
+
+✗ 3 comprobaciones fallidas · capturas en /tmp/claude-0/-home-user-shaders-learning/9b79b7cf-13d8-56ce-97bf-3314f2a27f6e/scratchpad/agentes/rev-m7-6/proyecto2
+FIN 1
