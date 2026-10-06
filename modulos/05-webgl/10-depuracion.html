@@ -331,6 +331,7 @@ if (!ext) {
 
 <div class="callout cuidado" data-titulo="Medir NaN con isnan() cambia el resultado">
   <p>La lista de arriba se midió con <code>isnan()</code> dentro del shader, y eso no es inocente: es el comportamiento raro <a href="../03-matematicas/07-precision.html#m3-isnan-heisenbug">«Añadir isnan() para depurar cambia el resultado»</a> de 3.7. En ANGLE sobre Metal, si un shader contiene <code>isnan()</code> o <code>isinf()</code> (en cualquier rama, aunque no se ejecute), el compilador deja de usar el «fast math» en <em>todo</em> el shader. Con el fast math activo, el compilador puede suponer que no hay NaN y simplificar a su gusto. Lo repetimos con un cero que llega por un uniform (para que el compilador no pueda calcularlo de antemano) y <strong>sin</strong> <code>isnan</code> en el shader: <code>0.0 / 0.0</code>, es decir, el cero dividido entre sí mismo, dio <strong>1</strong> en lugar de NaN, y <code>atan(0.0, 0.0)</code> dio NaN en lugar de 0. Los demás casos (<code>sqrt</code>, <code>log</code>, <code>pow</code> con base negativa, <code>asin(2.0)</code>, <code>normalize(vec3(0.0))</code>, los dos infinitos) no cambiaron. Moraleja: el resultado de una operación indefinida depende de qué más haya en el shader, y un detector de NaN puede modificar el síntoma que intentas ver. Si un shader se ve distinto al añadirle un <code>isnan</code>, sospecha de una operación indefinida.</p>
+  <p>Y una vuelta de tuerca más, que ya viste en 3.7: el <code>isnan</code> solo desactiva el fast math la <strong>primera vez</strong> que Chrome compila ese texto exacto. Chrome guarda los programas compilados en una caché (en memoria y en disco, entre pestañas y entre visitas), y si recibe otra vez el mismo código reutiliza el binario guardado, que se comporta como compilado <em>con</em> fast math (medido en el M1 con <code>mod(x, 7.0)</code>: 0 fallos de 4 096 en la primera compilación, 2 071 en la segunda). Los editores GLSL del curso lo esquivan añadiendo un comentario distinto a cada compilación de un shader con <code>isnan</code>. En WebGL hecho a mano, como el del ejemplo siguiente y el del ejercicio 5.10.2, lo hacemos nosotros: el fragment shader termina con <code>'\n// ' + Math.random()</code>, un comentario que cambia en cada ejecución, para que siempre se compile de verdad. Sin él, el resultado de sus operaciones indefinidas podría depender de si ese texto ya estaba en la caché, es decir, de si es la primera vez que pulsas ▶ o que abres la página. (El precio: una compilación completa cada vez, sin caché; no lo dejes en producción).</p>
 </div>
 
 <section class="ejemplo">
@@ -354,6 +355,9 @@ select { font: 12px ui-monospace, monospace; }
 const canvas = document.getElementById('c');
 const gl = canvas.getContext('webgl2', { alpha: false });
 const hayFloat = !!gl.getExtension('EXT_color_buffer_float');
+// El fragment shader usa isnan(): le añadimos al final un comentario distinto en cada ejecución
+// para que Chrome lo compile de verdad y no reutilice una versión guardada en su caché de programas
+// (recuadro «Medir NaN con isnan() cambia el resultado»).
 const programa = GLKit.crearPrograma(gl, `#version 300 es
 layout(location = 0) in vec2 a_posicion;
 void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
@@ -375,7 +379,7 @@ void main() {
   else if (u_vista == 2) color = vec4(max(difusa, 0.0), 0.0, max(-difusa, 0.0), 1.0);
   else if (u_vista == 3) color = any(isnan(final)) ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(vec3(dot(final, vec3(0.333))), 1.0);
   else color = vec4(final, difusa);                                     // vista 4: valores crudos, para leerlos
-}`);
+}` + '\n// ' + Math.random());
 const vao = GLKit.trianguloPantalla(gl);
 const loc = { res: gl.getUniformLocation(programa, 'u_resolucion'), vista: gl.getUniformLocation(programa, 'u_vista') };
 const selVista = document.getElementById('vista');
@@ -536,7 +540,7 @@ GLKit.bucle((t) => {
 });
 </script>
   </div>
-  <p>Lo que deberías observar: con el coste del shader alto, la resolución manda (al 25 % hay 16 veces menos píxeles que al 100 %). Con muchas llamadas extra, sube el JavaScript por frame y la resolución apenas importa. Si una escena real se comporta como el primer caso, optimiza el fragment shader o dibuja a menor resolución; si se comporta como el segundo, reduce llamadas (instancing, 5.9) o trabajo en JavaScript.</p>
+  <p>Lo que deberías observar: con el coste del shader alto, la resolución manda (al 25 % hay 16 veces menos píxeles que al 100 %). Con muchas llamadas extra, sube el JavaScript por frame y la resolución apenas importa. Si una escena real se comporta como el primer caso, optimiza el fragment shader o dibuja a menor resolución; si se comporta como el segundo, reduce llamadas (instancing, 5.9) o trabajo en JavaScript. La cifra «GPU» es la media de lo que devuelve el temporizador de la GPU en el último medio segundo, con las reservas del recuadro <a href="#lo-que-el-temporizador-no-te-dice">«Lo que el temporizador no te dice»</a>: tómala como orientativa y fíate más de los fps y de cómo cambian al mover cada mando. Todos estos números dependen de tu GPU, de tu pantalla y de lo ocupado que esté el equipo.</p>
 </section>
 
 <div class="quiz">
@@ -612,8 +616,9 @@ if (q && gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)) {
 </ol>
 </div>
 
-<div class="callout senior" data-titulo="Lo que el temporizador no te dice">
+<div class="callout senior" id="lo-que-el-temporizador-no-te-dice" data-titulo="Lo que el temporizador no te dice">
   <p>Probamos el temporizador en la máquina de pruebas, con una consulta por frame alrededor de un único dibujo, y los resultados enseñan a desconfiar. Un dibujo ligero (limitado por el scissor a un píxel) midió 0,03 ms: bien. Un dibujo pesado midió 3,2 ms, 7,5 ms, 9,8 ms y 9,7 ms en cuatro frames seguidos, haciendo exactamente lo mismo y sin que se activara <code>GPU_DISJOINT_EXT</code> (no sabemos si por cambios de frecuencia de la GPU o por cómo mide esta implementación). Y el dibujo ligero, cuando le precedía uno pesado <em>fuera</em> de la consulta en el mismo frame, midió de 3,1 a 10,2 ms, lo mismo que el pesado: en esta GPU, que procesa cada pasada de dibujo de una vez, la consulta no aísla los dibujos que encierra. Conclusiones prácticas: mide frames o pasadas completas, no dibujos sueltos; promedia muchas muestras; compara siempre con otra medida (los fps, o el efecto de cambiar la resolución); y desconfía de los números que no cuadran.</p>
+  <p>Para saber cuánto cuesta un shader concreto, fuera del bucle de animación, el método que nos dio cifras estables en esta GPU es otro: cada dibujo en su propia pasada de render (dos framebuffers alternos, con un <code>clear</code> al empezar cada uno), un <code>readPixels</code> de un píxel al final de la tanda y la mediana de varias tandas. Al revisar el módulo 6 comparamos los dos métodos con el mismo shader: el temporizador dio una mediana de 42 ms donde las pasadas aisladas medían 5,4 ms, y solo su mínimo se parecía. Y una trampa que da números estables y falsos: dibujar N veces seguidas sobre el mismo framebuffer y dividir entre N, porque una GPU de teselas se ahorra los dibujos tapados (<a href="../04-gpu/02-pipeline-grafico.html#early-z-probar-la-profundidad-antes-de-sombrear">4.2</a>). Todo el método, en la caja «Cómo se mide lo que cuesta un shader (y cómo no)» de <a href="../06-glsl/06-ruido.html#medir-coste-shader">6.6</a>.</p>
 </div>
 
 <h2>Fugas de memoria</h2>
@@ -765,6 +770,9 @@ canvas { width: 100%; height: 100%; display: block; }
 const VER_NAN = false;                        // true: los NaN se pintan de magenta
 const canvas = document.getElementById('c');
 const gl = canvas.getContext('webgl2', { alpha: false });
+// El fragment shader usa isnan(): le añadimos al final un comentario distinto en cada ejecución
+// para que Chrome lo compile de verdad y no reutilice una versión guardada en su caché de programas
+// (recuadro «Medir NaN con isnan() cambia el resultado»).
 const programa = GLKit.crearPrograma(gl, `#version 300 es
 layout(location = 0) in vec2 a_posicion;
 void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
@@ -785,7 +793,7 @@ void main() {
   float luz = 0.15 + 0.85 * max(dot(n, l), 0.0);
   vec3 c = mix(vec3(0.2, 0.45, 0.25), vec3(0.85, 0.8, 0.6), h * 2.0 + 0.5) * luz;
   color = (u_verNaN && any(isnan(c))) ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(c, 1.0);
-}`);
+}` + '\n// ' + Math.random());
 GLKit.ajustarTamaño(canvas);
 gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
 gl.useProgram(programa);
@@ -798,6 +806,9 @@ gl.drawArrays(gl.TRIANGLES, 0, 3);
 const VER_NAN = true;                         // ya no aparece ningún magenta
 const canvas = document.getElementById('c');
 const gl = canvas.getContext('webgl2', { alpha: false });
+// El fragment shader usa isnan(): le añadimos al final un comentario distinto en cada ejecución
+// para que Chrome lo compile de verdad y no reutilice una versión guardada en su caché de programas
+// (recuadro «Medir NaN con isnan() cambia el resultado»).
 const programa = GLKit.crearPrograma(gl, `#version 300 es
 layout(location = 0) in vec2 a_posicion;
 void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
@@ -818,7 +829,7 @@ void main() {
   float luz = 0.15 + 0.85 * max(dot(n, l), 0.0);
   vec3 c = mix(vec3(0.2, 0.45, 0.25), vec3(0.85, 0.8, 0.6), h * 2.0 + 0.5) * luz;
   color = (u_verNaN && any(isnan(c))) ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(c, 1.0);
-}`);
+}` + '\n// ' + Math.random());
 GLKit.ajustarTamaño(canvas);
 gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
 gl.useProgram(programa);

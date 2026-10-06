@@ -106,7 +106,7 @@
 
 <section class="ejemplo">
   <h3>Ejemplo 7.7.1 — Un programa de Three.js, llamada a llamada</h3>
-  <p>Este es un programa típico de Three.js: un shader a pantalla completa con <code>u_time</code> y <code>u_resolution</code>, el «hola mundo» de cualquiera que venga de Shadertoy. No se puede ejecutar aquí (necesita importar Three.js como módulo, lo que no funciona con <code>file://</code>, <a href="../01-web/07-herramientas.html">1.7</a>), pero se puede leer sabiendo qué produce cada línea:</p>
+  <p>Este es un programa típico de Three.js: un shader a pantalla completa con <code>u_time</code> y <code>u_resolution</code>, el «hola mundo» de cualquiera que venga de Shadertoy. No se puede ejecutar aquí (necesita importar Three.js como módulo, lo que no funciona con <code>file://</code>, <a href="../01-web/07-herramientas.html#por-que-file-rompe-cosas">1.7</a>), pero se puede leer sabiendo qué produce cada línea:</p>
   <div class="anotado" data-lang="js">
 <script type="text/plain">
 import * as THREE from 'three';
@@ -182,7 +182,7 @@ drawElements(TRIANGLES, 6, UNSIGNED_SHORT, 0)
   <li data-l="1-3">Lo primero es subir la geometría: <code>position</code> (4 vértices × 3 floats × 4 bytes = 48), <code>normal</code> (48) y <code>uv</code> (4 × 2 × 4 = 32). Se suben los tres, aunque el shader solo use <code>position</code>: Three.js no sabe aún qué programa tocará.</li>
   <li data-l="4">Antes de borrar, abre las máscaras. Si una pasada anterior dejó <code>depthMask(false)</code> (los transparentes de <a href="../05-webgl/07-blending.html#el-orden-importa">5.7</a>), el <code>clear</code> no borraría la profundidad. El comentario del código fuente lo dice así: <em>buffers might not be writable which is required to ensure a correct clear</em>.</li>
   <li data-l="5">Pregunta si existe la compilación en paralelo (<a href="01-arquitectura.html#recarga-en-caliente-sin-congelar-la-pagina">7.1</a>). Aquí solo la anota; la usa <code>compileAsync</code>.</li>
-  <li data-l="6-11">El enlace de <a href="../05-webgl/02-primer-triangulo.html">5.2</a>, con dos detalles. El vertex shader que se compila tiene 69 líneas y el fragment, 62 (verás por qué). Y <code>bindAttribLocation</code> fija <code>position</code> en la location 0 antes de enlazar, para que el atributo 0 siempre esté activo (<a href="../05-webgl/03-buffers-atributos.html#location-0-el-atributo-que-siempre-esta">5.3</a>).</li>
+  <li data-l="6-11">El enlace de <a href="../05-webgl/02-primer-triangulo.html">5.2</a>, con dos detalles. El vertex shader que se compila tiene 70 líneas y el fragment, 63 (verás por qué). Y <code>bindAttribLocation</code> fija <code>position</code> en la location 0 antes de enlazar, para que el atributo 0 siempre esté activo (<a href="../05-webgl/03-buffers-atributos.html#location-0-el-atributo-que-siempre-esta">5.3</a>).</li>
   <li data-l="12-13">La comprobación de errores no va dentro de la creación del programa, sino en su <em>primer uso</em>. En un <code>render</code> normal da igual (el primer uso llega enseguida), pero permite que <code>renderer.compile()</code> y <code>compileAsync()</code> lancen todas las compilaciones de una escena antes de esperar a ninguna: preguntar <code>LINK_STATUS</code> (o cualquier log) fuerza la espera (<a href="../05-webgl/02-primer-triangulo.html#paso-3-enlazar-los-shaders-en-un-programa">5.2</a>). Después, los shaders sobran.</li>
   <li data-l="14-15">El inventario del programa. Solo hay <strong>dos</strong> uniforms activos (<code>u_time</code> y <code>u_resolution</code>) y un atributo: las matrices y atributos que declara el prefijo y no usas los ha eliminado el compilador (<a href="../06-glsl/01-lenguaje.html#lo-que-hace-el-compilador-con-tu-codigo">6.1</a>). Las locations se guardan para siempre.</li>
   <li data-l="16-17">Programa en uso y valores iniciales de los uniforms. <code>uniform2f</code> y no <code>uniform2fv</code>, porque el valor es un <code>Vector2</code> (con <code>.x</code> e <code>.y</code>).</li>
@@ -191,11 +191,11 @@ drawElements(TRIANGLES, 6, UNSIGNED_SHORT, 0)
   <li data-l="23">El draw call: <code>TRIANGLES</code> (4), 6 índices, <code>UNSIGNED_SHORT</code> (5123).</li>
 </ol>
   </div>
-  <p>El segundo <code>render</code>, con <code>u_time</code> cambiado a 1, hizo <strong>3 llamadas</strong>: <code>clear</code>, <code>uniform1f(1)</code> y <code>drawElements</code>. El tercero, con el mismo tiempo, <strong>2</strong>: <code>clear</code> y <code>drawElements</code>. Ni <code>useProgram</code>, ni <code>bindVertexArray</code>, ni el <code>uniform2f</code> de la resolución, ni el <code>uniform1f</code> que no cambió. Three.js guarda una copia de todo el estado de GL que toca y compara antes de llamar: si el programa en uso ya es ese, no llama a <code>useProgram</code>; si el valor de un uniform es el mismo que envió la última vez, no llama a <code>uniform1f</code> (en el código: <code>if (cache[0] === v) return;</code>). Es la caché de estado que <a href="../05-webgl/10-depuracion.html#las-causas-habituales-medidas">5.10</a> te recomendaba montar, hecha a conciencia.</p>
+  <p>El segundo <code>render</code>, con <code>u_time</code> cambiado a 1, hizo <strong>3 llamadas</strong>: <code>clear</code>, <code>uniform1f(1)</code> y <code>drawElements</code>. El tercero, con el mismo tiempo, <strong>2</strong>: <code>clear</code> y <code>drawElements</code>. Ni <code>useProgram</code>, ni <code>bindVertexArray</code>, ni el <code>uniform2f</code> de la resolución, ni el <code>uniform1f</code> que no cambió. Three.js guarda una copia de todo el estado de GL que toca y compara antes de llamar: si el programa en uso ya es ese, no llama a <code>useProgram</code>; si el valor de un uniform es el mismo que envió la última vez, no llama a <code>uniform1f</code> (en el código: <code>if (cache[0] === v) return;</code>). Es una caché de estado hecha a conciencia, y completa lo que recomendaba <a href="../05-webgl/10-depuracion.html#las-causas-habituales-medidas">5.10</a>: Three.js ordena los objetos opacos por material antes de dibujarlos, para que haya pocos cambios de estado, y la caché se encarga de que las llamadas que no cambiarían nada ni siquiera se hagan.</p>
 </section>
 
 <h3>Lo que llega de verdad al compilador</h3>
-<p>El fragment shader del ejemplo tiene 6 líneas y llegó a <code>shaderSource</code> con 62. Lo capturamos con el espía; es este (las 17 líneas de precisión, abreviadas):</p>
+<p>El fragment shader del ejemplo tiene 6 líneas (7 contando el salto de línea con el que empieza la plantilla de texto) y llegó a <code>shaderSource</code> con 63. Lo capturamos con el espía; es este (las 17 líneas de precisión, abreviadas):</p>
 <div class="anotado" data-lang="glsl">
 <script type="text/plain">
 #version 300 es
@@ -223,7 +223,7 @@ vec4 sRGBTransferOETF( in vec4 value ) { … }
 vec4 linearToOutputTexel( vec4 value ) { … }
 float luminance( const in vec3 rgb ) { … }
 
-uniform float u_time;                   // ← tu código empieza en la línea 57
+uniform float u_time;                   // ← línea 58 (tu texto empieza en la 57)
 uniform vec2 u_resolution;
 void main() {
   vec2 uv = gl_FragCoord.xy / u_resolution;
@@ -237,7 +237,7 @@ void main() {
   <li data-l="13-15"><code>#define</code> informativos (el tipo y el nombre del material) y los de tus <code>material.defines</code>, que van aquí.</li>
   <li data-l="16-18">Uniforms que Three.js declara y rellena por ti. En el vertex shader hay más: <code>modelMatrix</code>, <code>modelViewMatrix</code>, <code>projectionMatrix</code>, <code>normalMatrix</code>, y los atributos <code>position</code>, <code>normal</code> y <code>uv</code> (su prefijo tiene 68 líneas). No los vuelvas a declarar: sería una redefinición.</li>
   <li data-l="20-24">Funciones de color que Three.js deja a mano: <code>linearToOutputTexel</code> convierte un color lineal al espacio de salida del renderer (sRGB por defecto). Las usarás en la sección del espacio de color.</li>
-  <li data-l="26-31">Tu shader, desde la línea 57. Los números de línea de los errores del compilador cuentan desde la línea 1 del texto completo, igual que con la envoltura de Shadertoy (<a href="../06-glsl/10-codigo-ajeno.html#lo-que-shadertoy-anade-por-delante-y-por-detras">6.10</a>). Three.js te ayuda: al fallar, imprime el trozo del texto completo alrededor de la línea culpable.</li>
+  <li data-l="26-31">Tu shader. Tu texto empieza en la línea 57; en el ejemplo, esa línea es el salto de línea con el que abre la plantilla de texto, así que <code>uniform float u_time</code> queda en la 58. Los números de línea de los errores del compilador cuentan desde la línea 1 del texto completo, igual que con la envoltura de Shadertoy (<a href="../06-glsl/10-codigo-ajeno.html#lo-que-shadertoy-anade-por-delante-y-por-detras">6.10</a>). Three.js te ayuda: al fallar, imprime el trozo del texto completo alrededor de la línea culpable.</li>
 </ol>
 </div>
 
@@ -371,7 +371,7 @@ _dibujar(o, camara) {
   <li data-l="3-7">Cada material recuerda su programa y la versión con la que lo obtuvo. <code>material.needsUpdate = true</code> sube la versión y obliga a pedir otro (en Three.js, igual). <code>_programa</code> busca primero en una caché indexada por el <em>texto</em> de los shaders y los <code>defines</code>: si otro material ya compiló ese texto, lo reutiliza.</li>
   <li data-l="8-10">La consulta de <code>LINK_STATUS</code>, al primer uso. Si falló, se imprime el error y el objeto no se dibuja; nada se lanza.</li>
   <li data-l="11-15">Los uniforms del material se envían si el programa acaba de cambiar o si este objeto usa un material distinto del anterior. Si dos objetos seguidos comparten material, el segundo no los reenvía (recuerda esto para el bestiario de <code>onBeforeRender</code>). <code>_uniform</code> compara con una copia del último valor enviado.</li>
-  <li data-l="16-18">Las matrices de cada objeto, con la misma caché. <code>modelViewMatrix</code> = vista × modelo, calculada en JavaScript con 64 bits, como recomendaba <a href="../05-webgl/06-3d-cubo.html#modelo-vista-y-proyeccion">5.6</a>.</li>
+  <li data-l="16-18">Las matrices de cada objeto, con la misma caché. <code>modelViewMatrix</code> = vista × modelo, calculada en JavaScript una vez por objeto, como recomendaba <a href="../05-webgl/06-3d-cubo.html#modelo-vista-y-proyeccion">5.6</a>. Three.js hace lo mismo con un detalle más: sus matrices son arrays normales de JavaScript (números de 64 bits), no <code>Float32Array</code> como las de GLKit, así que el producto se hace en doble precisión y solo se redondea a 32 bits al enviarlo.</li>
   <li data-l="19-21">El estado del material, con caché: solo se llama a <code>enable</code>/<code>disable</code> si cambia. En WebGPU, estas tres líneas serán parte del pipeline.</li>
   <li data-l="22-24">El VAO de la pareja (se crea la primera vez), el draw call y el contador de <code>renderer.info</code>.</li>
 </ol>
@@ -500,7 +500,7 @@ renderer.setAnimationLoop((ms) => {
 </script>
 <ol>
   <li data-l="1">El límite de DPR de 7.1: <code>setPixelRatio</code> acepta lo que le des, sin tope.</li>
-  <li data-l="2-3">El tamaño de partida se lee del layout; no se deja en 0. Parece redundante, porque el observador siempre avisa una vez al empezar a observar, pero ese aviso llega tarde: en cada frame, el navegador ejecuta primero los callbacks de rAF y después los de <code>ResizeObserver</code> (<a href="../05-webgl/01-contexto.html#el-patron-completo-resizeobserver-devicepixelcontentboxsize">5.1</a>). Medido: el primer rAF vio un ancho de 0 y el observador avisó justo después. Con <code>anchoCSS = 0</code>, el primer frame haría <code>setSize(0, 0)</code> y <code>aspect = 0 / 0</code>, es decir, <code>NaN</code> (con r186: canvas de 0 × 0 y matriz de proyección llena de <code>NaN</code>) hasta el frame siguiente. <code>crearApp</code> hace lo mismo con su <code>getBoundingClientRect()</code> inicial.</li>
+  <li data-l="2-3">El tamaño de partida se lee del layout; no se deja en 0. Parece redundante, porque el observador siempre avisa una vez al empezar a observar, pero ese aviso llega tarde: en cada frame, el navegador ejecuta primero los callbacks de rAF y después los de <code>ResizeObserver</code> (<a href="../05-webgl/01-contexto.html#el-patron-completo-resizeobserver-devicepixelcontentboxsize">5.1</a>). Medido: el primer rAF vio un ancho de 0 y el observador avisó justo después. Con <code>anchoCSS = 0</code>, el primer frame haría <code>setSize(0, 0)</code> y <code>aspect = 0 / 0</code>, es decir, <code>NaN</code> (con r186: canvas de 0 × 0 y <code>NaN</code> en la fila de la matriz de proyección que calcula la x) hasta el frame siguiente. <code>crearApp</code> hace lo mismo con su <code>getBoundingClientRect()</code> inicial.</li>
   <li data-l="4-7">El observador solo anota (<a href="01-arquitectura.html#el-esqueleto-cuatro-funciones-y-un-bucle">7.1</a>): el tamaño se aplica al principio del frame. <code>contentRect</code> va en píxeles CSS, que es lo que espera <code>setSize</code>. Si quieres el búfer exacto al píxel del patrón <code>devicePixelContentBoxSize</code> de 5.1, cambia <code>setSize</code> por <code>renderer.setDrawingBufferSize(anchoDisp, altoDisp, 1)</code> con los píxeles de dispositivo: hace <code>canvas.width = Math.floor(ancho × ratio)</code> sin tocar el CSS y, según el código de r186, deja además el ratio en 1 para las llamadas siguientes (sobra el <code>setPixelRatio</code> de la línea 1).</li>
   <li data-l="8-9"><code>THREE.Timer</code> recibe el tiempo del rAF en <code>update</code>. Con <code>connect(document)</code>, mientras la pestaña está oculta el <code>dt</code> vale 0 y al volver se reinicia la referencia, como <code>reiniciarReferencia</code> de 7.1.</li>
   <li data-l="12-17">El bloque que se olvida. Cambiar <code>camara.aspect</code> no recalcula nada: la matriz de proyección solo se reconstruye en <code>updateProjectionMatrix</code> (bestiario de abajo). <code>setSize(…, false)</code> deja el tamaño en pantalla en manos de tu CSS.</li>
@@ -511,7 +511,7 @@ renderer.setAnimationLoop((ms) => {
 
 <div class="callout bestiario" data-id="m7-7-aspecto-sin-actualizar" data-titulo="Al redimensionar, la escena de Three.js sale estirada aunque cambié camera.aspect">
   <p><strong>Síntoma:</strong> redimensionas la ventana y todo se ve aplastado o alargado. El código hace <code>renderer.setSize(…)</code> y <code>camera.aspect = w / h</code>, y el valor de <code>aspect</code> es el correcto.</p>
-  <p><strong>Causa:</strong> <code>aspect</code>, <code>fov</code>, <code>near</code>, <code>far</code> y <code>zoom</code> son solo números; la matriz que llega al shader es <code>camera.projectionMatrix</code>, que únicamente se recalcula en <code>updateProjectionMatrix()</code>. Medido: tras <code>camera.aspect = 2</code>, el elemento [0] de la matriz seguía en 2,1445; tras <code>updateProjectionMatrix()</code>, pasó a 1,0723. Es el mismo cubo estirado de <a href="../03-matematicas/06-espacios-coordenadas.html#m3-viewport-desfasado">3.6</a> y <a href="../05-webgl/06-3d-cubo.html">5.6</a>, con un paso más donde olvidarse.</p>
+  <p><strong>Causa:</strong> <code>aspect</code>, <code>fov</code>, <code>near</code>, <code>far</code> y <code>zoom</code> son solo números; la matriz que llega al shader es <code>camera.projectionMatrix</code>, que únicamente se recalcula en <code>updateProjectionMatrix()</code>. Medido: tras <code>camera.aspect = 2</code>, el elemento [0] de la matriz seguía en 2,1445; tras <code>updateProjectionMatrix()</code>, pasó a 1,0723. Es el mismo cubo estirado de <a href="../03-matematicas/06-espacios-coordenadas.html#m3-aspecto">3.6</a> y <a href="../05-webgl/06-3d-cubo.html">5.6</a>, con un paso más donde olvidarse.</p>
   <p><strong>Solución:</strong> <code>camera.updateProjectionMatrix()</code> justo después de cambiar cualquiera de esos parámetros, en el mismo sitio donde llamas a <code>setSize</code> (y solo cuando el tamaño cambió, al principio del frame).</p>
 </div>
 
@@ -635,9 +635,9 @@ void main() {
   float a = atan(p.y, p.x);
   float bandas = mod(a * 3.0 / 3.14159265 + u_time * 0.5, 1.0);
   float sector = bandas < 0.5 ? 1.0 : 0.6;
-  vec3 col = vec3(0.07, 0.08, 0.1) + vec3(0.12, 0.1, 0.25) * sector * smoothstep(1.3, 0.1, length(p));
+  vec3 col = vec3(0.07, 0.08, 0.1) + vec3(0.12, 0.1, 0.25) * sector * (1.0 - smoothstep(0.1, 1.3, length(p)));
   col += vec3(0.55, 0.48, 1.0) * exp(-5.0 * length(p - m));
-  col += vec3(0.25, 0.82, 0.91) * smoothstep(0.02, 0.0, abs(length(p) - 0.7)) * step(0.0, p.y);
+  col += vec3(0.25, 0.82, 0.91) * (1.0 - smoothstep(0.0, 0.02, abs(length(p) - 0.7))) * step(0.0, p.y);
   fragColor = vec4(col, 1.0);
 }`;
 const WGSL = /* wgsl */ `
@@ -664,9 +664,9 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let a = atan2(p.y, p.x);
   let bandas = modGLSL(a * 3.0 / 3.14159265 + g.tiempo * 0.5, 1.0);
   let sector = select(0.6, 1.0, bandas < 0.5);     // select(si no, si sí, condición)
-  var col = vec3f(0.07, 0.08, 0.1) + vec3f(0.12, 0.1, 0.25) * sector * smoothstep(1.3, 0.1, length(p));
+  var col = vec3f(0.07, 0.08, 0.1) + vec3f(0.12, 0.1, 0.25) * sector * (1.0 - smoothstep(0.1, 1.3, length(p)));
   col += vec3f(0.55, 0.48, 1.0) * exp(-5.0 * length(p - m));
-  col += vec3f(0.25, 0.82, 0.91) * smoothstep(0.02, 0.0, abs(length(p) - 0.7)) * step(0.0, p.y);
+  col += vec3f(0.25, 0.82, 0.91) * (1.0 - smoothstep(0.0, 0.02, abs(length(p) - 0.7))) * step(0.0, p.y);
   return vec4f(col, 1.0);
 }`;
 
@@ -848,7 +848,7 @@ fn fs(@builtin(position) pos: vec4f)
 </div>
 
 <div class="callout senior" data-titulo="Lo que en GLSL era indefinido, en WGSL no compila">
-  <p>En <a href="../06-glsl/03-formas-sdf.html#del-numero-al-pixel-el-borde-perfecto">6.3</a> mediste qué pasa con una derivada (o una lectura de textura con mipmaps) dentro de un <code>if</code> que depende del píxel: GLSL lo declara indefinido y en el M1 salió basura. WGSL lo impide al compilar con un <em>análisis de uniformidad</em>: el compilador sigue qué valores pueden variar entre invocaciones y rechaza <code>textureSample</code>, <code>dpdx</code> o <code>fwidth</code> en un flujo de control que dependa de ellos. Con <code>if (p.x &gt; 100.0) { c = textureSample(t, s, uv); }</code>, Chrome respondió <code>'textureSample' must only be called from uniform control flow</code>, con dos notas que señalan el <code>if</code> y el <code>@builtin(position)</code> culpable. El arreglo es el de 6.3: lee antes de la rama y elige después, o usa <code>textureSampleLevel</code>, que no necesita derivadas porque le das tú el nivel de mipmap.</p>
+  <p>En <a href="../06-glsl/03-formas-sdf.html#como-calcula-la-gpu-una-derivada">6.3</a> mediste qué pasa con una derivada (o una lectura de textura con mipmaps) dentro de un <code>if</code> que depende del píxel: GLSL lo declara indefinido y en el M1 salió basura. WGSL lo impide al compilar con un <em>análisis de uniformidad</em>: el compilador sigue qué valores pueden variar entre invocaciones y rechaza <code>textureSample</code>, <code>dpdx</code> o <code>fwidth</code> en un flujo de control que dependa de ellos. Con <code>if (p.x &gt; 100.0) { c = textureSample(t, s, uv); }</code>, Chrome respondió <code>'textureSample' must only be called from uniform control flow</code>, con dos notas que señalan el <code>if</code> y el <code>@builtin(position)</code> culpable. El arreglo es el de 6.3: lee antes de la rama y elige después, o usa <code>textureSampleLevel</code>, que no necesita derivadas porque le das tú el nivel de mipmap. No todo lo indefinido de GLSL se convierte en un error: a veces WGSL simplemente lo define. <code>smoothstep</code> con los bordes al revés, indefinido en GLSL (<a href="../08-anexos/02-chuleta-glsl.html#lo-indefinido-lista-de-comprobacion">A.2</a>; por eso el curso escribe <code>1.0 - smoothstep(a, b, x)</code>), en la especificación de WGSL está definido: la curva baja de 1 a 0. Solo es un error que los dos bordes sean iguales y constantes.</p>
 </div>
 
 <div class="callout hack" data-titulo="override: el #define de 7.1, sin tocar el texto">
@@ -859,11 +859,11 @@ fn fs(@builtin(position) pos: vec4f)
 <p>El pipeline es la respuesta de WebGPU a la máquina de estados. Contiene todo lo que en WebGL decidían llamadas sueltas: los shaders y sus puntos de entrada; el formato de los vértices (lo que <code>vertexAttribPointer</code> guardaba en el VAO, sin los buffers: esos se enlazan al dibujar con <code>setVertexBuffer</code>); la topología (<code>'triangle-list'</code>…) con el culling (<code>cullMode</code>, <code>frontFace</code>); la profundidad (<code>depthCompare</code>, <code>depthWriteEnabled</code>); la mezcla de cada destino; y los formatos de los destinos. Si un objeto se dibuja con mezcla y otro sin ella, son <strong>dos pipelines</strong>. Ahora entiendes por qué un <code>Material</code> de Three.js lleva <code>blending</code>, <code>depthTest</code> y <code>side</code> junto al shader: en WebGPU, todo eso es un único objeto.</p>
 <p>La ventaja es que la validación y la compilación se hacen una vez, al crear el pipeline, y no en cada draw call: dibujar es barato y predecible. El precio es crearlos de antemano. En el Chrome de pruebas, <code>createRenderPipeline</code> volvió al instante (la compilación sigue en el proceso de la GPU y se espera, si hace falta, al usarlo por primera vez), y <code>createRenderPipelineAsync</code>, la versión que devuelve una promesa, resolvió en 15,6 ms para un shader pequeño. Es el mismo problema que <code>KHR_parallel_shader_compile</code> resolvía en <a href="01-arquitectura.html#recarga-en-caliente-sin-congelar-la-pagina">7.1</a>: crea los pipelines con la versión asíncrona antes de necesitarlos y no darás tirones.</p>
 <p>Los <strong>bind groups</strong> sustituyen a las locations y a las unidades de textura. En el shader, cada recurso tiene una dirección de dos números, <code>@group(g) @binding(b)</code>; en JavaScript, un bind group rellena todas las direcciones de un grupo de una vez, y <code>setBindGroup(g, grupo)</code> lo enlaza con una sola orden. La costumbre es repartir los recursos por frecuencia de cambio: el grupo 0 para lo que cambia una vez por frame (tiempo, cámara), el 1 para lo de cada material (texturas, colores) y el 2 para lo de cada objeto (su matriz). WebGPU garantiza al menos 4 grupos (el M1 de pruebas da exactamente 4).</p>
-<p>Y los uniforms pasan a ser bytes en un buffer. WebGL2 también tenía esta forma, los bloques de uniforms con layout <code>std140</code> (los viste en la chuleta <a href="../08-anexos/03-chuleta-webgl.html">A.3</a>); en WebGPU es la única. Tú escribes los bytes y el shader los lee según su declaración, así que los dos tenéis que estar de acuerdo en dónde empieza cada campo. Cada tipo tiene una <strong>alineación</strong>: su posición en bytes debe ser múltiplo de ella. <code>f32</code> se alinea a 4, <code>vec2f</code> a 8, y <code>vec3f</code> y <code>vec4f</code> a 16. El tamaño del struct se redondea a la mayor alineación de sus campos.</p>
+<p>Y los uniforms pasan a ser bytes en un buffer. WebGL2 también tenía esta forma, los bloques de uniforms con layout <code>std140</code> (están en la chuleta <a href="../08-anexos/03-chuleta-webgl.html#uniforms-y-bloques-de-uniforms">A.3</a>); en WebGPU es la única. Tú escribes los bytes y el shader los lee según su declaración, así que los dos tenéis que estar de acuerdo en dónde empieza cada campo. Cada tipo tiene una <strong>alineación</strong>: su posición en bytes debe ser múltiplo de ella. <code>f32</code> se alinea a 4, <code>vec2f</code> a 8, y <code>vec3f</code> y <code>vec4f</code> a 16. El tamaño del struct se redondea a la mayor alineación de sus campos.</p>
 
 <div class="callout bestiario" data-id="m7-7-struct-desalineado" data-titulo="Los uniforms de WebGPU llegan cambiados de sitio (o el bind group da «Binding size … is smaller than the minimum binding size»)">
   <p><strong>Síntoma:</strong> portas unos uniforms a un struct de WGSL y escribes sus valores seguidos en un <code>Float32Array</code>. El shader recibe números cruzados: el color en el tiempo, la mitad de un vector en otro. O, al crear el bind group, un error de validación: <code>Binding size (48) of [Buffer (unlabeled)] is smaller than the minimum binding size (64)</code>.</p>
-  <p><strong>Causa:</strong> la alineación. Un <code>vec3f</code> ocupa 12 bytes pero empieza en un múltiplo de 16, y el struct entero se redondea. Lo medimos rellenando un buffer con los números 0, 1, 2… (uno por cada 4 bytes) y pidiéndole a la GPU que devolviera lo que leía en <code>struct U { a: f32, b: vec3f, c: f32, d: vec2f, e: vec3f }</code>: <code>a</code> en el byte 0, <code>b</code> en el 16 (no en el 4: hay 12 bytes de hueco), <code>c</code> en el 28 (cabe justo detrás de <code>b</code>), <code>d</code> en el 32, <code>e</code> en el 48, y el struct mide 64 bytes, no los 52 de sumar los tamaños. Un buffer de 48 bytes era demasiado pequeño para él.</p>
+  <p><strong>Causa:</strong> la alineación. Un <code>vec3f</code> ocupa 12 bytes pero empieza en un múltiplo de 16, y el struct entero se redondea. Lo medimos rellenando un buffer con los números 0, 1, 2… (uno por cada 4 bytes) y pidiéndole a la GPU que devolviera lo que leía en <code>struct U { a: f32, b: vec3f, c: f32, d: vec2f, e: vec3f }</code>: <code>a</code> en el byte 0, <code>b</code> en el 16 (no en el 4: hay 12 bytes de hueco), <code>c</code> en el 28 (cabe justo detrás de <code>b</code>), <code>d</code> en el 32, <code>e</code> en el 48, y el struct mide 64 bytes: ni los 40 de sumar los tamaños de los campos ni los 60 en los que acaba el último. Un buffer de 48 bytes era demasiado pequeño para él.</p>
   <p><strong>Solución:</strong> calcula los offsets con las reglas (es el ejercicio 7.7.4) y escribe cada campo en su sitio: <code>datos[offset / 4] = valor</code>. Un truco habitual: ordena los campos de mayor a menor alineación (matrices y <code>vec4f</code>, después <code>vec3f</code> seguido de un <code>f32</code> que rellene su hueco, después <code>vec2f</code>, y por último los <code>f32</code>). Y crea el buffer con el tamaño del struct redondeado, nunca con la suma de los campos.</p>
 </div>
 
@@ -904,7 +904,7 @@ fn paso(@builtin(global_invocation_id) id: vec3u) {
   <li data-l="3">Un uniform suelto también vale: un <code>f32</code> en su propio buffer.</li>
   <li data-l="5">Las invocaciones se agrupan en <em>workgroups</em> de 64. Desde JavaScript se lanzan con <code>pass.dispatchWorkgroups(Math.ceil(n / 64))</code>, dentro de un <code>beginComputePass()</code>.</li>
   <li data-l="6-8">Cada invocación sabe quién es por <code>global_invocation_id</code>, el <code>gl_VertexID</code> de este mundo. Como se lanzan grupos completos de 64, las últimas pueden sobrar: se retiran si se salen del array.</li>
-  <li data-l="9-13">La física de <a href="../02-animacion/05-fisica-muelles.html">2.5</a> (Euler semiimplícito y un rebote), en la GPU, para cada partícula a la vez.</li>
+  <li data-l="9-13">La física de <a href="../02-animacion/05-fisica-muelles.html">2.5</a> (Euler semi-implícito y un rebote), en la GPU, para cada partícula a la vez.</li>
 </ol>
 </div>
 <p>Y lo mejor: si el buffer se crea con <code>GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX</code>, la misma memoria que acaba de escribir el compute shader sirve de vertex buffer para dibujar las partículas con instancing en la pasada siguiente, sin volver a la CPU. Los workgroups además comparten una memoria rápida (<code>var&lt;workgroup&gt;</code>) y pueden sincronizarse con barreras: la base de los desenfoques rápidos, los histogramas y las simulaciones de fluidos.</p>
@@ -928,7 +928,7 @@ lejos * (x - cerca) / ((lejos - cerca) * x)
   <tbody>
     <tr><td>y = +1 en NDC</td><td>arriba</td><td>arriba (igual)</td></tr>
     <tr><td>el origen de <code>gl_FragCoord</code> / <code>@builtin(position)</code></td><td>abajo a la izquierda; la y sube</td><td><strong>arriba</strong> a la izquierda; la y baja (fila 0: y = 0,5)</td></tr>
-    <tr><td>la primera fila que subes a una textura</td><td>en v = 0, «abajo» (salvo con <code>UNPACK_FLIP_Y_WEBGL</code>)</td><td>en v = 0, y se ve arriba: no hay que voltear nada</td></tr>
+    <tr><td>la primera fila que subes a una textura</td><td>en v = 0, «abajo» (salvo con <code>UNPACK_FLIP_Y_WEBGL</code>)</td><td>en v = 0, que en WebGPU es arriba: no hay que voltear nada si tus UV siguen esa convención</td></tr>
     <tr><td>la primera fila que lees</td><td><code>readPixels</code>: la de abajo</td><td><code>copyTextureToBuffer</code>: la de arriba</td></tr>
   </tbody>
 </table>
@@ -937,7 +937,7 @@ lejos * (x - cerca) / ((lejos - cerca) * x)
 <div class="callout bestiario" data-id="m7-7-y-invertida-webgpu" data-titulo="El shader portado a WebGPU sale boca abajo (y el ratón, al revés)">
   <p><strong>Síntoma:</strong> un shader de Shadertoy o del curso, portado a WGSL con <code>@builtin(position)</code> en lugar de <code>gl_FragCoord</code>, se ve reflejado verticalmente: lo que estaba arriba sale abajo, y el efecto del puntero aparece a la altura contraria.</p>
   <p><strong>Causa:</strong> el origen de <code>@builtin(position)</code> está arriba a la izquierda y su y crece hacia abajo; el de <code>gl_FragCoord</code>, abajo y hacia arriba. NDC es igual en las dos API, así que la geometría no se da la vuelta: solo lo que depende de la posición del píxel. Medido: en la fila superior de un destino de 4 × 4, <code>@builtin(position).y</code> valía 0,5.</p>
-  <p><strong>Solución:</strong> al principio del fragment shader, <code>let fc = vec2f(pos.x, resolucion.y - pos.y);</code> y usa <code>fc</code> donde el código original usaba <code>gl_FragCoord</code>; el puntero, en la convención de GL (origen abajo), como en 7.2. O, mejor, pasa unas UV desde el vertex shader (salen de NDC, que no cambia) y deja de depender de la posición del píxel.</p>
+  <p><strong>Solución:</strong> al principio del fragment shader, <code>let fc = vec2f(pos.x, resolucion.y - pos.y);</code> y usa <code>fc</code> donde el código original usaba <code>gl_FragCoord</code>; el puntero, en la convención de GL (origen abajo), como en 7.2. O, mejor, pasa unas UV desde el vertex shader (salen de NDC, que no cambia) y deja de depender de la posición del píxel. Ojo si con esas UV, que suben como en GL, lees una textura subida en WebGPU: su v = 0 es la fila de arriba de la imagen, así que ahí sí tendrás que voltear.</p>
 </div>
 
 <h3>Errores, pérdida del dispositivo y la arquitectura de 7.1</h3>
@@ -1179,7 +1179,7 @@ void main() {
   float damero = mod(celda.x + celda.y, 2.0);
   float onda = 0.5 + 0.5 * sin(atan(p.y, p.x) * 5.0 + u_time);
   vec3 col = damero > 0.5 ? vec3(0.12, 0.13, 0.2) : vec3(0.2, 0.18, 0.35);
-  col += vec3(1.0, 0.42, 0.71) * onda * smoothstep(0.05, 0.0, abs(length(p) - 0.55));
+  col += vec3(1.0, 0.42, 0.71) * onda * (1.0 - smoothstep(0.0, 0.05, abs(length(p) - 0.55)));
   if (p.y > 0.6) col = mix(col, vec3(0.25, 0.82, 0.91), 0.5);
   fragColor = vec4(col, 1.0);
 }`;
@@ -1202,7 +1202,7 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let damero = mod(celda.x + celda.y, 2.0);
   let onda = 0.5 + 0.5 * sin(atan(p.y, p.x) * 5.0 + g.tiempo);
   var col = damero > 0.5 ? vec3f(0.12, 0.13, 0.2) : vec3f(0.2, 0.18, 0.35);
-  col += vec3f(1.0, 0.42, 0.71) * onda * smoothstep(0.05, 0.0, abs(length(p) - 0.55));
+  col += vec3f(1.0, 0.42, 0.71) * onda * (1.0 - smoothstep(0.0, 0.05, abs(length(p) - 0.55)));
   if (p.y > 0.6) col = mix(col, vec3f(0.25, 0.82, 0.91), 0.5);
   return vec4f(col, 1.0);
 }`;
@@ -1296,7 +1296,7 @@ void main() {
   float damero = mod(celda.x + celda.y, 2.0);
   float onda = 0.5 + 0.5 * sin(atan(p.y, p.x) * 5.0 + u_time);
   vec3 col = damero > 0.5 ? vec3(0.12, 0.13, 0.2) : vec3(0.2, 0.18, 0.35);
-  col += vec3(1.0, 0.42, 0.71) * onda * smoothstep(0.05, 0.0, abs(length(p) - 0.55));
+  col += vec3(1.0, 0.42, 0.71) * onda * (1.0 - smoothstep(0.0, 0.05, abs(length(p) - 0.55)));
   if (p.y > 0.6) col = mix(col, vec3(0.25, 0.82, 0.91), 0.5);
   fragColor = vec4(col, 1.0);
 }`;
@@ -1322,7 +1322,7 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let damero = modGLSL(celda.x + celda.y, 2.0);                      // 1. mod no existe
   let onda = 0.5 + 0.5 * sin(atan2(p.y, p.x) * 5.0 + g.tiempo);      // 2. atan de 2 argumentos → atan2
   var col = select(vec3f(0.2, 0.18, 0.35), vec3f(0.12, 0.13, 0.2), damero > 0.5);   // 3. sin ?:
-  col += vec3f(1.0, 0.42, 0.71) * onda * smoothstep(0.05, 0.0, abs(length(p) - 0.55));
+  col += vec3f(1.0, 0.42, 0.71) * onda * (1.0 - smoothstep(0.0, 0.05, abs(length(p) - 0.55)));
   if (p.y > 0.6) { col = mix(col, vec3f(0.25, 0.82, 0.91), 0.5); }   // llaves obligatorias
   return vec4f(col, 1.0);
 }`;
@@ -1408,7 +1408,7 @@ comparar().catch((e) => console.warn(e.message));
   <details class="pista"><summary>Pista 2</summary><p>Cuando compile, mira el cuadro de diferencias. Si sale casi todo magenta y la franja clara está abajo, es la y de <code>@builtin(position)</code>: con la imagen reflejada hasta el damero se invierte. Cuando solo quede mal la zona de abajo a la izquierda (en nuestra prueba, el 31 % de los píxeles), es el <code>%</code>: ahí <code>celda.x + celda.y</code> es negativo.</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
     <p>Hay cuatro errores de compilación y dos de significado. Los de compilación se arreglan con la tabla: <code>mod</code> no existe, <code>atan</code> de dos argumentos es <code>atan2</code>, el <code>?:</code> es <code>select</code> con los dos valores en el orden contrario (primero el de «falso») y el <code>if</code> necesita llaves. La tentación con el primero es escribir <code>(celda.x + celda.y) % 2.0</code>: compila, pero con celdas negativas da −1 y el damero se desfasa donde la suma es negativa (el bestiario de <code>mod</code>). Por eso la solución define <code>modGLSL</code>.</p>
-    <p>El segundo error de significado es la y. Sin voltearla, la imagen entera sale reflejada: la franja de la parte superior aparece abajo y el damero se invierte, porque reflejar la y cambia la paridad de cada fila de celdas (<code>floor(−y) = −floor(y) − 1</code>). Medido: con <code>modGLSL</code> pero sin voltear, el 100 % de los píxeles eran distintos; volteando pero con <code>%</code>, el 31 %, todos en la zona donde la suma de celdas es negativa. <code>fc = vec2f(pos.x, resolucion.y − pos.y)</code> reproduce <code>gl_FragCoord</code> y todo lo demás puede quedarse igual. Fíjate en lo que <em>no</em> hizo falta tocar: <code>floor</code>, <code>sin</code>, <code>mix</code>, <code>length</code>, <code>abs</code> y <code>smoothstep</code> (incluso con los bordes al revés, que compiló y dio el mismo resultado) son iguales. Y en el arnés: las filas de <code>readPixels</code> empiezan por abajo y las de <code>copyTextureToBuffer</code> por arriba, así que para comparar la misma fila de pantalla hay que voltear una de las dos (y <code>bytesPerRow</code> debe ser múltiplo de 256: por eso cada fila de 384 bytes viaja en un hueco de 512).</p>
+    <p>El segundo error de significado es la y. Sin voltearla, la imagen entera sale reflejada: la franja de la parte superior aparece abajo y el damero se invierte, porque reflejar la y cambia la paridad de cada fila de celdas (<code>floor(−y) = −floor(y) − 1</code>). Medido: con <code>modGLSL</code> pero sin voltear, el 100 % de los píxeles eran distintos; volteando pero con <code>%</code>, el 31 %, todos en la zona donde la suma de celdas es negativa. <code>fc = vec2f(pos.x, resolucion.y − pos.y)</code> reproduce <code>gl_FragCoord</code> y todo lo demás puede quedarse igual. Fíjate en lo que <em>no</em> hizo falta tocar: <code>floor</code>, <code>sin</code>, <code>mix</code>, <code>length</code>, <code>abs</code> y <code>smoothstep</code> son iguales. Y en el arnés: las filas de <code>readPixels</code> empiezan por abajo y las de <code>copyTextureToBuffer</code> por arriba, así que para comparar la misma fila de pantalla hay que voltear una de las dos (y <code>bytesPerRow</code> debe ser múltiplo de 256: por eso cada fila de 384 bytes viaja en un hueco de 512).</p>
   </details>
 </section>
 
@@ -1451,7 +1451,7 @@ for (const nombre in STRUCTS) {
 async function preguntarALaGPU(nombre) {             // la GPU devuelve lo que lee en cada campo
   if (!navigator.gpu) { console.log('(sin WebGPU: no podemos preguntarle a la GPU)'); return; }
   const adaptador = await navigator.gpu.requestAdapter();
-  if (!adaptador) return;
+  if (!adaptador) { console.log('(WebGPU sin adaptador: no podemos preguntarle a la GPU)'); return; }
   const device = await adaptador.requestDevice();
   const s = STRUCTS[nombre], tuyos = disposicion(s.campos).offsets;
   const primera = { f32: '', vec2f: '.x', vec3f: '.x', vec4f: '.x', mat3x3f: '[0].x', mat4x4f: '[0].x' };
@@ -1514,7 +1514,7 @@ for (const nombre in STRUCTS) {
 async function preguntarALaGPU(nombre) {             // la GPU devuelve lo que lee en cada campo
   if (!navigator.gpu) { console.log('(sin WebGPU: no podemos preguntarle a la GPU)'); return; }
   const adaptador = await navigator.gpu.requestAdapter();
-  if (!adaptador) return;
+  if (!adaptador) { console.log('(WebGPU sin adaptador: no podemos preguntarle a la GPU)'); return; }
   const device = await adaptador.requestDevice();
   const s = STRUCTS[nombre], tuyos = disposicion(s.campos).offsets;
   const primera = { f32: '', vec2f: '.x', vec3f: '.x', vec4f: '.x', mat3x3f: '[0].x', mat4x4f: '[0].x' };

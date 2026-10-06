@@ -334,7 +334,7 @@ gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
 </div>
 
 <div class="callout nota" id="m5-ebo-desenlazado">
-  <p><strong>«Must have element array buffer bound».</strong> El enlace de <code>ELEMENT_ARRAY_BUFFER</code> se guarda en el VAO enlazado en ese momento: si enlazas los índices <em>antes</em> de <code>bindVertexArray(vao)</code>, se los queda otro VAO, y si «limpias» con <code>gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null)</code> con tu VAO todavía enlazado, se los quitas (comprobado: tras hacerlo, el VAO devolvía <code>null</code>). Es el comportamiento raro <a href="../04-gpu/04-vbo-vao.html#m4-ebo-vao-equivocado">«drawElements dibuja la malla de otro objeto»</a> de 4.4: configura el EBO dentro del VAO y, si quieres limpiar, primero <code>bindVertexArray(null)</code>. WebGL valida además que ningún índice se salga del buffer de vértices: un índice 7 con 4 vértices da <code>Vertex buffer is not big enough for the draw call</code>.</p>
+  <p><strong>«Must have element array buffer bound».</strong> El enlace de <code>ELEMENT_ARRAY_BUFFER</code> se guarda en el VAO enlazado en ese momento: si enlazas los índices <em>antes</em> de <code>bindVertexArray(vao)</code>, se los queda otro VAO, y si «limpias» con <code>gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null)</code> con tu VAO todavía enlazado, se los quitas (comprobado: tras hacerlo, el VAO devolvía <code>null</code>). Es el comportamiento raro <a href="../04-gpu/04-vbo-vao.html#m4-ebo-vao-equivocado">«drawElements dibuja la malla de otro objeto (o falla con «Must have element array buffer bound»)»</a> de 4.4: configura el EBO dentro del VAO y, si quieres limpiar, primero <code>bindVertexArray(null)</code>. WebGL valida además que ningún índice se salga del buffer de vértices: un índice 7 con 4 vértices da <code>Vertex buffer is not big enough for the draw call</code>.</p>
 </div>
 
 <div class="callout senior" data-titulo="La caché de vértices">
@@ -647,7 +647,7 @@ function frame(ms) {
 requestAnimationFrame(frame);
 </script>
   </div>
-  <p>El <code>Float32Array</code> se crea una vez y se reutiliza: crear uno nuevo por frame generaría basura para el recolector, y sus pausas se notan como tirones (<a href="../02-animacion/03-raf.html">2.3</a>). El <code>bindBuffer</code> antes de <code>bufferSubData</code> es necesario porque <code>bufferSubData</code> actúa sobre el buffer enlazado en <code>ARRAY_BUFFER</code>, y en un programa real otro código puede haber enlazado otro por el camino.</p>
+  <p>El <code>Float32Array</code> se crea una vez y se reutiliza: crear uno nuevo por frame generaría basura para el recolector, y sus pausas se notan como tirones (<a href="../01-web/03-js-lenguaje.html#el-recolector-de-basura-y-los-bucles-calientes">1.3</a>; es el comportamiento raro <a href="../02-animacion/01-pipeline-render.html#m2-tirones-periodicos">«La animación va fluida pero pega un tirón cada cierto tiempo»</a> de 2.1). El <code>bindBuffer</code> antes de <code>bufferSubData</code> es necesario porque <code>bufferSubData</code> actúa sobre el buffer enlazado en <code>ARRAY_BUFFER</code>, y en un programa real otro código puede haber enlazado otro por el camino.</p>
 </section>
 
 <div class="callout senior" data-titulo="Orphaning, y lo que medimos">

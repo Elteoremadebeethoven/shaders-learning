@@ -16,7 +16,8 @@
      · renderer.info cuenta draw calls y recursos; dispose() los borra.
 
    No es Three.js: no hay luces, sombras, texturas ni cargadores. Son unas
-   300 líneas para que veas el esqueleto. Necesita GLKit y mat4 (glkit.js).
+   500 líneas (con comentarios) para que veas el esqueleto. Necesita GLKit
+   y mat4 (glkit.js).
    En los playgrounds JS:  data-incluir="glkit,l77tres"
    ===================================================================== */
 (function () {

@@ -510,7 +510,7 @@ void main() {
 <div class="callout bestiario" data-id="m6a-formas-cortadas" data-titulo="Las formas del patrón aparecen cortadas por líneas rectas invisibles">
   <p><strong>Síntoma:</strong> en un patrón repetido, algunas formas tienen un lado recto, como si alguien las hubiera recortado con tijeras; los cortes forman una rejilla invisible. Pasa sobre todo al desplazarlas al azar, agrandarlas, girarlas o añadirles un brillo.</p>
   <p><strong>Causa:</strong> la forma de una celda se extiende a la celda vecina, pero los píxeles de la vecina solo evalúan la forma de su propia celda. La parte que invade no la dibuja nadie.</p>
-  <p><strong>Solución:</strong> o haz que la forma quepa (desplazamiento + tamaño + giro dentro de medio lado de celda), o evalúa las celdas vecinas y quédate con la distancia mínima: las 3 × 3 si las formas pueden alejarse hasta una celda entera de la suya. Si solo sobresalen poco, basta con las 2 × 2 más cercanas al píxel (las de su cuadrante).</p>
+  <p><strong>Solución:</strong> o haz que la forma quepa (desplazamiento + tamaño + giro dentro de medio lado de celda), o evalúa las celdas vecinas y quédate con la distancia mínima: las 3 × 3 si las formas pueden alejarse hasta una celda entera de la suya. Si solo sobresalen poco, basta con las 2 × 2 más cercanas al píxel (las de su cuadrante). En raymarching el mismo error es peor, porque además los rayos atraviesan el objeto: <a href="09-raymarching.html#m6b-rm-repeticion">«Con la repetición, los objetos salen cortados por planos»</a> (6.9).</p>
 </div>
 
 <div class="callout senior" data-titulo="Lo que cuesta mirar a los vecinos, y a qué se parece">
