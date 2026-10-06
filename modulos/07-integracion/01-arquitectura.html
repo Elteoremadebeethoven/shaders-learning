@@ -381,7 +381,7 @@ requestAnimationFrame(frame);
 <h2>Tamaño: lo que 5.1 no podía saber</h2>
 <p>En <a href="../05-webgl/01-contexto.html">5.1</a> resolviste el tamaño del búfer píxel a píxel: <code>ResizeObserver</code> con <code>devicePixelContentBoxSize</code>, el tamaño se anota en el observador y se aplica al empezar el frame, solo si cambió, y el viewport sale de <code>drawingBufferWidth/Height</code>. Todo eso sigue igual. Lo que una aplicación añade son tres decisiones que un ejemplo aislado no necesita tomar:</p>
 <ol>
-  <li><strong>Un límite de DPR.</strong> Con DPR 3 hay 9 veces más píxeles que con DPR 1, y en <a href="../05-webgl/10-depuracion.html">5.10</a> un shader pesado tardó 7 veces más. En un móvil, pasar de DPR 3 a 2 divide por 2,25 el trabajo de los fragmentos y casi nadie nota la diferencia en un fondo animado. Por eso <code>GLKit.ajustarTamaño</code> limita a 2 por defecto.</li>
+  <li><strong>Un límite de DPR.</strong> Con DPR 3 hay 9 veces más píxeles que con DPR 1, y el trabajo de un shader limitado por los fragmentos crece casi en la misma proporción (<a href="../05-webgl/10-depuracion.html#me-frena-la-cpu-o-la-gpu">5.10</a>). En un móvil, pasar de DPR 3 a 2 divide por 2,25 el trabajo de los fragmentos y casi nadie nota la diferencia en un fondo animado. Por eso <code>GLKit.ajustarTamaño</code> limita a 2 por defecto.</li>
   <li><strong>Un límite de píxeles totales.</strong> El DPR no basta: un monitor 4K con DPR 2 y el canvas a pantalla completa pide 3840 × 2160 = 8,3 megapíxeles, más que cualquier móvil. Un tope de área (por ejemplo, 4 millones de píxeles) protege el caso grande sin tocar el pequeño.</li>
   <li><strong>Quién se entera del cambio.</strong> Lo que depende del tamaño (FBOs de post-proceso, texturas del tamaño de la pantalla, la rejilla de una simulación) se rehace en <code>redimensionar</code>, una vez por cambio, y no en <code>dibujar</code>, en cada frame, ni en el observador, que se ejecuta después del rAF y borraría el búfer ya dibujado (<a href="../05-webgl/01-contexto.html">5.1</a>).</li>
 </ol>
@@ -981,7 +981,7 @@ document.getElementById('recuperar').onclick = () => ext.restoreContext();
 
 <section class="ejemplo">
   <h3>Ejemplo 7.1.5 — Tres maneras de fallar con elegancia</h3>
-  <p>Cada botón arranca de nuevo la app en un escenario distinto. En todos, el resultado debe ser una alternativa digna, y la app anterior se destruye liberando su contexto.</p>
+  <p>Cada botón arranca de nuevo la app en un escenario distinto: el normal y tres maneras de fallar. En las tres, el resultado debe ser una alternativa digna, y la app anterior se destruye liberando su contexto.</p>
   <div class="js-playground" data-titulo="Ejemplo 7.1.5 — Alternativas" data-altura="320" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
 <script type="text/x-html">
 <div id="escena">
@@ -1390,7 +1390,7 @@ document.getElementById('adaptativa').onchange = (ev) => {
 };
 </script>
   </div>
-  <p>El búfer cambia de tamaño, pero el canvas ocupa lo mismo en la página: el navegador amplía la imagen. Con el coste alto, fíjate en que los bordes se ablandan un poco y en que la animación, en cambio, vuelve a ser fluida: casi siempre es el trato que quieres. Si tu pantalla es de 120 Hz, el presupuesto del controlador sigue siendo 16,7 ms (<code>objetivoMs</code>): para un fondo animado, 60 fps estables son mejores que 120 intermitentes.</p>
+  <p>El búfer cambia de tamaño, pero el canvas ocupa lo mismo en la página: el navegador amplía la imagen. Con el coste alto, fíjate en que los bordes se ablandan un poco y en que la animación, en cambio, vuelve a ser fluida: casi siempre es el trato que quieres. Si tu pantalla es de 120 Hz, el presupuesto del controlador sigue siendo 16,7 ms (<code>objetivoMs</code>): para un fondo animado, 60 fps estables son mejores que 120 intermitentes. Y un efecto secundario que verás si arrastras el deslizador deprisa: cada valor compila una variante dentro de <code>dibujar</code>, y ese frame largo el controlador lo cuenta como falta de GPU, así que puede bajar la escala sin que haga falta. En una aplicación, las variantes se compilan de antemano (recuadro siguiente) o en paralelo, como en el ejemplo 7.1.6.</p>
 </section>
 
 <div class="callout senior" data-titulo="Otros mandos, y en qué orden tocarlos">
