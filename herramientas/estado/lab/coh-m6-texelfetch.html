@@ -1,0 +1,64 @@
+<!doctype html><meta charset="utf-8"><canvas id="c" width="4" height="4"></canvas>
+<script>
+function prueba() {
+  const gl = document.getElementById("c").getContext("webgl2");
+  const info = gl.getExtension("WEBGL_debug_renderer_info");
+  const renderer = info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  const vs = `#version 300 es
+  void main(){ vec2 p = vec2((gl_VertexID & 1) * 4 - 1, (gl_VertexID >> 1) * 4 - 1); gl_Position = vec4(p, 0.0, 1.0); }`;
+  const fs = `#version 300 es
+  precision highp float; uniform highp sampler2D t; uniform ivec2 c; uniform int lod; out vec4 o;
+  void main(){ o = texelFetch(t, c, lod); }`;
+  const sh = (tipo, src) => { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s); return s; };
+  const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); gl.useProgram(p);
+  // destino: FBO RGBA8 de 1x1
+  const dst = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, dst); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 1, 1);
+  const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0);
+  gl.viewport(0, 0, 1, 1);
+  const datos = new Uint8Array([255,128,64,200, 255,128,64,200, 255,128,64,200, 255,128,64,200]);
+  const completa = gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, completa);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  const incompleta = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, incompleta);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos); // filtro por defecto NEAREST_MIPMAP_LINEAR sin mipmaps: incompleta
+
+  const mip = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, mip);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos); gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+  const max0 = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, max0);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 0);
+  const grande = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, grande);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 16, 16, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(16*16*4).fill(200)); gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+
+  const dos = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, dos);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(16).fill(10));
+  gl.texImage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([90,90,90,90]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+  const locT = gl.getUniformLocation(p, "t"), locC = gl.getUniformLocation(p, "c"), locL = gl.getUniformLocation(p, "lod");
+  gl.uniform1i(locT, 0);
+  const medir = (tex, x, y, lod) => { gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform2i(locC, x, y); gl.uniform1i(locL, lod);
+    gl.clearColor(0.5, 0.5, 0.5, 0.5); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return Array.from(px).join(","); };
+  return { renderer,
+    completa_dentro_0_0: medir(completa, 0, 0, 0),
+    completa_fuera_5_5: medir(completa, 5, 5, 0),
+    completa_fuera_neg1_0: medir(completa, -1, 0, 0),
+    completa_nivel3: medir(completa, 0, 0, 3),
+    incompleta_dentro_0_0: medir(incompleta, 0, 0, 0),
+    incompleta_fuera_5_5: medir(incompleta, 5, 5, 0),
+    completa_nivel1: medir(completa, 0, 0, 1),
+    mip_nivel1: medir(mip, 0, 0, 1),
+    mip_nivel3: medir(mip, 0, 0, 3),
+    mip_nivel_neg1: medir(mip, 0, 0, -1),
+    max0_nivel1: medir(max0, 0, 0, 1),
+    grande16_nivel4: medir(grande, 0, 0, 4),
+    grande16_nivel5: medir(grande, 0, 0, 5),
+    grande16_nivel7: medir(grande, 0, 0, 7),
+    grande16_nivel2_fuera_4_0: medir(grande, 4, 0, 2),
+    dos_nivel0: medir(dos, 0, 0, 0), dos_nivel1: medir(dos, 0, 0, 1), dos_nivel2: medir(dos, 0, 0, 2), dos_nivel5: medir(dos, 0, 0, 5), dos_nivel_neg1: medir(dos, 0, 0, -1),
+    dos_nivel1_fuera_1_0: medir(dos, 1, 0, 1),
+    error: gl.getError() };
+}
+</script>

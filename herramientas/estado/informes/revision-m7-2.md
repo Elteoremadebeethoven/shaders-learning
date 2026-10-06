@@ -159,4 +159,50 @@ en Float64 y el resto de ejercicios: correctos.
 
 ## (g) Verificación final
 
-PENDIENTE (se completa abajo).
+- `node enlaces.mjs ../modulos/07-integracion/02-interaccion.html` → 29 enlaces internos, **0 rotos** (tras la última edición;
+  incluye las anclas nuevas: `#los-sistemas-de-coordenadas-del-puntero`,
+  `#pointer-events-raton-dedo-y-lapiz-con-una-sola-api`, `#arrastrar-setpointercapture-y-touch-action`,
+  `#lanzar-con-un-gesto-la-velocidad-del-puntero`, `#capas-y-el-hilo-del-compositor`, `#movimiento-reducido`).
+- `verificar.mjs --soluciones` (tema oscuro), lanzado **después de la última edición de la lección**: ✓ 1/1 páginas sin
+  problemas. js=10, ejemplos=5, ejercicios=5, quiz=3, anotado=3, callouts=9, bestiario=5, senior=3, h2=9,
+  palabras=11 055, soluciones=5. Capturas de la primera pasada (antes de editar) revisadas una a una: todo se ve como
+  dice el texto (cruz/anillo, ondas sobre el paisaje sin voltear, halos fantasma, tarjetas con borde rosa, disco, etc.).
+- Tema claro y móvil (390 px): **no llegaron a ejecutarse** (parada ordenada; ver abajo).
+
+## Dónde me quedé (sesión 3)
+
+**(a) Hecho y verificado.** Todos los cambios de (a)1–12 en `modulos/07-integracion/02-interaccion.html`; la verificación
+en tema oscuro con `--soluciones` se lanzó después de la última edición y dio 0 problemas. Las afirmaciones corregidas
+están comprobadas con los experimentos de `herramientas/estado/lab/rev-m7-2/` (resultados en `resultados-exp1.json`,
+`resultados-exp4.json`; los de exp2/exp3 están copiados en (a)2 y (a)8 de este informe).
+
+**(b) Hecho pero sin verificar del todo.**
+- `02-interaccion.html` con `--tema light` y `node movil.mjs` (390 px): no ejecutados. La lección no tiene demos a
+  medida fuera de playgrounds y no añadí CSS, así que el riesgo es bajo.
+- Capturas tras editar: no miré las de la segunda pasada (`capturas2`, en el SCRATCH, se pierden). Solo cambió el
+  código de un playground (ejemplo 7.2.4, `pointerdown`); su lógica está probada en `multitouch-leccion.html` (extraído de
+  la lección con `extraer.mjs`): sin errores, 6 clics rápidos sin fugas, 3 dedos en huecos 0–2 que se liberan.
+
+**(c) Pendiente, en orden.**
+1. **`modulos/07-integracion/recursos/m7kit.js`, `Puntero.actualizar`, l.~375**: cambiar `if (this.fresco) {` por
+   `if (this.fresco && this.dentro) {` (comentario: «primera vez, o la primera tras volver a entrar»). Probado con
+   `lab/rev-m7-2/m7kit-arreglado.js` + `puntero-arreglado.html` (exp4.mjs): sin barrido al volver a entrar. **Imprescindible:
+   el anotado de 7.2 ya muestra esa línea.** (Archivo del revisor de m7kit/7.1; yo no lo toqué.)
+2. Verificar 7.2 con `--tema light` y `node movil.mjs ../modulos/07-integracion/02-interaccion.html`.
+3. `node herramientas/indexar.mjs` (lo hace el lead): recoge los textos nuevos de los bestiarios `m7-barrido-inicial` y
+   `m7-canvas-fijo-retraso` para A.1.
+4. Glosario A.4: añadir los términos de (f) y actualizar «eventos coalescidos» ((d)2).
+5. Opcionales: (d)3 y (d)4 (2.5 y 1.4), (b) puntero fantasma en el ejemplo 7.2.2, confirmar en el M1 las cifras de (c).
+
+**(d) Experimentos y scripts.** Todo copiado en `herramientas/estado/lab/rev-m7-2/` (ejecutar desde esa carpeta, con
+`node exp*.mjs`; usan el puppeteer parcheado y `D = file://<cwd>/`):
+- `exp.mjs` (E1 coalescencia, E2 rueda con ratón quieto, E3 arrays de uniforms, E4 dedos, E5 fuga de huecos con
+  `multitouch.html` / `multitouch-arreglado.html`, E6 barrido de `M7.Puntero`, E7 coste de `getBoundingClientRect`,
+  E8 `pointer-events` (diseño defectuoso: el canvas sin z-index tapaba ambos textos; lo rehace `exp2.mjs`), E9 foco y
+  teclado, E10 movimiento reducido, E11 árbol de accesibilidad). Páginas: `eventos.html`, `eventos-sinraw.html`,
+  `uniforms.html`, `varios.html`, `puntero.html`.
+- `exp2.mjs` (coalescencia a 250 Hz / ~650 Hz / de golpe, con y sin listener de `pointerrawupdate`; `pe.html`:
+  `pointer-events`), `exp3.mjs` (los discretos no esperan al frame), `exp4.mjs` (kit corregido y ejemplo 7.2.4 de la
+  lección). `extraer.mjs "<data-titulo>" salida.html [--solucion]` saca un playground JS de la lección a una página
+  `file://` autónoma con glkit/texturas/m7kit.
+- Nada a medio hacer: todos los experimentos terminaron y sus conclusiones están en este informe.

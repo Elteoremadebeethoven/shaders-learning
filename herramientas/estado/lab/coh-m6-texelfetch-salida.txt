@@ -1,0 +1,28 @@
+{
+ "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+ "completa_dentro_0_0": "255,128,64,200",
+ "completa_fuera_5_5": "0,0,0,0",
+ "completa_fuera_neg1_0": "0,0,0,0",
+ "completa_nivel3": "255,128,64,200",
+ "incompleta_dentro_0_0": "0,0,0,255",
+ "incompleta_fuera_5_5": "0,0,0,0",
+ "completa_nivel1": "255,128,64,200",
+ "mip_nivel1": "255,128,64,200",
+ "mip_nivel3": "255,128,64,200",
+ "mip_nivel_neg1": "255,128,64,200",
+ "max0_nivel1": "255,128,64,200",
+ "grande16_nivel4": "200,200,200,200",
+ "grande16_nivel5": "200,200,200,200",
+ "grande16_nivel7": "200,200,200,200",
+ "grande16_nivel2_fuera_4_0": "0,0,0,0",
+ "dos_nivel0": "10,10,10,10",
+ "dos_nivel1": "90,90,90,90",
+ "dos_nivel2": "90,90,90,90",
+ "dos_nivel5": "90,90,90,90",
+ "dos_nivel_neg1": "10,10,10,10",
+ "dos_nivel1_fuera_1_0": "0,0,0,0",
+ "error": 0
+}
+version: Chrome/141.0.7390.37
+
+[exited with code 0]

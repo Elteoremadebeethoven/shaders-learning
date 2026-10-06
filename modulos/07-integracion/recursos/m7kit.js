@@ -374,7 +374,7 @@
         this.ancho = r.width || 1; this.alto = r.height || 1;
         this.x = this.cx - r.left; this.y = this.cy - r.top;
         if (!this.visto) return;
-        if (this.fresco) {                      // primera vez (o tras salir): sin «barrido» desde otro sitio
+        if (this.fresco && this.dentro) {      // primera vez (o al volver a entrar): sin «barrido» desde donde salió
           this.sx = this.x; this.sy = this.y; this.vx = this.vy = 0; this.fresco = false;
           return;
         }
