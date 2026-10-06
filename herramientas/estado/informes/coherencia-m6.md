@@ -251,4 +251,65 @@ Todas se cumplen.
 ---
 
 ## 8. Verificación
-(ver abajo)
+
+`verificar.mjs --soluciones --capturas` (Chromium 141 con SwiftShader), tras la última edición de cada archivo:
+
+| Lección | Resultado |
+|---|---|
+| 6.1 | ✓ glsl=10, js=2, 7 soluciones |
+| 6.3 | ✓ 4 soluciones |
+| 6.4 | ✓ 4 soluciones. Miré las capturas «Bandas y ruido» y la solución de 6.4.4, que llevan el `precision highp int` nuevo: compilan; se ven la escalera de 7 peldaños y el sol blanco con su halo. |
+| 6.6 | ✓ 4 soluciones |
+| 6.7 | ✓ 4 soluciones |
+| 6.8 | ✓ 4 soluciones; bestiario = 4 (antes 5: `m6b-distorsion-invertida` es ahora una nota) |
+| 6.5 | ✗ dos veces: «Runtime.callFunctionOn timed out» (el `protocolTimeout` de 180 s de puppeteer). |
+
+**Diagnóstico de 6.5.** Mi script `lab/coh-m6-lento65.mjs`, con `protocolTimeout` de 900 s, recorre los 17 componentes uno a uno:
+- todos responden en menos de 130 ms;
+- no hay errores de página ni de `Curso.qa`;
+- no hay errores de consola.
+
+Así que no es un fallo de la lección. Mis cambios en 6.5 son solo texto, dentro de dos cajas bestiario. Lo más probable es la lentitud de SwiftShader con la cola de Chrome compartida, al ejecutar el `evaluate` final del verificador (que mide la página entera). **No pude confirmar que 6.5 pase con `--soluciones`**: es lo primero que queda en «Dónde me quedé».
+
+**Enlaces:** `node enlaces.mjs` sobre m6 da 321 enlaces internos y 0 rotos; sobre todo el curso, 0 rotos.
+
+**Títulos:** `coh-m6-titulos.mjs` da 21 de 21 citas entre «» exactas.
+
+---
+
+## Dónde me quedé (sesión 3)
+
+Parada ordenada a petición del coordinador. Todas las ediciones están completas y el HTML es válido.
+
+**(a) Hecho y verificado** (`verificar.mjs` ✓ tras la última edición): 6.1, 6.3, 6.4, 6.6, 6.7 y 6.8, con todos los cambios de §2. Enlaces: 0 rotos.
+
+**(b) Hecho pero sin verificar con `verificar.mjs`:** `modulos/06-glsl/05-patrones.html`.
+- **Los dos cambios:** frase añadida a la causa de `m6a-patron-lejos` y frase añadida a la solución de `m6a-formas-cortadas`, solo texto con enlaces.
+- **Lo que sí está comprobado:** `enlaces.mjs` correcto, y `coh-m6-lento65.mjs` sin errores en los 17 componentes.
+- **Lo que falta:** pasar `node verificar.mjs ../modulos/06-glsl/05-patrones.html --soluciones` en un momento en que la cola de Chrome esté libre, o en el M1. Si vuelve a dar timeout aquí, es la máquina: el script lo descarta como fallo de la lección.
+
+**(c) Pendiente, en orden** (nada de esto lo he empezado):
+1. **A.1 `08-anexos/01-bestiario.html` l.120.** El enlace `#m6b-distorsion-invertida` dejará de existir al ejecutar `indexar.mjs`, porque ahora es una nota. Hay que apuntarlo a `#m3-rotacion-inversa-shader` o fundirlo con la l.119 (texto propuesto en §4). **Hacerlo en la misma pasada que `indexar.mjs`.**
+2. **A.1 l.122.** «Una rotación copiada de otro shader gira al revés» debe enlazar a `#m3-matriz-traspuesta`, no a `#m3-rotacion-inversa-shader`.
+3. **A.1 l.252.** Separar `isnan` (enlace a `#m3-isnan-heisenbug`) de la caché (enlace a `#m6b-hash-fastmath`). Texto en §4.
+4. **A.4 `04-glosario.html`:**
+   - `#g-dithering` (l.609): «±medio nivel, un nivel de pico a pico».
+   - `#g-fast-math` (l.821): añadir la caché.
+   - «comportamiento indefinido» (l.407): «e incluso de la caché».
+   - `#g-texelfetch` (l.2177): matización opcional.
+   - Textos concretos en §4.
+5. **3.7, editores con PCG (l.275 y l.613):** añadir `precision highp int;`. Es del revisor de m0–m5.
+6. **5.5 l.431 (y A.2/A.3 si se quiere):** matizar «nivel inexistente → 0», que no se cumple con SwiftShader. Texto modelo en 6.8, l.99.
+7. **Coherencia m6 ↔ m7:** enlazar `m7-4-epsilon` ↔ `m6b-rm-normales` y `m7-4-heightmap-escalones` ↔ `m6b-ruido-textura-escalones`.
+8. **M1:** confirmar la frase de 6.6 l.114 (256 niveles de gris también al recargar) y, si se quiere, `texelFetch` con un nivel inexistente (§6).
+9. **Opcional y de estilo:** decidir el separador decimal del curso (§7).
+
+**(d) Scripts y resultados copiados a `herramientas/estado/lab/`** (el scratch se borrará):
+- `coh-m6-titulos.mjs`: `node coh-m6-titulos.mjs modulos/06-glsl/*.html` desde la raíz. Compara cada cita de un bestiario con su `data-titulo`.
+- `coh-m6-numeros.mjs`: enlaces con texto «N.M» frente al manifest.
+- `coh-m6-texto.mjs`: lección → texto compacto, con números de línea.
+- `coh-m6-mapa.md`: mapa por lección (definiciones, cifras, promesas y bestiarios).
+- `coh-m6-texelfetch.html`, `coh-m6-texelfetch.mjs` y `coh-m6-texelfetch-salida.txt`: el experimento de §3. Está terminado.
+- `coh-m6-lento65.mjs`: el diagnóstico del timeout de 6.5, con `protocolTimeout` de 900 s. Está terminado.
+
+No queda ningún experimento a medias.
