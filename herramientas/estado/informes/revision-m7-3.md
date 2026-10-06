@@ -194,6 +194,24 @@ Anclas relativas a `modulos/07-integracion/03-transiciones-shader.html`.
 | Position parameter | Notación de GSAP para colocar una pista: número absoluto, `'<'` (con la anterior), `'+=x'` / `'-=x'` (respecto al final de la línea). | `#encadenar-uniforms-una-linea-de-tiempo` |
 | Bucle bajo demanda (render on demand) | Bucle que solo pide frames mientras algo cambia (`pedirFrame`) y se duerme en reposo; al despertar, primer `dt` = 0. | `#rendimiento-dibujar-solo-mientras-algo-se-mueve` |
 
-## (g) Verificación final
+## (g) Verificación final (tras los cambios; Chromium 141 + SwiftShader)
 
-(se completa al final de la revisión)
+```
+node verificar.mjs ../modulos/07-integracion/03-transiciones-shader.html --soluciones --capturas …/capturas-final
+✓ ../modulos/07-integracion/03-transiciones-shader.html  (100524 ms)
+   glsl=4 js=9 graficador=0 demo=0 ejemplos=8 ejercicios=5 quiz=4 anotado=10 callouts=18 bestiario=8 senior=6 h2=9 pres=6 palabras=21442 soluciones=5
+1/1 páginas sin problemas
+
+node verificar.mjs … --tema light --pagina …/claro      → ✓ 1/1 páginas sin problemas (59 tramos; revisados a
+                                                          muestreo: cabecera, diagrama, bestiarios, tablas, código anotado)
+node movil.mjs …                                        → ✓ scrollWidth=390 / 390 (solo aparecen los <math> ocultos de KaTeX)
+node enlaces.mjs …                                      → 55 enlaces internos, 0 rotos (incluidas las anclas nuevas
+                                                          #que-dispara-cada-propiedad, #mezclar-en-srgb-o-en-lineal,
+                                                          #m3-aspecto y #medir-coste-shader)
+```
+
+Además, con scripts propios (en el scratch del agente: `qa1.mjs`, `qa2.mjs`): los 9 playgrounds JS en marcha con
+capturas recortadas (todas se ven como dice el texto), las pruebas de consola de los ejercicios 7.3.3–7.3.5 (partida
+y solución) y los experimentos de (a)/«Comprobado». El script de medida para el M1
+(`herramientas/estado/lab/rev-m7-3-tiempos.mjs`) se ha probado aquí y funciona (cifras de SwiftShader descartadas).
+No he ejecutado `indexar.mjs` (lo hace el lead).

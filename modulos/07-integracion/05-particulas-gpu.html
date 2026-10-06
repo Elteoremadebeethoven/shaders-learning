@@ -524,6 +524,7 @@ void avanzar(inout vec2 p, inout vec2 v) {
   <li data-l="1-4">Lo que la física recibe de la CPU en cada frame: el paso de animación (0 en pausa), el tiempo del reloj (hace evolucionar el campo), el aspecto (el ancho del mundo) y el puntero, con su posición en unidades del mundo en <code>xy</code> y su intensidad en <code>z</code> (positiva atrae, negativa repele, 0 no hace nada).</li>
   <li data-l="5-6">Dos mandos: <code>FLUJO</code> convierte el rotacional en una velocidad tranquila, y <code>ARRASTRE</code> (en 1/s) dice lo deprisa que una partícula adopta la velocidad del campo.</li>
   <li data-l="7"><code>inout</code>: la función recibe una copia de <code>p</code> y <code>v</code> y la devuelve modificada al terminar (<a href="../06-glsl/01-lenguaje.html">6.1</a>).</li>
+  <li data-l="8-9">El mundo mide 2·aspecto × 2 (<code>medio</code> es su mitad), y <code>flujo</code> es la velocidad que pide el campo en este punto: el rotacional de <code>L75.RUIDO</code>, escalado.</li>
   <li data-l="10">La velocidad no salta a la del campo: se acerca con el suavizado exponencial exacto de <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>, con $\lambda$ = <code>ARRASTRE</code>. Queda la fracción $e^{-\lambda\,dt}$ de la diferencia, sea cual sea la frecuencia de la pantalla, y la semivida es $\ln 2/2 \approx 0{,}35$ s. Es la inercia de la caja de abajo.</li>
   <li data-l="11-13">La atracción del puntero, $1/d^2$ con el <em>softening</em> de <a href="../02-animacion/08-proyecto-particulas.html#m2-fuerza-infinita">2.8</a> ($\varepsilon^2 = 0{,}02$, $\varepsilon \approx 0{,}14$), sumada a la velocidad como aceleración por <code>u_dt</code>. Con <code>u_raton.z = 0</code> se anula sola.</li>
   <li data-l="14">Euler semi-implícito (<a href="../02-animacion/05-fisica-muelles.html">2.5</a>): primero la velocidad, después la posición con la velocidad nueva.</li>
@@ -1435,6 +1436,7 @@ function leer(gl, estado) {                    // la partícula 0, leída del FB
   return [px[0].toFixed(3), px[1].toFixed(3)];
 }
 setTimeout(() => {
+  if (!app.gpu) return;                        // iniciar falló (sin la extensión): nada que comprobar
   const [x, y] = leer(app.gl, app.gpu.A).map(Number);
   console.log('partícula 0 tras 1,5 s: (' + x.toFixed(3) + ', ' + y.toFixed(3) + ')');
   console.log(Math.abs(x) + Math.abs(y) > 1e-4 ? '✓ las partículas conservan su estado' : '✗ la simulación ha dejado la partícula en (0, 0)');
@@ -1539,6 +1541,7 @@ function leer(gl, estado) {                    // la partícula 0, leída del FB
   return [px[0].toFixed(3), px[1].toFixed(3)];
 }
 setTimeout(() => {
+  if (!app.gpu) return;                        // iniciar falló (sin la extensión): nada que comprobar
   const [x, y] = leer(app.gl, app.gpu.A).map(Number);
   console.log('partícula 0 tras 1,5 s: (' + x.toFixed(3) + ', ' + y.toFixed(3) + ')');
   console.log(Math.abs(x) + Math.abs(y) > 1e-4 ? '✓ las partículas conservan su estado' : '✗ la simulación ha dejado la partícula en (0, 0)');
@@ -1676,6 +1679,7 @@ function cercaDe(fx, fy) {                     // % de partículas a menos de 0,
   return 100 * n / N;
 }
 setTimeout(() => {
+  if (!app.gpu) return;                        // iniciar falló (sin la extensión): nada que comprobar
   const r = canvas.getBoundingClientRect();
   const ev = (tipo) => canvas.dispatchEvent(new PointerEvent(tipo, { clientX: r.left + 0.75 * r.width, clientY: r.top + 0.4 * r.height, bubbles: true }));
   const antes = cercaDe(0.75, 0.4);
@@ -1803,6 +1807,7 @@ function cercaDe(fx, fy) {                     // % de partículas a menos de 0,
   return 100 * n / N;
 }
 setTimeout(() => {
+  if (!app.gpu) return;                        // iniciar falló (sin la extensión): nada que comprobar
   const r = canvas.getBoundingClientRect();
   const ev = (tipo) => canvas.dispatchEvent(new PointerEvent(tipo, { clientX: r.left + 0.75 * r.width, clientY: r.top + 0.4 * r.height, bubbles: true }));
   const antes = cercaDe(0.75, 0.4);

@@ -67,6 +67,7 @@
         this.objetivoMs = o.objetivoMs || 1000 / 60;    // presupuesto por frame
         this.paso = o.paso || 0.85;                     // factor de cada bajada (y su inverso al subir)
         this.paciencia = o.paciencia || 2000;           // ms con margen antes de subir
+        this.descartarMs = o.descartarMs || 250;        // intervalos más largos no cuentan (tirón suelto, vuelta de una suspensión)
         this.escala = this.max;
         this.mediaMs = this.objetivoMs;                 // media móvil exponencial (2.3)
         this.enfriar = o.calentamiento !== undefined ? o.calentamiento : 1000; // ms sin decidir: al arrancar y tras cada cambio
@@ -75,7 +76,7 @@
       }
       /* Devuelve true si la escala ha cambiado. */
       medir(intervaloMs) {
-        if (!(intervaloMs > 0) || intervaloMs > 250) return false;  // pausa o pestaña: no es rendimiento
+        if (!(intervaloMs > 0) || intervaloMs > this.descartarMs) return false;  // pausa (0) o tirón suelto: no es rendimiento
         this.mediaMs += 0.1 * (intervaloMs - this.mediaMs);
         if (this.enfriar > 0) { this.enfriar -= intervaloMs; return false; }
         const antes = this.escala;
@@ -262,7 +263,8 @@
        M7.flotante(5) → "5.0". true/false → 1/0 (para #if). */
     function conDefines(fuente, defines) {
       const fin = fuente.indexOf("\n");
-      if (!/^\s*#version/.test(fuente)) throw new Error("conDefines: la primera línea debe ser #version");
+      // [ \t]* y no \s*: una plantilla que empieza con un salto de línea ya no tiene #version en la línea 1 (5.2)
+      if (!/^[ \t]*#version/.test(fuente)) throw new Error("conDefines: la primera línea debe ser #version");
       let extra = "";
       for (const k in defines) {
         const v = defines[k];

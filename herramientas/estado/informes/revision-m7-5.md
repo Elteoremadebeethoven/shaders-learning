@@ -44,7 +44,7 @@ Máquina de esta revisión: contenedor Linux sin GPU, Chromium 141 headless con 
     - Antes, sin la extensión, el método «texturas» (el de arranque) lanzaba una excepción dentro de `dibujar`. `crearApp` paraba el bucle para siempre y el selector ya no servía de nada.
     - Ahora `iniciar` anota si existe la extensión, y `dibujar` cambia a transform feedback, actualiza el selector y lo avisa en la línea de información: es el `elegirMetodo` de la última sección, aplicado a la demo.
     - El texto bajo la demo lo explica.
-16. Los cuatro ejercicios que usan texturas ya lanzaban `Error('sin EXT_color_buffer_float')`, que el playground muestra en su consola. Me parece suficiente para un ejercicio y no los he tocado.
+16. Los ejercicios con texturas ya lanzaban `Error('sin EXT_color_buffer_float')`, que el playground muestra en su consola, y eso basta para un ejercicio. Pero en 7.5.1 y 7.5.2 la prueba «no la toques» leía después `app.gpu.A` y añadía un `TypeError` confuso. He añadido `if (!app.gpu) return;` al principio de las dos pruebas, en el código de partida y en la solución. En 7.5.4 la prueba solo lee el canvas y en 7.5.3 no hay extensión que falte.
 
 ### Otras correcciones menores
 17. «`M7.crearApp` y `M7.Puntero` de 7.2»: `crearApp` es de 7.1. Corregido.
@@ -116,7 +116,7 @@ Todas las cifras de la lección son del M1 (Chrome, ANGLE/Metal) y lo dicen.
   - la simulación sola;
   - el dibujo solo en FBO alternos y en el canvas;
   - para 1 M, acumular en `RGBA16F` + tono, frente a dibujar directo al canvas.
-- **Prueba de humo en SwiftShader:** LABTEST.
+- **Prueba de humo en SwiftShader** (`?rapido`, 16 K y 65 K): se ejecuta entera sin errores. Sus cifras de software no significan nada para el M1.
 
 Cifras que hay que confirmar con él:
 1. «La simulación del millón costó 2,4 ms (2,8 con transform feedback) y dibujar los puntos, 8,2 ms». También «con cuatro millones: 9,5 ms de simulación frente a 35 ms de dibujo», que no cuadra con los 56 ms del frame completo (ver b.2). Repetido en el resumen final («8,2 ms … frente a 2,4 ms»).

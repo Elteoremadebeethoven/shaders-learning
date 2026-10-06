@@ -714,11 +714,11 @@ function frame(ms) {
 <ol>
   <li data-l="2-3"><code>raf = 0</code> anota que ya no hay ninguna petición pendiente. Si la app se desactivó entre la petición y este callback (o el contexto se perdió), no se hace nada.</li>
   <li data-l="5">El reloj de la aplicación: <code>t</code> y <code>dt</code> con pausa y escala.</li>
-  <li data-l="6-10">Los fps, con la media móvil exponencial de los <em>tiempos</em> de frame (<a href="../02-animacion/03-raf.html">2.3</a>). Se descartan los intervalos absurdos (el primero tras una pausa vale 0; uno de más de 250 ms no es rendimiento, es una pestaña que vuelve).</li>
+  <li data-l="6-10">Los fps, con la media móvil exponencial de los <em>tiempos</em> de frame (<a href="../02-animacion/03-raf.html">2.3</a>). Se descartan los intervalos que no miden el ritmo normal: el primero tras una pausa o tras volver a la pestaña vale 0 (el reloj olvidó la referencia), y uno de más de 250 ms es un tirón suelto o la vuelta de una suspensión del equipo. Por eso, en un equipo que no llega ni a 4 fps, la cifra se queda en el último valor válido.</li>
   <li data-l="11">La calidad adaptativa mide el mismo intervalo; puede cambiar la escala de resolución.</li>
   <li data-l="12-13">El tamaño se aplica al empezar el frame (con los tres factores de antes). Si cambió, se llama a <code>redimensionar</code>. El viewport se fija siempre: tu <code>dibujar</code> puede haberlo cambiado para un FBO en el frame anterior.</li>
   <li data-l="14-20">Actualizar y dibujar. Una excepción aquí no puede repetirse 60 veces por segundo llenando la consola: se detiene la app y se muestra la alternativa (sección siguiente).</li>
-  <li data-l="22-23">En modo continuo, siempre se pide el siguiente frame. En modo bajo demanda, solo si alguien llamó a <code>app.pedirFrame()</code> durante este frame (por eso la línea 4 pone <code>pendiente = false</code> antes de actualizar y dibujar) (un muelle que aún se mueve, un evento); si no, la app se duerme. Lo usaremos en <a href="03-transiciones-shader.html">7.3</a>.</li>
+  <li data-l="22-23">En modo continuo, siempre se pide el siguiente frame. En modo bajo demanda, solo si alguien llamó a <code>app.pedirFrame()</code> durante este frame (un muelle que aún se mueve, un evento): por eso la línea 4 pone <code>pendiente = false</code> antes de actualizar y dibujar. Si nadie lo pidió, la app se duerme. Lo usaremos en <a href="03-transiciones-shader.html">7.3</a>.</li>
 </ol>
 </div>
 
@@ -1066,7 +1066,7 @@ document.getElementById('panel').onclick = (e) => { if (e.target.dataset.modo) a
 arrancar('normal');
 </script>
   </div>
-  <p>El escenario «sin WebGL2» usa un truco para simularlo en cualquier navegador: pedir antes un contexto <code>'2d'</code> al mismo canvas, porque un canvas solo admite un tipo de contexto y la segunda petición, de otro tipo, devuelve <code>null</code> (<a href="../05-webgl/01-contexto.html">5.1</a>). El shader roto hace que <code>GLKit.crearPrograma</code> lance una excepción dentro de <code>iniciar</code>, que <code>crearApp</code> captura. La excepción en <code>dibujar</code> aparece una sola vez en la consola, porque el bucle se detiene en lugar de repetirla en cada frame. Y en los tres casos el canvas se retira: la alternativa ocupa su sitio.</p>
+  <p>El escenario «sin WebGL2» usa un truco para simularlo en cualquier navegador: pedir antes un contexto <code>'2d'</code> al mismo canvas, porque un canvas solo admite un tipo de contexto y la segunda petición, de otro tipo, devuelve <code>null</code> (<a href="../05-webgl/01-contexto.html#m5-getcontext-null">5.1</a>); de paso, <code>webglcontextcreationerror</code> llega con el motivo <code>Canvas has an existing context of a different type</code>, que la alternativa muestra en letra pequeña. El shader roto hace que <code>GLKit.crearPrograma</code> lance una excepción dentro de <code>iniciar</code>, que <code>crearApp</code> captura. La excepción en <code>dibujar</code> aparece una sola vez en la consola, porque el bucle se detiene en lugar de repetirla en cada frame. Y en los tres casos el canvas se retira: la alternativa ocupa su sitio.</p>
 </section>
 
 <div class="callout senior" data-titulo="Qué mandar a la telemetría">
@@ -1093,7 +1093,7 @@ arrancar('normal');
 <div class="anotado" data-lang="js">
 <script type="text/plain">
 function conDefines(fuente, defines) {
-  if (!/^\s*#version/.test(fuente)) {
+  if (!/^[ \t]*#version/.test(fuente)) {
     throw new Error('la primera línea debe ser #version');
   }
   const fin = fuente.indexOf('\n');
@@ -1113,7 +1113,7 @@ function flotante(v) {
 }
 </script>
 <ol>
-  <li data-l="2-5">La primera línea debe ser <code>#version</code>; si no lo es, preferimos una excepción clara ahora que un error críptico del compilador después. <code>fin</code> es la posición del salto de línea que la termina.</li>
+  <li data-l="2-5">La primera línea debe ser <code>#version</code>; si no lo es, preferimos una excepción clara ahora que un error críptico del compilador después. La expresión admite espacios o tabuladores delante (ANGLE también), pero no saltos de línea: <code>[ \t]*</code> y no <code>\s*</code>, porque una plantilla escrita como <code>`</code> + salto de línea + <code>#version 300 es</code> ya no tiene <code>#version</code> en la primera línea (<a href="../05-webgl/02-primer-triangulo.html#m5-version-primera-linea">5.2</a>). <code>fin</code> es la posición del salto de línea que la termina.</li>
   <li data-l="7-11">Una línea por <code>#define</code>. Los booleanos se escriben como 1 o 0, para usarlos con <code>#if</code>; el resto, tal cual con <code>String</code>.</li>
   <li data-l="12-13">La primera línea, los <code>#define</code>, <code>#line 2</code> (la línea que venía después de <code>#version</code> era la 2) y el resto del código.</li>
   <li data-l="15-19">La tercera trampa: el número 2 de JavaScript se escribe como <code>"2"</code>, que en GLSL es un <code>int</code>. Esta función garantiza un literal float: añade <code>.0</code> si el texto no tiene ni punto ni exponente (<code>String(1e-7)</code> es <code>"1e-7"</code>, que ya es un float válido en GLSL).</li>
@@ -1270,7 +1270,7 @@ requestAnimationFrame(frame);
 <div class="anotado" data-lang="js">
 <script type="text/plain">
 medir(intervaloMs) {
-  if (!(intervaloMs > 0) || intervaloMs > 250) return false;
+  if (!(intervaloMs > 0) || intervaloMs > this.descartarMs) return false;
   this.mediaMs += 0.1 * (intervaloMs - this.mediaMs);
   if (this.enfriar > 0) {
     this.enfriar -= intervaloMs;
@@ -1297,7 +1297,7 @@ medir(intervaloMs) {
 }
 </script>
 <ol>
-  <li data-l="2">Un intervalo de 0 (el primer frame tras una pausa) o de más de 250 ms (una pestaña que vuelve) no dice nada del rendimiento.</li>
+  <li data-l="2">Un intervalo de 0 (el primer frame tras una pausa o tras volver a la pestaña) no dice nada del rendimiento. Uno de más de <code>descartarMs</code> (250 ms por defecto) tampoco se cuenta: suele ser un tirón suelto (una compilación, el recolector de basura) o el equipo que despierta de una suspensión, y no queremos bajar la calidad por eso. El precio: si la GPU no llega ni a 4 fps, todos los intervalos se descartan y el controlador se queda ciego. Si tu efecto puede caer tan bajo en algún equipo, sube ese tope (<code>calidad: { descartarMs: 1000 }</code>).</li>
   <li data-l="3">Media móvil exponencial de los tiempos de frame, con α = 0,1: un frame suelto lento no dispara nada; una racha, sí.</li>
   <li data-l="4-7">Tras cada cambio, medio segundo sin decidir: el búfer nuevo tarda unos frames en notarse y no queremos reaccionar a medidas del tamaño anterior. El constructor pone además <code>enfriar = 1000</code> al arrancar (un «calentamiento»): los primeros frames de una página son lentos por motivos que no tienen que ver con el efecto (compilar shaders, terminar de cargar) y no deben bajar la calidad.</li>
   <li data-l="9-11">Si vamos más de un 25 % por encima del presupuesto, se baja ya, multiplicando por <code>paso</code> (0,85 por defecto). Bajar deprisa es importante: cada segundo por encima del presupuesto son tirones que el usuario ve.</li>
@@ -1902,7 +1902,7 @@ class CalidadEstable extends M7.Calidad {
     this.desdeSubida = Infinity; // ms desde la última subida
   }
   medir(intervaloMs) {
-    if (!(intervaloMs > 0) || intervaloMs > 250) return false;
+    if (!(intervaloMs > 0) || intervaloMs > this.descartarMs) return false;
     this.bloqueo = Math.max(0, this.bloqueo - intervaloMs);
     if (this.bloqueo === 0) this.techo = Infinity;       // pasado el castigo, se puede volver a probar
     this.desdeSubida += intervaloMs;
