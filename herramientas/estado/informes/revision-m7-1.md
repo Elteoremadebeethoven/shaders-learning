@@ -212,3 +212,35 @@ recarga en caliente, reloj propio, visibilitychange, presupuesto de frame)
   las tablas usan variables del tema.
 - Laboratorio `herramientas/estado/lab/rev-m7-1-tiempos.mjs --rapido` probado aquí (SwiftShader): funciona y da los 12
   casos; las cifras de SwiftShader **no** sirven para el curso, hay que ejecutarlo sin `--rapido` en el M1.
+
+## Dónde me quedé (sesión 3)
+
+**(a) Hecho y verificado.** Todos los cambios de (a) en `modulos/07-integracion/01-arquitectura.html` y
+`modulos/07-integracion/recursos/m7kit.js`. Verificación tras la última edición de contenido: `verificar.mjs` oscuro
+(0 problemas), claro con 06-proyecto-final (2/2), `movil.mjs` (390/390), `enlaces.mjs` (60, 0 rotos). Laboratorio
+`herramientas/estado/lab/rev-m7-1-tiempos.mjs` probado con `--rapido`.
+
+**(b) Hecho pero sin verificar tras la última edición.** Nada en el curso: la última edición de la lección (nota L22-23
+del bucle anotado, `pendiente = false`; sin enlaces) es anterior a las verificaciones finales oscura/clara. Solo el
+informe se editó después.
+
+**(c) Pendiente, en orden** (detalle en (b), (c) y (d) de arriba):
+1. Ejecutar en el M1 `cd herramientas && node estado/lab/rev-m7-1-tiempos.mjs` y, con el grupo A, corregir
+   `modulos/05-webgl/10-depuracion.html` l.444 (5,1 / 16,7 / 35,9 ms) y l.559 («tardó 7 veces más»). 7.1 ya no depende del número.
+2. Confirmar en el M1 que la tabla DOM↔GL (7.1 «Un único bucle») y la cifra de 177,5 ms se midieron allí (el texto ya lo atribuye al M1).
+3. `herramientas/verificar.mjs` l.169 y l.190: capturar con `page.screenshot({ clip, captureBeyondViewport: false })` tras
+   esperar a que el iframe del playground esté estable (las capturas de elementos altos salen con el iframe recién recreado).
+4. Decisiones de diseño de m7kit propuestas y no hechas (cambian comportamiento): liberar la GPU al fallar (`fallar` →
+   `destruir`), alternativa si el contexto no vuelve en N s, `app.fps` contando intervalos > 250 ms (`Math.min(iv, 1000)`).
+5. Glosario A.4: términos de (f) y semántica de `#line` en `g-line-directiva`.
+6. A.1: añadir al «Diagnóstico rápido» los 4 casos de (e).
+
+**(d) Scripts** (copiados del SCRATCH a `herramientas/estado/lab/`, todos para el Chromium de este contenedor; para el Mac,
+cambiar `executablePath`/args como en `rev-m7-1-tiempos.mjs`):
+- `rev-m7-1-tiempos.mjs` — tiempos de GPU con el método fiable (listo; falta ejecutarlo en el M1).
+- `rev-m7-1-afirmaciones.mjs` (+ `rev-m7-1-vacia.html`, ejecutar desde `herramientas/estado/lab/`) — desynchronized,
+  mensajes de ANGLE (`#version`, `#line`, `RADIO`), pérdida de contexto, orden resize/rAF/ResizeObserver, caché de programas.
+- `rev-m7-1-interactuar.mjs <dirSalida> [índices]` — maneja los 13 playgrounds de 7.1 (botones, soluciones con clic por JS,
+  capturas de ventana); completo.
+- `rev-m7-1-sim.cjs` — simulación del ejercicio 7.1.5 con el `M7.Calidad` real (ejecutar desde `modulos/07-integracion/`
+  tras ajustar la ruta de `m7kit.js`, o tal cual si se lee la ruta absoluta que contiene).
