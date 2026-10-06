@@ -161,4 +161,16 @@ contradicciones, promesas, repeticiones, notación, enlaces; bestiarios gemelos 
   `Curso.glCompartido.compilar`).
 
 ## 5. Verificación al cerrar la sesión 3 (Chromium 141 + SwiftShader, Linux)
-VERIFICACION_FINAL
+Re-verificado por el lead al cerrar (lo que los agentes dejaron sin verificar tras la parada):
+- `verificar.mjs --soluciones` (oscuro): ✓ 7.4, A.2, A.3, A.5 y 5.10 (5/5 sin problemas).
+- `verificar.mjs --soluciones --tema light`: ✓ 7.2 y A.1. ✗ 7.5: «Runtime.callFunctionOn timed out» (el verificador
+  agota el tiempo en SwiftShader, como 6.5; 7.5 sí pasó en oscuro con `--soluciones` tras la última edición de su
+  revisor). ✗ 7.7: solo problemas del entorno —sin adaptador WebGPU en el Chromium del verificador: el ejercicio
+  7.7.3 «NO falló» y avisos «Failed to create WebGPU Context Provider»—; en oscuro pasaba igual salvo eso.
+- `movil.mjs` (390 px): ✓ 7.2, 7.4, 7.7, A.2, A.3, A.5 (scrollWidth = 390).
+- Por agente (tras su última edición): 7.1 ✓ (oscuro, claro, móvil, enlaces) · 7.3 ✓ (oscuro, claro, móvil,
+  enlaces) · 7.6 ✓ (claro con todas las ediciones; móvil) · m6: ✓ 6.1, 6.3, 6.4, 6.6, 6.7, 6.8 (6.5 agota el
+  tiempo aquí) · m0–m5: 16/16 ✓.
+- `enlaces.mjs`: 63 archivos, 3 321 enlaces internos, 0 rotos. `indexar.mjs`: 802 entradas, 253 casos.
+- Sin verificar en esta sesión (no se tocaron): el resto del curso pasó `verificar.mjs` al cerrar la sesión 2 en
+  el M1; la verificación de base de la sesión 3 (SwiftShader) llegó a m0, m1 y 2.1–2.4: todo ✓.
