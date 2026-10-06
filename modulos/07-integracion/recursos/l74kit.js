@@ -6,15 +6,17 @@
      L74.rejilla(N)            datos de un plano de N × N celdas: uv e índices
                                (Uint16Array o Uint32Array según haga falta)   (7.4 §2)
      L74.crearMalla(gl, N, o)  VAO con a_uv en la location 0 + buffer de índices;
-                               con o.sinUV, solo índices (gl_VertexID)         (7.4 §2, §8)
+                               con o.sinUV, solo índices (gl_VertexID)         (7.4 §2, §9)
      L74.Orbita                cámara orbital de 5.6 con la regla de 7.1: los eventos
                                solo anotan; actualizar() aplica, una vez por frame
-     L74.rayo(vp, nx, ny)      rayo que sale del ojo por el punto (nx, ny) del canvas
-                               (0..1, origen abajo a la izquierda)             (7.4 §7)
+     L74.rayo(vp, nx, ny)      rayo del mundo que pasa por el punto (nx, ny) del canvas
+                               (0..1, origen abajo a la izquierda); sale del plano
+                               cercano, no del ojo                             (7.4 §8)
      L74.cortarPlanoY(r, y)    punto donde un rayo corta el plano horizontal y
      L74.GLSL.RUIDO            hash12, ruidoGradiente y fbm de 6.6
-     L74.GLSL.ALAMBRE          baricéntricas de la rejilla a partir de gl_VertexID
-                               y alambre() con fwidth                          (7.4 §4)
+     L74.GLSL.ALAMBRE_VS       baricentrica(id, lado): baricéntricas de la rejilla a
+                               partir de gl_VertexID (para el vertex shader)   (7.4 §4)
+     L74.GLSL.ALAMBRE_FS       alambre(b, grosor) con fwidth (para el fragment shader)
 
    En los playgrounds JS:  data-incluir="glkit,m7kit,l74kit"  (glkit ANTES: usa mat4 y vec3)
    ===================================================================== */

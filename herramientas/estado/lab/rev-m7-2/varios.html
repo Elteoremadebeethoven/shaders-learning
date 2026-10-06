@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>body{margin:0;font:16px sans-serif}
+#f1{position:fixed;left:0;top:0;width:100%;height:100%;z-index:-1;background:transparent}
+#f2{position:fixed;left:0;top:0;width:100%;height:200px;background:transparent}
+p{margin:40px}
+#k1,#k2{display:block;width:200px;height:100px;margin:10px;background:#333}</style></head>
+<body>
+<canvas id="f1"></canvas>
+<p id="texto1">texto con canvas fijo z-index:-1 detrás</p>
+<canvas id="f2"></canvas>
+<p id="texto2">texto sobre el que hay un canvas fijo sin z-index</p>
+<button id="b" style="margin:40px">botón</button>
+<div style="margin-top:300px">
+<canvas id="k1"></canvas>
+<canvas id="k2" tabindex="0"></canvas>
+<canvas id="a0"></canvas>
+<canvas id="a1" role="img" aria-label="Ondas moradas"></canvas>
+<canvas id="a2" aria-hidden="true"></canvas>
+<canvas id="a3"><p>Texto alternativo</p><button>Botón dentro</button></canvas>
+</div>
+<script>
+window.log = [];
+for (const id of ['k1','k2']) document.getElementById(id).addEventListener('keydown', e => log.push(id + ':' + e.code));
+document.addEventListener('keydown', e => log.push('doc:' + e.code + ' target=' + e.target.tagName + (e.target.id ? '#' + e.target.id : '')));
+document.getElementById('k2').addEventListener('blur', () => log.push('k2:blur'));
+window.addEventListener('blur', () => log.push('window:blur'));
+</script></body></html>

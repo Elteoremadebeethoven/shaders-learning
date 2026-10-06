@@ -62,9 +62,9 @@ bucle();
   <li data-l="2">Sin comprobar el <code>null</code>: en un navegador sin WebGL2 la siguiente llamada lanza una excepción y la página se queda a medias (<a href="../05-webgl/01-contexto.html#m5-getcontext-null">5.1</a>).</li>
   <li data-l="3-4">El búfer al tamaño CSS, sin <code>devicePixelRatio</code>: borroso en cualquier pantalla retina (<a href="../05-webgl/01-contexto.html#m5-canvas-borroso">5.1</a>). Y <code>innerWidth</code> incluye la barra de scroll.</li>
   <li data-l="5-8">Programa y locations creados una sola vez, en variables sueltas. Cuando se pierda el contexto, estos objetos quedarán muertos y nada sabrá recrearlos.</li>
-  <li data-l="10-13">Redimensiona en el evento, fuera del frame, borrando el búfer ya dibujado. Y nadie actualiza <code>gl.viewport</code> (<a href="../05-webgl/01-contexto.html#m5-viewport-olvidado">5.1</a>).</li>
-  <li data-l="14-16">Una llamada de GL dentro de un evento, sin saber qué programa está en uso, varias veces por frame y con la y al revés (<a href="../01-web/04-js-dom-eventos.html#m1-raton-invertido">1.4</a>).</li>
-  <li data-l="19">La hora de 1970 convertida a float32: la animación está congelada desde el primer frame (<a href="../05-webgl/04-uniforms-animacion.html#m5-tiempo-float32">5.4</a>).</li>
+  <li data-l="10-13">Solo se entera de los cambios de tamaño de la <em>ventana</em>: si cambia el contenedor del canvas (un panel que se abre, una fuente que termina de cargar) el búfer se queda como estaba. Repite el olvido del DPR. Y nadie actualiza <code>gl.viewport</code>: tras agrandar la ventana, la escena se queda en la esquina inferior izquierda (<a href="../05-webgl/01-contexto.html#m5-viewport-olvidado">5.1</a>).</li>
+  <li data-l="14-16">Una llamada de GL dentro de un evento, sin saber qué programa está en uso, varias veces por frame, en píxeles CSS (no del búfer) y con la y al revés (<a href="../01-web/04-js-dom-eventos.html#m1-raton-invertido">1.4</a>).</li>
+  <li data-l="19">Los segundos desde 1970 (unos 1 800 millones) convertidos a float32: a esa altura, entre dos valores representables hay 128 s, así que la animación se ve congelada desde el primer frame y da un salto cada dos minutos largos (<a href="../05-webgl/04-uniforms-animacion.html#m5-tiempo-float32">5.4</a>).</li>
   <li data-l="20-21">Dibuja siempre, aunque el canvas esté fuera de la vista, y no sabe pausar ni ir a cámara lenta.</li>
 </ol>
 </div>
@@ -264,7 +264,7 @@ requestAnimationFrame(frame);
 
 <h2>Un único bucle para todo</h2>
 <p>En una página real no solo se mueve el canvas: hay etiquetas que siguen a objetos de la escena, contadores, barras de progreso, botones que reaccionan al mismo muelle que la transición del shader. La tentación es que cada parte tenga su propio bucle: el canvas su <code>requestAnimationFrame</code>, la interfaz un <code>setInterval</code>, el contador otro rAF con su propio reloj. La regla de un senior es la contraria: <strong>un solo <code>requestAnimationFrame</code> para toda la aplicación</strong>, que actualiza el estado una vez y después escribe en el DOM y dibuja en la GPU a partir de ese mismo estado.</p>
-<p>¿Tanto importa? Lo medimos con un círculo dibujado en WebGL que gira a 440 px/s y un cuadrado del DOM que debería ir pegado a él. Hicimos 40 capturas de pantalla a intervalos aleatorios y medimos en cada una la distancia entre los dos centros:</p>
+<p>¿Tanto importa? Lo medimos (Chrome en el Apple M1 del curso, a 60 fps) con un círculo dibujado en WebGL que gira a 440 px/s y un cuadrado del DOM que debería ir pegado a él. Hicimos 40 capturas de pantalla a intervalos aleatorios y medimos en cada una la distancia entre los dos centros:</p>
 <table class="m7-medidas">
   <thead><tr><th>Cómo se mueve el cuadrado del DOM</th><th class="num">Separación mediana</th><th class="num">Máxima</th></tr></thead>
   <tbody>
@@ -273,7 +273,7 @@ requestAnimationFrame(frame);
     <tr><td>Con su propio <code>setInterval(…, 16)</code></td><td class="num">2,7 px</td><td class="num">8,6 px</td></tr>
   </tbody>
 </table>
-<p>Con el mismo bucle y el mismo tiempo, la separación es el redondeo al píxel. Con <code>performance.now()</code> aparece un desfase fijo: ese reloj marca el instante en que se ejecuta tu código, unos milisegundos después del inicio del frame (<a href="../02-animacion/03-raf.html">2.3</a>), y a 440 px/s tres milisegundos son más de un píxel. Con un temporizador aparte, el cuadrado va unas veces un frame por delante y otras por detrás: 8,6 px de tirón, el bicho de <a href="../02-animacion/03-raf.html#m2-setinterval-tirones">2.3</a> visto desde otro ángulo. Compruébalo tú en esta demo, con más velocidad para que se note a simple vista:</p>
+<p>Con el mismo bucle y el mismo tiempo, la separación es el redondeo al píxel. Con <code>performance.now()</code> aparece un desfase fijo: ese reloj marca el instante en que se ejecuta tu código, unos milisegundos después del inicio del frame (<a href="../02-animacion/03-raf.html">2.3</a>), y a 440 px/s tres milisegundos son más de un píxel. Con un temporizador aparte, el cuadrado se coloca con la hora a la que se ejecutó el temporizador, en algún momento entre dos frames, y se ve en el frame siguiente: va por detrás una distancia que cambia en cada frame, de casi nada a más de un frame entero (8,6 px son 20 ms a 440 px/s). Es el bicho de <a href="../02-animacion/03-raf.html#m2-setinterval-tirones">2.3</a> visto desde otro ángulo. Compruébalo tú en esta demo, con más velocidad para que se note a simple vista:</p>
 
 <div class="js-playground" data-titulo="DOM y GL: ¿el mismo bucle?" data-altura="320" data-incluir="glkit" data-fondo="oscuro" data-sin-editor>
 <script type="text/x-html">
@@ -366,7 +366,7 @@ requestAnimationFrame(frame);
 <p>El navegador presenta juntos lo que has escrito en el DOM y lo que has dibujado en el canvas durante un mismo callback: los dos entran en el mismo frame. Con varios bucles, pierdes también eso otro que da una arquitectura: poder pausar la aplicación entera de una vez, ralentizar todo junto o saber en qué orden pasan las cosas.</p>
 
 <div class="callout senior" data-titulo="desynchronized: la excepción que confirma la regla">
-  <p><code>getContext('webgl2', { desynchronized: true })</code> pide un canvas de <em>baja latencia</em>: el navegador puede presentarlo por su cuenta, sin esperar al resto de la página, lo que reduce el retraso entre el puntero y el trazo en aplicaciones de dibujo. El precio es justo lo que acabamos de medir: deja de estar sincronizado con el DOM y puede verse a medio dibujar (<em>tearing</em>). Es una petición, no una orden: en el Chrome de pruebas la pedimos y <code>getContextAttributes().desynchronized</code> devolvió <code>false</code>. Para un efecto que acompaña a la interfaz, no la quieres.</p>
+  <p><code>getContext('webgl2', { desynchronized: true })</code> pide un canvas de <em>baja latencia</em>: el navegador puede presentarlo por su cuenta, sin esperar al resto de la página, lo que reduce el retraso entre el puntero y el trazo en aplicaciones de dibujo. El precio es justo lo que acabamos de medir: deja de estar sincronizado con el DOM y puede verse a medio dibujar (<em>tearing</em>). Es una petición, no una orden, y la respuesta depende del sistema: <code>getContextAttributes().desynchronized</code> devolvió <code>false</code> en Chrome para macOS (el M1 del curso) y <code>true</code> en Chromium para Linux. Para un efecto que acompaña a la interfaz, no la quieres.</p>
 </div>
 
 <div class="quiz">
@@ -381,7 +381,7 @@ requestAnimationFrame(frame);
 <h2>Tamaño: lo que 5.1 no podía saber</h2>
 <p>En <a href="../05-webgl/01-contexto.html">5.1</a> resolviste el tamaño del búfer píxel a píxel: <code>ResizeObserver</code> con <code>devicePixelContentBoxSize</code>, el tamaño se anota en el observador y se aplica al empezar el frame, solo si cambió, y el viewport sale de <code>drawingBufferWidth/Height</code>. Todo eso sigue igual. Lo que una aplicación añade son tres decisiones que un ejemplo aislado no necesita tomar:</p>
 <ol>
-  <li><strong>Un límite de DPR.</strong> Con DPR 3 hay 9 veces más píxeles que con DPR 1, y en <a href="../05-webgl/10-depuracion.html">5.10</a> un shader pesado tardó 7 veces más. En un móvil, pasar de DPR 3 a 2 divide por 2,25 el trabajo de los fragmentos y casi nadie nota la diferencia en un fondo animado. Por eso <code>GLKit.ajustarTamaño</code> limita a 2 por defecto.</li>
+  <li><strong>Un límite de DPR.</strong> Con DPR 3 hay 9 veces más píxeles que con DPR 1, y el trabajo de un shader limitado por los fragmentos crece casi en la misma proporción (<a href="../05-webgl/10-depuracion.html#me-frena-la-cpu-o-la-gpu">5.10</a>). En un móvil, pasar de DPR 3 a 2 divide por 2,25 el trabajo de los fragmentos y casi nadie nota la diferencia en un fondo animado. Por eso <code>GLKit.ajustarTamaño</code> limita a 2 por defecto.</li>
   <li><strong>Un límite de píxeles totales.</strong> El DPR no basta: un monitor 4K con DPR 2 y el canvas a pantalla completa pide 3840 × 2160 = 8,3 megapíxeles, más que cualquier móvil. Un tope de área (por ejemplo, 4 millones de píxeles) protege el caso grande sin tocar el pequeño.</li>
   <li><strong>Quién se entera del cambio.</strong> Lo que depende del tamaño (FBOs de post-proceso, texturas del tamaño de la pantalla, la rejilla de una simulación) se rehace en <code>redimensionar</code>, una vez por cambio, y no en <code>dibujar</code>, en cada frame, ni en el observador, que se ejecuta después del rAF y borraría el búfer ya dibujado (<a href="../05-webgl/01-contexto.html">5.1</a>).</li>
 </ol>
@@ -403,9 +403,9 @@ function tamañoObjetivo() {
 }
 </script>
 <ol>
-  <li data-l="1-2"><code>dispAncho</code> y <code>dispAlto</code> son los píxeles de dispositivo que anotó el <code>ResizeObserver</code> de 5.1. Partimos de ahí.</li>
-  <li data-l="3">El límite de DPR, como factor: con DPR 3 y <code>dprMax = 2</code>, <code>f = 0,667</code>; con DPR 1 o 2, <code>f = 1</code> (nunca ampliamos).</li>
+  <li data-l="2-3">El límite de DPR, como factor: con DPR 3 y <code>dprMax = 2</code>, <code>f = 0,667</code>; con DPR 1 o 2, <code>f = 1</code> (nunca ampliamos).</li>
   <li data-l="4">La escala de la calidad adaptativa, que construiremos al final de la lección: un número entre, por ejemplo, 0,5 y 1.</li>
+  <li data-l="5"><code>dispAncho</code> y <code>dispAlto</code> son los píxeles de dispositivo que anotó el <code>ResizeObserver</code> de 5.1 (<code>devicePixelContentBoxSize</code>). Partimos de ahí y aplicamos los dos factores.</li>
   <li data-l="6-9">El tope de área. Escalar los dos lados por <code>k</code> multiplica el área por <code>k²</code>, así que para bajar el área a <code>pixelesMax</code> hace falta la raíz. Con 8,3 MP y un tope de 4 MP, <code>k = 0,69</code>: el búfer pasa de 3840 × 2160 a 2667 × 1500 y se conserva la proporción.</li>
   <li data-l="10-12">Redondeo a entero y nunca menos de 1: un canvas de 0 × 0 (una pestaña sin layout, un contenedor con <code>display: none</code>) no debe dar un búfer de tamaño 0.</li>
 </ol>
@@ -640,7 +640,7 @@ canvas.addEventListener('webglcontextrestored', () => {
 </script>
 <ol>
   <li data-l="2">«Sé recuperarme.» Sin esta línea, el navegador no devolverá el contexto nunca.</li>
-  <li data-l="3">Un motivo más para parar el bucle: con el contexto perdido, las llamadas de GL no hacen nada (ni se quejan), así que dibujar sería trabajo tirado. El reloj no avanza mientras tanto.</li>
+  <li data-l="3">Un motivo más para parar el bucle: con el contexto perdido, las llamadas de GL no hacen nada ni dan error (<code>getError</code> devuelve <code>CONTEXT_LOST_WEBGL</code> una sola vez y después <code>NO_ERROR</code>; comprobado), así que dibujar sería trabajo tirado. El reloj no avanza mientras tanto.</li>
   <li data-l="7">Olvidar el tamaño conocido obliga a que el próximo frame llame a <code>redimensionar</code>: los FBOs también murieron y hay que rehacerlos con el tamaño actual.</li>
   <li data-l="8">Todo lo de la GPU, otra vez, desde sus descripciones. El objeto <code>gl</code> es el mismo (5.1); lo que había dentro, no.</li>
   <li data-l="9"><code>revisar</code> vuelve a arrancar el bucle si los demás motivos lo permiten, con <code>dt = 0</code> en el primer frame.</li>
@@ -667,6 +667,7 @@ const app = M7.crearApp(canvas, {
   contexto: { antialias: false },   // atributos de getContext (5.1)
   dprMax: 2,                        // límite de DPR
   pixelesMax: 4e6,                  // límite de píxeles del búfer
+  dtMax: 0.1,                       // tope del dt real en s (es el valor por defecto)
   calidad: { min: 0.5 },            // calidad adaptativa (al final de la lección); sin esta opción, no hay
   bajoDemanda: false,               // true: solo dibuja cuando alguien llama a app.pedirFrame() (7.3)
   estado: { /* lo que la app sabe */ },
@@ -675,6 +676,7 @@ const app = M7.crearApp(canvas, {
   actualizar(estado, dt, app) { /* solo JavaScript */ },
   dibujar(gl, estado, app) { /* uniforms y draw calls */ },
   fallar(motivo, app) { /* mostrar la alternativa sin WebGL */ },
+  alPerder(app) { /* opcional: avisar de que se perdió el contexto */ },
 });
 // app.reloj (t, dt, escala, pausado), app.ancho/app.alto (búfer), app.anchoCSS/app.altoCSS,
 // app.fps, app.pedirFrame(), app.pausar(), app.reanudar(), app.destruir()
@@ -712,11 +714,11 @@ function frame(ms) {
 <ol>
   <li data-l="2-3"><code>raf = 0</code> anota que ya no hay ninguna petición pendiente. Si la app se desactivó entre la petición y este callback (o el contexto se perdió), no se hace nada.</li>
   <li data-l="5">El reloj de la aplicación: <code>t</code> y <code>dt</code> con pausa y escala.</li>
-  <li data-l="6-10">Los fps, con la media móvil exponencial de los <em>tiempos</em> de frame (<a href="../02-animacion/03-raf.html">2.3</a>). Se descartan los intervalos absurdos (el primero tras una pausa vale 0; uno de más de 250 ms no es rendimiento, es una pestaña que vuelve).</li>
+  <li data-l="6-10">Los fps, con la media móvil exponencial de los <em>tiempos</em> de frame (<a href="../02-animacion/03-raf.html">2.3</a>). Se descartan los intervalos que no miden el ritmo normal: el primero tras una pausa o tras volver a la pestaña vale 0 (el reloj olvidó la referencia), y uno de más de 250 ms es un tirón suelto o la vuelta de una suspensión del equipo. Por eso, en un equipo que no llega ni a 4 fps, la cifra se queda en el último valor válido.</li>
   <li data-l="11">La calidad adaptativa mide el mismo intervalo; puede cambiar la escala de resolución.</li>
   <li data-l="12-13">El tamaño se aplica al empezar el frame (con los tres factores de antes). Si cambió, se llama a <code>redimensionar</code>. El viewport se fija siempre: tu <code>dibujar</code> puede haberlo cambiado para un FBO en el frame anterior.</li>
   <li data-l="14-20">Actualizar y dibujar. Una excepción aquí no puede repetirse 60 veces por segundo llenando la consola: se detiene la app y se muestra la alternativa (sección siguiente).</li>
-  <li data-l="22-23">En modo continuo, siempre se pide el siguiente frame. En modo bajo demanda, solo si alguien llamó a <code>app.pedirFrame()</code> durante este frame (un muelle que aún se mueve, un evento); si no, la app se duerme. Lo usaremos en <a href="03-transiciones-shader.html">7.3</a>.</li>
+  <li data-l="22-23">En modo continuo, siempre se pide el siguiente frame. En modo bajo demanda, solo si alguien llamó a <code>app.pedirFrame()</code> durante este frame (un muelle que aún se mueve, un evento): por eso la línea 4 pone <code>pendiente = false</code> antes de actualizar y dibujar. Si nadie lo pidió, la app se duerme. Lo usaremos en <a href="03-transiciones-shader.html">7.3</a>.</li>
 </ol>
 </div>
 
@@ -813,7 +815,7 @@ document.getElementById('recuperar').onclick = () => ext.restoreContext();
 
 <h2>Varias escenas, un solo contexto</h2>
 <p>Tarde o temprano una página tiene más de un efecto: un fondo en la portada, otro en una sección, una transición entre dos vistas. La solución ingenua, un canvas con su contexto por efecto, choca con dos muros que ya conoces: el límite de unos 16 contextos vivos (<a href="../05-webgl/01-contexto.html#m5-demasiados-contextos">5.1</a>) y que los recursos no se comparten entre contextos (una textura cargada en uno no existe en otro, y una transición entre dos escenas necesita las dos en el mismo). La arquitectura habitual es <strong>un contexto y un gestor de escenas</strong>: cada escena es un objeto con la misma interfaz que la app (<code>iniciar</code>, <code>redimensionar</code>, <code>actualizar</code>, <code>dibujar</code>) más una función <code>liberar</code> que borra lo suyo.</p>
-<p>El gestor decide tres cosas: qué escena está activa (solo esa se actualiza y se dibuja), cuándo se inicia cada una (al necesitarla por primera vez, no todas al arrancar) y si al salir de una se libera o se conserva. Liberar ahorra memoria de GPU; conservar evita el tirón de volver a compilar sus shaders al regresar (<a href="../04-gpu/01-cpu-vs-gpu.html#m4-tiron-primer-dibujo">4.1</a>). Para una transición entre dos escenas (<a href="03-transiciones-shader.html">7.3</a>) las dos tienen que estar vivas a la vez.</p>
+<p>El gestor decide tres cosas: qué escena está activa (solo esa se actualiza y se dibuja), cuándo se inicia cada una (al necesitarla por primera vez, no todas al arrancar) y si al salir de una se libera o se conserva. Liberar ahorra memoria de GPU; conservar evita el tirón de volver a crear, compilar y estrenar sus programas al regresar (<a href="../04-gpu/01-cpu-vs-gpu.html#m4-tiron-primer-dibujo">4.1</a>). Ese tirón suele ser menor la segunda vez, porque Chrome guarda en una caché los programas que ya compiló y reconoce el mismo texto (<a href="../05-webgl/10-depuracion.html#ver-lo-que-calcula-la-gpu">5.10</a>). Para una transición entre dos escenas (<a href="03-transiciones-shader.html">7.3</a>) las dos tienen que estar vivas a la vez.</p>
 
 <section class="ejemplo">
   <h3>Ejemplo 7.1.4 — Un gestor de escenas que sobrevive a todo</h3>
@@ -958,7 +960,7 @@ document.getElementById('recuperar').onclick = () => ext.restoreContext();
   <p>Tres decisiones del código que merecen atención:</p>
   <ul>
     <li><strong>El selector no inicia nada.</strong> Solo anota la escena deseada en el estado; el cambio real ocurre al principio del siguiente <code>dibujar</code>, donde es seguro tocar GL. Es la regla de los eventos aplicada a algo más grande que un uniform.</li>
-    <li><strong>Iniciación perezosa.</strong> Al arrancar solo se compila la escena activa. Las demás se compilan la primera vez que se eligen (fíjate en la consola). Con «liberar al salir» desmarcado, volver a una escena ya vista es instantáneo; marcado, se vuelve a compilar.</li>
+    <li><strong>Iniciación perezosa.</strong> Al arrancar solo se compila la escena activa. Las demás se compilan la primera vez que se eligen (fíjate en la consola). Con «liberar al salir» desmarcado, volver a una escena ya vista es instantáneo; marcado, se vuelve a crear y a compilar (con la caché de Chrome, más deprisa que la primera vez).</li>
     <li><strong>La pérdida de contexto borra el conjunto de vivas.</strong> <code>iniciar</code> de la app se limita a olvidar todas las escenas: la activa se reconstruirá sola en el siguiente frame y las demás, cuando se elijan. Ninguna escena necesita saber nada de pérdidas de contexto.</li>
   </ul>
 </section>
@@ -979,7 +981,7 @@ document.getElementById('recuperar').onclick = () => ext.restoreContext();
 
 <section class="ejemplo">
   <h3>Ejemplo 7.1.5 — Tres maneras de fallar con elegancia</h3>
-  <p>Cada botón arranca de nuevo la app en un escenario distinto. En todos, el resultado debe ser una alternativa digna, y la app anterior se destruye liberando su contexto.</p>
+  <p>Cada botón arranca de nuevo la app en un escenario distinto: el normal y tres maneras de fallar. En las tres, el resultado debe ser una alternativa digna, y la app anterior se destruye liberando su contexto.</p>
   <div class="js-playground" data-titulo="Ejemplo 7.1.5 — Alternativas" data-altura="320" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
 <script type="text/x-html">
 <div id="escena">
@@ -1064,7 +1066,7 @@ document.getElementById('panel').onclick = (e) => { if (e.target.dataset.modo) a
 arrancar('normal');
 </script>
   </div>
-  <p>El escenario «sin WebGL2» usa un truco para simularlo en cualquier navegador: pedir antes un contexto <code>'2d'</code> al mismo canvas, porque un canvas solo admite un tipo de contexto y la segunda petición, de otro tipo, devuelve <code>null</code> (<a href="../05-webgl/01-contexto.html">5.1</a>). El shader roto hace que <code>GLKit.crearPrograma</code> lance una excepción dentro de <code>iniciar</code>, que <code>crearApp</code> captura. La excepción en <code>dibujar</code> aparece una sola vez en la consola, porque el bucle se detiene en lugar de repetirla en cada frame. Y en los tres casos el canvas se retira: la alternativa ocupa su sitio.</p>
+  <p>El escenario «sin WebGL2» usa un truco para simularlo en cualquier navegador: pedir antes un contexto <code>'2d'</code> al mismo canvas, porque un canvas solo admite un tipo de contexto y la segunda petición, de otro tipo, devuelve <code>null</code> (<a href="../05-webgl/01-contexto.html#m5-getcontext-null">5.1</a>); de paso, <code>webglcontextcreationerror</code> llega con el motivo <code>Canvas has an existing context of a different type</code>, que la alternativa muestra en letra pequeña. El shader roto hace que <code>GLKit.crearPrograma</code> lance una excepción dentro de <code>iniciar</code>, que <code>crearApp</code> captura. La excepción en <code>dibujar</code> aparece una sola vez en la consola, porque el bucle se detiene en lugar de repetirla en cada frame. Y en los tres casos el canvas se retira: la alternativa ocupa su sitio.</p>
 </section>
 
 <div class="callout senior" data-titulo="Qué mandar a la telemetría">
@@ -1080,10 +1082,10 @@ arrancar('normal');
 </ul>
 
 <h3>Inyectar <code>#define</code> sin romper nada</h3>
-<p>¿Por qué <code>#define</code> y no un uniform? Porque un uniform es un valor desconocido al compilar: el compilador debe generar código para todos los casos. Con <code>#define OCTAVAS 5</code>, el bucle tiene un límite constante que el compilador puede desenrollar, y con <code>#if CALIDAD > 1</code> el código de la calidad alta ni siquiera existe en la variante baja (el compilador elimina lo que no llega a las salidas, <a href="../06-glsl/01-lenguaje.html">6.1</a>). El precio es una compilación por variante, que se hace una vez al arrancar o al cambiar de calidad.</p>
+<p>¿Por qué <code>#define</code> y no un uniform? Porque un uniform es un valor desconocido al compilar: el compilador debe generar código para todos los casos. Con <code>#define OCTAVAS 5</code>, el bucle tiene un límite constante que el compilador puede desenrollar, y con <code>#if CALIDAD > 1</code> el código de la calidad alta ni siquiera existe en la variante baja: lo quita el preprocesador antes de compilar. (Un <code>if (CALIDAD > 1)</code> normal también acabaría eliminado, porque el compilador pliega la constante y descarta la rama muerta, <a href="../06-glsl/01-lenguaje.html#lo-que-hace-el-compilador-con-tu-codigo">6.1</a>; con un uniform, ninguna de las dos cosas es posible.) El precio es una compilación por variante, que se hace una vez al arrancar o al cambiar de calidad.</p>
 <p>El truco tiene tres trampas, todas comprobadas en el Chrome de pruebas:</p>
 <ol>
-  <li><strong>El sitio.</strong> Si pones el <code>#define</code> delante de todo, ANGLE protesta con <code>ERROR: 0:2: 'version' : #version directive must occur before anything else, except for comments and white space</code>, y en cascada aparecen errores de sintaxis de GLSL ES 1.00. Hay que insertarlo <em>después</em> de la primera línea.</li>
+  <li><strong>El sitio.</strong> Si pones el <code>#define</code> delante de todo, ANGLE protesta con <code>ERROR: 0:2: 'version' : #version directive must occur before anything else, except for comments and white space</code>, y en cascada llegan errores de un shader que ya se trata como GLSL ES 1.00, como <code>'out' : storage qualifier supported in GLSL ES 3.00 and above only</code>. Hay que insertarlo <em>después</em> de la primera línea.</li>
   <li><strong>Los números de línea.</strong> Cada línea insertada desplaza las del resto: con tres <code>#define</code>, un error en la línea 5 de tu código se anuncia en la línea 9. La directiva <code>#line</code> lo arregla: en ANGLE, <code>#line N</code> hace que la línea <em>siguiente</em> cuente como la N. Con <code>#line 2</code> justo después de los <code>#define</code>, el error vuelve a anunciarse en la línea 5.</li>
   <li><strong>Los tipos.</strong> JavaScript no distingue <code>2</code> de <code>2.0</code>, y GLSL sí: un número inyectado sin punto decimal es un <code>int</code> (lo verás en el bestiario de abajo).</li>
 </ol>
@@ -1091,7 +1093,7 @@ arrancar('normal');
 <div class="anotado" data-lang="js">
 <script type="text/plain">
 function conDefines(fuente, defines) {
-  if (!/^\s*#version/.test(fuente)) {
+  if (!/^[ \t]*#version/.test(fuente)) {
     throw new Error('la primera línea debe ser #version');
   }
   const fin = fuente.indexOf('\n');
@@ -1111,7 +1113,7 @@ function flotante(v) {
 }
 </script>
 <ol>
-  <li data-l="2-5">La primera línea debe ser <code>#version</code>; si no lo es, preferimos una excepción clara ahora que un error críptico del compilador después. <code>fin</code> es la posición del salto de línea que la termina.</li>
+  <li data-l="2-5">La primera línea debe ser <code>#version</code>; si no lo es, preferimos una excepción clara ahora que un error críptico del compilador después. La expresión admite espacios o tabuladores delante (ANGLE también), pero no saltos de línea: <code>[ \t]*</code> y no <code>\s*</code>, porque una plantilla escrita como <code>`</code> + salto de línea + <code>#version 300 es</code> ya no tiene <code>#version</code> en la primera línea (<a href="../05-webgl/02-primer-triangulo.html#m5-version-primera-linea">5.2</a>). <code>fin</code> es la posición del salto de línea que la termina.</li>
   <li data-l="7-11">Una línea por <code>#define</code>. Los booleanos se escriben como 1 o 0, para usarlos con <code>#if</code>; el resto, tal cual con <code>String</code>.</li>
   <li data-l="12-13">La primera línea, los <code>#define</code>, <code>#line 2</code> (la línea que venía después de <code>#version</code> era la 2) y el resto del código.</li>
   <li data-l="15-19">La tercera trampa: el número 2 de JavaScript se escribe como <code>"2"</code>, que en GLSL es un <code>int</code>. Esta función garantiza un literal float: añade <code>.0</code> si el texto no tiene ni punto ni exponente (<code>String(1e-7)</code> es <code>"1e-7"</code>, que ya es un float válido en GLSL).</li>
@@ -1120,19 +1122,19 @@ function flotante(v) {
 
 <div class="callout bestiario" data-id="m7-define-entero" data-titulo="Al inyectar un número desde JavaScript, el shader deja de compilar («wrong operand types»)">
   <p><strong>Síntoma:</strong> el shader compilaba con el valor escrito a mano y, al generarlo desde JavaScript (<code>`#define RADIO ${radio}`</code>), falla con <code>'*' : wrong operand types - no operation '*' exists that takes a left-hand operand of type 'const int' and a right operand of type 'const float'</code> o con <code>cannot convert from 'const int' to 'highp float'</code>. A veces solo falla con ciertos valores: con 2,5 compila y con 2 no.</p>
-  <p><strong>Causa:</strong> JavaScript no distingue enteros de decimales: <code>String(2.0)</code> es <code>"2"</code>. El <code>#define</code> pega ese texto y en GLSL <code>2</code> es un <code>int</code>, y GLSL no convierte tipos implícitamente (<a href="../06-glsl/01-lenguaje.html">6.1</a>). Lo comprobamos: <code>#define RADIO 2</code> seguido de <code>RADIO * 0.5</code> da exactamente esos dos errores.</p>
-  <p><strong>Solución:</strong> formatea los floats al generarlos: <code>(2).toFixed(1)</code> o una función como <code>flotante(v)</code>, que añade <code>.0</code> cuando falta. Usa texto sin decimales solo cuando quieras un <code>int</code> de verdad (el límite de un bucle).</p>
+  <p><strong>Causa:</strong> JavaScript no distingue enteros de decimales: <code>String(2.0)</code> es <code>"2"</code>. El <code>#define</code> pega ese texto y en GLSL <code>2</code> es un <code>int</code>, y GLSL no convierte tipos implícitamente (<a href="../06-glsl/01-lenguaje.html#literales-y-conversiones-el-error-numero-1">6.1</a>). Lo comprobamos: <code>#define RADIO 2</code> seguido de <code>RADIO * 0.5</code> da exactamente esos dos errores.</p>
+  <p><strong>Solución:</strong> formatea los floats al generarlos con una función como <code>flotante(v)</code>, que añade <code>.0</code> solo cuando falta. Cuidado con el atajo <code>v.toFixed(1)</code>: arregla el 2 (<code>"2.0"</code>), pero redondea todo lo demás (<code>(0.25).toFixed(1)</code> da <code>"0.3"</code>). Usa texto sin decimales solo cuando quieras un <code>int</code> de verdad (el límite de un bucle).</p>
 </div>
 
 <div class="callout hack" data-titulo="#line con número de «archivo»">
-  <p><code>#line</code> admite un segundo número, el de la <em>cadena de fuente</em>, que aparece como prefijo en los errores. Lo comprobamos: tras <code>#line 1 7</code>, un error en la quinta línea se anunció como <code>ERROR: 7:5:</code> en lugar de <code>0:5:</code>. Si montas un shader con varios trozos interpolados, pon <code>#line 1 N</code> al principio de cada uno con un número distinto por trozo, y el log te dirá en qué trozo y en qué línea de ese trozo está el error. Es lo que hacen los motores grandes con sus <code>#include</code>.</p>
+  <p><code>#line</code> admite un segundo número, el de la <em>cadena de fuente</em>, que aparece como prefijo en los errores. Lo comprobamos: tras <code>#line 1 7</code>, la línea siguiente pasa a ser la 1 de la cadena 7, y un error cuatro líneas más abajo se anunció como <code>ERROR: 7:5:</code> (con <code>#line 1</code> a secas habría sido <code>0:5:</code>). Si montas un shader con varios trozos interpolados, pon <code>#line 1 N</code> al principio de cada trozo, con un número distinto para cada uno, y al terminar el trozo otro <code>#line L 0</code> que devuelva la numeración del texto principal (L, la línea que toque): el log te dirá en qué trozo y en qué línea de ese trozo está el error. Es lo que hacen los motores grandes con sus <code>#include</code>.</p>
 </div>
 
 <div class="quiz">
   <p class="pregunta">Montas un fragment shader así: <code>'#define OCTAVAS 5\n' + fuente</code>, donde <code>fuente</code> empieza por <code>#version 300 es</code>. ¿Qué ocurre?</p>
   <ul>
     <li>Compila bien: el preprocesador procesa el <code>#define</code> antes que cualquier otra cosa.<div class="explicacion">El preprocesador sí va primero, pero <code>#version</code> es especial: tiene que ser lo primero del shader (en WebGL, literalmente la primera línea). ANGLE rechaza el shader.</div></li>
-    <li data-correcta>Falla: <code>#version</code> ya no está al principio, y en cascada aparecen errores de GLSL ES 1.00, como que <code>out</code> no existe.<div class="explicacion">Correcto. El error real es el primero («#version directive must occur before anything else…»); los siguientes vienen de que, sin <code>#version</code> válido, el shader se trata como GLSL ES 1.00. Inserta los <code>#define</code> tras la primera línea y añade <code>#line 2</code>.</div></li>
+    <li data-correcta>Falla: <code>#version</code> ya no está al principio, y en cascada aparecen errores de GLSL ES 1.00, como que <code>out</code> solo existe a partir de GLSL ES 3.00.<div class="explicacion">Correcto. El error real es el primero («#version directive must occur before anything else…»); los siguientes vienen de que, sin <code>#version</code> válido, el shader se trata como GLSL ES 1.00. Inserta los <code>#define</code> tras la primera línea y añade <code>#line 2</code>.</div></li>
     <li>Compila, pero todos los errores futuros se anuncian una línea más abajo.<div class="explicacion">Eso pasaría si insertaras el <code>#define</code> en el sitio correcto (después de <code>#version</code>) sin <code>#line</code>. Aquí ni siquiera compila.</div></li>
   </ul>
 </div>
@@ -1152,7 +1154,7 @@ if (import.meta.hot) {                            // solo existe en desarrollo
 }
 </script>
 
-<p>La herramienta es lo de menos; la regla es lo importante: <strong>compila la versión nueva aparte y solo sustituye a la vieja si ha compilado</strong>. Si falla, muestra el error y deja la vieja funcionando. Es exactamente lo que hacen los editores de este curso cuando escribes un punto y coma de menos. Y hay un segundo detalle que casi nadie cuida: <strong>no congelar la página mientras compila</strong>. En <a href="../05-webgl/02-primer-triangulo.html">5.2</a> viste que Chrome compila en otros hilos y que preguntar <code>LINK_STATUS</code> obliga a esperar. Lo medimos con un shader grande: preguntar enseguida bloqueó el hilo principal 177,5 ms (diez frames perdidos de golpe); sondeando <code>COMPLETION_STATUS_KHR</code> de la extensión <code>KHR_parallel_shader_compile</code> una vez por frame, el programa estuvo listo en 10 frames, cada consulta costó como mucho 0,1 ms y la página no perdió ni un frame.</p>
+<p>La herramienta es lo de menos; la regla es lo importante: <strong>compila la versión nueva aparte y solo sustituye a la vieja si ha compilado</strong>. Si falla, muestra el error y deja la vieja funcionando. Es exactamente lo que hacen los editores de este curso cuando escribes un punto y coma de menos. Y hay un segundo detalle que casi nadie cuida: <strong>no congelar la página mientras compila</strong>. En <a href="../05-webgl/02-primer-triangulo.html">5.2</a> viste que Chrome compila en otros hilos y que preguntar <code>LINK_STATUS</code> obliga a esperar. Lo medimos con un shader grande que Chrome aún no tenía en su caché de programas (Chrome en el Apple M1 del curso): preguntar enseguida bloqueó el hilo principal 177,5 ms (diez frames perdidos de golpe); sondeando <code>COMPLETION_STATUS_KHR</code> de la extensión <code>KHR_parallel_shader_compile</code> una vez por frame, el programa estuvo listo en 10 frames, cada consulta costó como mucho 0,1 ms y la página no perdió ni un frame.</p>
 
 <section class="ejemplo">
   <h3>Ejemplo 7.1.6 — Recarga en caliente con compilación en paralelo</h3>
@@ -1254,7 +1256,7 @@ requestAnimationFrame(frame);
 
 <h2>Presupuesto de rendimiento: calidad adaptativa</h2>
 <p>Cada frame tiene un presupuesto: 16,7 ms a 60 Hz, 8,3 ms a 120 Hz (<a href="../02-animacion/01-pipeline-render.html">2.1</a>). Un fondo que va sobrado en tu portátil puede no caber en el móvil de un usuario, y no hay un número de octavas o de píxeles que sirva para todos. La técnica de un senior es medir en el dispositivo del usuario y adaptar la calidad sobre la marcha. El mando más eficaz es el que ya tienes: <strong>la resolución del búfer</strong>. El trabajo de los fragmentos es proporcional al número de píxeles, así que un 15 % menos de lado es un 28 % menos de trabajo, y el navegador amplía el resultado sin coste.</p>
-<p>La pregunta es qué medir. El reflejo es cronometrar el código con <code>performance.now()</code>, y es un error: como viste en <a href="../05-webgl/10-depuracion.html">5.10</a>, las llamadas de WebGL solo encolan trabajo, y el JavaScript no ve cuánto tarda la GPU. Lo medimos con un fragment shader pesado (1500 iteraciones de un bucle) a pantalla completa en la máquina de pruebas:</p>
+<p>La pregunta es qué medir. El reflejo es cronometrar el código con <code>performance.now()</code>, y es un error: como viste en <a href="../05-webgl/10-depuracion.html">5.10</a>, las llamadas de WebGL solo encolan trabajo, y el JavaScript no ve cuánto tarda la GPU. Lo medimos con un fragment shader pesado (1500 iteraciones de un bucle) a pantalla completa, en Chrome sobre el Apple M1 del curso (ANGLE/Metal), con un dibujo por frame:</p>
 <table class="m7-medidas">
   <thead><tr><th>Escala del búfer</th><th>Búfer</th><th class="num">JavaScript por frame</th><th class="num">Intervalo entre frames (mediana)</th></tr></thead>
   <tbody>
@@ -1268,7 +1270,7 @@ requestAnimationFrame(frame);
 <div class="anotado" data-lang="js">
 <script type="text/plain">
 medir(intervaloMs) {
-  if (!(intervaloMs > 0) || intervaloMs > 250) return false;
+  if (!(intervaloMs > 0) || intervaloMs > this.descartarMs) return false;
   this.mediaMs += 0.1 * (intervaloMs - this.mediaMs);
   if (this.enfriar > 0) {
     this.enfriar -= intervaloMs;
@@ -1295,7 +1297,7 @@ medir(intervaloMs) {
 }
 </script>
 <ol>
-  <li data-l="2">Un intervalo de 0 (el primer frame tras una pausa) o de más de 250 ms (una pestaña que vuelve) no dice nada del rendimiento.</li>
+  <li data-l="2">Un intervalo de 0 (el primer frame tras una pausa o tras volver a la pestaña) no dice nada del rendimiento. Uno de más de <code>descartarMs</code> (250 ms por defecto) tampoco se cuenta: suele ser un tirón suelto (una compilación, el recolector de basura) o el equipo que despierta de una suspensión, y no queremos bajar la calidad por eso. El precio: si la GPU no llega ni a 4 fps, todos los intervalos se descartan y el controlador se queda ciego. Si tu efecto puede caer tan bajo en algún equipo, sube ese tope (<code>calidad: { descartarMs: 1000 }</code>).</li>
   <li data-l="3">Media móvil exponencial de los tiempos de frame, con α = 0,1: un frame suelto lento no dispara nada; una racha, sí.</li>
   <li data-l="4-7">Tras cada cambio, medio segundo sin decidir: el búfer nuevo tarda unos frames en notarse y no queremos reaccionar a medidas del tamaño anterior. El constructor pone además <code>enfriar = 1000</code> al arrancar (un «calentamiento»): los primeros frames de una página son lentos por motivos que no tienen que ver con el efecto (compilar shaders, terminar de cargar) y no deben bajar la calidad.</li>
   <li data-l="9-11">Si vamos más de un 25 % por encima del presupuesto, se baja ya, multiplicando por <code>paso</code> (0,85 por defecto). Bajar deprisa es importante: cada segundo por encima del presupuesto son tirones que el usuario ve.</li>
@@ -1305,7 +1307,7 @@ medir(intervaloMs) {
 </ol>
 </div>
 
-<p>En la misma máquina y con un shader aún más pesado (2500 iteraciones), el controlador llevó el búfer de 1440 × 900 a 543 × 339 en 4,2 s (el primero, de calentamiento, sin decidir nada), y los fps pasaron de 14 a 60. Y a partir de ahí apareció un comportamiento curioso: cada 3 segundos intentaba subir a 639 × 399, no cabía, bajaba unos 0,6 s después y volvía a empezar.</p>
+<p>En la misma máquina y con un shader aún más pesado (2500 iteraciones), el controlador llevó el búfer de 1440 × 900 a 543 × 339 en 4,2 s (el primer segundo, de calentamiento, sin decidir nada), y los fps pasaron de 14 a 60. Y a partir de ahí apareció un comportamiento curioso: cada 3 segundos intentaba subir a 639 × 399, no cabía, bajaba unos 0,6 s después y volvía a empezar.</p>
 
 <div class="callout bestiario" data-id="m7-calidad-oscila" data-titulo="La nitidez del fondo cambia cada pocos segundos (y hay un tirón en cada cambio)">
   <p><strong>Síntoma:</strong> con calidad adaptativa, el fondo alterna periódicamente entre más nítido y más borroso, y cada cambio viene con un pequeño tirón. En la consola de rendimiento se ve una caída de fps con un ritmo regular.</p>
@@ -1388,7 +1390,7 @@ document.getElementById('adaptativa').onchange = (ev) => {
 };
 </script>
   </div>
-  <p>El búfer cambia de tamaño, pero el canvas ocupa lo mismo en la página: el navegador amplía la imagen. Con el coste alto, fíjate en que los bordes se ablandan un poco y en que la animación, en cambio, vuelve a ser fluida: casi siempre es el trato que quieres. Si tu pantalla es de 120 Hz, el presupuesto del controlador sigue siendo 16,7 ms (<code>objetivoMs</code>): para un fondo animado, 60 fps estables son mejores que 120 intermitentes.</p>
+  <p>El búfer cambia de tamaño, pero el canvas ocupa lo mismo en la página: el navegador amplía la imagen. Con el coste alto, fíjate en que los bordes se ablandan un poco y en que la animación, en cambio, vuelve a ser fluida: casi siempre es el trato que quieres. Si tu pantalla es de 120 Hz, el presupuesto del controlador sigue siendo 16,7 ms (<code>objetivoMs</code>): para un fondo animado, 60 fps estables son mejores que 120 intermitentes. Y un efecto secundario que verás si arrastras el deslizador deprisa: cada valor compila una variante dentro de <code>dibujar</code>, y ese frame largo el controlador lo cuenta como falta de GPU, así que puede bajar la escala sin que haga falta. En una aplicación, las variantes se compilan de antemano (recuadro siguiente) o en paralelo, como en el ejemplo 7.1.6.</p>
 </section>
 
 <div class="callout senior" data-titulo="Otros mandos, y en qué orden tocarlos">
@@ -1900,7 +1902,7 @@ class CalidadEstable extends M7.Calidad {
     this.desdeSubida = Infinity; // ms desde la última subida
   }
   medir(intervaloMs) {
-    if (!(intervaloMs > 0) || intervaloMs > 250) return false;
+    if (!(intervaloMs > 0) || intervaloMs > this.descartarMs) return false;
     this.bloqueo = Math.max(0, this.bloqueo - intervaloMs);
     if (this.bloqueo === 0) this.techo = Infinity;       // pasado el castigo, se puede volver a probar
     this.desdeSubida += intervaloMs;
@@ -1958,10 +1960,10 @@ console.log((tuya.cambiosTramo <= 6 ? '✓' : '✗') + ' como mucho 6 cambios co
 console.log((tuya.final === 1 ? '✓' : '✗') + ' vuelve a escala 1 cuando la escena se aligera');
 </script>
   </div>
-  <details class="pista"><summary>Pista 1</summary><p>Mira la lista de cambios del original: sube a 0,61, medio segundo después baja a 0,52, y así cada 2,5 s. La información útil es «acabo de subir y ha fallado». ¿Cómo sabes que una bajada llega justo después de una subida?</p></details>
+  <details class="pista"><summary>Pista 1</summary><p>Mira la lista de cambios del original: sube a 0,61, medio segundo después baja a 0,52, y vuelve a empezar cada 3 s. La información útil es «acabo de subir y ha fallado». ¿Cómo sabes que una bajada llega justo después de una subida?</p></details>
   <details class="pista"><summary>Pista 2</summary><p>Guarda los milisegundos transcurridos desde la última subida. Si bajas y han pasado menos de 1,5 s, apunta la escala que falló como <code>techo</code> y prohíbe volver a ella durante, por ejemplo, 10 s. Pasado ese tiempo, olvida el techo: la escena pudo haberse aligerado.</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
-    <p>El original no tiene memoria: cada vez que acumula 2 s de holgura vuelve a intentar el mismo nivel que acaba de fallar. La solución añade tres campos: <code>desdeSubida</code> (para reconocer que una bajada es la consecuencia inmediata de una subida), <code>techo</code> (la escala que no cupo) y <code>bloqueo</code> (cuánto tiempo más la respetamos). Con un castigo de 10 s, los intentos fallidos pasan de uno cada 2,5 s a uno cada 10 s: 4 cambios en el tramo en lugar de 16, y 117 frames lentos en lugar de 213.</p>
+    <p>El original no tiene memoria: cada vez que acumula 2 s de holgura vuelve a intentar el mismo nivel que acaba de fallar. La solución añade tres campos: <code>desdeSubida</code> (para reconocer que una bajada es la consecuencia inmediata de una subida), <code>techo</code> (la escala que no cupo) y <code>bloqueo</code> (cuánto tiempo más la respetamos). Con un castigo de 10 s, los intentos fallidos pasan de uno cada 3 s a uno cada 10,5 s: 4 cambios en el tramo en lugar de 16, y 117 frames lentos en lugar de 213.</p>
     <p>¿Por qué no prohibir el techo para siempre? Porque las condiciones cambian: a los 30 s la escena se aligera y el controlador debe poder volver a escala 1, y solo puede averiguarlo probando (como explica el bestiario, a vsync fijo el intervalo no revela el margen). Un paso más, habitual en controladores reales, es que el castigo crezca con cada fracaso seguido (10 s, 20 s, 40 s…) y se reinicie cuando una subida funciona: es la misma idea que el <em>backoff</em> exponencial de los reintentos de red.</p>
   </details>
 </section>

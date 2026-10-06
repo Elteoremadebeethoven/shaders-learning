@@ -1,0 +1,84 @@
+[turno-chrome] esperando turno: solo se permiten 2 Chrome headless a la vez…
+===== EJERCICIOS
+Ejemplo 7.5.2 — Estado en texturas + ping-pong
+   info: 262144 partículas · RGBA32F · 33 fps
+   tras RGBA16F: 262144 partículas · RGBA16F · 35 fps
+Ejemplo 7.5.3 — Transform feedback
+   info: 262144 partículas · transform feedback · 35 fps
+Ejemplo 7.5.4 — Comparativa de 16 K a 4 M
+   info: texturas · 65.536 partículas · 39 fps
+   tf 16384: transform feedback · 16.384 partículas · 22 fps · medido: 16.9 ms/frame
+   cpu 16384: CPU · 16.384 partículas · 31 fps · JS 30.9 ms · medido: 39.6 ms/frame
+   texturas 16384: texturas · 16.384 partículas · 21 fps · medido: 10.4 ms/frame
+   tf 65536: transform feedback · 65.536 partículas · 15 fps · medido: 66.5 ms/frame
+Ejercicio 7.5.1
+   partida: partícula 0 recién subida: (-0.915, -0.060) ‖ partícula 0 tras 1,5 s: (0.000, 0.000) ‖ ✗ la simulación ha dejado la partícula en (0, 0)
+   solución: partícula 0 recién subida: (0.646, -0.070) ‖ partícula 0 tras 1,5 s: (0.256, 0.596) ‖ ✓ las partículas conservan su estado
+Ejercicio 7.5.2
+   partida: cerca del puntero: 2.4 % antes, 2.3 % tras 2 s pulsado ‖ ✗ el ratón no las atrae
+   solución: cerca del puntero: 2.3 % antes, 28.7 % tras 2 s pulsado ‖ ✓ el ratón las atrae
+Ejercicio 7.5.3
+   partida: 
+   solución: 
+Ejercicio 7.5.4
+   partida: 
+   solución: brillo medio del centro: 0.295 ‖ ✓ se ven las luciérnagas
+errores/avisos de consola: ninguno
+===== SIN EXTENSION
+Ejemplo 7.5.2 — Estado en texturas + ping-pong
+   ¿extensión visible en el iframe? false
+   info: error al iniciar: sin EXT_color_buffer_float: esta GPU no puede renderizar en RGBA32F · el ejemplo 7.5.3 (transform feedback) no la necesita
+   consola: Error: sin EXT_color_buffer_float: esta GPU no puede renderizar en RGBA32F
+Ejemplo 7.5.3 — Transform feedback
+   ¿extensión visible en el iframe? false
+   info: 262144 partículas · transform feedback · 56 fps
+   consola: 
+Ejemplo 7.5.4 — Comparativa de 16 K a 4 M
+   ¿extensión visible en el iframe? false
+   info: transform feedback · 65.536 partículas · 48 fps · sin EXT_color_buffer_float: uso transform feedback
+   consola: 
+Ejercicio 7.5.1
+   ¿extensión visible en el iframe? false
+   info: 
+   consola: Error: sin EXT_color_buffer_float ‖ ✗ TypeError: Cannot read properties of undefined (reading 'A')  (línea 97 de JS)
+===== LAB ?rapido
+{
+ "renderer": "WebKit WebGL",
+ "buffer": [
+  1000,
+  600
+ ],
+ "texturas_16384": {
+  "frameCanvas": 22.96,
+  "soloSimular": 5.94,
+  "soloDibujarFBO8": 12.39,
+  "soloDibujarCanvas": 15.2,
+  "acumular16F_mas_tono": 39.41,
+  "directoCanvas_brillo0_0015": 15.25,
+  "solo16F": 27.83
+ },
+ "tf_16384": {
+  "frameCanvas": 18.4,
+  "soloSimular": 4.9,
+  "soloDibujarFBO8": 9.78,
+  "soloDibujarCanvas": 10.29,
+  "acumular16F_mas_tono": 32.24,
+  "directoCanvas_brillo0_0015": 10.73,
+  "solo16F": 30.27
+ },
+ "texturas_65536": {
+  "frameCanvas": 69.46,
+  "soloSimular": 28.8,
+  "soloDibujarFBO8": 51.49,
+  "soloDibujarCanvas": 50.42
+ },
+ "tf_65536": {
+  "frameCanvas": 89.72,
+  "soloSimular": 34.96,
+  "soloDibujarFBO8": 55.04,
+  "soloDibujarCanvas": 42.17
+ }
+}
+consola: 
+===== TEMAS
+done

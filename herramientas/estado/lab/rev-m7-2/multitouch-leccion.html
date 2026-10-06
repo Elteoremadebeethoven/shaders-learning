@@ -1,0 +1,100 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+#info { position: absolute; left: 8px; bottom: 6px; color: #b4bccb; font: 12px ui-monospace, monospace; }
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="info"></div>
+
+<script src="file:///home/user/shaders-learning/assets/js/glkit.js"></script><script src="file:///home/user/shaders-learning/assets/js/texturas.js"></script><script src="file:///home/user/shaders-learning/modulos/07-integracion/recursos/m7kit.js"></script>
+<script>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+#define MAX_DEDOS 5
+uniform vec3 u_dedos[MAX_DEDOS];   // xy: px del búfer (origen abajo) · z: intensidad 0..1
+uniform float u_escala;            // px del búfer por px CSS
+out vec4 fragColor;
+vec3 color(float i) { return 0.55 + 0.45 * cos(6.2831 * (i * 0.21 + vec3(0.0, 0.33, 0.67))); }
+void main() {
+  vec3 col = vec3(0.05, 0.06, 0.09);
+  for (int i = 0; i < MAX_DEDOS; i++) {
+    float k = u_dedos[i].z;
+    if (k <= 0.0) continue;
+    float d = distance(gl_FragCoord.xy, u_dedos[i].xy) / (60.0 * u_escala);
+    col += color(float(i)) * k * exp(-d * d * 2.5);
+  }
+  fragColor = vec4(col, 1.0);
+}`;
+const MAX = 5;
+const huecos = new Array(MAX).fill(null);             // hueco → pointerId (o null)
+const dedos = new Map();                              // pointerId → { cx, cy, activo, k, hueco }
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+let fantasmas = true;                                 // demostración hasta el primer toque
+
+canvas.addEventListener('pointerdown', (e) => {
+  fantasmas = false;
+  let d = dedos.get(e.pointerId);                     // ¿vuelve un puntero que aún se apaga? (el ratón es siempre el 1)
+  if (!d) {
+    const hueco = huecos.indexOf(null);
+    if (hueco < 0) return;                            // ya hay 5 dedos: se ignora el sexto
+    huecos[hueco] = e.pointerId;
+    d = { cx: 0, cy: 0, activo: false, k: 0, hueco };
+    dedos.set(e.pointerId, d);
+  }
+  d.cx = e.clientX; d.cy = e.clientY; d.activo = true;   // si volvía, conserva su hueco y su intensidad
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', (e) => {
+  const d = dedos.get(e.pointerId);
+  if (d) { d.cx = e.clientX; d.cy = e.clientY; }
+});
+const soltar = (e) => { const d = dedos.get(e.pointerId); if (d) d.activo = false; };
+canvas.addEventListener('pointerup', soltar);
+canvas.addEventListener('pointercancel', soltar);     // ¡igual que pointerup!
+
+const datos = new Float32Array(MAX * 3);
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    const dtr = app.reloj.dtReal;
+    for (const [id, d] of dedos) {
+      d.k = M7.suavizar(d.k, d.activo ? 1 : 0, 0.08, dtr);
+      if (!d.activo && d.k < 0.01) { huecos[d.hueco] = null; dedos.delete(id); }   // libera el hueco
+    }
+  },
+  dibujar(gl, e, app) {
+    const r = canvas.getBoundingClientRect();         // conversión en el frame
+    const k = app.ancho / r.width;
+    datos.fill(0);
+    if (fantasmas) {
+      const t = app.reloj.t;
+      for (let i = 0; i < 2; i++) {
+        const a = t * (0.9 + 0.4 * i) + i * 3;
+        datos[i * 3] = (0.5 + 0.28 * Math.cos(a)) * app.ancho;
+        datos[i * 3 + 1] = (0.5 + 0.3 * Math.sin(a * 1.3)) * app.alto;
+        datos[i * 3 + 2] = 0.8;
+      }
+    }
+    for (const d of dedos.values()) {
+      datos[d.hueco * 3] = (d.cx - r.left) * k;
+      datos[d.hueco * 3 + 1] = (r.bottom - d.cy) * k;
+      datos[d.hueco * 3 + 2] = d.k;
+    }
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_dedos, datos);
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    info.textContent = fantasmas ? 'demostración: toca o haz clic' : 'punteros: ' + ([...dedos.keys()].join(', ') || 'ninguno');
+  },
+});
+</script></body></html>

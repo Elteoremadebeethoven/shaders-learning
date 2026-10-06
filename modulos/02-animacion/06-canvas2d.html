@@ -138,7 +138,7 @@ function frame() {
 </div>
 
 <div class="callout cuidado">
-  <p>La receta tiene un requisito que es fácil olvidar: la caja del canvas debe tener tamaño propio por CSS (<code>width: 100%; height: 100%</code> dentro de un contenedor con tamaño, o valores concretos). Si no lo tiene, la caja toma el tamaño del búfer (comprobado: sin CSS, tras <code>width = 600</code> su <code>clientWidth</code> pasó a 600), y al multiplicar por el DPR la caja crece, lo que hace crecer el búfer en la siguiente medida, y así sin fin. Es el comportamiento raro <a href="../01-web/04-js-dom-eventos.html#m1-canvas-crece">«El canvas crece sin parar»</a> de la lección 1.4.</p>
+  <p>La receta tiene un requisito que es fácil olvidar: la caja del canvas debe tener tamaño propio por CSS (<code>width: 100%; height: 100%</code> dentro de un contenedor con tamaño, o valores concretos). Si no lo tiene, la caja toma el tamaño del búfer (comprobado: sin CSS, tras <code>width = 600</code> su <code>clientWidth</code> pasó a 600), y al multiplicar por el DPR la caja crece, lo que hace crecer el búfer en la siguiente medida, y así sin fin. Es el comportamiento raro <a href="../01-web/04-js-dom-eventos.html#m1-canvas-crece">«El canvas crece sin parar hasta llenar (y romper) la página»</a> de la lección 1.4.</p>
 </div>
 
 <div class="quiz">
@@ -219,7 +219,7 @@ requestAnimationFrame(dibujar);
 casilla.addEventListener('change', () => { ctx.beginPath(); frame = 0; });
 </script>
 </div>
-<p>Sin la casilla, verás la trayectoria entera dibujada con el color del momento, aunque cada frame empieza con <code>clearRect</code>. Medimos el coste: en un canvas de 400 × 300, <code>fill()</code> pasaba de 0,1 ms a 0,5 ms en 300 frames, y crece sin límite: al cabo de un minuto la animación empieza a perder frames. Nota el detalle de <code>performance.now()</code> alrededor de <code>fill()</code>: en un canvas acelerado por GPU, lo que mides es el coste de <em>registrar</em> la orden, no el de pintarla, que ocurre después (el mismo engaño que el comportamiento raro <a href="../04-gpu/01-cpu-vs-gpu.html#m4-drawcall-0ms">«performance.now() dice que dibujar no cuesta nada»</a> de la lección 4.1).</p>
+<p>Sin la casilla, verás la trayectoria entera dibujada con el color del momento, aunque cada frame empieza con <code>clearRect</code>. Medimos el coste: en un canvas de 400 × 300, <code>fill()</code> pasaba de 0,1 ms a 0,5 ms en 300 frames, y crece sin límite: al cabo de un minuto la animación empieza a perder frames. Nota el detalle de <code>performance.now()</code> alrededor de <code>fill()</code>: en un canvas acelerado por GPU, lo que mides es el coste de <em>registrar</em> la orden, no el de pintarla, que ocurre después (el mismo engaño que el comportamiento raro <a href="../04-gpu/01-cpu-vs-gpu.html#m4-drawcall-0ms">«performance.now() dice que dibujar no cuesta nada (y el frame va a tirones)»</a> de la lección 4.1).</p>
 
 <div class="callout bestiario" data-id="m2-beginpath-olvidado" data-titulo="Las formas anteriores reaparecen en el canvas y todo va cada vez más lento">
   <p><strong>Síntoma:</strong> aunque borras el canvas en cada frame, aparecen las posiciones anteriores de los objetos, todas con el último color usado; o las líneas se van engrosando y oscureciendo; y la animación, fluida al principio, se ralentiza con el tiempo.</p>

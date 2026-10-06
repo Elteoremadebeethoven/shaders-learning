@@ -45,6 +45,7 @@
     scrollSuave: 0,
     raton: 0,              // intensidad del remolino: 1 con el puntero dentro, 0 fuera (suavizada)
     reducir: false,        // prefers-reduced-motion (o ?reducir en la URL)
+    entradaVista: false,   // la entrada del texto ya terminó (o se saltó): no se repite
     pausa: false,          // el botón «Pausar animación»
     rectLienzo: null,      // rectángulos leídos al principio del frame (paso «leer»)
     rectBoton: null,
@@ -169,7 +170,12 @@
     const p = Math.min(1, Math.max(0, estado.progreso.x));
 
     // (3a) Las animaciones del DOM, colocadas en el instante del reloj.
-    for (const a of deEntrada) a.currentTime = reducir ? FIN_ENTRADA : ms;   // reducir: ya terminadas
+    // La entrada se ve una sola vez. Con movimiento reducido se salta (va directa a su final) y el
+    // reloj se queda en t = 0; si el usuario desactiva la preferencia con la página abierta, el reloj
+    // arranca desde 0 y, sin esta marca, el texto que ya estaba desaparecería para volver a entrar.
+    if (reducir || ms >= FIN_ENTRADA) estado.entradaVista = true;
+    const msEntrada = estado.entradaVista ? FIN_ENTRADA : ms;
+    for (const a of deEntrada) a.currentTime = msEntrada;
     latido.currentTime = reducir ? 0 : ms;                                    // 0 = onda apagada
     for (const a of deCSS) a.currentTime = reducir ? 0 : ms;
 
@@ -193,7 +199,9 @@
     }
     if (pausaAplicada !== estado.pausa) {
       pausaAplicada = estado.pausa;
-      botonPausa.setAttribute("aria-pressed", String(estado.pausa));
+      // El texto dice lo que hará el botón. Por eso NO lleva aria-pressed: en un botón conmutador
+      // el texto no debe cambiar (un lector diría «Reanudar animación, pulsado»). O una cosa o la otra.
+      botonPausa.classList.toggle("pausado", estado.pausa);   // el icono: ❚❚ o ▶ (estilos.css)
       botonPausa.lastElementChild.textContent = estado.pausa ? "Reanudar animación" : "Pausar animación";
     }
 
@@ -225,7 +233,10 @@
     // Hasta el primer frame, el canvas (opaco) sería un rectángulo negro: está en opacity 0 y aparece
     // con una transición cuando ya tiene algo dibujado.
     alPrimerFrame() { lienzo.classList.add("listo"); },
-    alPerder() { hero.classList.add("gl-perdido"); },       // el canvas queda transparente: se ve la alternativa
+    // Con el contexto perdido el canvas queda transparente y se ve la alternativa, que está siempre
+    // debajo: no hace falta ningún estilo. Las clases gl-perdido y sin-webgl son ganchos para los tuyos
+    // (un aviso, otra imagen de fondo…); estilos.css no las usa.
+    alPerder() { hero.classList.add("gl-perdido"); },
     alRecuperar() { hero.classList.remove("gl-perdido"); },
     fallar(motivo) {
       hero.classList.add("sin-webgl");                      // la alternativa CSS pasa a ser el fondo
@@ -243,7 +254,7 @@
     ponerUniform(gl, u.u_resolution, [capa.ancho, capa.alto]);
     ponerUniform(gl, u.u_escala, k);
     ponerUniform(gl, u.u_time, t);
-    ponerUniform(gl, u.u_entrada, e.reducir ? 1 : suave(0, ENTRADA_S, t));
+    ponerUniform(gl, u.u_entrada, e.entradaVista ? 1 : suave(0, ENTRADA_S, t));
     ponerUniform(gl, u.u_scroll, e.reducir ? 0 : e.scrollSuave);
     ponerUniform(gl, u.u_mouse, puntero.aGL(lienzo));
     ponerUniform(gl, u.u_raton, e.raton);
@@ -265,8 +276,11 @@
     if (capa.gl) extPerdida = capa.gl.getExtension("WEBGL_lose_context");   // ¡antes de perderlo! (7.1)
     panel.addEventListener("click", (ev) => {
       const q = ev.target.dataset && ev.target.dataset.q;
-      if (q === "perder" && extPerdida) extPerdida.loseContext();
-      if (q === "recuperar" && extPerdida) extPerdida.restoreContext();
+      // Perder un contexto ya perdido (o recuperar uno que no lo está) es un INVALID_OPERATION con
+      // aviso en la consola: se comprueba antes.
+      const perdido = !!capa.gl && capa.gl.isContextLost();
+      if (q === "perder" && extPerdida && !perdido) extPerdida.loseContext();
+      if (q === "recuperar" && extPerdida && perdido && !capa.fallada) extPerdida.restoreContext();
       if (q === "lento") bucle.reloj.escala = bucle.reloj.escala === 0.25 ? 1 : 0.25;
       bucle.pedirFrame();
     });

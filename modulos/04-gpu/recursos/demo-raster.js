@@ -90,10 +90,15 @@
       let s = "píxel " + Math.min(st.paso, traza.length) + " de " + traza.length + " candidatos de la caja envolvente · fragmentos generados: " + stats.fragmentos;
       if (r) {
         s += "\npíxel (" + r.x + ", " + r.y + ") · centro (" + (r.x + 0.5) + ", " + (r.y + 0.5) + ")";
-        s += "\nfunciones de arista: w0 = E_BC = " + f2(r.w[0]) + "   w1 = E_CA = " + f2(r.w[1]) + "   w2 = E_AB = " + f2(r.w[2]);
+        // Si arrastras los vértices hasta dejarlos en sentido horario, la GPU de juguete intercambia B y C para que
+        // el área salga positiva (gpu-juguete.js, rasterizar): las aristas y las λ pasan a ser las del orden A, C, B.
+        const horario = st.tri && st.tri.frontal === false;
+        const E = horario ? ["E_CB", "E_BA", "E_AC"] : ["E_BC", "E_CA", "E_AB"];
+        if (horario) s += "\n(sentido horario: la GPU de juguete intercambia B y C, así que el orden es A, C, B)";
+        s += "\nfunciones de arista: w0 = " + E[0] + " = " + f2(r.w[0]) + "   w1 = " + E[1] + " = " + f2(r.w[1]) + "   w2 = " + E[2] + " = " + f2(r.w[2]);
         s += r.dentro ? "   → DENTRO (las tres > 0, o = 0 en una arista izquierda/inferior)" : "   → FUERA (alguna < 0, o = 0 en una arista derecha/superior; no se ejecuta el fragment shader)";
         if (r.dentro && r.lambda) {
-          s += "\nλ = w / (2·área) = (" + r.lambda.map(f3).join(", ") + ")   pesos " + (st.perspectiva ? "corregidos con 1/w" : "(sin corregir)") + " = (" + r.pesos.map(f3).join(", ") + ")";
+          s += "\nλ" + (horario ? " (de A, C, B)" : "") + " = w / (2·área) = (" + r.lambda.map(f3).join(", ") + ")   pesos " + (st.perspectiva ? "corregidos con 1/w" : "(sin corregir)") + " = (" + r.pesos.map(f3).join(", ") + ")";
           s += "\nv_color = (" + r.v.map(f3).join(", ") + ")  →  fragColor en bytes = (" + r.bytes.join(", ") + ")";
         }
       } else s += "\npulsa ▶ para empezar (y arrastra los vértices cuando quieras)";

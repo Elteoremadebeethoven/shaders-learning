@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;height:3000px} canvas{display:block;width:300px;height:200px;background:#333}</style></head>
+<body><canvas id="c" width="300" height="200"></canvas><div id="d" style="width:300px;height:200px;background:#555"></div>
+<script>
+window.res = [];
+const reg = (nombre, obj, opts) => obj.addEventListener('wheel', (e) => { e.preventDefault(); res.push({nombre, cancelable: e.cancelable, defaultPrevented: e.defaultPrevented, scrollY: scrollY}); }, opts);
+window.modo = (m) => {
+  if (m === 'canvas') reg('canvas sin opciones', document.getElementById('c'));
+  if (m === 'canvasPF') reg('canvas passive:false', document.getElementById('c'), { passive: false });
+  if (m === 'window') reg('window sin opciones', window);
+  if (m === 'body') reg('body sin opciones', document.body);
+  if (m === 'document') reg('document sin opciones', document);
+};
+</script></body></html>

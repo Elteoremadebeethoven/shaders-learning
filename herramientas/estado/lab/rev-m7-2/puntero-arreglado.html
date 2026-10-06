@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0}#z{position:absolute;left:100px;top:100px;width:400px;height:300px;background:#345}</style></head>
+<body><div id="z"></div>
+<script src="m7kit-arreglado.js"></script>
+<script>
+const p = new M7.Puntero(document.getElementById('z'), { semivida: 0.06 });
+window.hist = []; let prev = null;
+function f(ms){ const dt = prev === null ? 0 : (ms - prev) / 1000; prev = ms; p.actualizar(dt);
+  hist.push({ x: +p.x.toFixed(1), sx: +p.sx.toFixed(1), dentro: p.dentro, fresco: p.fresco }); requestAnimationFrame(f); }
+requestAnimationFrame(f);
+</script></body></html>

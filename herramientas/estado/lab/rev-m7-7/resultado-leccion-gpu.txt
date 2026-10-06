@@ -1,0 +1,72 @@
+DEMO WEBGPU:
+navigator.gpu: existe
+adaptador: google · arquitectura swiftshader · por software
+formato preferido del canvas: bgra8unorm
+subgrupos: 4 carriles
+límites del adaptador: 4 bind groups · 256 invocaciones por workgroup · texturas de hasta 8192 px
+características (19): bgra8unorm-storage, chromium-experimental-timestamp-query-inside-passes, chromium-experimental-unorm16-texture-formats, clip-distances, core-features-and-limits, depth-clip-control, depth32float-stencil8, float32-blendable, float32-filterable, indirect-first-instance, rg11b10ufloat-renderable, subgroups, texture-component-swizzle, texture-compression-astc, texture-compression-astc-sliced-3d, texture-compression-bc, texture-compression-bc-sliced-3d, texture-compression-etc2, timestamp-query
+
+=== Ejemplo 7.7.2 — Tres.js por dentro (partida)
+frame 1: 110 llamadas; programas: 2, geometrías: 2
+frame 2: clear · useProgram · uniform1f · disable · depthMask · enable · bindVertexArray · drawElements · useProgram · uniformMatrix4fv · enable · depthMask · disable · bindVertexArray · drawElements · uniformMatrix4fv · drawElements · uniformMatrix4fv · drawElements
+frame 3: clear · useProgram · disable · depthMask · enable · bindVertexArray · drawElements · useProgram · uniformMatrix4fv · enable · depthMask · disable · bindVertexArray · drawElements · uniformMatrix4fv · drawElements · uniformMatrix4fv · drawElements
+
+=== Ejemplo 7.7.3 — WebGL2 y WebGPU, lado a lado (partida)
+WebGPU listo · formato bgra8unorm · adaptador google swiftshader
+
+=== Ejercicio 7.7.3 (partida)
+[E] WGSL 17:26  invalid character found
+=== Ejercicio 7.7.3 (solución)
+píxeles distintos: 0.0 % (arriba 0, abajo 0, izquierda 0, derecha 0)
+✓ tu WGSL dibuja lo mismo que el GLSL
+
+=== Ejercicio 7.7.4 (partida)
+✗ Globales: {"resolucion":0,"raton":8,"tiempo":16}, 20 bytes   esperado: {"resolucion":0,"raton":8,"tiempo":16}, 24
+✗ U: {"a":0,"b":4,"c":16,"d":20,"e":28}, 40 bytes   esperado: {"a":0,"b":16,"c":28,"d":32,"e":48}, 64
+✓ Material: {"color":0,"brillo":12,"modelo":16}, 80 bytes
+✗ Normales: {"normal":0,"escala":48}, 52 bytes   esperado: {"normal":0,"escala":48}, 64
+La GPU, en el struct U:
+  a → byte 0  ✓
+  b → byte 16  ✗ tú dijiste 4
+  c → byte 28  ✗ tú dijiste 16
+  d → byte 32  ✗ tú dijiste 20
+  e → byte 48  ✗ tú dijiste 28
+=== Ejercicio 7.7.4 (solución)
+✓ Globales: {"resolucion":0,"raton":8,"tiempo":16}, 24 bytes
+✓ U: {"a":0,"b":16,"c":28,"d":32,"e":48}, 64 bytes
+✓ Material: {"color":0,"brillo":12,"modelo":16}, 80 bytes
+✓ Normales: {"normal":0,"escala":48}, 64 bytes
+La GPU, en el struct U:
+  a → byte 0  ✓
+  b → byte 16  ✓
+  c → byte 28  ✓
+  d → byte 32  ✓
+  e → byte 48  ✓
+
+CONSOLA PÁGINA:
+error: Failed to load resource: the server responded with a status of 404 (Not Found)
+warn: [.WebGL-0x14340167aa00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+warn: Error while parsing WGSL: :17:26 error: invalid character found
+  var col = damero > 0.5 ? vec3f(0.12, 0.13, 0.2) : vec3f(0.2, 0.18, 0.35);
+                         ^
+
+
+ - While calling [Device].Creat
+error: WGSL 17:26  invalid character found
+warn: [.WebGL-0x143401679200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+warn: Error while parsing WGSL: :17:26 error: invalid character found
+  var col = damero > 0.5 ? vec3f(0.12, 0.13, 0.2) : vec3f(0.2, 0.18, 0.35);
+                         ^
+
+
+ - While calling [Device].Creat
+error: WGSL 17:26  invalid character found
+warn: [.WebGL-0x1434041a0800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+warn: Error while parsing WGSL: :17:26 error: invalid character found
+  var col = damero > 0.5 ? vec3f(0.12, 0.13, 0.2) : vec3f(0.2, 0.18, 0.35);
+                         ^
+
+
+ - While calling [Device].Creat
+error: WGSL 17:26  invalid character found
+warn: [.WebGL-0x1434041a0200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)

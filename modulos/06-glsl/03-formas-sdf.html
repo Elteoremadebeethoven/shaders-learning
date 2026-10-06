@@ -338,7 +338,7 @@ void main() {
 </section>
 
 <div class="callout hack" data-titulo="Contornos de contornos">
-  <p>Como <code>abs(d) - w</code> es otra SDF, se puede volver a aplicar: <code>abs(abs(d) - 0.1) - 0.02</code> son dos contornos finos a 0.1 unidades a cada lado del borde, y repetido con <code>abs(mod(d, 0.1) - 0.05)</code> sale un número ilimitado de contornos concéntricos, como las curvas de nivel de un mapa, que siguen la forma sea cual sea. Es el mismo principio que la visualización de Quilez: todos los efectos «de borde» son funciones de una sola variable aplicadas a la distancia.</p>
+  <p>Como <code>abs(d) - w</code> es otra SDF, se puede volver a aplicar: <code>abs(abs(d) - 0.1) - 0.02</code> son dos contornos finos a 0.1 unidades a cada lado del borde, y repetido con <code>abs(mod(d, 0.1) - 0.05) - 0.01</code> (la distancia a los niveles d = 0.05 + 0.1k, inflada 0.01) sale un número ilimitado de contornos concéntricos, como las curvas de nivel de un mapa, que siguen la forma sea cual sea. Es el mismo principio que la visualización de Quilez: todos los efectos «de borde» son funciones de una sola variable aplicadas a la distancia.</p>
 </div>
 
 <h2>Combinar formas</h2>

@@ -12,7 +12,6 @@
      L75.azar(semilla)   generador determinista mulberry32
      L75.estadoInicial(n, aspecto, semilla)
                          Float32Array con (x, y, vx, vy) por partícula
-     L75.MedidorGPU      milisegundos de GPU con EXT_disjoint_timer_query_webgl2
      L75.crearMotor(gl, metodo)
                          las tres arquitecturas de la lección con la misma
                          física: 'cpu' (7.5.1), 'texturas' (7.5.2), 'tf' (7.5.3)
@@ -155,37 +154,6 @@ void avanzar(inout vec2 p, inout vec2 v) {
         d[i * 4 + 1] = r() * 2 - 1;
       }
       return d;
-    }
-
-    /* ---------------------------------------------------------------
-       Tiempo de GPU (5.10). Una consulta por frame alrededor de todo el
-       trabajo; el resultado llega unos frames después. Media de 30.
-       --------------------------------------------------------------- */
-    class MedidorGPU {
-      constructor(gl) {
-        this.gl = gl;
-        this.ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
-        this.pendientes = [];
-        this.muestras = [];
-        this.activa = null;
-      }
-      empezar() {
-        if (!this.ext || this.activa || this.pendientes.length > 8) return;
-        this.activa = this.gl.createQuery();
-        this.gl.beginQuery(this.ext.TIME_ELAPSED_EXT, this.activa);
-      }
-      terminar() {
-        const gl = this.gl;
-        if (this.activa) { gl.endQuery(this.ext.TIME_ELAPSED_EXT); this.pendientes.push(this.activa); this.activa = null; }
-        while (this.pendientes.length && gl.getQueryParameter(this.pendientes[0], gl.QUERY_RESULT_AVAILABLE)) {
-          const q = this.pendientes.shift();
-          const ns = gl.getQueryParameter(q, gl.QUERY_RESULT);
-          if (!gl.getParameter(this.ext.GPU_DISJOINT_EXT)) { this.muestras.push(ns / 1e6); if (this.muestras.length > 30) this.muestras.shift(); }
-          gl.deleteQuery(q);
-        }
-      }
-      reiniciar() { this.muestras.length = 0; }
-      get ms() { if (!this.muestras.length) return NaN; let s = 0; for (const m of this.muestras) s += m; return s / this.muestras.length; }
     }
 
     /* ---------------------------------------------------------------
@@ -442,7 +410,7 @@ void main() {
       return m;
     }
 
-    return { RUIDO, PASO, pcg, ruidoGradiente, psi, rotacional, azar, estadoInicial, MedidorGPU, crearMotor };
+    return { RUIDO, PASO, pcg, ruidoGradiente, psi, rotacional, azar, estadoInicial, crearMotor };
   }
   window.L75 = factory();
   window.Curso = window.Curso || {};

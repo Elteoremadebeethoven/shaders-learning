@@ -1,0 +1,76 @@
+[consola error] Failed to load resource: the server responded with a status of 404 (Not Found)
+{
+ "gpu": true,
+ "adapter": true,
+ "info": {
+  "vendor": "google",
+  "arch": "swiftshader",
+  "fb": true,
+  "sgmin": 4
+ },
+ "lim": {
+  "bg": 4,
+  "inv": 256,
+  "sto": 1073741824
+ },
+ "langFeatures": [
+  "packed_4x8_integer_dot_product",
+  "pointer_composite_access",
+  "readonly_and_readwrite_storage_textures",
+  "unrestricted_pointer_parameters"
+ ],
+ "devLim": {
+  "inv": 256,
+  "sto": 134217728,
+  "bg": 4
+ },
+ "casos": {
+  "float": [
+   "1:17 unresolved type 'float'"
+  ],
+  "letAssign": [
+   "1:23 cannot assign to 'let x'"
+  ],
+  "fragCoord": [
+   "1:50 unresolved value 'gl_FragCoord'"
+  ],
+  "texture": [
+   "1:134 unresolved call target 'texture'"
+  ],
+  "ternario": [
+   "1:33 invalid character found"
+  ],
+  "atan": [
+   "1:38 no matching call to 'atan(f32, f32)'"
+  ],
+  "mod": [
+   "1:30 unresolved call target 'mod'"
+  ],
+  "dFdx": [
+   "1:83 unresolved call target 'dFdx'"
+  ],
+  "ifSinLlaves": [
+   "1:44 expected '{' for if statement"
+  ],
+  "abstractos": [],
+  "i32af32": [
+   "1:32 cannot initialize 'let' of type 'f32' with value of type 'i32'"
+  ],
+  "swizzle": [
+   "1:59 cannot assign to value of type 'vec2<f32>'"
+  ],
+  "uniformidad": [
+   "1:197 'textureSample' must only be called from uniform control flow"
+  ],
+  "smoothConst": [],
+  "smoothIguales": [
+   "1:24 smoothstep called with 'low' (0.5) equal to 'high' (0.5)"
+  ]
+ },
+ "mod": [
+  -0.5,
+  -0.25,
+  -1,
+  1
+ ]
+}

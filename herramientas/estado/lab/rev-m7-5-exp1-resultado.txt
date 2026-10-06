@@ -1,0 +1,69 @@
+[turno-chrome] esperando turno: solo se permiten 2 Chrome headless a la vez…
+=== /tmp/claude-0/-home-user-shaders-learning/9b79b7cf-13d8-56ce-97bf-3314f2a27f6e/scratchpad/agentes/rev-m7-5/exp1.html
+soportadas: ["EXT_color_buffer_float","EXT_color_buffer_half_float","EXT_float_blend","OES_texture_float_linear"]
+renderer: "WebKit WebGL"
+MAX_TF_INTERLEAVED: 128
+MAX_TF_SEP_ATTRIBS: 4
+POINT_RANGE: [1,1023]
+sinExt_fbo_RGBA32F: "0x8cd6"
+sinExt_fbo_RGBA16F: "0x8cd6"
+log_7: ""
+RGBA16F_linear_sinExt: [128,128,128,255]
+EXT_color_buffer_float: true
+conExt_fbo_RGBA32F: "0x8cd5"
+conExt_fbo_RG32F: "0x8cd5"
+conExt_fbo_RGB32F: "0x8cd6"
+conExt_fbo_RGBA16F: "0x8cd5"
+log_14: ""
+log_15: ""
+texelFetch_LINEAR_FS: [0,0,0,1]
+texelFetch_LINEAR_VS: [0,0,0,1]
+texelFetch_NEAREST_FS: [0.25,0.5,0.75,1]
+texelFetch_NEAREST_VS: [0.25,0.5,0.75,1]
+texelFetch_NEAREST_MIPMAP_LINEAR_FS: [0,0,0,1]
+texelFetch_NEAREST_MIPMAP_LINEAR_VS: [0,0,0,1]
+feedback_NEAREST: "0x502"
+feedback_LINEAR: "NO_ERROR"
+log_24: ""
+blend32F_sinFloatBlend_error: "NO_ERROR"
+blend32F_1000x0.001: 0.999990701675415
+EXT_float_blend_disponible: true
+blend16F_1000x0.001: 0.978515625
+blend16F_5000x0.001: 4
+blend8_100x0.0019: 0
+blend8_100x0.002: 100
+blend8_100x0.005: 100
+blend8_100x0.0015: 0
+half_0.500333: 0.50048828125
+half_1.0009: 1.0009765625
+discard_clear: [0,0,255,255]
+log_37: ""
+VS_sin_glPosition_log: "(ver log_*)"
+tfVarying0: ["v_pos","0x8b50",1]
+tf_ok: [{"eBegin":"NO_ERROR","eDraw":"NO_ERROR"},[1.5,0,1,0,3,1,2,0,5,2,3,0,7,3,4,0]]
+tf_divisor1: [{"eBegin":"NO_ERROR","eDraw":"NO_ERROR"},[1.5,0,1,0,1.5,0,1,0,1.5,0,1,0,1.5,0,1,0]]
+tf_salida_en_ARRAY_BUFFER: {"eBegin":"NO_ERROR","eDraw":"0x502"}
+tf_entrada_en_ARRAY_BUFFER: {"eBegin":"NO_ERROR","eDraw":"NO_ERROR"}
+tf_salida_en_UNIFORM_BUFFER: {"eBegin":"NO_ERROR","eDraw":"0x502"}
+tf_useProgram_activo: "0x502"
+tf_modo_TRIANGLES: {"eBegin":"NO_ERROR","eDraw":"0x502"}
+tf_buffer_pequeño: {"eBegin":"NO_ERROR","eDraw":"0x502"}
+log_48: ""
+tf_separate_un_buffer_begin: "0x502"
+log_50: ""
+dibujar_con_buffer_en_TF_enlazado: "0x502"
+dibujar_tras_desenlazar_TF_obj: "NO_ERROR"
+flipY_float_texel00: 0.75
+log_54: ""
+punto_centro_fuera_pixel_(60,32): [255,255,255,255]
+--- consola:
+  warn: WebGL: INVALID_OPERATION: useProgram: transform feedback is active and not paused
+  warn: WebGL: INVALID_OPERATION: beginTransformFeedback: not enough transform feedback buffers bound
+  warn: [.WebGL-0x27ec00135a00] GL_INVALID_ENUM: glTexParameteri: Texture filter not recognized.
+  warn: [.WebGL-0x27ec00135a00] GL_INVALID_OPERATION: glDrawArrays: Feedback loop formed between Framebuffer and active Texture.
+  warn: [.WebGL-0x27ec00135a00] GL_INVALID_OPERATION: glDrawArrays: A transform feedback buffer that would be written to is also bound to a non-transform-feedback target, which would cause undefined behavior.
+  warn: [.WebGL-0x27ec00135a00] GL_INVALID_OPERATION: glDrawArrays: A transform feedback buffer that would be written to is also bound to a non-transform-feedback target, which would cause undefined behavior.
+  warn: [.WebGL-0x27ec00135a00] GL_INVALID_OPERATION: glDrawArrays: Draw mode must match current transform feedback object's draw mode.
+  warn: [.WebGL-0x27ec00135a00] GL_INVALID_OPERATION: glDrawArrays: Not enough space in bound transform feedback buffers.
+  warn: [.WebGL-0x27ec00135a00] GL_INVALID_OPERATION: glDrawArrays: It is undefined behavior to use a vertex buffer that is bound for transform feedback.
+done

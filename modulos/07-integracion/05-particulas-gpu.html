@@ -105,7 +105,7 @@
 </div>
 
 <h2>Enfoque 1: la CPU simula, la GPU dibuja</h2>
-<p>El primer paso es el que ya diste en <a href="../05-webgl/09-instancing.html">5.9</a> con el banco de flechas: la simulación sigue en JavaScript, sobre un <code>Float32Array</code>, y en cada frame se sube entero a un buffer con un único <code>bufferSubData</code> y se dibuja con un único <code>drawArraysInstanced</code>. El <em>pool</em> de 2.8 (arrays tipados de tamaño fijo, <em>swap and pop</em> para matar partículas) encaja sin cambios: los datos ya estaban en el formato que necesita la GPU.</p>
+<p>El primer paso es el que ya diste en <a href="../05-webgl/09-instancing.html">5.9</a> con el banco de flechas: la simulación sigue en JavaScript, sobre un <code>Float32Array</code>, y en cada frame se sube entero a un buffer con un único <code>bufferSubData</code> y se dibuja con un único <code>drawArraysInstanced</code>. El <em>pool</em> de 2.8 (arrays tipados de tamaño fijo, <em>swap and pop</em> para matar partículas) encaja casi sin cambios. El único es la disposición: en 2.8 cada campo tenía su propio <code>Float32Array</code> (SoA, <a href="../01-web/06-binario.html">1.6</a>); aquí, los campos que necesita la GPU van entrelazados en un solo array (AoS: x, y, vx, vy, vida de cada partícula, seguidos), para subirlos con una sola llamada y describirlos con un stride. Con SoA también funcionaría: un buffer por campo y un <code>bufferSubData</code> por buffer, cinco subidas en lugar de una.</p>
 <p>Lo nuevo es la forma de cada partícula. En lugar de un triángulo como las flechas, un <strong>quad</strong>: cuatro vértices en <code>TRIANGLE_STRIP</code> que forman un cuadrado, sobre el que el fragment shader pinta un disco de bordes suaves. El quad se describe una sola vez, con sus cuatro esquinas en $(\pm 1, \pm 1)$, y cada instancia lo coloca en su sitio con sus propios datos.</p>
 
 <div class="callout senior" data-titulo="¿Por qué no gl.POINTS?">
@@ -148,7 +148,7 @@ gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, vivas);
 </ol>
 </div>
 
-<p>Y este es el vertex shader que convierte una esquina y un registro en una posición de pantalla. El mundo de la simulación usa las mismas unidades que <a href="01-arquitectura.html">7.1</a> recomendaba para el estado, independientes del búfer: la y va de −1 a 1 (abajo a arriba) y la x de −aspecto a +aspecto.</p>
+<p>Y este es el vertex shader que convierte una esquina y un registro en una posición de pantalla. El mundo de la simulación usa unidades independientes del búfer, como pedía <a href="01-arquitectura.html">7.1</a> para el estado: la y va de −1 a 1 (abajo a arriba) y la x de −aspecto a +aspecto, las coordenadas centradas de los shaders del módulo 6. Así, cambiar la resolución del búfer no mueve ninguna partícula.</p>
 
 <div class="anotado" data-lang="glsl">
 <script type="text/plain">
@@ -188,7 +188,7 @@ void main() {
 
 <section class="ejemplo">
   <h3>Ejemplo 7.5.1 — La fuente de 2.8, dibujada con instancing</h3>
-  <p>La misma física de 2.8 (gravedad, rozamiento exacto con <code>exp</code> y un atractor con <em>softening</em>), ahora en unidades del mundo, con <code>M7.crearApp</code> y <code>M7.Puntero</code> de <a href="02-interaccion.html">7.2</a>. El puntero atrae las partículas; mantén pulsado para repelerlas. El deslizador cambia cuántas se emiten por segundo, y la línea de abajo separa el tiempo de simular del de subir los datos.</p>
+  <p>La misma física de 2.8 (gravedad, rozamiento exacto con <code>exp</code> y un atractor con <em>softening</em>), ahora en unidades del mundo, con <code>M7.crearApp</code> de <a href="01-arquitectura.html">7.1</a> y <code>M7.Puntero</code> de <a href="02-interaccion.html">7.2</a>. El puntero atrae las partículas; mantén pulsado para repelerlas. El deslizador cambia cuántas se emiten por segundo, y la línea de abajo separa el tiempo de simular del de subir los datos.</p>
   <div class="js-playground" data-titulo="Ejemplo 7.5.1 — CPU + quads instanciados" data-altura="360" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
 <script type="text/x-html">
 <canvas id="c"></canvas>
@@ -343,7 +343,7 @@ const app = M7.crearApp(canvas, {
   <p>Recorre el código por responsabilidades, como en 7.1:</p>
   <ol>
     <li><strong><code>iniciar</code></strong> crea el programa, el VAO y los dos buffers (esquinas e instancias). Fíjate en lo que <em>no</em> está: los datos de las partículas. Viven en <code>datos</code>, un array de JavaScript, así que si se pierde el contexto, <code>iniciar</code> vuelve a crear el buffer vacío, el siguiente <code>dibujar</code> lo rellena y no se pierde ni una partícula. En los enfoques 2 y 3 no tendremos esa suerte.</li>
-    <li><strong><code>actualizar</code></strong> es el bucle de 2.8 casi línea a línea: emisión por segundo con acumulador (para que a 120 Hz no salgan el doble, <a href="../02-animacion/08-proyecto-particulas.html#m2-emision-por-frame">bestiario de 2.8</a>), <em>swap and pop</em> dentro de un bucle que no avanza <code>i</code> al matar (para no saltarse la que ocupa el hueco, <a href="../02-animacion/08-proyecto-particulas.html#m2-splice-en-bucle">otro bestiario de 2.8</a>), <em>softening</em> en la atracción y rozamiento con <code>Math.exp(-0.8 * dt)</code> calculado una vez por frame. El puntero se convierte de px CSS de la caja a unidades del mundo: la x de 0…ancho a −A…A y la y de 0…alto (hacia abajo) a 1…−1.</li>
+    <li><strong><code>actualizar</code></strong> es el bucle de 2.8 casi línea a línea: emisión por segundo con acumulador (para que a 120 Hz no salgan el doble, <a href="../02-animacion/08-proyecto-particulas.html#m2-emision-por-frame">bestiario de 2.8</a>), <em>swap and pop</em> dentro de un bucle que no avanza <code>i</code> al matar (para no saltarse la que ocupa el hueco, <a href="../02-animacion/08-proyecto-particulas.html#m2-splice-en-bucle">otro bestiario de 2.8</a>), <em>softening</em> en la atracción, rozamiento con <code>Math.exp(-0.8 * dt)</code> calculado una vez por frame y Euler semi-implícito (<a href="../02-animacion/05-fisica-muelles.html">2.5</a>): primero la velocidad, después la posición con la velocidad nueva. El puntero se convierte de px CSS de la caja a unidades del mundo: la x de 0…ancho a −A…A y la y de 0…alto (hacia abajo) a 1…−1.</li>
     <li><strong><code>dibujar</code></strong> sube las partículas vivas, limpia, activa la mezcla aditiva y lanza una sola llamada. La subida está en <code>dibujar</code> y no en <code>actualizar</code> porque es una llamada de GL (la regla de 7.1).</li>
   </ol>
   <p>Sube la emisión al máximo: unas 280 000 partículas vivas. En la máquina de pruebas, ese es el punto en el que la línea de abajo empieza a importar. Lo que tarda cada parte con cada carga está en la tabla que sigue.</p>
@@ -357,7 +357,7 @@ const app = M7.crearApp(canvas, {
     <tr><td>80 000/s</td><td class="num">≈ 280 000</td><td class="num">2,3–3,9 ms</td><td class="num">0,1–0,2 ms</td><td class="num">60</td></tr>
   </tbody>
 </table>
-<p>Medido en la máquina de pruebas dentro del propio playground. Los tiempos van a saltos de 0,1 ms porque, en un iframe sin aislamiento de origen, Chrome reduce la resolución de <code>performance.now()</code> a 100 µs (una defensa contra ataques de temporización); por eso aparecen valores de 0,00 y 0,10. La conclusión es clara: con esta física, casi 300 000 partículas caben de sobra en el presupuesto de 16,7 ms, y subir 5,6 MB por frame no llega a 0,2 ms. Para muchos efectos (chispas, confeti, una fuente) el enfoque 1 basta, y conserva las ventajas de tener el estado en JavaScript: puedes leerlo, emitir desde cualquier evento y no se pierde con el contexto.</p>
+<p>Medido en la máquina de pruebas dentro del propio playground. Los tiempos van a saltos de 0,1 ms porque, en una página sin aislamiento de origen cruzado (como este iframe, y como casi cualquier página), Chrome reduce la resolución de <code>performance.now()</code> a 100 µs (una defensa contra ataques de temporización, <a href="../01-web/05-event-loop.html">1.5</a>); por eso aparecen valores de 0,00 y 0,10. La conclusión es clara: con esta física, casi 300 000 partículas caben de sobra en el presupuesto de 16,7 ms, y subir 5,6 MB por frame no llega a 0,2 ms. Para muchos efectos (chispas, confeti, una fuente) el enfoque 1 basta, y conserva las ventajas de tener el estado en JavaScript: puedes leerlo, emitir desde cualquier evento y no se pierde con el contexto.</p>
 
 <div class="callout senior" data-titulo="Subir datos a un buffer que la GPU todavía está usando">
   <p>Esos 0,1–0,2 ms de subida son de un bucle real: cuando llega el siguiente frame, la GPU ya terminó de dibujar el anterior. Si fuerzas frames seguidos, sin esperar al vsync, la cosa cambia. Lo medimos subiendo 16 MB en cada iteración de un bucle que también dibuja con ese buffer: la llamada a <code>bufferSubData</code> pasó a costar 6,6 ms, porque la GPU aún tenía pendiente leer el contenido anterior y el driver no puede pisarlo (tiene que esperar o copiar). El truco clásico de OpenGL para evitarlo, reasignar el buffer con <code>bufferData(tamaño)</code> antes de escribir (<em>orphaning</em>), no ayudó en ANGLE sobre Metal: 7,3 ms. La lección práctica es otra: sube una vez por frame, después de simular y justo antes de dibujar, y nunca escribas varias veces en el mismo buffer dentro de un frame. Y no extrapoles estas cifras: el M1 tiene memoria unificada (la CPU y la GPU comparten la RAM); en una GPU dedicada, los 16 MB cruzan el bus PCIe, y no lo hemos podido medir.</p>
@@ -376,7 +376,7 @@ const app = M7.crearApp(canvas, {
 <h2>Un campo de flujo sin sumideros: curl noise</h2>
 <p>Antes de pasar la simulación a la GPU, veamos qué física merece la pena llevar allí. El efecto más típico de partículas masivas es un <strong>campo de flujo</strong>: una velocidad definida en cada punto del plano, que cambia despacio con el tiempo, y miles de partículas que la siguen como hojas en un río. La idea natural es sacar esa velocidad del ruido de <a href="../06-glsl/06-ruido.html">6.6</a>. La pregunta es cómo.</p>
 <p>El primer intento suele ser usar el <strong>gradiente</strong> del ruido: $\vec v = \nabla\psi$, donde $\psi(x, y)$ es un ruido de gradiente. El gradiente apunta cuesta arriba, así que las partículas suben por las laderas del ruido… y se quedan en las cimas. Cada máximo de $\psi$ es un <em>sumidero</em>: todo lo que entra no sale. En pocos segundos, las partículas se amontonan en unos cuantos puntos y el resto de la pantalla se vacía.</p>
-<p>La solución, propuesta por Robert Bridson en 2007 para simular humo, es girar el gradiente 90°. En 2D, el <strong>rotacional</strong> (<em>curl</em>) de un potencial escalar $\psi$ es:</p>
+<p>La solución, propuesta por Robert Bridson y sus coautores en 2007 para simular humo, es girar el gradiente 90°. En 2D, el <strong>rotacional</strong> (<em>curl</em>) de un potencial escalar $\psi$ es:</p>
 $$\vec v = \left(\frac{\partial \psi}{\partial y},\; -\frac{\partial \psi}{\partial x}\right)$$
 <p>Dos propiedades hacen que funcione. La primera: $\vec v$ es perpendicular a $\nabla\psi$, así que las partículas no suben ni bajan por el ruido: se mueven a lo largo de sus <em>curvas de nivel</em>, rodeando las cimas y los valles. La segunda, más profunda: su <strong>divergencia</strong> es cero,</p>
 $$\nabla\cdot\vec v = \frac{\partial}{\partial x}\frac{\partial \psi}{\partial y} - \frac{\partial}{\partial y}\frac{\partial \psi}{\partial x} = 0,$$
@@ -462,7 +462,7 @@ void main() {
 <div class="callout bestiario" data-id="m7-5-costura-hilos" data-titulo="Con curl noise, las partículas forman hilos densos que nacen en los bordes">
   <p><strong>Síntoma:</strong> usas un campo de rotacional, que en teoría no amontona nada, y las partículas empiezan bien repartidas; pero al cabo de unos segundos aparecen hilos y zonas densas, y si te fijas, nacen en los bordes de la pantalla.</p>
   <p><strong>Causa:</strong> el mundo «da la vuelta» (lo que sale por la derecha entra por la izquierda) pero el ruido no es periódico: el campo a un lado de la costura no tiene nada que ver con el del otro. En una altura donde el flujo sale por los dos bordes a la vez, las partículas salen por la derecha, entran por la izquierda y vuelven a salir: la costura se comporta como un sumidero, y lo acumulado se estira en hilos hacia el interior. Lo medimos con el campo de la lección en una versión sin periodicidad: a los 30 s, el 5 % de celdas más pobladas tenía el 46 % de las partículas. Con la versión periódica, que casa en la costura, el 7 %, lo mismo que al principio.</p>
-  <p><strong>Solución:</strong> usa ruido periódico con el mismo periodo que el mundo (se repite la rejilla de gradientes con un módulo, como en el <a href="../06-glsl/06-ruido.html">ejercicio 6.6.4</a>; es lo que hace <code>L75.RUIDO</code>, justo debajo), o no envuelvas: haz que las partículas que salen renazcan en un sitio al azar. O acéptalo: en un efecto decorativo, los hilos quedan bien. Lo importante es saber de dónde salen.</p>
+  <p><strong>Solución:</strong> usa ruido periódico con el mismo periodo que el mundo (se repite la rejilla de gradientes con un módulo, como en el <a href="../06-glsl/06-ruido.html#ejercicio-6-6-4-un-fbm-que-se-repite-sin-costuras">ejercicio 6.6.4</a>; es lo que hace <code>L75.RUIDO</code>, justo debajo), o no envuelvas: haz que las partículas que salen renazcan en un sitio al azar. O acéptalo: en un efecto decorativo, los hilos quedan bien. Lo importante es saber de dónde salen.</p>
 </div>
 
 <p>El campo que usaremos en el resto de la lección es el del editor con dos cambios, justo los que pide el bestiario: es periódico con el tamaño del mundo y se deriva en unidades del mundo. En los ejemplos lo encontrarás empaquetado como <code>L75.RUIDO</code>, una cadena de GLSL que se interpola en los shaders con <code>${L75.RUIDO}</code>, la «directiva include de los pobres» de 7.1 (puedes verla entera con <code>console.log(L75.RUIDO)</code> en cualquier playground que incluya <code>l75</code>). <code>pcg</code> y <code>ruidoGradiente</code> son los del editor, con el periodo como argumento extra. Esto es lo que cambia:</p>
@@ -489,18 +489,51 @@ vec2 rotacional(vec2 p, float t, vec2 medio) {
 }
 </script>
 <ol>
-  <li data-l="1-5">El gradiente de cada esquina de la rejilla, con el hash PCG de 6.6 (que da los mismos bits en la GPU y en JavaScript). La novedad es <code>mod(esquina, periodo)</code>: la esquina número <code>periodo</code> recibe el mismo gradiente que la 0, así que el ruido se repite cada <code>periodo</code> celdas, sin costura (la técnica del <a href="../06-glsl/06-ruido.html">ejercicio 6.6.4</a>). Como las esquinas son enteros guardados en floats, el <code>mod</code> es exacto.</li>
+  <li data-l="1-5">El gradiente de cada esquina de la rejilla, con el hash PCG de 6.6 (que da los mismos bits en la GPU y en JavaScript). La novedad es <code>mod(esquina, periodo)</code>: la esquina número <code>periodo</code> recibe el mismo gradiente que la 0, así que el ruido se repite cada <code>periodo</code> celdas, sin costura (la técnica del <a href="../06-glsl/06-ruido.html#ejercicio-6-6-4-un-fbm-que-se-repite-sin-costuras">ejercicio 6.6.4</a>). Como las esquinas son enteros guardados en floats, el <code>mod</code> es exacto.</li>
   <li data-l="6-8">Cuántas celdas de ruido caben en el mundo: 2 en la altura y, a lo ancho, el entero más cercano a 2 × aspecto (al menos 1). Tienen que ser enteros para que el ruido case en los bordes. El precio es que las celdas se estiran un poco a lo ancho: con aspecto 1,67, caben 3 celdas en 3,33 unidades, y cada una mide 1,11 de ancho por 1 de alto.</li>
   <li data-l="9">Del mundo (x en ±<code>medio.x</code>, y en ±<code>medio.y</code>) a coordenadas de celda, de 0 a <code>periodo</code>.</li>
-  <li data-l="10-11">El potencial: dos octavas que se desplazan con el tiempo en direcciones distintas (la primera hacia arriba a 0,11 celdas/s, la segunda hacia la derecha), así que el campo no se traslada en bloque: <em>evoluciona</em>. La segunda octava tiene el doble de celdas y, por tanto, el doble de periodo. Los desplazamientos son iguales en todos los puntos, así que no rompen la periodicidad; el 31,7 separa la segunda octava del origen de la primera (<a href="../06-glsl/06-ruido.html#m6b-fbm-origen">bestiario de 6.6</a>).</li>
+  <li data-l="10-11">El potencial: dos octavas que se desplazan con el tiempo en direcciones distintas, así que el campo no se traslada en bloque: <em>evoluciona</em>. Ojo con el sentido: sumar <code>0.11 * t</code> a la coordenada mueve el dibujo al revés (<a href="../03-matematicas/05-matrices.html#m3-rotacion-inversa-shader">3.5</a>), así que la primera octava baja a 0,11 celdas/s y la segunda va hacia la izquierda (comprobado con el gemelo en JavaScript: el mismo dibujo, un segundo después, 0,11 celdas más abajo). La segunda octava tiene el doble de celdas y, por tanto, el doble de periodo. Los desplazamientos son iguales en todos los puntos, así que no rompen la periodicidad; el 31,7 separa la segunda octava del origen de la primera (<a href="../06-glsl/06-ruido.html#m6b-fbm-origen">bestiario de 6.6</a>).</li>
   <li data-l="14">El paso de las diferencias, en unidades del mundo: pequeño para que la derivada sea precisa y grande para que la resta no pierda precisión en float32 (la cancelación catastrófica de <a href="../03-matematicas/07-precision.html">3.7</a>).</li>
   <li data-l="15-16">Cuatro evaluaciones del potencial: arriba, abajo, derecha e izquierda. Cada una son dos octavas de cuatro esquinas: 32 hashes, 32 senos y 32 cosenos por partícula. Ese es el coste que en JavaScript sale a unos 0,7 µs por partícula.</li>
-  <li data-l="17"><strong>Diferencias centrales</strong>: $\partial\psi/\partial y \approx (\psi(y + e) - \psi(y - e)) / 2e$, y lo mismo en x, ya giradas: la x de la velocidad es la derivada en y, y la y es menos la derivada en x (<code>izda − dcha</code>). Derivar en unidades del mundo y no en celdas es importante: como las celdas no son cuadradas (escala $s_x$ a lo ancho y $s_y$ a lo alto), el rotacional calculado en celdas y usado como velocidad en el mundo tendría divergencia $(s_x - s_y)\,\partial^2\psi/\partial x\partial y$, pequeña pero distinta de cero.</li>
+  <li data-l="17"><strong>Diferencias centrales</strong>: $\partial\psi/\partial y \approx (\psi(y + e) - \psi(y - e)) / 2e$, y lo mismo en x, ya giradas: la x de la velocidad es la derivada en y, y la y es menos la derivada en x (<code>izda − dcha</code>). Derivar en unidades del mundo y no en celdas es importante: como las celdas no son cuadradas (en coordenadas de celda, $u = s_x x$ y $v = s_y y$), el rotacional calculado en celdas, $(\partial\psi/\partial v, -\partial\psi/\partial u)$, y usado como velocidad en el mundo tendría divergencia $(s_x - s_y)\,\partial^2\psi/\partial u\,\partial v$, pequeña pero distinta de cero.</li>
+</ol>
+</div>
+
+<p>El campo da una velocidad; falta mover las partículas con ella. Es la otra cadena de GLSL de la lección, <code>L75.PASO</code>, que comparten los enfoques 2 y 3 (la CPU tiene su gemelo en JavaScript): los uniforms de la física y una función <code>avanzar</code> que recibe la posición y la velocidad de una partícula y las deja como deben estar <code>u_dt</code> segundos después.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+uniform float u_dt;
+uniform float u_time;
+uniform float u_aspecto;
+uniform vec3 u_raton;
+const float FLUJO = 0.09;
+const float ARRASTRE = 2.0;
+void avanzar(inout vec2 p, inout vec2 v) {
+  vec2 medio = vec2(u_aspecto, 1.0);
+  vec2 flujo = FLUJO * rotacional(p, u_time, medio);
+  v = flujo + (v - flujo) * exp(-ARRASTRE * u_dt);
+  vec2 d = u_raton.xy - p;
+  float d2 = dot(d, d) + 0.02;
+  v += u_raton.z * d / (d2 * sqrt(d2)) * u_dt;
+  p += v * u_dt;
+  p = mod(p + medio, 2.0 * medio) - medio;
+}
+</script>
+<ol>
+  <li data-l="1-4">Lo que la física recibe de la CPU en cada frame: el paso de animación (0 en pausa), el tiempo del reloj (hace evolucionar el campo), el aspecto (el ancho del mundo) y el puntero, con su posición en unidades del mundo en <code>xy</code> y su intensidad en <code>z</code> (positiva atrae, negativa repele, 0 no hace nada).</li>
+  <li data-l="5-6">Dos mandos: <code>FLUJO</code> convierte el rotacional en una velocidad tranquila, y <code>ARRASTRE</code> (en 1/s) dice lo deprisa que una partícula adopta la velocidad del campo.</li>
+  <li data-l="7"><code>inout</code>: la función recibe una copia de <code>p</code> y <code>v</code> y la devuelve modificada al terminar (<a href="../06-glsl/01-lenguaje.html">6.1</a>).</li>
+  <li data-l="8-9">El mundo mide 2·aspecto × 2 (<code>medio</code> es su mitad), y <code>flujo</code> es la velocidad que pide el campo en este punto: el rotacional de <code>L75.RUIDO</code>, escalado.</li>
+  <li data-l="10">La velocidad no salta a la del campo: se acerca con el suavizado exponencial exacto de <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>, con $\lambda$ = <code>ARRASTRE</code>. Queda la fracción $e^{-\lambda\,dt}$ de la diferencia, sea cual sea la frecuencia de la pantalla, y la semivida es $\ln 2/2 \approx 0{,}35$ s. Es la inercia de la caja de abajo.</li>
+  <li data-l="11-13">La atracción del puntero, $1/d^2$ con el <em>softening</em> de <a href="../02-animacion/08-proyecto-particulas.html#m2-fuerza-infinita">2.8</a> ($\varepsilon^2 = 0{,}02$, $\varepsilon \approx 0{,}14$), sumada a la velocidad como aceleración por <code>u_dt</code>. Con <code>u_raton.z = 0</code> se anula sola.</li>
+  <li data-l="14">Euler semi-implícito (<a href="../02-animacion/05-fisica-muelles.html">2.5</a>): primero la velocidad, después la posición con la velocidad nueva.</li>
+  <li data-l="15">El mundo da la vuelta: lo que sale por la derecha entra por la izquierda. El <code>mod</code> de GLSL ($x - y\,\lfloor x/y\rfloor$) da un resultado positivo también con negativos, al revés que el <code>%</code> de JavaScript (<a href="../01-web/03-js-lenguaje.html">1.3</a>; por eso el gemelo de la CPU lo escribe con <code>Math.floor</code>). Esta vuelta es la costura del bestiario de arriba, y la razón de que el ruido tenga que ser periódico.</li>
 </ol>
 </div>
 
 <div class="callout senior" data-titulo="Sin sumideros no significa sin grumos: la inercia">
-  <p>La propiedad de «no amontonar» vale para partículas <em>sin masa</em>, que adoptan en cada instante la velocidad del campo. Las nuestras tienen inercia: su velocidad se acerca a la del campo con una semivida de unos 0,35 s (<code>ARRASTRE = 2</code>), y en los remolinos la inercia las centrifuga hacia fuera, como a la arena en un vaso de agua que gira. Con el campo de la lección, medimos que a los 30 s seguían ocupadas el 95 % de las celdas, pero el coeficiente de variación había subido de 0,22 a 1,06 y el 5 % de celdas más pobladas tenía el 22 % de las partículas. Es mucho menos grave que el gradiente (4 % de celdas ocupadas), y los físicos lo conocen bien: es la <em>concentración preferente</em> de las partículas pesadas en la turbulencia. Si quieres un reparto perfectamente uniforme, iguala la velocidad a la del campo sin más (<code>v = flujo</code>); si quieres que el ratón las lance y orbiten, necesitas la inercia y sus grumos.</p>
+  <p>La propiedad de «no amontonar» vale para partículas <em>sin masa</em>, que adoptan en cada instante la velocidad del campo. Las nuestras tienen inercia: su velocidad se acerca a la del campo con una semivida de unos 0,35 s (<code>ARRASTRE = 2</code>), y en los remolinos la inercia las centrifuga hacia fuera, como la ropa en una centrifugadora: se acumulan entre remolino y remolino. Con el campo de la lección, medimos que a los 30 s seguían ocupadas el 95 % de las celdas, pero el coeficiente de variación había subido de 0,22 a 1,06 y el 5 % de celdas más pobladas tenía el 22 % de las partículas. Es mucho menos grave que el gradiente (4 % de celdas ocupadas), y los físicos lo conocen bien: es la <em>concentración preferente</em> de las partículas pesadas en la turbulencia. Si quieres un reparto perfectamente uniforme, iguala la velocidad a la del campo sin más (<code>v = flujo</code>); si quieres que el ratón las lance y orbiten, necesitas la inercia y sus grumos.</p>
 </div>
 
 <h2>Enfoque 2: el estado en texturas float</h2>
@@ -627,13 +660,13 @@ void main() {
 
 <div class="callout bestiario" data-id="m7-5-todas-en-el-centro" data-titulo="Todas las partículas aparecen amontonadas en el centro (y no se mueven)">
   <p><strong>Síntoma:</strong> la simulación en texturas arranca y, en lugar de miles de partículas repartidas, ves un único punto muy brillante en el centro del lienzo (en <code>(0, 0)</code> del mundo). No hay ningún error en la consola. Si lees la textura inicial con <code>readPixels</code>, los datos están bien.</p>
-  <p><strong>Causa:</strong> la textura de estado es <code>RGBA32F</code> con el filtro por defecto de GLKit (<code>LINEAR</code>) o el de WebGL (<code>NEAREST_MIPMAP_LINEAR</code> para reducir, sin mipmaps). Filtrar linealmente una textura de 32 bits exige <code>OES_texture_float_linear</code>; sin ella, la textura está <em>incompleta</em> (<a href="../05-webgl/05-texturas.html#m5-textura-negra">5.5</a>) y cualquier lectura devuelve <code>(0, 0, 0, 1)</code>, incluida <code>texelFetch</code>, aunque no filtre nada. Lo comprobamos: con <code>LINEAR</code>, <code>texelFetch</code> devolvió (0, 0, 0, 1) en el vertex shader y en el fragment shader; con <code>NEAREST</code>, el valor correcto; y tras pedir la extensión, también con <code>LINEAR</code>. Todas las posiciones valen 0 y la primera simulación escribe esos ceros en la otra textura: el estado se ha perdido.</p>
+  <p><strong>Causa:</strong> la textura de estado es <code>RGBA32F</code> con el filtro por defecto de GLKit (<code>LINEAR</code>). Filtrar linealmente una textura de 32 bits exige <code>OES_texture_float_linear</code>; sin ella, la textura está <em>incompleta</em> (<a href="../05-webgl/05-texturas.html#m5-textura-negra">5.5</a>; con el filtro por defecto de WebGL, <code>NEAREST_MIPMAP_LINEAR</code>, y sin mipmaps, también lo está, y además con cualquier formato) y cualquier lectura devuelve <code>(0, 0, 0, 1)</code>, incluida <code>texelFetch</code>, aunque no filtre nada. Lo comprobamos: con <code>LINEAR</code>, <code>texelFetch</code> devolvió (0, 0, 0, 1) en el vertex shader y en el fragment shader; con <code>NEAREST</code>, el valor correcto; y tras pedir la extensión, también con <code>LINEAR</code>. Todas las posiciones valen 0 y la primera simulación escribe esos ceros en la otra textura: el estado se ha perdido.</p>
   <p><strong>Solución:</strong> <code>NEAREST</code> en los dos filtros de las texturas de estado (<code>GLKit.crearFBO(gl, w, h, { filtro: gl.NEAREST, … })</code> pone los dos). No dependas de una extensión para algo que no necesitas: <code>texelFetch</code> no filtra. Ojo: <code>RGBA16F</code> sí se puede filtrar en WebGL2 sin extensiones (comprobado), así que este fallo aparece justo al pasar de 16 a 32 bits.</p>
 </div>
 
 <div class="callout bestiario" data-id="m7-5-half-congeladas" data-titulo="Con RGBA16F, unas partículas se mueven y otras se quedan congeladas (o van más despacio)">
   <p><strong>Síntoma:</strong> la simulación va bien con <code>RGBA32F</code>. Con <code>RGBA16F</code> (para gastar la mitad de memoria, o porque el dispositivo no renderiza en 32 bits), las partículas lentas se quedan quietas en ciertas zonas, las de los bordes van más despacio que las del centro y, en una pantalla de 120 Hz, se congelan todavía más.</p>
-  <p><strong>Causa:</strong> un half float tiene 11 bits significativos (10 guardados y uno implícito, <a href="../03-matematicas/07-precision.html">3.7</a>): entre 0,5 y 1 los valores representables van de 0,00049 en 0,00049, y entre 1 y 2, de 0,00098 en 0,00098 (el ULP). Si una partícula avanza menos que eso en un frame, al guardarla vuelve a su valor anterior. Y en el M1 es peor que redondear: la conversión a 16 bits al escribir en el FBO <strong>trunca</strong> (redondea hacia cero). Lo medimos integrando <code>x += v · dt</code> durante 600 pasos de 1/60 s: con <code>x₀ = 0,5</code> y <code>v = 0,02</code>, la posición no se movió ni una milésima (debía llegar a 0,7); con <code>x₀ = 0,1</code> y <code>v = 0,01</code>, llegó a 0,173 en lugar de 0,2; con <code>x₀ = 0,9</code> y <code>v = 0,1</code>, a 1,52 en lugar de 1,9. En <code>RGBA32F</code>, las tres llegaron a su sitio con 5 cifras correctas. A 120 Hz, cada paso es la mitad de largo y cae por debajo del ULP con velocidades el doble de grandes: una partícula en <code>x₀ = 1,2</code> con <code>v = 0,1</code> recorrió en 5 s el 59 % de lo debido con pasos de 1/60 s (llegó a 1,49 en lugar de 1,7) y, con pasos de 1/120 s, no se movió (1,2002). El mismo código, congelado o no según la pantalla del usuario.</p>
+  <p><strong>Causa:</strong> un half float tiene 11 bits significativos (10 guardados y uno implícito, <a href="../03-matematicas/07-precision.html">3.7</a>): entre 0,5 y 1 los valores representables van de 0,00049 en 0,00049, y entre 1 y 2, de 0,00098 en 0,00098 (el ULP). Si una partícula avanza menos que eso en un frame, al guardarla vuelve a su valor anterior. Y en el M1 es peor que redondear: la conversión a 16 bits al escribir en el FBO <strong>trunca</strong> (redondea hacia cero). No todas las GPU lo hacen (SwiftShader, el renderizador por software de Chrome, redondea al más cercano: 0,500333 se guardó como 0,500488), pero con cualquiera de las dos reglas un paso menor que medio ULP se pierde entero. Lo medimos en el M1 integrando <code>x += v · dt</code> durante 600 pasos de 1/60 s: con <code>x₀ = 0,5</code> y <code>v = 0,02</code>, la posición no se movió ni una milésima (debía llegar a 0,7); con <code>x₀ = 0,1</code> y <code>v = 0,01</code>, llegó a 0,173 en lugar de 0,2; con <code>x₀ = 0,9</code> y <code>v = 0,1</code>, a 1,52 en lugar de 1,9. En <code>RGBA32F</code>, las tres llegaron a su sitio con 5 cifras correctas. A 120 Hz, cada paso es la mitad de largo y cae por debajo del ULP con velocidades el doble de grandes: una partícula en <code>x₀ = 1,2</code> con <code>v = 0,1</code> recorrió en 5 s el 59 % de lo debido con pasos de 1/60 s (llegó a 1,49 en lugar de 1,7) y, con pasos de 1/120 s, no se movió (1,2002). El mismo código, congelado o no según la pantalla del usuario.</p>
   <p><strong>Solución:</strong> <code>RGBA32F</code> para posiciones siempre que se pueda. Si tienes que usar 16 bits, guarda posiciones <em>relativas</em> (a una celda, a un centro) para que los valores sean pequeños y su ULP también, acumula el movimiento en la velocidad y no en la posición, o simula con transform feedback, que escribe floats de 32 bits en un buffer y no necesita ninguna extensión (enfoque 3). Pruébalo en el ejemplo 7.5.2: el selector cambia el formato del estado.</p>
 </div>
 
@@ -722,7 +755,7 @@ const app = M7.crearApp(canvas, {
   contexto: { alpha: false, antialias: false },
   estado: { formato: 'RGBA32F', pendiente: 0 },
   iniciar(gl, app) {                          // también tras perder el contexto: todo desde la semilla
-    if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('sin EXT_color_buffer_float');
+    if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('sin EXT_color_buffer_float: esta GPU no puede renderizar en RGBA32F');
     const simular = GLKit.crearPrograma(gl, VS_PANTALLA, FS_SIMULAR);
     const dibujar = GLKit.crearPrograma(gl, VS_DIBUJAR, FS_DIBUJAR);
     app.gpu = {
@@ -731,6 +764,9 @@ const app = M7.crearApp(canvas, {
       vao: gl.createVertexArray(),            // vacío: ningún atributo
       estado: crearEstado(gl, app.estado.formato, app.anchoCSS / app.altoCSS),
     };
+  },
+  fallar(motivo) {                            // sin la extensión: decirlo, no dejar un lienzo negro (7.1)
+    info.textContent = motivo + ' · el ejemplo 7.5.3 (transform feedback) no la necesita';
   },
   actualizar(e, dt, app) {                    // solo JavaScript: decide cuánto avanzar
     puntero.actualizar(app.reloj.dtReal);
@@ -788,6 +824,7 @@ document.getElementById('formato').onchange = (ev) => { app.estado.formato = ev.
     <li><strong><code>crearEstado</code></strong> crea las dos texturas con <code>NEAREST</code> y siembra A con <code>texSubImage2D</code> a partir de <code>L75.estadoInicial</code>, que usa un generador con semilla (el mulberry32 de <code>texturas.js</code>). Para <code>RGBA16F</code> se sube igualmente un <code>Float32Array</code> con tipo <code>FLOAT</code>: WebGL2 admite esa combinación y convierte al subir.</li>
     <li><strong>La pérdida de contexto</strong> está cubierta sin una línea más: <code>iniciar</code> recrea programas, VAO y texturas, y la semilla reproduce el estado inicial. Las partículas vuelven a empezar, que es una de las tres opciones de <a href="01-arquitectura.html">7.1</a> para el estado que vive en la GPU (la caja senior de abajo cuenta las otras dos).</li>
     <li><strong>El cambio de formato</strong> sigue la regla de los eventos: el selector solo escribe <code>app.estado.formato</code>, y <code>dibujar</code>, que es donde se puede tocar GL, libera las texturas viejas y crea las nuevas.</li>
+    <li><strong>Sin <code>EXT_color_buffer_float</code></strong>, <code>iniciar</code> lanza un error; <code>crearApp</code> lo captura, detiene el bucle y llama a <code>fallar</code> (<a href="01-arquitectura.html">7.1</a>), que lo escribe en el panel en lugar de dejar un lienzo negro y mudo. En un producto, ahí elegirías otro camino (<a href="#que-funcione-en-el-equipo-de-tu-usuario">«Que funcione en el equipo de tu usuario»</a>, al final de la lección).</li>
     <li><strong><code>e.pendiente</code></strong> separa decidir de ejecutar: <code>actualizar</code> anota cuánto hay que avanzar y <code>dibujar</code> lo ejecuta y lo pone a 0. En pausa (<code>dt = 0</code>) no se simula, pero se sigue dibujando.</li>
   </ul>
   <p>Con <code>RGBA16F</code> fíjate en dos cosas. Las partículas de los lados (donde |x| &gt; 1 en unidades del mundo, porque allí el ULP del half float es de 0,00098) avanzan a saltos y más despacio que las del centro. Y las más lentas se paran del todo, sobre todo si tu pantalla va a 120 Hz.</p>
@@ -1091,7 +1128,7 @@ if (float(h >> 8u) * (1.0 / 16777216.0) < u_dt / VIDA_MEDIA) {
 </div>
 
 <h2>Comparativa: medir antes de elegir</h2>
-<p>Pusimos las tres arquitecturas a trabajar con exactamente la misma física (el campo de curl noise de <code>L75.PASO</code>) y el mismo dibujo (puntos de 1,5 px con mezcla aditiva), para que la única diferencia fuera dónde vive el estado. Medimos el coste de un frame completo forzando a la CPU a esperar a la GPU (20 frames seguidos y una lectura de un píxel con <code>readPixels</code>, la técnica de <a href="../05-webgl/10-depuracion.html">5.10</a>), y los fps con el intervalo real entre frames. Cada iteración es un frame entero (limpiar, simular, dibujar), no el mismo dibujo repetido: en la GPU de teselas del M1, repetir un dibujo sobre el mismo framebuffer permite al controlador ahorrarse trabajo y falsea la medida (lo vimos en <a href="../06-glsl/06-ruido.html">6.6</a>). Por eso contrastamos cada cifra con los fps reales, y cuadran: con 4 M, 56 ms medidos frente a un intervalo real de 50 a 53 ms. Máquina de pruebas (Apple M1, Chrome 154, ANGLE/Metal), canvas de 1000 × 600 píxeles de búfer, sin antialiasing:</p>
+<p>Pusimos las tres arquitecturas a trabajar con exactamente la misma física (el campo de curl noise de <code>L75.PASO</code>) y el mismo dibujo (puntos de 1,5 px con mezcla aditiva), para que la única diferencia fuera dónde vive el estado. Medimos el coste de un frame completo forzando a la CPU a esperar a la GPU (20 frames seguidos y una lectura de un píxel con <code>readPixels</code>, la técnica de <a href="../05-webgl/10-depuracion.html">5.10</a>), y los fps con el intervalo real entre frames. Cada iteración es un frame entero (limpiar, simular, dibujar), no el mismo dibujo repetido: en la GPU de teselas del M1, repetir un dibujo sobre el mismo framebuffer permite al controlador ahorrarse trabajo y falsea la medida (<a href="../06-glsl/06-ruido.html#medir-coste-shader">lo vimos en 6.6</a>). Aquí cada frame alterna de framebuffer (la pasada de simulación escribe en una textura o un buffer, la de dibujo en el canvas) y el dibujo mezcla de forma aditiva (cada fragmento suma, ninguno tapa a otro), así que no hay trabajo tapado que la GPU pueda ahorrarse. Por eso contrastamos cada cifra con los fps reales, y cuadran: con 4 M, 56 ms medidos frente a un intervalo real de 50 a 53 ms. Máquina de pruebas (Apple M1, Chrome 154, ANGLE/Metal), canvas de 1000 × 600 píxeles de búfer, sin antialiasing:</p>
 <table class="m7-medidas">
   <thead><tr><th class="num">Partículas</th><th class="num">CPU (JavaScript)</th><th class="num">Texturas + ping-pong</th><th class="num">Transform feedback</th></tr></thead>
   <tbody>
@@ -1118,7 +1155,7 @@ if (float(h >> 8u) * (1.0 / 16777216.0) < u_dt / VIDA_MEDIA) {
     <tr><td>Requisitos</td><td>ninguno</td><td><code>EXT_color_buffer_float</code>; filtro <code>NEAREST</code></td><td>ninguno (núcleo de WebGL2)</td></tr>
     <tr><td>Leer otras partículas</td><td>sí, en JavaScript</td><td>sí: <code>texelFetch</code> de cualquier texel</td><td>no, salvo con una textura aparte</td></tr>
     <tr><td>Emitir desde un evento</td><td>trivial: escribir en el array</td><td><code>texSubImage2D</code> en un rectángulo</td><td><code>bufferSubData</code> en un rango</td></tr>
-    <tr><td>Precisión</td><td>float64 al simular</td><td>float32 (cuidado con la alternativa de 16 bits)</td><td>float32</td></tr>
+    <tr><td>Precisión</td><td>float64 al calcular, float32 al guardar</td><td>float32 (cuidado con la alternativa de 16 bits)</td><td>float32</td></tr>
     <tr><td>Si se pierde el contexto</td><td>no se pierde nada</td><td>se pierde el estado</td><td>se pierde el estado</td></tr>
     <tr><td>Trampas típicas</td><td>subir a un buffer en uso</td><td>completitud, realimentación, half float</td><td>buffers en dos sitios, descarte olvidado, divisor</td></tr>
   </tbody>
@@ -1160,18 +1197,25 @@ function raton(aspecto) {
   return [(puntero.sx / puntero.ancho * 2 - 1) * aspecto, 1 - puntero.sy / puntero.alto * 2,
           puntero.pulsado ? -0.3 : 0.05];
 }
-let medida = '';
+let medida = '', aviso = '';
 
 const app = M7.crearApp(canvas, {
   contexto: { alpha: false, antialias: false },
   estado: { metodo: 'texturas', n: 65536, pendiente: 0, medir: false },
-  iniciar(gl, app) { app.gpu = { motor: null }; },    // el motor se crea al dibujar (y tras perder el contexto)
+  iniciar(gl, app) {                         // el motor se crea al dibujar (y tras perder el contexto)
+    app.gpu = { motor: null, float: !!gl.getExtension('EXT_color_buffer_float') };
+  },
   actualizar(e, dt, app) {
     puntero.actualizar(app.reloj.dtReal);
     e.pendiente = dt;
   },
   dibujar(gl, e, app) {
     const g = app.gpu, aspecto = app.ancho / app.alto;
+    if (e.metodo === 'texturas' && !g.float) {   // sin la extensión, este camino no existe
+      e.metodo = 'tf';
+      document.getElementById('metodo').value = 'tf';
+      aviso = ' · sin EXT_color_buffer_float: uso transform feedback';
+    }
     const n = e.metodo === 'cpu' ? Math.min(e.n, LIMITE_CPU) : e.n;
     if (!g.motor || g.motor.metodo !== e.metodo || g.motor.n !== n) {   // cambio pedido por la interfaz
       if (g.motor) g.motor.liberar();                                   // ¡libera la memoria de la GPU!
@@ -1205,7 +1249,7 @@ const app = M7.crearApp(canvas, {
     const nombre = { texturas: 'texturas', tf: 'transform feedback', cpu: 'CPU' }[m.metodo];
     info.textContent = `${nombre} · ${n.toLocaleString('es')} partículas · ${app.fps.toFixed(0)} fps` +
       (m.metodo === 'cpu' ? ` · JS ${m.msCPU.toFixed(1)} ms` : '') + medida +
-      (e.metodo === 'cpu' && e.n > LIMITE_CPU ? ' (máx. en CPU)' : '');
+      (e.metodo === 'cpu' && e.n > LIMITE_CPU ? ' (máx. en CPU)' : '') + aviso;
   },
 });
 // La interfaz solo anota en el estado; dibujar() hace los cambios
@@ -1219,8 +1263,8 @@ document.getElementById('botones').onclick = (ev) => {
 document.getElementById('medir').onclick = () => { app.estado.medir = true; };
 </script>
   </div>
-  <p>Lo que da en la máquina de pruebas, con el búfer de este playground (unos 740 × 420 píxeles): 1 M partículas a 60 fps («medir GPU»: 10 ms por frame, tanto con texturas como con transform feedback) y 4 M a 21 fps (44 ms por frame con los dos). La CPU mantiene 60 fps con 16 K (12 ms de JavaScript por frame) y cae a 6 fps con 262 K. Son algo menos que en la tabla de arriba porque el lienzo es más pequeño: menos píxeles que rellenar con cada punto.</p>
-  <p>El esqueleto es el gestor de escenas de <a href="01-arquitectura.html">7.1</a> en pequeño: la interfaz solo escribe <code>metodo</code> y <code>n</code> en el estado; <code>dibujar</code> compara con el motor actual y, si no coincide, libera el viejo y crea el nuevo. Liberar no es opcional: con 4 M, cada motor de texturas ocupa 128 MB de GPU (dos texturas de 64 MB), y el recolector de basura de JavaScript no libera la memoria de la GPU a tiempo (<a href="../05-webgl/10-depuracion.html#m5-memoria-sin-liberar">5.10</a>). Y <code>iniciar</code> solo pone <code>motor: null</code>, así que tras perder el contexto el siguiente <code>dibujar</code> crea uno nuevo.</p>
+  <p>Lo que da en la máquina de pruebas, con el búfer de este playground (unos 740 × 420 píxeles, medido con <code>devicePixelRatio</code> 1; en una pantalla Retina el búfer mide el doble en cada eje, y cada punto cubre cuatro veces más píxeles del búfer): 1 M partículas a 60 fps («medir GPU»: 10 ms por frame, tanto con texturas como con transform feedback) y 4 M a 21 fps (44 ms por frame con los dos). La CPU mantiene 60 fps con 16 K (12 ms de JavaScript por frame) y cae a 6 fps con 262 K. Son algo menos que en la tabla de arriba porque el lienzo es más pequeño: menos píxeles que rellenar con cada punto.</p>
+  <p>El esqueleto es el gestor de escenas de <a href="01-arquitectura.html">7.1</a> en pequeño: la interfaz solo escribe <code>metodo</code> y <code>n</code> en el estado; <code>dibujar</code> compara con el motor actual y, si no coincide, libera el viejo y crea el nuevo. Liberar no es opcional: con 4 M, cada motor de texturas ocupa 128 MB de GPU (dos texturas de 64 MB), y el recolector de basura de JavaScript no libera la memoria de la GPU a tiempo (<a href="../05-webgl/10-depuracion.html#m5-memoria-sin-liberar">5.10</a>). Y <code>iniciar</code> solo pone <code>motor: null</code>, así que tras perder el contexto el siguiente <code>dibujar</code> crea uno nuevo. También anota si existe <code>EXT_color_buffer_float</code>: sin ella, <code>dibujar</code> cambia el método de texturas por transform feedback y lo avisa en la línea de abajo (el <code>elegirMetodo</code> de <a href="#que-funcione-en-el-equipo-de-tu-usuario">la última sección</a>).</p>
   <p>El brillo de cada partícula es <code>60 / √N</code>: con cuatro veces más partículas, cada una brilla la mitad, y la imagen conserva un aspecto parecido en todas las cargas (no idéntico: la densidad crece más deprisa que el brillo baja, y es a propósito, para que se note que hay más). Con 4 M, cada partícula aporta 0,03 de intensidad, unos 7 niveles de 255. Estamos rozando un problema que tiene sección propia.</p>
 </section>
 
@@ -1243,12 +1287,12 @@ document.getElementById('medir').onclick = () => { app.estado.medir = true; };
     <tr><td>0,001 × 5000</td><td class="num">5,000</td><td class="num">0,000</td><td class="num">2,000</td></tr>
   </tbody>
 </table>
-<p>Medido en la máquina de pruebas, dibujando la misma intensidad una y otra vez con <code>ONE, ONE</code>. En RGBA8, cada aportación se redondea a un múltiplo de 1/255 antes de sumarse: 0,0019 × 255 = 0,48 se redondea a 0 (la partícula no existe) y 0,002 × 255 = 0,51 se redondea a 1 (brilla casi el doble de lo que debería). En RGBA16F casi todo cuadra, con un error del 2 % por el truncamiento de 16 bits que ya conocemos, y con un techo: a partir de 2,0, el ULP del half float (0,00195) es mayor que 0,001 y la suma deja de crecer.</p>
+<p>Medido en la máquina de pruebas, dibujando la misma intensidad una y otra vez con <code>ONE, ONE</code>. En RGBA8, cada aportación se redondea a un múltiplo de 1/255 antes de sumarse: 0,0019 × 255 = 0,48 se redondea a 0 (la partícula no existe) y 0,002 × 255 = 0,51 se redondea a 1 (brilla casi el doble de lo que debería). En RGBA16F casi todo cuadra, con un error del 2 % por el truncamiento de 16 bits que ya conocemos, y con un techo: a partir de 2,0, el ULP del half float (0,00195) es mayor que 0,001 y, truncando, la suma deja de crecer. El techo depende de cómo redondee la GPU: en SwiftShader, el renderizador por software de Chrome, que redondea al más cercano, la misma suma siguió subiendo hasta 4,0, donde 0,001 ya es menos de medio ULP (0,00195) y se pierde entero. Lo que no depende de la GPU es que el techo existe.</p>
 
 <div class="callout bestiario" data-id="m7-5-aditivo-invisible" data-titulo="Con un millón de partículas tenues no se ve nada (o 0,002 brilla el doble que 0,0019)">
   <p><strong>Síntoma:</strong> para que un millón de partículas no quemen la imagen a blanco, bajas la intensidad de cada una a algo como 0,001. El lienzo se queda completamente negro. Subes a 0,002 y de repente brilla muchísimo más de lo esperado; entre 0,002 y 0,005 apenas hay diferencia.</p>
   <p><strong>Causa:</strong> el canvas guarda 8 bits por canal, y cada resultado de la mezcla se redondea a un múltiplo de 1/255 ≈ 0,0039. Una aportación menor que la mitad (0,00196) se redondea a 0 cada vez: mil partículas de 0,001 superpuestas siguen sumando 0 (medido). Por encima, cada aportación se convierte en 1/255, 2/255…: la intensidad real va a escalones, y 0,002 y 0,005 aportan lo mismo (medido: 100 sumas de cada una dieron 100/255).</p>
-  <p><strong>Solución:</strong> acumula en un FBO de 16 bits float (<code>RGBA16F</code>, renderizable con <code>EXT_color_buffer_float</code>; mezclar en 16 bits no necesita nada más) del tamaño del canvas, y después dibuja un triángulo de pantalla completa que lea esa textura y la lleve al canvas con una curva de tono como <code>1.0 - exp(-acumulado * exposicion)</code>, que nunca se recorta de golpe. Recuerda el techo del half float (una suma de aportaciones de 0,001 se estanca en 2,0): elige la exposición para que 2 ya sea casi blanco, o usa <code>RGBA32F</code>, que suma sin techo práctico (1000 × 0,001 dio 0,99999). Mezclar en 32 bits requiere la extensión <code>EXT_float_blend</code>; en el Chrome de pruebas funcionó sin error aunque solo habíamos pedido <code>EXT_color_buffer_float</code>, pero pídela también, explícitamente: no cuesta nada y deja escrita la dependencia. Es el ejercicio 7.5.4.</p>
+  <p><strong>Solución:</strong> acumula en un FBO de 16 bits float (<code>RGBA16F</code>, renderizable con <code>EXT_color_buffer_float</code>; mezclar en 16 bits no necesita nada más) del tamaño del canvas, y después dibuja un triángulo de pantalla completa que lea esa textura y la lleve al canvas con una curva de tono como <code>1.0 - exp(-acumulado * exposicion)</code>, que nunca se recorta de golpe. Recuerda el techo del half float (en el M1, una suma de aportaciones de 0,001 se estanca en 2,0; donde se redondea al más cercano, en 4,0): elige la exposición para que 2 ya sea casi blanco, o usa <code>RGBA32F</code>, que suma sin techo práctico (1000 × 0,001 dio 0,99999). Mezclar en 32 bits requiere la extensión <code>EXT_float_blend</code>; en el Chrome de pruebas funcionó sin pedirla, porque su especificación dice que se activa sola al activar <code>EXT_color_buffer_float</code>, pero solo donde el hardware la admite. Donde no, el dibujo con mezcla en <code>RGBA32F</code> falla con <code>INVALID_OPERATION</code>. Pídela también, explícitamente: si <code>gl.getExtension('EXT_float_blend')</code> devuelve <code>null</code>, ya sabes que tienes que acumular en <code>RGBA16F</code>. Es el ejercicio 7.5.4.</p>
 </div>
 
 <div class="quiz">
@@ -1392,6 +1436,7 @@ function leer(gl, estado) {                    // la partícula 0, leída del FB
   return [px[0].toFixed(3), px[1].toFixed(3)];
 }
 setTimeout(() => {
+  if (!app.gpu) return;                        // iniciar falló (sin la extensión): nada que comprobar
   const [x, y] = leer(app.gl, app.gpu.A).map(Number);
   console.log('partícula 0 tras 1,5 s: (' + x.toFixed(3) + ', ' + y.toFixed(3) + ')');
   console.log(Math.abs(x) + Math.abs(y) > 1e-4 ? '✓ las partículas conservan su estado' : '✗ la simulación ha dejado la partícula en (0, 0)');
@@ -1496,6 +1541,7 @@ function leer(gl, estado) {                    // la partícula 0, leída del FB
   return [px[0].toFixed(3), px[1].toFixed(3)];
 }
 setTimeout(() => {
+  if (!app.gpu) return;                        // iniciar falló (sin la extensión): nada que comprobar
   const [x, y] = leer(app.gl, app.gpu.A).map(Number);
   console.log('partícula 0 tras 1,5 s: (' + x.toFixed(3) + ', ' + y.toFixed(3) + ')');
   console.log(Math.abs(x) + Math.abs(y) > 1e-4 ? '✓ las partículas conservan su estado' : '✗ la simulación ha dejado la partícula en (0, 0)');
@@ -1633,6 +1679,7 @@ function cercaDe(fx, fy) {                     // % de partículas a menos de 0,
   return 100 * n / N;
 }
 setTimeout(() => {
+  if (!app.gpu) return;                        // iniciar falló (sin la extensión): nada que comprobar
   const r = canvas.getBoundingClientRect();
   const ev = (tipo) => canvas.dispatchEvent(new PointerEvent(tipo, { clientX: r.left + 0.75 * r.width, clientY: r.top + 0.4 * r.height, bubbles: true }));
   const antes = cercaDe(0.75, 0.4);
@@ -1760,6 +1807,7 @@ function cercaDe(fx, fy) {                     // % de partículas a menos de 0,
   return 100 * n / N;
 }
 setTimeout(() => {
+  if (!app.gpu) return;                        // iniciar falló (sin la extensión): nada que comprobar
   const r = canvas.getBoundingClientRect();
   const ev = (tipo) => canvas.dispatchEvent(new PointerEvent(tipo, { clientX: r.left + 0.75 * r.width, clientY: r.top + 0.4 * r.height, bubbles: true }));
   const antes = cercaDe(0.75, 0.4);
@@ -1776,7 +1824,7 @@ setTimeout(() => {
   <details class="pista"><summary>Pista 1</summary><p>La conversión del puntero es la del ejemplo 7.5.1: <code>M7.Puntero</code> da <code>sx</code> y <code>sy</code> en px CSS de la caja, con la y hacia abajo. La x del mundo va de −aspecto a +aspecto y la y de −1 (abajo) a 1 (arriba). Devuelve una intensidad distinta de 0 solo si <code>puntero.pulsado</code>.</p></details>
   <details class="pista"><summary>Pista 2</summary><p>En <code>avanzar</code>: <code>d = u_raton.xy − p</code>; <code>d2 = dot(d, d) + ε²</code>; la aceleración es <code>u_raton.z * d / (d2 * sqrt(d2))</code>, y se suma a <code>v</code> multiplicada por <code>u_dt</code>, antes de mover <code>p</code>. Con <code>u_raton.z = 0</code>, el término desaparece solo.</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
-    <p>En JavaScript, <code>raton()</code> hace dos conversiones de 7.2: de 0…ancho a −aspecto…aspecto para la x, y de 0…alto (hacia abajo) a 1…−1 para la y. La intensidad (0,4) solo se envía mientras el botón está pulsado; al soltar vuelve a 0 y el término de la atracción se anula, sin necesidad de un <code>if</code> en el shader (multiplicar por 0 es más barato que ramificar, y en la GPU todos los fragmentos harían lo mismo de todos modos).</p>
+    <p>En JavaScript, <code>raton()</code> hace dos conversiones de 7.2: de 0…ancho a −aspecto…aspecto para la x, y de 0…alto (hacia abajo) a 1…−1 para la y. La intensidad (0,4) solo se envía mientras el botón está pulsado; al soltar vuelve a 0 y el término de la atracción se anula solo, sin necesidad de un <code>if</code> en el shader. (Un <code>if (u_raton.z != 0.0)</code> tampoco costaría casi nada: depende de un uniform, así que todos los fragmentos toman la misma rama y no hay divergencia, <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>; sin él, el código es más corto y no hay un caso especial que olvidar.)</p>
     <p>En GLSL, la fuerza es la de 2.8: $\vec a = F\,\vec d / (|\vec d|^2 + \varepsilon^2)^{3/2}$. El <em>softening</em> ($\varepsilon^2 = 0{,}02$) acota la aceleración cerca del puntero; sin él, una partícula que pasa justo por encima recibe una aceleración enorme y sale despedida, o se convierte en NaN si <code>d</code> vale exactamente 0 (<a href="../02-animacion/08-proyecto-particulas.html#m2-fuerza-infinita">el bestiario de 2.8</a>). La aceleración entra en la velocidad (<code>v += a · dt</code>) antes de mover la posición: es el Euler semi-implícito de 2.5. Y como el arrastre hacia el flujo sigue actuando, las partículas no orbitan para siempre: se agolpan alrededor del puntero y, al soltar, el remolino las recupera. La prueba lo confirma contando las que hay a menos de 0,25 del punto pulsado antes y después.</p>
   </details>
 </section>

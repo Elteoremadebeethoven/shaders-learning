@@ -24,7 +24,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+// Chrome del dueño (macOS, GPU real vía ANGLE/Metal); en otras máquinas, $CHROME o el Chromium de Playwright
+// (en Linux sin GPU, WebGL va por SwiftShader: sirve para compilar/ejecutar, NO para medir tiempos de GPU).
+const CHROME = process.env.CHROME || [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/opt/pw-browsers/chromium",
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium",
+].find((p) => fs.existsSync(p));
+const ANGLE = process.platform === "darwin" ? "--use-angle=metal" : "--use-angle=swiftshader";
+const ROOT = process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []; // Chrome no arranca como root sin esto (contenedores)
 const args = process.argv.slice(2);
 const opt = { capturas: null, pagina: null, ancho: 1440, dpr: 1, espera: 600, json: false, tema: null, soluciones: false, aislar: false };
 const objetivos = [];
@@ -50,7 +59,7 @@ const navegador = await puppeteer.launch({
   // playgrounds JS van en su propio proceso). Puppeteer lo desactiva por defecto. Úsalo para medir
   // tiempos/bloqueos de iframes; NO por defecto: en headless con aislamiento, elementFromPoint dentro
   // del iframe devuelve null (falso error que en Chrome real no ocurre).
-  args: ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"].concat(opt.aislar ? ["--enable-features=IsolateSandboxedIframes"] : []),
+  args: [ANGLE, "--enable-gpu", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"].concat(ROOT, opt.aislar ? ["--enable-features=IsolateSandboxedIframes"] : []),
   defaultViewport: { width: opt.ancho, height: 900, deviceScaleFactor: opt.dpr },
 });
 

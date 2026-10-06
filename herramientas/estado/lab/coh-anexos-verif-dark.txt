@@ -1,0 +1,13 @@
+[turno-chrome] esperando turno: solo se permiten 2 Chrome headless a la vez…
+✓ ../modulos/08-anexos/02-chuleta-glsl.html  (73204 ms)
+   glsl=0 js=1 graficador=1 demo=0 ejemplos=0 ejercicios=0 quiz=0 anotado=0 callouts=2 bestiario=0 senior=1 h2=27 pres=4 palabras=10759 soluciones=0
+   capturas: 45 en /tmp/claude-0/-home-user-shaders-learning/9b79b7cf-13d8-56ce-97bf-3314f2a27f6e/scratchpad/agentes/coh-anexos/capturas
+✓ ../modulos/08-anexos/03-chuleta-webgl.html  (78093 ms)
+   glsl=0 js=3 graficador=0 demo=0 ejemplos=0 ejercicios=0 quiz=0 anotado=0 callouts=1 bestiario=0 senior=0 h2=18 pres=1 palabras=10013 soluciones=0
+   capturas: 48 en /tmp/claude-0/-home-user-shaders-learning/9b79b7cf-13d8-56ce-97bf-3314f2a27f6e/scratchpad/agentes/coh-anexos/capturas
+✓ ../modulos/08-anexos/05-recursos.html  (20007 ms)
+   glsl=0 js=0 graficador=0 demo=0 ejemplos=0 ejercicios=0 quiz=0 anotado=0 callouts=2 bestiario=0 senior=1 h2=7 pres=0 palabras=3134 soluciones=0
+   capturas: 12 en /tmp/claude-0/-home-user-shaders-learning/9b79b7cf-13d8-56ce-97bf-3314f2a27f6e/scratchpad/agentes/coh-anexos/paginas
+
+3/3 páginas sin problemas
+FIN

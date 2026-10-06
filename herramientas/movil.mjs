@@ -1,6 +1,10 @@
 import puppeteer from "puppeteer-core";
+import fs from "node:fs";
 import path from "node:path"; import { pathToFileURL } from "node:url";
-const b = await puppeteer.launch({ executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: "new", args: ["--use-angle=metal","--enable-gpu"], defaultViewport: { width: 390, height: 800, deviceScaleFactor: 2 } });
+const CHROME = process.env.CHROME || ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/opt/pw-browsers/chromium", "/usr/bin/google-chrome", "/usr/bin/chromium"].find((p) => fs.existsSync(p));
+const ANGLE = process.platform === "darwin" ? "--use-angle=metal" : "--use-angle=swiftshader";
+const ROOT = process.getuid && process.getuid() === 0 ? ["--no-sandbox"] : []; // Chrome no arranca como root sin esto (contenedores)
+const b = await puppeteer.launch({ executablePath: CHROME, headless: "new", args: [ANGLE, "--enable-gpu", "--enable-unsafe-swiftshader", ...ROOT], defaultViewport: { width: 390, height: 800, deviceScaleFactor: 2 } });
 for (const f of process.argv.slice(2)) {
   const p = await b.newPage();
   await p.goto(pathToFileURL(path.resolve(f)).href, { waitUntil: "load" });

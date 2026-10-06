@@ -1,0 +1,150 @@
+<!doctype html>
+<meta charset="utf-8">
+<body>
+<canvas id="c" width="300" height="150"></canvas>
+<script>
+// Comprobación de afirmaciones de A.3 que dependen de la validación de WebGL (no de la GPU)
+const R = {};
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const E = () => { const e = gl.getError(); return e === 0 ? 0 : '0x' + e.toString(16); };
+const limpiar = () => { while (gl.getError()) {} };
+R.atributos = gl.getContextAttributes();
+R.drawingBufferStorage = 'drawingBufferStorage' in gl;
+R.chrome = navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0];
+R.renderer = gl.getParameter(gl.RENDERER);
+
+function sh(tipo, src) { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+function prog(vs, fs) { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); return p; }
+const VS = '#version 300 es\nlayout(location=0) in vec2 a;\nvoid main(){ gl_Position = vec4(a, 0.0, 1.0); }';
+const FSu = '#version 300 es\nprecision highp float;\nuniform float u;\nout vec4 o;\nvoid main(){ o = vec4(u); }';
+
+// isProgram tras borrar un programa en uso
+{
+  const p = prog(VS, FSu); gl.useProgram(p); gl.deleteProgram(p);
+  R.isProgram_borradoEnUso = gl.isProgram(p);
+  R.deleteStatus = gl.getProgramParameter(p, gl.DELETE_STATUS);
+  gl.useProgram(null);
+  R.isProgram_trasSoltar = gl.isProgram(p);
+  const b = gl.createBuffer(); gl.deleteBuffer(b); R.isBuffer_trasBorrar = gl.isBuffer(b);
+  limpiar();
+}
+// getAttribLocation sin enlazar
+{ const p = gl.createProgram(); R.getAttribLocation_sinEnlazar = [gl.getAttribLocation(p, 'a'), E()]; limpiar(); }
+// bufferData con un Array normal
+{ const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, [1, 2, 3], gl.STATIC_DRAW); R.bufferData_Array = [gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE), E()]; limpiar(); }
+// relink: location vieja
+{
+  const p = prog(VS, FSu); gl.useProgram(p); const loc = gl.getUniformLocation(p, 'u'); gl.uniform1f(loc, 3);
+  gl.linkProgram(p); gl.useProgram(p);
+  const loc2 = gl.getUniformLocation(p, 'u'); R.relink_uniformVale = gl.getUniform(p, loc2);
+  gl.uniform1f(loc, 2); R.relink_locVieja = E(); limpiar();
+  gl.uniform1f(null, 2); R.uniform_null = E();
+}
+// clearColor / clearDepth / blendColor guardados
+{
+  gl.clearColor(2, -1, 0.5, 1); R.clearColor = Array.from(gl.getParameter(gl.COLOR_CLEAR_VALUE));
+  R.copiaNueva = gl.getParameter(gl.COLOR_CLEAR_VALUE) !== gl.getParameter(gl.COLOR_CLEAR_VALUE);
+  gl.clearDepth(5); R.clearDepth = gl.getParameter(gl.DEPTH_CLEAR_VALUE);
+  gl.blendColor(2, -1, 0.5, 1); R.blendColor = Array.from(gl.getParameter(gl.BLEND_COLOR));
+  gl.clearColor(0, 0, 0, 0); gl.clearDepth(1); gl.blendColor(0, 0, 0, 0);
+}
+// Framebuffer con adjuntos de distinto tamaño
+{
+  const t1 = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  const t2 = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t2); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 8, 8, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t1, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, t2, 0);
+  R.fbo_tamanosDistintos_color = '0x' + gl.checkFramebufferStatus(gl.FRAMEBUFFER).toString(16);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, null, 0);
+  const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, 8, 8);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+  R.fbo_tamanosDistintos_profundidad = '0x' + gl.checkFramebufferStatus(gl.FRAMEBUFFER).toString(16);
+  R.drawBuffer1_inicial = '0x' + gl.getParameter(gl.DRAW_BUFFER1).toString(16);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); limpiar();
+  R.drawBuffer0_canvas = '0x' + gl.getParameter(gl.DRAW_BUFFER0).toString(16);
+  gl.readBuffer(gl.COLOR_ATTACHMENT0); R.readBuffer_canvas_attach0 = E(); limpiar();
+}
+// FLIP_Y y PREMULTIPLY con TypedArray (WebGL2, texImage2D)
+function leerTex(datos, w, h, conf) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  for (const [k, v] of conf) gl.pixelStorei(k, v);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos);
+  const err = E();
+  for (const [k] of conf) gl.pixelStorei(k, false);
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  const px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return [Array.from(px), err];
+}
+{
+  const datos = new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]); // fila 0 roja, fila 1 verde (1×2)
+  R.flipY_typedArray_sin = leerTex(datos, 1, 2, []);
+  R.flipY_typedArray_con = leerTex(datos, 1, 2, [[gl.UNPACK_FLIP_Y_WEBGL, true]]);
+  R.premult_typedArray = leerTex(new Uint8Array([0, 0, 255, 128]), 1, 1, [[gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true]]);
+}
+// Valores iniciales de textura y sampler
+{
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  R.tex_inicial = ['TEXTURE_MIN_FILTER','TEXTURE_MAG_FILTER','TEXTURE_WRAP_S','TEXTURE_BASE_LEVEL','TEXTURE_MAX_LEVEL','TEXTURE_MIN_LOD','TEXTURE_MAX_LOD','TEXTURE_COMPARE_MODE','TEXTURE_COMPARE_FUNC'].map((n) => { const v = gl.getTexParameter(gl.TEXTURE_2D, gl[n]); return n + '=' + (v > 255 ? '0x' + v.toString(16) : v); });
+  R.unpack_inicial = ['UNPACK_FLIP_Y_WEBGL','UNPACK_PREMULTIPLY_ALPHA_WEBGL','UNPACK_COLORSPACE_CONVERSION_WEBGL','UNPACK_ALIGNMENT','PACK_ALIGNMENT','UNPACK_ROW_LENGTH'].map((n) => { const v = gl.getParameter(gl[n]); return n + '=' + (typeof v === 'number' && v > 255 ? '0x' + v.toString(16) : v); });
+}
+// Estado fijo inicial
+{
+  const P = (n) => { const v = gl.getParameter(gl[n]); return n + '=' + (v && v.length ? '[' + Array.from(v).join(',') + ']' : (typeof v === 'number' && v > 255 ? '0x' + v.toString(16) : v)); };
+  R.estado = ['DEPTH_FUNC','DEPTH_WRITEMASK','DEPTH_RANGE','BLEND_SRC_RGB','BLEND_DST_RGB','BLEND_EQUATION_RGB','CULL_FACE_MODE','FRONT_FACE','STENCIL_BITS','DEPTH_BITS','LINE_WIDTH','SAMPLE_COVERAGE_VALUE','GENERATE_MIPMAP_HINT','ACTIVE_TEXTURE','DITHER','STENCIL_FUNC','STENCIL_WRITEMASK','STENCIL_VALUE_MASK','SAMPLES','MAX_CLIENT_WAIT_TIMEOUT_WEBGL'].map(P);
+}
+// Errores sueltos
+{
+  gl.enable(0x8D69 /* PRIMITIVE_RESTART_FIXED_INDEX */); R.enable_primitiveRestart = E(); limpiar();
+  gl.lineWidth(NaN); R.lineWidth_NaN = E(); limpiar();
+  gl.lineWidth(0); R.lineWidth_0 = E(); limpiar();
+  gl.lineWidth(5); R.lineWidth_5 = gl.getParameter(gl.LINE_WIDTH); gl.lineWidth(1);
+  gl.depthRange(1, 0); R.depthRange_invertido = E(); limpiar();
+  gl.depthRange(-1, 5); R.depthRange_recorte = Array.from(gl.getParameter(gl.DEPTH_RANGE)); gl.depthRange(0, 1);
+  gl.activeTexture(1); R.activeTexture_1 = E(); limpiar();
+  gl.blendFunc(gl.CONSTANT_COLOR, gl.CONSTANT_ALPHA); R.blend_constColorAlpha = E(); limpiar();
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, 64, gl.STATIC_DRAW);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 256, 0); R.stride_256 = E(); limpiar();
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 6, 0); R.stride_6 = E(); limpiar();
+  const p = gl.createProgram(); gl.useProgram(p); R.useProgram_sinEnlazar = E(); limpiar();
+  const s = sh(gl.FRAGMENT_SHADER, 'basura'); R.compile_error_getError = E(); limpiar();
+  canvas.width = 640; R.viewport_trasResize = Array.from(gl.getParameter(gl.VIEWPORT)); canvas.width = 300;
+}
+// query y fence en la misma tarea
+{
+  const q = gl.createQuery(); gl.beginQuery(gl.ANY_SAMPLES_PASSED, q); gl.endQuery(gl.ANY_SAMPLES_PASSED);
+  gl.finish(); R.query_disponible = gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE);
+  const f = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.finish();
+  R.fence_estado = gl.getSyncParameter(f, gl.SYNC_STATUS) === gl.SIGNALED ? 'SIGNALED' : 'UNSIGNALED';
+  R.clientWait_0 = '0x' + gl.clientWaitSync(f, 0, 0).toString(16);
+  R.clientWait_1 = ['0x' + gl.clientWaitSync(f, 0, 1).toString(16), E()]; limpiar();
+}
+// borrar textura enlazada en varias unidades
+{
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.deleteTexture(t);
+  R.deleteTexture_unidad3 = gl.getParameter(gl.TEXTURE_BINDING_2D);
+  gl.activeTexture(gl.TEXTURE0); R.deleteTexture_unidad0 = gl.getParameter(gl.TEXTURE_BINDING_2D);
+}
+// bindBufferBase escribe el genérico
+{ const b = gl.createBuffer(); gl.bindBufferBase(gl.UNIFORM_BUFFER, 2, b); R.bindBufferBase_generico = gl.getParameter(gl.UNIFORM_BUFFER_BINDING) === b; }
+// timing finish vs readPixels (solo orientativo en SwiftShader)
+{
+  const p = prog('#version 300 es\nvoid main(){ vec2 v = vec2(gl_VertexID & 1, gl_VertexID >> 1); gl_Position = vec4(v * 4.0 - 1.0, 0.0, 1.0); }',
+    '#version 300 es\nprecision highp float;\nuniform float u;\nout vec4 o;\nvoid main(){ float s = 0.0; for (int i = 0; i < 400; i++) s += sin(gl_FragCoord.x * 0.01 + float(i) * u); o = vec4(s * 1e-4); }');
+  gl.useProgram(p); gl.uniform1f(gl.getUniformLocation(p, 'u'), 0.37); gl.bindVertexArray(gl.createVertexArray());
+  const px = new Uint8Array(4);
+  gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  let t0 = performance.now(); gl.finish(); const tf = performance.now() - t0;
+  t0 = performance.now(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); const tr = performance.now() - t0;
+  R.swiftshader_finish_ms = tf.toFixed(2); R.swiftshader_readPixels_ms = tr.toFixed(2);
+}
+window.__res = R;
+</script>
+</body>

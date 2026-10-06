@@ -1,0 +1,131 @@
+<!doctype html><html><body><canvas id="c" width="200" height="100" style="width:200px;height:100px"></canvas>
+<script type="importmap">{"imports":{"three":"./three/three.module.js"}}</script>
+<script type="module">
+// Espía instalado ANTES de crear el renderer
+const proto = WebGL2RenderingContext.prototype;
+const reg = { on: false, log: [] };
+for (const k of Object.getOwnPropertyNames(proto)) {
+  const d = Object.getOwnPropertyDescriptor(proto, k);
+  if (!d || typeof d.value !== 'function' || k === 'constructor') continue;
+  const f = d.value;
+  proto[k] = function (...a) {
+    if (reg.on) {
+      let s = k;
+      if (k === 'shaderSource') { reg.fuentes = reg.fuentes || []; reg.fuentes.push(a[1]); }
+      if (k === 'bufferData') s += '(' + (a[1] && a[1].byteLength) + ')';
+      if (k.startsWith('uniform')) s += '(' + [...a].slice(1).map(v => typeof v === 'object' && v ? '[..]' : v).join(',') + ')';
+      if (k === 'drawElements') s += '(' + a.join(',') + ')';
+      if (k === 'getExtension') s += '(' + a[0] + ')';
+      if (k === 'getProgramParameter' || k === 'enable' || k === 'disable') s += '(' + a[1 - (k === 'enable' || k === 'disable' ? 1 : 0)] + ')';
+      reg.log.push(s);
+    }
+    return f.apply(this, a);
+  };
+}
+const R = {};
+try {
+const THREE = await import('three');
+R.revision = THREE.REVISION;
+const canvas = document.getElementById('c');
+reg.on = true;
+const renderer = new THREE.WebGLRenderer({ canvas });
+R.attrs = renderer.getContext().getContextAttributes();
+R.callsCtor = reg.log.length;
+reg.log = [];
+renderer.setPixelRatio(2);
+R.trasPixelRatio = [canvas.width, canvas.height];
+renderer.setSize(200, 100, false);
+renderer.setPixelRatio(1); renderer.setSize(200, 100, false);
+reg.log = [];
+const escena = new THREE.Scene();
+const camara = new THREE.Camera();
+const material = new THREE.ShaderMaterial({
+  uniforms: { u_time: { value: 0 }, u_resolution: { value: new THREE.Vector2(canvas.width, canvas.height) } },
+  vertexShader: `
+    void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    uniform float u_time;
+    uniform vec2 u_resolution;
+    void main() {
+      vec2 uv = gl_FragCoord.xy / u_resolution;
+      gl_FragColor = vec4(uv, 0.5 + 0.5 * sin(u_time), 1.0);
+    }`,
+});
+escena.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+reg.log = []; reg.fuentes = [];
+renderer.render(escena, camara);
+R.f1 = reg.log.slice();
+R.lineasVS = reg.fuentes[0].split('\n').length; R.lineasFS = reg.fuentes[1].split('\n').length;
+R.fs = reg.fuentes[1]; R.vs = reg.fuentes[0];
+reg.log = []; material.uniforms.u_time.value = 1; renderer.render(escena, camara); R.f2 = reg.log.slice();
+reg.log = []; renderer.render(escena, camara); R.f3 = reg.log.slice();
+reg.on = false;
+R.uniformsRef = (() => { const U = { a: { value: 1 } }; return new THREE.ShaderMaterial({ uniforms: U }).uniforms === U; })();
+R.outputColorSpace = renderer.outputColorSpace;
+R.texColorSpaceDefault = new THREE.Texture().colorSpace;
+// #version duplicado
+const errores = [];
+const oe = console.error; console.error = (...a) => { errores.push(a.join(' ')); oe.apply(console, a); };
+const m2 = new THREE.ShaderMaterial({ vertexShader: '#version 300 es\nin vec3 position;\nvoid main(){ gl_Position = vec4(position, 1.0); }', fragmentShader: '#version 300 es\nprecision highp float;\nout vec4 c;\nvoid main(){ c = vec4(1.0); }' });
+const e2 = new THREE.Scene(); e2.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), m2));
+renderer.render(e2, camara);
+const m3 = new THREE.RawShaderMaterial({ vertexShader: 'in vec3 position;\nvoid main(){ gl_Position = vec4(position, 1.0); }', fragmentShader: 'precision highp float;\nvoid main(){ gl_FragColor = vec4(1.0); }' });
+const e3 = new THREE.Scene(); e3.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), m3));
+renderer.render(e3, camara);
+console.error = oe;
+R.errores = errores.map(s => s.split('\n').filter(l => /ERROR|Shader Error/.test(l)).join(' | '));
+// Espacio de color: gris 128 en CanvasTexture
+function texGris() { const c2 = document.createElement('canvas'); c2.width = c2.height = 4; const x = c2.getContext('2d'); x.fillStyle = 'rgb(128,128,128)'; x.fillRect(0, 0, 4, 4); return new THREE.CanvasTexture(c2); }
+const gl = renderer.getContext();
+function pix(mat) { const s = new THREE.Scene(); s.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat)); renderer.render(s, camara); const p = new Uint8Array(4); gl.readPixels(100, 50, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p); return p[0]; }
+const tS = texGris(); tS.colorSpace = THREE.SRGBColorSpace; const tN = texGris();
+const vsUV = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+R.color = {
+  basicSRGB: pix(new THREE.MeshBasicMaterial({ map: tS })),
+  basicNone: pix(new THREE.MeshBasicMaterial({ map: tN })),
+  shaderSRGB: pix(new THREE.ShaderMaterial({ uniforms: { t: { value: tS } }, vertexShader: vsUV, fragmentShader: 'uniform sampler2D t; varying vec2 vUv; void main(){ gl_FragColor = texture2D(t, vUv); }' })),
+  shaderSRGBinc: pix(new THREE.ShaderMaterial({ uniforms: { t: { value: tS } }, vertexShader: vsUV, fragmentShader: 'uniform sampler2D t; varying vec2 vUv; void main(){ gl_FragColor = texture2D(t, vUv);\n#include <colorspace_fragment>\n}' })),
+  shaderNone: pix(new THREE.ShaderMaterial({ uniforms: { t: { value: tN } }, vertexShader: vsUV, fragmentShader: 'uniform sampler2D t; varying vec2 vUv; void main(){ gl_FragColor = texture2D(t, vUv); }' })),
+};
+// onBeforeRender + uniform compartido
+{
+  const mat = new THREE.ShaderMaterial({ uniforms: { u_b: { value: 0 } }, vertexShader: 'void main(){ gl_Position = modelMatrix * vec4(position, 1.0); }', fragmentShader: 'uniform float u_b; void main(){ gl_FragColor = vec4(u_b, 0.0, 0.0, 1.0); }' });
+  const s = new THREE.Scene();
+  const a = new THREE.Mesh(new THREE.PlaneGeometry(1, 2), mat); a.position.x = -0.5; a.onBeforeRender = () => { mat.uniforms.u_b.value = 0.25; };
+  const b = new THREE.Mesh(new THREE.PlaneGeometry(1, 2), mat); b.position.x = 0.5; b.onBeforeRender = () => { mat.uniforms.u_b.value = 1.0; };
+  s.add(a, b);
+  const leer = () => { renderer.render(s, camara); const p = new Uint8Array(4); gl.readPixels(50, 50, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p); const q = new Uint8Array(4); gl.readPixels(150, 50, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, q); return [p[0], q[0]]; };
+  R.onBeforeRender = leer();
+  b.onBeforeRender = () => { mat.uniforms.u_b.value = 1.0; mat.uniformsNeedUpdate = true; };
+  a.onBeforeRender = () => { mat.uniforms.u_b.value = 0.25; mat.uniformsNeedUpdate = true; };
+  R.onBeforeRenderNU = leer();
+}
+// onBeforeCompile con fábrica
+{
+  const crear = (col) => { const m = new THREE.MeshBasicMaterial(); m.onBeforeCompile = (sh) => { R.obcLlamadas = (R.obcLlamadas || 0) + 1; sh.fragmentShader = sh.fragmentShader.replace('#include <dithering_fragment>', '#include <dithering_fragment>\ngl_FragColor = vec4(' + col + ', 1.0);'); }; return m; };
+  const s = new THREE.Scene();
+  const a = new THREE.Mesh(new THREE.PlaneGeometry(1, 2), crear('1.0, 0.0, 0.0')); a.position.x = -0.5;
+  const b = new THREE.Mesh(new THREE.PlaneGeometry(1, 2), crear('0.0, 0.0, 1.0')); b.position.x = 0.5;
+  s.add(a, b);
+  const p0 = renderer.info.programs.length;
+  renderer.render(s, camara);
+  const p = new Uint8Array(4); gl.readPixels(150, 50, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
+  R.obc = { derecha: [...p], programasNuevos: renderer.info.programs.length - p0 };
+}
+// aspect
+{ const c = new THREE.PerspectiveCamera(50, 1, 0.1, 100); const e0 = c.projectionMatrix.elements[0]; c.aspect = 2; const e1 = c.projectionMatrix.elements[0]; c.updateProjectionMatrix(); R.aspect = [e0, e1, c.projectionMatrix.elements[0]]; 
+  const w = new THREE.PerspectiveCamera(50, 2, 1, 100); w.coordinateSystem = THREE.WebGPUCoordinateSystem; w.updateProjectionMatrix(); R.webgpuM = [w.projectionMatrix.elements[10], w.projectionMatrix.elements[14]]; }
+// culling
+{
+  const cam = new THREE.PerspectiveCamera(50, 2, 0.1, 100); cam.position.set(20, 0, 5); cam.lookAt(20, 0, 0);
+  const mat = new THREE.ShaderMaterial({ vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position + vec3(20.0, 0.0, 0.0), 1.0); }', fragmentShader: 'void main(){ gl_FragColor = vec4(1.0); }' });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+  const s = new THREE.Scene(); s.add(m);
+  renderer.render(s, cam); const c0 = renderer.info.render.calls;
+  m.frustumCulled = false; renderer.render(s, cam); R.culling = [c0, renderer.info.render.calls];
+}
+R.Timer = typeof THREE.Timer; R.Clock = typeof THREE.Clock;
+R.mat4elements = Array.isArray(new THREE.Matrix4().elements);
+} catch (e) { R.excepcion = e.message + '\n' + e.stack; }
+window.__R = R;
+</script></body></html>

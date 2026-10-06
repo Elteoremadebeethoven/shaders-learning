@@ -1,0 +1,887 @@
+{
+ "version": "Chrome/141.0.7390.37",
+ "E1a_60_de_golpe": {
+  "pointermove": 2,
+  "sumaCoalescidos": 60,
+  "predichos": [
+   10,
+   10
+  ],
+  "porFrame": {
+   "34": 2
+  },
+  "mousemove": 2,
+  "pointerrawupdate": 2,
+  "rawPorFrame": {
+   "34": 2
+  },
+  "msAntesDelRaf_pm": [
+   3
+  ],
+  "msAntesDelRaf_raw_min_max": [
+   3.3,
+   7.3
+  ],
+  "secure": [
+   true,
+   true
+  ]
+ },
+ "E1b_60_uno_a_uno": {
+  "pointermove": 60,
+  "sumaCoalescidos": 60,
+  "predichos": [
+   0,
+   0,
+   0,
+   1,
+   1
+  ],
+  "porFrame": {
+   "59": 1,
+   "60": 1,
+   "61": 1,
+   "62": 1,
+   "63": 1,
+   "64": 1,
+   "65": 1,
+   "66": 1,
+   "67": 1,
+   "68": 1,
+   "69": 1,
+   "70": 1,
+   "71": 1,
+   "72": 1,
+   "73": 1,
+   "74": 1,
+   "75": 1,
+   "76": 1,
+   "77": 1,
+   "78": 1,
+   "79": 1,
+   "80": 1,
+   "81": 1,
+   "82": 1,
+   "83": 1,
+   "84": 1,
+   "85": 1,
+   "86": 1,
+   "87": 1,
+   "88": 1,
+   "89": 1,
+   "90": 1,
+   "91": 1,
+   "92": 1,
+   "93": 1,
+   "94": 1,
+   "95": 1,
+   "96": 1,
+   "97": 1,
+   "98": 1,
+   "99": 1,
+   "100": 1,
+   "101": 1,
+   "102": 1,
+   "103": 1,
+   "104": 1,
+   "105": 1,
+   "106": 1,
+   "107": 1,
+   "108": 1,
+   "109": 1,
+   "110": 1,
+   "111": 1,
+   "112": 1,
+   "113": 1,
+   "114": 1,
+   "115": 1,
+   "116": 1,
+   "117": 1,
+   "118": 1
+  },
+  "mousemove": 60,
+  "pointerrawupdate": 60,
+  "rawPorFrame": {
+   "59": 1,
+   "60": 1,
+   "61": 1,
+   "62": 1,
+   "63": 1,
+   "64": 1,
+   "65": 1,
+   "66": 1,
+   "67": 1,
+   "68": 1,
+   "69": 1,
+   "70": 1,
+   "71": 1,
+   "72": 1,
+   "73": 1,
+   "74": 1,
+   "75": 1,
+   "76": 1,
+   "77": 1,
+   "78": 1,
+   "79": 1,
+   "80": 1,
+   "81": 1,
+   "82": 1,
+   "83": 1,
+   "84": 1,
+   "85": 1,
+   "86": 1,
+   "87": 1,
+   "88": 1,
+   "89": 1,
+   "90": 1,
+   "91": 1,
+   "92": 1,
+   "93": 1,
+   "94": 1,
+   "95": 1,
+   "96": 1,
+   "97": 1,
+   "98": 1,
+   "99": 1,
+   "100": 1,
+   "101": 1,
+   "102": 1,
+   "103": 1,
+   "104": 1,
+   "105": 1,
+   "106": 1,
+   "107": 1,
+   "108": 1,
+   "109": 1,
+   "110": 1,
+   "111": 1,
+   "112": 1,
+   "113": 1,
+   "114": 1,
+   "115": 1,
+   "116": 1,
+   "117": 1,
+   "118": 1
+  },
+  "msAntesDelRaf_pm": [
+   0.1,
+   0.7,
+   0.2,
+   0.7,
+   0.3,
+   0,
+   0.3,
+   0.1,
+   0,
+   0.1,
+   0.1,
+   0.1,
+   0.2,
+   0,
+   0.1,
+   0.3,
+   0.1,
+   0.1,
+   0.1,
+   0,
+   1,
+   0.3,
+   0.3,
+   0.3,
+   0.9,
+   0.2,
+   0.1,
+   0.3,
+   0.1,
+   0.4,
+   0.1,
+   0.4,
+   0.1,
+   1,
+   0.1,
+   0.2,
+   0.1,
+   0,
+   0,
+   0.2,
+   0.2,
+   0.4,
+   0,
+   0.2,
+   0.1,
+   0.2,
+   0.1,
+   0,
+   0.1,
+   1.5,
+   1.1,
+   0.9,
+   0.1,
+   0.2,
+   0,
+   0.2,
+   0.1,
+   0,
+   0.2,
+   0.1
+  ],
+  "msAntesDelRaf_raw_min_max": [
+   7.2,
+   17.4
+  ],
+  "secure": [
+   true,
+   true
+  ]
+ },
+ "E1c_60_de_golpe_hilo_ocupado": {
+  "pointermove": 1,
+  "sumaCoalescidos": 60,
+  "predichos": [
+   10
+  ],
+  "porFrame": {
+   "143": 1
+  },
+  "mousemove": 1,
+  "pointerrawupdate": 1,
+  "rawPorFrame": {
+   "143": 1
+  },
+  "msAntesDelRaf_pm": [
+   0.2
+  ],
+  "msAntesDelRaf_raw_min_max": [
+   0.5,
+   0.5
+  ],
+  "secure": [
+   true,
+   true
+  ]
+ },
+ "E1d_40_cada_4ms": {
+  "pointermove": 34,
+  "sumaCoalescidos": 40,
+  "predichos": [
+   0,
+   0,
+   4,
+   4,
+   4
+  ],
+  "porFrame": {
+   "170": 3,
+   "171": 3,
+   "172": 2,
+   "173": 2,
+   "174": 2,
+   "175": 3,
+   "176": 3,
+   "177": 3,
+   "178": 3,
+   "179": 4,
+   "180": 4,
+   "181": 2
+  },
+  "mousemove": 34,
+  "pointerrawupdate": 40,
+  "rawPorFrame": {
+   "170": 4,
+   "171": 3,
+   "172": 3,
+   "173": 3,
+   "174": 3,
+   "175": 4,
+   "176": 4,
+   "177": 3,
+   "178": 3,
+   "179": 4,
+   "180": 4,
+   "181": 2
+  },
+  "msAntesDelRaf_pm": [
+   0.2,
+   0,
+   2,
+   3.8,
+   0,
+   0.1,
+   0,
+   0.1,
+   0.2,
+   0.1,
+   0.1,
+   0.1
+  ],
+  "msAntesDelRaf_raw_min_max": [
+   0.1,
+   18.1
+  ],
+  "secure": [
+   true,
+   true
+  ]
+ },
+ "E2_rueda_raton_quieto": {
+  "cuenta": {
+   "wheel": 1,
+   "scroll": 8,
+   "pointerout": 1,
+   "pointerleave": 1
+  },
+  "scrollYfinal": 800,
+  "msScrollAntesDelRaf": [
+   0.3,
+   0,
+   0.1,
+   0.1,
+   0.2,
+   0.1,
+   0,
+   0
+  ],
+  "leave": [
+   [
+    "pointerout",
+    200
+   ],
+   [
+    "pointerleave",
+    200
+   ]
+  ]
+ },
+ "E3": {
+  "activo0": [
+   "u_ondas[0]",
+   "FLOAT_VEC3",
+   8
+  ],
+  "igualesObj": false,
+  "l5": true,
+  "leidoConL": [
+   7,
+   8,
+   9
+  ],
+  "con24": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ],
+  "con12": [
+   2,
+   2,
+   2,
+   2,
+   1,
+   1,
+   1,
+   1
+  ],
+  "err12": 0,
+  "con30": [
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3
+  ],
+  "err30": 0,
+  "err10": 1281,
+  "con10": [
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3,
+   3
+  ],
+  "desde5con24": [
+   3,
+   3,
+   3,
+   3,
+   3,
+   5,
+   5,
+   5
+  ],
+  "errDesde5": 0,
+  "maxFrag": 4096,
+  "INVALID_VALUE": 1281
+ },
+ "E3_consola": [
+  "WebGL: INVALID_VALUE: uniform3fv: invalid size"
+ ],
+ "E4_dedos": [
+  [
+   "pointerdown",
+   2,
+   true
+  ],
+  [
+   "pointerdown",
+   3,
+   false
+  ],
+  [
+   "pointerup",
+   3,
+   false
+  ],
+  [
+   "pointerup",
+   2,
+   true
+  ],
+  [
+   "pointerdown",
+   4,
+   true
+  ],
+  [
+   "pointerup",
+   4,
+   true
+  ]
+ ],
+ "E5_multitouch.html": {
+  "pasos": [
+   {
+    "huecos": [
+     1,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      0,
+      false,
+      0.16
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     1,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      1,
+      false,
+      0.16
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     1,
+     1,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      2,
+      false,
+      0.11
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     1,
+     1,
+     1,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      3,
+      false,
+      0.18
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     1,
+     1,
+     1,
+     1
+    ],
+    "dedos": [
+     [
+      1,
+      4,
+      false,
+      0.16
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     1,
+     1,
+     1,
+     1
+    ],
+    "dedos": [
+     [
+      1,
+      4,
+      false,
+      0.03
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     1,
+     1,
+     1,
+     null
+    ],
+    "dedos": [],
+    "info": "punteros: ninguno"
+   },
+   {
+    "huecos": [
+     1,
+     1,
+     1,
+     1,
+     1
+    ],
+    "dedos": [
+     [
+      1,
+      4,
+      true,
+      0.94
+     ]
+    ],
+    "info": "punteros: 1"
+   }
+  ],
+  "errs": []
+ },
+ "E5_multitouch-arreglado.html": {
+  "pasos": [
+   {
+    "huecos": [
+     1,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      0,
+      false,
+      0.16
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      0,
+      false,
+      0.16
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      0,
+      false,
+      0.14
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      0,
+      false,
+      0.14
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      0,
+      false,
+      0.13
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     1,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      0,
+      false,
+      0.18
+     ]
+    ],
+    "info": "punteros: 1"
+   },
+   {
+    "huecos": [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [],
+    "info": "punteros: ninguno"
+   },
+   {
+    "huecos": [
+     1,
+     null,
+     null,
+     null,
+     null
+    ],
+    "dedos": [
+     [
+      1,
+      0,
+      true,
+      0.93
+     ]
+    ],
+    "info": "punteros: 1"
+   }
+  ],
+  "errs": []
+ },
+ "E6_reentrada": [
+  {
+   "x": 380,
+   "sx": 82.8,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 135,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 178,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 213.2,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 242.5,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 266.6,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 286.5,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 302.8,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 316.4,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 327.5,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 336.7,
+   "dentro": true,
+   "fresco": false
+  },
+  {
+   "x": 380,
+   "sx": 344.3,
+   "dentro": true,
+   "fresco": false
+  }
+ ],
+ "E8_pointerEvents": {
+  "texto1": "CANVAS#f2",
+  "texto2": "CANVAS#f2",
+  "boton": "BUTTON#b"
+ },
+ "E7_gbcr": "0.803 µs/llamada",
+ "E9_teclado": {
+  "act1": "BODY#",
+  "act2": "CANVAS#k2",
+  "log": [
+   "doc:KeyA target=BODY",
+   "k2:KeyB",
+   "doc:KeyB target=CANVAS#k2",
+   "k2:blur",
+   "window:blur"
+  ],
+  "hasFocusTrasOtraPestaña": false
+ },
+ "E11_ax": {
+  "nodos": [
+   [
+    "Canvas",
+    ""
+   ],
+   [
+    "Canvas",
+    ""
+   ],
+   [
+    "button",
+    "botón"
+   ],
+   [
+    "Canvas",
+    ""
+   ],
+   [
+    "Canvas",
+    ""
+   ],
+   [
+    "Canvas",
+    ""
+   ],
+   [
+    "image",
+    "Ondas moradas"
+   ],
+   [
+    "Canvas",
+    ""
+   ],
+   [
+    "button",
+    "Botón dentro"
+   ]
+  ],
+  "ignorados": 0
+ },
+ "E10_reducido": {
+  "antes": false,
+  "despues": true,
+  "cambios": [
+   [
+    true,
+    802.1999999999534
+   ]
+  ]
+ }
+}

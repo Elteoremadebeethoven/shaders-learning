@@ -1,0 +1,65 @@
+### qa1.out
+[turno-chrome] esperando turno: solo se permiten 2 Chrome headless a la vez…
+chrome lanzado 2026-10-06T19:49:32.856Z
+7.3.4 info: foto → paisaje · p = 1.00 · instantáneas: 3
+7.3.5 info: hover = 1.000 · velocidad = 0.01/s · demostración
+7.3.6 tras la demo: {
+  h1: 'Proyectos',
+  actual: [ 'Proyectos' ],
+  aviso: 'Página: Proyectos',
+  foco: 'contenido',
+  clase: ''
+}
+7.3.8: [
+  'continuo · 30 frames en el último segundo · total 105',
+  'bajo demanda · 0 frames en el último segundo · total 2'
+]
+Ejercicio 7.3.3 partida: ["✓ de 0 a 1 en 1 s (± 1 frame) y termina en 1 exacto","✗ al interrumpir a mitad, el valor no salta","✗ volver desde la mitad tarda la mitad: 0,5 s (± 1 frame)","✓ y termina en 0 exacto","✗ pedir el mismo destino a mitad no reinicia: faltan 0,7 s (± 1 frame)","✗ ir al valor en el que ya está no crea ningún tramo"]
+Ejercicio 7.3.3 solución: ["✓ de 0 a 1 en 1 s (± 1 frame) y termina en 1 exacto","✓ al interrumpir a mitad, el valor no salta","✓ volver desde la mitad tarda la mitad: 0,5 s (± 1 frame)","✓ y termina en 0 exacto","✓ pedir el mismo destino a mitad no reinicia: faltan 0,7 s (± 1 frame)","✓ ir al valor en el que ya está no crea ningún tramo"]
+Ejercicio 7.3.4 partida: ["✓ la línea dura 2,5 s","✗ antes de empezar, x vale el «desde» de su primera pista (0)","✗ x en 0,5 s = 5","✗ entre pistas (1,2 s), x se queda en 10","✓ x en 2 s = 15 (segunda pista)","✗ pasado el final, x = 20","✗ y en 0,25 s = 2,5 y en 3 s = 0","✓ una propiedad sin pistas da undefined","✗ sin estado: saltar hacia atrás da lo mismo que antes"]
+Ejercicio 7.3.4 solución: ["✓ la línea dura 2,5 s","✓ antes de empezar, x vale el «desde» de su primera pista (0)","✓ x en 0,5 s = 5","✓ entre pistas (1,2 s), x se queda en 10","✓ x en 2 s = 15 (segunda pista)","✓ pasado el final, x = 20","✓ y en 0,25 s = 2,5 y en 3 s = 0","✓ una propiedad sin pistas da undefined","✓ sin estado: saltar hacia atrás da lo mismo que antes"]
+Ejercicio 7.3.5 partida: ["✗ en reposo: 53 frames en 1 s (deben ser 0)","✓ al entrar el puntero se anima: 24 frames en 0,5 s","✗ al salir, vuelve a dormirse: 53 frames en 1 s","✗ y el muelle termina en 0 exacto: -1.240348470153865e-8"]
+Ejercicio 7.3.5 solución: ["✓ en reposo: 0 frames en 1 s (deben ser 0)","✓ al entrar el puntero se anima: 25 frames en 0,5 s","✓ al salir, vuelve a dormirse: 0 frames en 1 s","✓ y el muelle termina en 0 exacto: 0"]
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+Error [TypeError]: Cannot read properties of null (reading 'textContent')
+    at evaluate (evaluate at file:///tmp/claude-0/-home-user-shaders-learning/9b79b7cf-13d8-56ce-97bf-3314f2a27f6e/scratchpad/agentes/rev-m7-3/qa1.mjs:101:13, <anonymous>:1:105)
+    at #evaluate (file:///home/user/shaders-learning/herramientas/node_modules/puppeteer-core/lib/puppeteer/cdp/ExecutionContext.js:402:19)
+    at async ExecutionContext.evaluate (file:///home/user/shaders-learning/herramientas/node_modules/puppeteer-core/lib/puppeteer/cdp/ExecutionContext.js:288:16)
+    at async IsolatedWorld.evaluate (file:///home/user/shaders-learning/herramientas/node_modules/puppeteer-core/lib/puppeteer/cdp/IsolatedWorld.js:104:16)
+    at async CdpJSHandle.evaluate (file:///home/user/shaders-learning/herramientas/node_modules/puppeteer-core/lib/puppeteer/api/JSHandle.js:154:20)
+    at async CdpElementHandle.evaluate (file:///home/user/shaders-learning/herramientas/node_modules/puppeteer-core/lib/puppeteer/api/ElementHandle.js:344:20)
+    at async file:///tmp/claude-0/-home-user-shaders-learning/9b79b7cf-13d8-56ce-97bf-3314f2a27f6e/scratchpad/agentes/rev-m7-3/qa1.mjs:101:5
+
+Node.js v22.22.0
+FIN
+
+### qa2.out
+[turno-chrome] esperando turno: solo se permiten 2 Chrome headless a la vez…
+chrome Chrome/141.0.7390.37
+opacidad 0.5 y 0.25 de blanco sobre negro: [[128,128,128,255],[64,64,64,255]]
+APIs: {"startViewTransition":"function","drawElement":"undefined","drawElementImage":"undefined","texElementImage2D":"undefined"}
+toque sin arrastre: t:pointerover(touch) t:pointerenter(touch) t:pointerdown(touch) t:touchstart t:pointerup(touch) t:pointerout(touch) t:pointerleave(touch) t:touchend t:click(touch)
+toque con arrastre vertical: t2:pointerover(touch) t2:pointerenter(touch) t2:pointerdown(touch) t2:touchstart t2:pointermove(touch) t2:pointermove(touch) t2:touchmove t2:pointercancel(touch) t2:pointerout(touch) t2:pointerleave(touch) t2:touchmove t2:touchmove t2:touchmove t2:touchmove t2:touchmove t2:touchmove t2:touchmove t2:touchmove t2:touchmove t2:touchend scrollY= 203
+fbm 1024x512, escala 5: {"min":0.15380558371543884,"p1":0.2413891702890396,"mediana":0.5542380213737488,"p99":0.7986059188842773,"max":0.8911678194999695,"tabla":{"0.1":[0,2.8],"0.2":[0.3,8],"0.3":[3,16.7],"0.5":[36.5,41.1],"0.7":[89,74.3],"0.8":[99,86.6],"0.9":[100,95.3]},"ardenEnP0":2.22}
+7.3.5 sin visto, código cambiado: true
+7.3.5 sin puntero.visto: ["✓ en reposo: 0 frames en 1 s (deben ser 0)","✓ al entrar el puntero se anima: 19 frames en 0,5 s","✓ al salir, vuelve a dormirse: 0 frames en 1 s","✓ y el muelle termina en 0 exacto: 0"]
+FIN
+
+### tiempos.out (SwiftShader, NO vale para la lección)
+[turno-chrome] esperando turno: solo se permiten 2 Chrome headless a la vez…
+GPU: ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) · Chrome/141.0.7390.37 · 720×450
+modo  transición            fiable (mediana, min–max)   engañoso (mismo FBO)
+0     fundido sRGB             43.42 ms (39.93–54.77)     41.19 ms
+1     fundido en luz           47.81 ms (42.77–54.73)     45.01 ms
+2     por negro                46.23 ms (43.26–56.8)     45.98 ms
+3     cortinilla               50.51 ms (41.46–55.92)     44.62 ms
+4     radial                   46.28 ms (41.13–51.45)     42.82 ms
+5     disolución               57.96 ms (52.61–61.17)     55.14 ms
+6     desplazamiento           45.94 ms (43.95–50.88)     44.06 ms
+7     persianas                45.54 ms (43.58–50.48)     42.51 ms
+
+(Esto NO es el M1: con SwiftShader las cifras no sirven para la lección.)
+FIN

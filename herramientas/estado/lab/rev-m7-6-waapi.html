@@ -1,0 +1,58 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+#css { width: 10px; height: 10px; animation: mover 3s linear infinite; }
+@keyframes mover { from { transform: translateX(0) } to { transform: translateX(100px) } }
+@media (prefers-reduced-motion: reduce) { #css { animation: none; } }
+body { margin: 0; background: #f0f; }
+canvas { width: 100px; height: 100px; display: block; }
+</style></head><body>
+<div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div><div id="css"></div>
+<canvas id="c1"></canvas><canvas id="c2"></canvas>
+<div id="inerte" inert><button id="btn">x</button></div>
+<script>
+const R = {};
+const op = (el) => +getComputedStyle(el).opacity;
+// 1. pausa + currentTime: estilo síncrono
+const a = document.getElementById('a').animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1000, delay: 200, easing: 'linear', fill: 'backwards' });
+a.pause();
+a.currentTime = 700; R.t700 = op(document.getElementById('a'));
+a.currentTime = 100; R.t100 = op(document.getElementById('a'));
+a.currentTime = 5000; R.t5000 = op(document.getElementById('a')); R.estado5000 = a.playState;
+a.currentTime = 1200; R.t1200_endTime = op(document.getElementById('a')) + ' (endTime ' + a.effect.getComputedTiming().endTime + ')';
+// 2. CSSAnimation
+const cssA = document.getElementById('css').getAnimations();
+R.css = cssA.map(x => x.constructor.name + ':' + x.animationName + ':' + x.playState).join();
+// 3. Sin pause(): escribir 0 diez frames y dejar de hacerlo
+const b = document.getElementById('b').animate([{ opacity: 0 }, { opacity: 1 }], { duration: 10000 });
+let n = 0;
+function f() { b.currentTime = 0; if (++n < 10) requestAnimationFrame(f); else setTimeout(() => { R.sinPausa500 = Math.round(b.currentTime); }, 500); }
+requestAnimationFrame(f);
+// 4. En marcha, colocada en 1000 ms (100 px) en cada rAF: ¿qué ve al entrar al callback?
+const c = document.getElementById('c').animate([{ transform: 'translateX(0px)' }, { transform: 'translateX(1000px)' }], { duration: 10000, easing: 'linear' });
+const vistos = [];
+let m = 0;
+function g() {
+  const antes = new DOMMatrix(getComputedStyle(document.getElementById('c')).transform).m41;
+  c.currentTime = 1000;
+  const despues = new DOMMatrix(getComputedStyle(document.getElementById('c')).transform).m41;
+  if (m > 2) vistos.push(antes.toFixed(1) + '→' + despues.toFixed(1));
+  if (++m < 8) requestAnimationFrame(g); else R.enMarcha = vistos.join(' ');
+}
+requestAnimationFrame(g);
+// 5. canvas alpha:false sin dibujar
+const g1 = document.getElementById('c1').getContext('webgl2', { alpha: false });
+const g2 = document.getElementById('c2').getContext('webgl2', { alpha: true });
+// 6. inert
+document.getElementById('btn').focus(); R.focoInert = document.activeElement.tagName;
+// 7. getContext('webgl2') tras '2d': ¿evento de error de creación?
+const cv = document.createElement('canvas'); cv.getContext('2d');
+let msg = '(sin evento)';
+cv.addEventListener('webglcontextcreationerror', (e) => { msg = e.statusMessage; });
+R.webgl2tras2d = String(cv.getContext('webgl2')) + ' · ' + msg;
+// 8. restoreContext sin perder / loseContext dos veces: ¿avisos?
+const cv2 = document.createElement('canvas'); const gl3 = cv2.getContext('webgl2'); const ext = gl3.getExtension('WEBGL_lose_context');
+cv2.addEventListener('webglcontextlost', e => e.preventDefault());
+ext.restoreContext(); R.errRestaurarSinPerder = gl3.getError();
+ext.loseContext(); ext.loseContext(); 
+window.R = R;
+</script></body></html>

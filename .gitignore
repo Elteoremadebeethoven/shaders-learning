@@ -10,7 +10,7 @@ __pycache__/
 *.py[cod]
 
 # Cola global de Chrome headless (herramientas/.chrome-turno) y registros del vigilante
-herramientas/.chrome-turno
+herramientas/.chrome-turno*
 *.log
 
 # Capturas y temporales de verificación

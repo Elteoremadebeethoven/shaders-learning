@@ -689,7 +689,7 @@ console.log("caja CSS:", canvas.clientWidth, "×", canvas.clientHeight, "px");
 <p>Con 24 píxeles de ancho, el círculo es una mancha borrosa: el navegador interpola 24 píxeles para cubrir cientos. Activa <code>pixelated</code> y verás los píxeles reales, como bloques. Sube el deslizador hasta el ancho de la caja (lo imprime la consola) y el borde se vuelve nítido. Desactiva «mantener proporción» y el círculo se convierte en un óvalo.</p>
 
 <div class="callout cuidado">
-  <p><code>canvas.width = canvas.width</code> es un truco antiguo para «borrar» el canvas. Funciona porque, como acabas de ver, asignar el tamaño borra el búfer; pero también reinicia todo el estado del contexto (transformaciones, colores, fuente) y obliga al navegador a reasignar memoria. Para borrar en cada frame usa <code>ctx.clearRect(0, 0, canvas.width, canvas.height)</code> en Canvas 2D (lección <a href="../02-animacion/06-canvas2d.html">2.6</a>) o <code>gl.clear()</code> en WebGL (lección <a href="../05-webgl/02-primer-triangulo.html">5.2</a>).</p>
+  <p><code>canvas.width = canvas.width</code> es un truco antiguo para «borrar» el canvas. Funciona porque, como acabas de ver, asignar el tamaño borra el búfer; pero también reinicia todo el estado del contexto (transformaciones, colores, fuente) y obliga al navegador a reasignar memoria. Para borrar en cada frame usa <code>ctx.clearRect(0, 0, canvas.width, canvas.height)</code> en Canvas 2D (lección <a href="../02-animacion/06-canvas2d.html">2.6</a>) o <code>gl.clear()</code> en WebGL (lección <a href="../05-webgl/01-contexto.html#clearcolor-y-clear-sin-misterios">5.1</a>).</p>
 </div>
 
 <div class="callout bestiario" data-id="m1-circulo-ovalado" data-titulo="Dibujo un círculo y sale un óvalo borroso">

@@ -120,7 +120,7 @@ void main() {
 
 <div class="callout bestiario" data-id="m6a-patron-lejos" data-titulo="El patrón se pixela, tiembla o desaparece tras mucho tiempo en movimiento">
   <p><strong>Síntoma:</strong> un patrón que se desplaza con el tiempo (un fondo que avanza, un scroll infinito) se ve perfecto al principio y, tras horas, sus formas se vuelven poligonales o tiemblan; o un patrón funciona cerca del origen y se deshace al llevarlo lejos.</p>
-  <p><strong>Causa:</strong> la coordenada que entra en <code>fract</code> es enorme (<code>p * N + u_time * velocidad</code> tras horas, o una posición de mundo grande), y en float32 le quedan pocas cifras para los decimales. <code>fract</code> no puede devolver la precisión que la coordenada ya no tiene.</p>
+  <p><strong>Causa:</strong> la coordenada que entra en <code>fract</code> es enorme (<code>p * N + u_time * velocidad</code> tras horas, o una posición de mundo grande), y en float32 le quedan pocas cifras para los decimales. <code>fract</code> no puede devolver la precisión que la coordenada ya no tiene. Es la versión en patrones de dos bichos de 3.7: <a href="../03-matematicas/07-precision.html#m3-temblor-mundo-grande">«El personaje tiembla lejos del origen»</a> y <a href="../03-matematicas/07-precision.html#m3-tiempo-horas">«La animación va a saltos tras horas con la página abierta»</a>.</p>
   <p><strong>Solución:</strong> mantén pequeñas las coordenadas que entran en la repetición. Si el patrón es periódico, envuelve el desplazamiento en JavaScript (en doble precisión) con un periodo que sea múltiplo de la celda: <code>(velocidad * t) % 1.0</code> para un patrón de periodo 1. Si las celdas tienen identificadores (colores por celda), envía por separado la parte entera del desplazamiento como offset de los identificadores, calculado en la CPU.</p>
 </div>
 
@@ -510,7 +510,7 @@ void main() {
 <div class="callout bestiario" data-id="m6a-formas-cortadas" data-titulo="Las formas del patrón aparecen cortadas por líneas rectas invisibles">
   <p><strong>Síntoma:</strong> en un patrón repetido, algunas formas tienen un lado recto, como si alguien las hubiera recortado con tijeras; los cortes forman una rejilla invisible. Pasa sobre todo al desplazarlas al azar, agrandarlas, girarlas o añadirles un brillo.</p>
   <p><strong>Causa:</strong> la forma de una celda se extiende a la celda vecina, pero los píxeles de la vecina solo evalúan la forma de su propia celda. La parte que invade no la dibuja nadie.</p>
-  <p><strong>Solución:</strong> o haz que la forma quepa (desplazamiento + tamaño + giro dentro de medio lado de celda), o evalúa las celdas vecinas y quédate con la distancia mínima: las 3 × 3 si las formas pueden alejarse hasta una celda entera de la suya. Si solo sobresalen poco, basta con las 2 × 2 más cercanas al píxel (las de su cuadrante).</p>
+  <p><strong>Solución:</strong> o haz que la forma quepa (desplazamiento + tamaño + giro dentro de medio lado de celda), o evalúa las celdas vecinas y quédate con la distancia mínima: las 3 × 3 si las formas pueden alejarse hasta una celda entera de la suya. Si solo sobresalen poco, basta con las 2 × 2 más cercanas al píxel (las de su cuadrante). En raymarching el mismo error es peor, porque además los rayos atraviesan el objeto: <a href="09-raymarching.html#m6b-rm-repeticion">«Con la repetición, los objetos salen cortados por planos»</a> (6.9).</p>
 </div>
 
 <div class="callout senior" data-titulo="Lo que cuesta mirar a los vecinos, y a qué se parece">
