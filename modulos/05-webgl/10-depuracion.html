@@ -1,0 +1,1199 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.10 · Depuración y rendimiento — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/depuracion">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>Depuración y rendimiento</h1>
+  <p class="resumen">Con WebGL, lo normal es que algo no funcione y la pantalla no diga por qué, o que funcione despacio sin que se sepa dónde se va el tiempo. Esta lección convierte los trucos sueltos del módulo en un método: una lista de comprobación para la pantalla negra, herramientas para ver lo que la GPU calcula de verdad y una forma sistemática de averiguar qué te frena.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: todo el módulo 5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Seguirás una lista de comprobación ordenada ante una pantalla negra, y usarás un inspector de estado para acotar el fallo.</li>
+      <li>Envolverás el contexto en modo depuración para que cada error de WebGL señale la línea exacta, y leerás los logs del compilador sin miedo.</li>
+      <li>Verás el shader que ejecuta la GPU de verdad (<code>WEBGL_debug_shaders</code>), pintarás valores intermedios en falso color, detectarás NaN y leerás valores exactos con <code>readPixels</code>.</li>
+      <li>Distinguirás si tu escena está limitada por la CPU o por la GPU, y conocerás las causas típicas: llamadas, cambios de estado, overdraw, subidas de texturas, esperas y resolución.</li>
+      <li>Medirás tiempos de GPU con <code>EXT_disjoint_timer_query_webgl2</code> sabiendo sus límites, y evitarás fugas de memoria.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>La pantalla negra, con método</h2>
+<p>Una pantalla negra (o del color de <code>clearColor</code>) no es un error: es la ausencia de resultado, y puede venir de una docena de sitios. Probar cosas al azar es lento; lo eficaz es descartar causas en orden, de la más barata de comprobar a la más cara, partiendo el problema en dos en cada paso:</p>
+<ol>
+  <li><strong>¿Hay errores en la consola del navegador (F12)?</strong> Excepciones de JavaScript, logs de compilación o enlace, avisos de WebGL. Léelos de arriba abajo: el primero suele causar los demás. Y ojo: Chrome solo muestra 256 avisos por contexto (ver el bestiario de abajo).</li>
+  <li><strong>¿Se ve el color de borrado?</strong> Pon un <code>clearColor</code> chillón (magenta). Si no aparece, el problema es anterior a dibujar: el contexto, el tamaño del canvas o su CSS, o el bucle que no se ejecuta (5.1).</li>
+  <li><strong>¿Llega algo al fragment shader?</strong> Haz que devuelva un color fijo, <code>vec4(1.0, 0.0, 1.0, 1.0)</code>. Si aparece la silueta, la geometría está bien y el fallo está en el color: uniforms, texturas incompletas (5.5), alfa y mezcla (5.7), NaN (más abajo).</li>
+  <li><strong>Si no aparece nada, la geometría no llega a la pantalla.</strong> Desactiva <code>CULL_FACE</code> y <code>DEPTH_TEST</code> (5.6). Comprueba el viewport y el scissor, el framebuffer enlazado (5.8), el número de vértices de la llamada, los atributos (activados, con su buffer y su divisor: 5.2, 5.3, 5.9) y la <em>w</em> de <code>gl_Position</code>. Un <code>gl_Position</code> fijo, como <code>vec4(0.0, 0.0, 0.0, 1.0)</code> con <code>gl_PointSize</code> y <code>POINTS</code>, dice si el pipeline funciona.</li>
+  <li><strong>Inspecciona el estado justo antes de dibujar</strong> con una función como la del ejemplo siguiente: programa, atributos, uniforms, viewport, destino.</li>
+</ol>
+
+<div class="callout hack" data-titulo="Borra de magenta">
+  <p>El primer cambio al depurar una pantalla negra: <code>gl.clearColor(1, 0, 1, 1)</code>. Un fondo magenta no se confunde con nada. Si ves magenta, WebGL funciona y el canvas está donde crees; si no, no pierdas tiempo mirando shaders. Lo mismo en el fragment shader: un <code>color = vec4(1.0, 0.0, 1.0, 1.0)</code> provisional separa «no hay geometría» de «la geometría sale de un color que no ves» (negro sobre negro, alfa 0).</p>
+</div>
+
+<p>Esta tabla resume los síntomas típicos del módulo y dónde se explicó cada uno. Cada fila es una entrada del bestiario.</p>
+<table>
+  <thead><tr><th>Síntoma</th><th>Primer sospechoso</th><th>Lección</th></tr></thead>
+  <tbody>
+    <tr><td>Ni siquiera se ve el color de borrado</td><td>Contexto nulo, canvas de 0 px, bucle parado</td><td>5.1</td></tr>
+    <tr><td>Se ve el borrado pero nada más, sin errores</td><td>Atributo desactivado, <code>count</code> 0, <code>w</code> 0, uniform sin fijar (vale 0)</td><td>5.2, 5.4</td></tr>
+    <tr><td>La figura sale en una esquina o recortada</td><td>Viewport sin actualizar (canvas o FBO)</td><td>5.1, 5.8</td></tr>
+    <tr><td>Un objeto 3D desaparece al girar o se ve «del revés»</td><td>Culling con el orden de vértices invertido, profundidad sin borrar</td><td>5.6</td></tr>
+    <tr><td>Una textura sale negra</td><td>Textura incompleta (mipmaps), sampler en otra unidad</td><td>5.5</td></tr>
+    <tr><td>Bordes oscuros, transparencias que tapan</td><td>Alfa no premultiplicado, orden de dibujo</td><td>5.7</td></tr>
+    <tr><td>Lo dibujado en un FBO no aparece</td><td>FBO incompleto, bucle de realimentación, viewport</td><td>5.8</td></tr>
+    <tr><td>Instancias superpuestas o invisibles</td><td>Divisor olvidado, <code>mat4</code> con una sola columna</td><td>5.9</td></tr>
+    <tr><td>Manchas negras en zonas concretas</td><td>NaN en el shader</td><td>3.7, esta lección</td></tr>
+  </tbody>
+</table>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.10.1 — Un inspector de estado completo</h3>
+  <p>La función <code>diagnosticar(gl)</code> amplía el inspector de 5.2: recorre los atributos y los uniforms <em>activos</em> del programa en uso (los que el compilador no eliminó) y, para cada atributo, dice si está activado, de qué buffer lee y cuántos vértices caben en él. Aquí la llamamos antes de dibujar un triángulo que no aparece. Lee la salida y busca la línea que delata el fallo.</p>
+  <div class="js-playground" data-titulo="diagnosticar(gl)" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+function diagnosticar(gl) {
+  const nombre = (o) => (o ? o.constructor.name.replace('WebGL', '') : 'null');
+  const hex = (v) => '0x' + v.toString(16);
+  const fmt = (v) => (v !== null && typeof v === 'object' && 'length' in v)
+    ? '[' + Array.from(v, (x) => (typeof x === 'number' && !Number.isInteger(x) ? x.toFixed(3) : x)).join(', ') + ']'
+    : (typeof v === 'number' && !Number.isInteger(v) ? v.toFixed(3) : String(v));
+  const BYTES = { [gl.FLOAT]: 4, [gl.UNSIGNED_BYTE]: 1, [gl.BYTE]: 1, [gl.SHORT]: 2, [gl.UNSIGNED_SHORT]: 2, [gl.INT]: 4, [gl.UNSIGNED_INT]: 4 };
+  const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+  console.log('canvas: CSS ' + gl.canvas.clientWidth + '×' + gl.canvas.clientHeight + ' · búfer ' + gl.drawingBufferWidth + '×' + gl.drawingBufferHeight);
+  console.log('destino: ' + (fb ? 'FBO, estado ' + hex(gl.checkFramebufferStatus(gl.FRAMEBUFFER)) : 'el canvas') + ' · viewport ' + fmt(gl.getParameter(gl.VIEWPORT)));
+  console.log('scissor ' + gl.isEnabled(gl.SCISSOR_TEST) + ' · profundidad ' + gl.isEnabled(gl.DEPTH_TEST) + ' · culling ' + gl.isEnabled(gl.CULL_FACE) +
+              ' · blend ' + gl.isEnabled(gl.BLEND) + ' · colorMask ' + fmt(gl.getParameter(gl.COLOR_WRITEMASK)));
+  const p = gl.getParameter(gl.CURRENT_PROGRAM);
+  console.log('programa: ' + nombre(p) + (p ? ' · enlazado ' + gl.getProgramParameter(p, gl.LINK_STATUS) : '') + ' · VAO ' + nombre(gl.getParameter(gl.VERTEX_ARRAY_BINDING)));
+  if (!p) return;
+  for (let i = 0; i < gl.getProgramParameter(p, gl.ACTIVE_ATTRIBUTES); i++) {
+    const a = gl.getActiveAttrib(p, i), loc = gl.getAttribLocation(p, a.name);
+    const va = (q) => gl.getVertexAttrib(loc, q);
+    if (!va(gl.VERTEX_ATTRIB_ARRAY_ENABLED)) { console.log('  atributo ' + a.name + ' (loc ' + loc + '): DESACTIVADO, lee la constante ' + fmt(va(gl.CURRENT_VERTEX_ATTRIB))); continue; }
+    const buf = va(gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
+    const previo = gl.getParameter(gl.ARRAY_BUFFER_BINDING);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    const bytes = buf ? gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE) : 0;
+    gl.bindBuffer(gl.ARRAY_BUFFER, previo);                     // dejar el estado como estaba
+    const n = va(gl.VERTEX_ATTRIB_ARRAY_SIZE), tipo = va(gl.VERTEX_ATTRIB_ARRAY_TYPE);
+    const stride = va(gl.VERTEX_ATTRIB_ARRAY_STRIDE) || n * BYTES[tipo];
+    const offset = gl.getVertexAttribOffset(loc, gl.VERTEX_ATTRIB_ARRAY_POINTER);
+    const caben = bytes >= offset + n * BYTES[tipo] ? Math.floor((bytes - offset - n * BYTES[tipo]) / stride) + 1 : 0;
+    console.log('  atributo ' + a.name + ' (loc ' + loc + '): ' + n + ' × ' + hex(tipo) + ', stride ' + stride + ', offset ' + offset +
+                ', divisor ' + va(gl.VERTEX_ATTRIB_ARRAY_DIVISOR) + ' · buffer de ' + bytes + ' bytes → caben ' + caben);
+  }
+  for (let i = 0; i < gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i++) {
+    const u = gl.getActiveUniform(p, i);
+    console.log('  uniform ' + u.name + ' = ' + fmt(gl.getUniform(p, gl.getUniformLocation(p, u.name))));
+  }
+  console.log('getError: ' + gl.getError());
+}
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+uniform vec2 u_centro;
+uniform float u_escala;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(u_centro + a_posicion * u_escala, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, new Float32Array([-0.6, -0.6, 1.0, 0.4, 0.3,  0.6, -0.6, 0.3, 0.8, 1.0,  0.0, 0.7, 1.0, 0.8, 0.2]));
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
+
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform2f(gl.getUniformLocation(programa, 'u_centro'), 0, 0);
+diagnosticar(gl);                                   // justo antes de dibujar
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <p>Todo está en orden (programa enlazado, atributos activados con 3 vértices de sitio, viewport del tamaño del búfer) excepto una línea: <code>uniform u_escala = 0.000</code>. Los uniforms empiezan valiendo 0 (5.4) y nadie fijó este, así que todos los vértices se multiplican por 0 y el triángulo se reduce a un punto. Añade <code>gl.uniform1f(gl.getUniformLocation(programa, 'u_escala'), 1);</code> antes de dibujar y aparecerá. Un inspector así no encuentra el fallo por ti, pero te enseña el estado real en lugar del que crees haber puesto.</p>
+</section>
+
+<h2>getError, con método</h2>
+<p>Muchos fallos de WebGL no lanzan excepciones: la llamada incorrecta no hace nada y levanta una bandera que solo <code>gl.getError()</code> revela (5.1). Eso tiene tres problemas. Las banderas no dicen <em>qué</em> llamada falló. Consultar <code>getError</code> fuerza un viaje de ida y vuelta al proceso de la GPU (medimos unos 37 µs por consulta en 5.1). Y los avisos de la consola, que sí dicen la función, se agotan: Chrome muestra 256 por contexto y después calla.</p>
+<p>La solución profesional es un <strong>envoltorio de depuración</strong>: un objeto que se hace pasar por el contexto, reenvía cada llamada al contexto real y, justo después, consulta <code>getError</code>. Si hay error, lanza una excepción con el nombre de la función. La excepción trae una pila de llamadas que apunta a la línea exacta de tu código. JavaScript tiene la herramienta perfecta para esto: <code>Proxy</code>.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const NOMBRES = { 0x500: 'INVALID_ENUM', 0x501: 'INVALID_VALUE',
+  0x502: 'INVALID_OPERATION', 0x506: 'INVALID_FRAMEBUFFER_OPERATION' };
+function depurar(gl) {
+  return new Proxy(gl, {
+    get(objetivo, prop) {
+      const valor = objetivo[prop];
+      if (typeof valor !== 'function') return valor;
+      return (...args) => {
+        const resultado = valor.apply(objetivo, args);
+        if (prop !== 'getError') {
+          const e = objetivo.getError();
+          if (e !== objetivo.NO_ERROR) {
+            throw new Error('gl.' + prop + ' → ' + (NOMBRES[e] || e));
+          }
+        }
+        return resultado;
+      };
+    },
+  });
+}
+const DEPURAR = true;
+const ctx = canvas.getContext('webgl2');
+const gl = DEPURAR ? depurar(ctx) : ctx;
+</script>
+<ol>
+  <li data-l="1-2">Nombres legibles para los códigos de error (5.1).</li>
+  <li data-l="3-4"><code>new Proxy(objetivo, manejador)</code> crea un objeto que se comporta como <code>gl</code>, pero cada acceso a una propiedad pasa por el manejador.</li>
+  <li data-l="5-7">La trampa <code>get</code> se ejecuta en cada <code>gl.algo</code>. Las constantes (<code>gl.TRIANGLES</code>) y propiedades (<code>gl.canvas</code>) se devuelven tal cual.</li>
+  <li data-l="8-9">Para las funciones, se devuelve otra que llama a la real con <code>apply</code> y el contexto <em>real</em> como <code>this</code>. Sin eso, WebGL lanzaría <code>Illegal invocation</code>.</li>
+  <li data-l="10-15">Después de cada llamada (salvo del propio <code>getError</code>), se consulta el error y, si lo hay, se lanza una excepción con el nombre de la función.</li>
+  <li data-l="21-23">Un interruptor: en desarrollo, el contexto envuelto; en producción, el real, sin ningún coste.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.10.2 — El envoltorio señala la línea</h3>
+  <p>Un programa con un fallo silencioso: un uniform <code>vec3</code> se intenta fijar con <code>uniform4f</code>. Sin el envoltorio, la llamada no hace nada y el triángulo sale negro, sin ningún error visible. Con el envoltorio, la excepción lo dice en cuanto ocurre (aquí la capturamos con <code>try</code> para mostrarla en la consola del playground; sin el <code>try</code>, verías además la pila con el número de línea).</p>
+  <div class="js-playground" data-titulo="Envoltorio de depuración" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const NOMBRES = { 0x500: 'INVALID_ENUM', 0x501: 'INVALID_VALUE', 0x502: 'INVALID_OPERATION', 0x506: 'INVALID_FRAMEBUFFER_OPERATION' };
+function depurar(gl) {
+  return new Proxy(gl, {
+    get(objetivo, prop) {
+      const valor = objetivo[prop];
+      if (typeof valor !== 'function') return valor;
+      return (...args) => {
+        const resultado = valor.apply(objetivo, args);
+        if (prop !== 'getError') {
+          const e = objetivo.getError();
+          if (e !== objetivo.NO_ERROR) throw new Error('gl.' + prop + '(' + args.map((a) => (a && typeof a === 'object' ? a.constructor.name : a)).join(', ') + ') → ' + (NOMBRES[e] || e));
+        }
+        return resultado;
+      };
+    },
+  });
+}
+const DEPURAR = true;                        // cámbialo a false y compara
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('webgl2');
+const gl = DEPURAR ? depurar(ctx) : ctx;
+
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-0.6, -0.6), vec2(0.6, -0.6), vec2(0.0, 0.7));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec3 u_color;
+out vec4 color;
+void main() { color = vec4(u_color, 1.0); }`);
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.25, 0.27, 0.33, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(gl.createVertexArray());
+try {
+  gl.uniform4f(gl.getUniformLocation(programa, 'u_color'), 1.0, 0.6, 0.2, 1.0);   // ← el fallo
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  console.log('dibujado sin errores detectados');
+} catch (e) {
+  console.log('✋ ' + e.message);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);        // dibujar igualmente, para ver el síntoma
+}
+</script>
+  </div>
+  <p>La consola dice <code>gl.uniform4f(WebGLUniformLocation, 1, 0.6, 0.2, 1) → INVALID_OPERATION</code>: el método no coincide con el tipo del uniform (5.4), así que <code>u_color</code> se queda en (0, 0, 0) y el triángulo sale negro sobre el gris. El envoltorio tiene un precio: medimos 2000 llamadas en 0,1 ms sin él y en 74,6 ms con él, porque cada <code>getError</code> espera al proceso de la GPU. Por eso va detrás de un interruptor y nunca en producción. GLKit trae la versión sencilla del mismo principio, <code>GLKit.revisarError(gl, etiqueta)</code>, que consulta <code>getError</code> hasta vaciarlo y escribe cada error con su nombre; sirve para colocarla a mano entre dos llamadas sospechosas.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-demasiados-errores" data-titulo="La consola dejó de mostrar errores de WebGL">
+  <p><strong>Síntoma:</strong> la consola se llenó de avisos de WebGL, terminó con <code>WebGL: too many errors, no more errors will be reported to the console for this context.</code>, y a partir de ahí, silencio, aunque sigan pasando cosas raras.</p>
+  <p><strong>Causa:</strong> Chrome muestra como mucho 256 avisos por contexto (lo comprobamos, tanto con errores de WebGL como con los de ANGLE). Un error dentro del bucle de animación agota el cupo en unos segundos, y cualquier error nuevo y distinto que aparezca después ya no se muestra.</p>
+  <p><strong>Solución:</strong> arregla el primer error antes de buscar los demás, recarga la página para recuperar el cupo, y en depuración usa el envoltorio, que se detiene en el primer error con una excepción.</p>
+</div>
+
+<h2>Leer los logs del compilador</h2>
+<p>Los errores de compilación los escribe el traductor de ANGLE, con el formato <code>ERROR: 0:4: 'brillo' : undeclared identifier</code>: el <code>0</code> es el número de fragmento de código fuente (siempre 0 en WebGL), el <code>4</code> es la línea, entre comillas va el elemento problemático y al final la explicación. <code>GLKit.crearPrograma</code> añade el código numerado y marca las líneas culpables. Estos son los mensajes que más verás, capturados de la GPU de pruebas:</p>
+<table>
+  <thead><tr><th>Mensaje</th><th>Qué pasa</th><th>Arreglo</th></tr></thead>
+  <tbody>
+    <tr><td><code>'' : No precision specified for (float)</code></td><td>Fragment shader sin precisión por defecto</td><td><code>precision highp float;</code></td></tr>
+    <tr><td><code>'=' : cannot convert from 'const int' to 'highp float'</code></td><td><code>float x = 1;</code>: GLSL no convierte enteros solo</td><td><code>1.0</code></td></tr>
+    <tr><td><code>'*' : wrong operand types - no operation '*' exists that takes a left-hand operand of type 'const float' and a right operand of type 'mediump int'</code></td><td><code>0.5 * i</code> con <code>i</code> entero</td><td><code>0.5 * float(i)</code></td></tr>
+    <tr><td><code>'brillo' : undeclared identifier</code></td><td>Variable sin declarar o mal escrita</td><td>Declararla o corregir el nombre</td></tr>
+    <tr><td><code>'color' : syntax error</code></td><td>Casi siempre, falta un <code>;</code> en la línea <em>anterior</em></td><td>Mirar una línea más arriba (5.2)</td></tr>
+    <tr><td><code>'=' : dimension mismatch</code> y <code>cannot convert from 'highp 3-component vector of float' to 'out highp 4-component vector of float'</code></td><td>Asignar un <code>vec3</code> a un <code>vec4</code></td><td><code>vec4(c, 1.0)</code></td></tr>
+    <tr><td><code>'texture2D' : no matching overloaded function found</code></td><td>Función de GLSL ES 1.00 en un shader 3.00</td><td><code>texture</code></td></tr>
+    <tr><td><code>'gl_FragColor' : undeclared identifier</code></td><td>GLSL ES 1.00 en un shader 3.00</td><td>Declarar <code>out vec4 color;</code></td></tr>
+    <tr><td><code>'out' : storage qualifier supported in GLSL ES 3.00 and above only</code></td><td>Falta <code>#version 300 es</code>, o no está en la primera línea</td><td>5.2</td></tr>
+    <tr><td><code>'mix' : no matching overloaded function found</code></td><td>Una función integrada con argumentos que no encajan</td><td>Revisar número y tipos</td></tr>
+    <tr><td>(enlace) <code>Types of varying 'v_color' differ between VERTEX and FRAGMENT shaders.</code></td><td>El <code>out</code> y el <code>in</code> tienen tipos distintos</td><td>Mismo tipo en los dos</td></tr>
+    <tr><td>(enlace) <code>FRAGMENT varying v_colr does not match any VERTEX varying</code></td><td>Nombres distintos</td><td>Mismo nombre en los dos</td></tr>
+  </tbody>
+</table>
+<p>Una regla que ahorra mucho tiempo: <strong>arregla el primer error y vuelve a compilar</strong>. Un solo fallo puede provocar una cascada: el <code>texture2D</code> de la tabla generó tres mensajes, y el <code>gl_FragColor</code>, cuatro. Los siguientes eran consecuencia del primero.</p>
+
+<h2>El shader que ejecuta la GPU de verdad</h2>
+<p>Tu GLSL no llega tal cual a la GPU. ANGLE lo valida, lo reescribe (renombra variables, inicializa lo que no inicializaste, añade comprobaciones) y lo traduce al lenguaje del sistema: en el Mac de pruebas, <em>Metal Shading Language</em>. La extensión <code>WEBGL_debug_shaders</code> te deja ver el resultado con <code>ext.getTranslatedShaderSource(shader)</code>.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.10.3 — Leer la traducción</h3>
+  <p>El fragment shader de este playground se compila y la consola muestra la función principal traducida. Cambia el shader y mira qué pasa con la traducción.</p>
+  <div class="js-playground" data-titulo="WEBGL_debug_shaders" data-altura="140" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const FS = `#version 300 es
+precision mediump float;
+uniform float u_t;
+out vec4 color;
+void main() {
+  float onda = 0.5 + 0.5 * sin(u_t * 0.1);
+  color = vec4(onda, 0.3, 0.2, 1.0);
+}`;
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, FS);
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_t'), 20);
+gl.bindVertexArray(GLKit.trianguloPantalla(gl));
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+const ext = gl.getExtension('WEBGL_debug_shaders');
+if (!ext) {
+  console.log('WEBGL_debug_shaders no está disponible en este navegador');
+} else {
+  const sh = gl.createShader(gl.FRAGMENT_SHADER);          // compilamos otra copia para pedir su traducción
+  gl.shaderSource(sh, FS);
+  gl.compileShader(sh);
+  const t = ext.getTranslatedShaderSource(sh);
+  const lenguaje = t.includes('metal_stdlib') ? 'Metal Shading Language' : /^\s*#version/.test(t) ? 'GLSL' : 'otro (¿HLSL?)';
+  console.log('lenguaje de la traducción: ' + lenguaje + ' · ' + t.length + ' caracteres');
+  const i = t.indexOf('void ANGLE__0_main');                  // la función main traducida (en la salida de ANGLE para Metal)
+  console.log(i >= 0 ? t.slice(i, t.indexOf('\n}\n', i) + 2) : t.slice(0, 1500));
+}
+</script>
+  </div>
+  <p>Varias cosas que aprender de la traducción. Tu <code>u_t</code> se llama <code>_uu_t</code>, tu variable <code>onda</code>, <code>_uonda</code>, y tu salida <code>color</code>, <code>_ucolor</code>: ANGLE prefija todos tus nombres para que no choquen con los suyos. La salida se inicializa a cero antes de ejecutar tu código, aunque no lo pidieras (en el vertex shader, también <code>gl_Position</code> y los varyings): es una medida de seguridad, para que ningún shader lea memoria sin inicializar. El <code>0.1</code> aparece como <code>0.100000001f</code>, el float32 más cercano (3.7). Y aunque pediste <code>precision mediump float</code>, todo es <code>float</code> de 32 bits: en esta GPU, <code>mediump</code> se calcula con la misma precisión que <code>highp</code>. Por eso un fallo de precisión con <code>mediump</code> puede no verse nunca en tu portátil y aparecer en un móvil, donde <code>mediump</code> sí suele ser de 16 bits. Alrededor de <code>main</code> hay además código que ANGLE añade para invertir la <em>y</em>, porque Metal tiene el origen arriba y WebGL abajo.</p>
+</section>
+
+<div class="callout senior" data-titulo="Spector.js: grabar un frame entero">
+  <p>Cuando el problema no está en un shader sino en la secuencia de llamadas (qué se dibuja, en qué orden, con qué estado, en qué framebuffer), la herramienta es <strong>Spector.js</strong>, del equipo de Babylon.js (<a href="https://spector.babylonjs.com/">spector.babylonjs.com</a>). Se usa como extensión de Chrome o Firefox, o incluyendo su script y llamando a <code>new SPECTOR.Spector().displayUI()</code>. Captura un frame completo: la lista de todas las llamadas de WebGL con sus argumentos, el estado de cada llamada de dibujo, los shaders y la imagen de salida después de cada dibujo. Es la forma de ver, por ejemplo, qué contiene de verdad un FBO intermedio o por qué una librería hace mil llamadas donde esperabas diez. No hace falta instalarlo para este curso, pero conviene saber que existe antes de pelearse a ciegas con una escena grande.</p>
+</div>
+
+<h2>Ver lo que calcula la GPU</h2>
+<p>Un shader no tiene <code>console.log</code>. Lo que sí tiene es un píxel de salida, y eso basta: cualquier valor intermedio se puede pintar como color para verlo (<strong>falso color</strong>). Las normales como <code>n * 0.5 + 0.5</code> (cada eje de −1…1 pasa a 0…1), las coordenadas UV como rojo y verde, un valor con signo con rojo para lo positivo y azul para lo negativo. Y para leer un valor exacto, se dibuja en una textura float y se lee con <code>readPixels</code> (5.8): el <code>printf</code> de los shaders.</p>
+<p>Un caso que merece atención especial es el <strong>NaN</strong> (<em>not a number</em>), el resultado de operaciones sin sentido (de dónde sale y cómo se contagia lo viste en <a href="../03-matematicas/07-precision.html#nan-e-infinito-en-los-shaders">3.7</a>). Lo comprobamos en la GPU de pruebas: dan NaN <code>0.0 / 0.0</code>, <code>sqrt(-1.0)</code>, <code>log(-1.0)</code>, <code>pow(-2.0, 0.5)</code>, <code>asin(2.0)</code> y <code>normalize(vec3(0.0))</code>; dan infinito <code>1.0 / 0.0</code> e <code>inversesqrt(0.0)</code>; y <code>atan(0.0, 0.0)</code> dio 0, aunque GLSL no garantiza nada. Lo traicionero es cómo se ve: un NaN escrito en un canvas normal (8 bits por canal) se guardó como <strong>0, negro</strong>, indistinguible de una sombra, mientras que el infinito se guardó como 255. En una textura float, el NaN se conserva. Y como NaN contagia todo lo que toca, una sola operación mala ennegrece todo lo que dependa de ella. La función <code>isnan()</code> de GLSL lo detecta (funcionó en todos los casos anteriores).</p>
+
+<div class="callout cuidado" data-titulo="Medir NaN con isnan() cambia el resultado">
+  <p>La lista de arriba se midió con <code>isnan()</code> dentro del shader, y eso no es inocente: es el comportamiento raro <a href="../03-matematicas/07-precision.html#m3-isnan-heisenbug">«Añadir isnan() para depurar cambia el resultado»</a> de 3.7. En ANGLE sobre Metal, si un shader contiene <code>isnan()</code> o <code>isinf()</code> (en cualquier rama, aunque no se ejecute), el compilador deja de usar el «fast math» en <em>todo</em> el shader. Con el fast math activo, el compilador puede suponer que no hay NaN y simplificar a su gusto. Lo repetimos con un cero que llega por un uniform (para que el compilador no pueda calcularlo de antemano) y <strong>sin</strong> <code>isnan</code> en el shader: <code>0.0 / 0.0</code>, es decir, el cero dividido entre sí mismo, dio <strong>1</strong> en lugar de NaN, y <code>atan(0.0, 0.0)</code> dio NaN en lugar de 0. Los demás casos (<code>sqrt</code>, <code>log</code>, <code>pow</code> con base negativa, <code>asin(2.0)</code>, <code>normalize(vec3(0.0))</code>, los dos infinitos) no cambiaron. Moraleja: el resultado de una operación indefinida depende de qué más haya en el shader, y un detector de NaN puede modificar el síntoma que intentas ver. Si un shader se ve distinto al añadirle un <code>isnan</code>, sospecha de una operación indefinida.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.10.4 — Falso color, NaN y el printf de los shaders</h3>
+  <p>Una esfera calculada píxel a píxel con un fallo típico: la luz difusa <code>dot(n, l)</code> sin <code>max</code>, que es negativa en la cara oscura, y después una corrección de gamma con <code>pow</code>. El selector cambia la vista. Haz clic en cualquier punto de la esfera para leer sus valores exactos, dibujados en una textura float y leídos con <code>readPixels</code>; al arrancar se lee un punto de la cara oscura.</p>
+  <div class="js-playground" data-titulo="Falso color y NaN" data-altura="300" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles"><label>vista <select id="vista">
+  <option value="0" selected>color final</option><option value="1">normales</option>
+  <option value="2">dot(n, l): + rojo, − azul</option><option value="3">NaN en magenta</option>
+</select></label> <span>haz clic en la esfera para leer un píxel</span></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; cursor: crosshair; }
+.controles { display: flex; gap: 14px; padding: 8px 12px; font: 12px ui-monospace, monospace; color: #b4bccb; }
+select { font: 12px ui-monospace, monospace; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const hayFloat = !!gl.getExtension('EXT_color_buffer_float');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec2 u_resolucion;
+uniform int u_vista;
+out vec4 color;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolucion) / u_resolucion.y;   // -1…1 en vertical, centrado
+  float r2 = dot(p, p) / 0.64;                                          // esfera de radio 0.8
+  if (r2 > 1.0) { color = vec4(0.08, 0.09, 0.12, 1.0); return; }
+  vec3 n = vec3(p / 0.8, sqrt(1.0 - r2));                               // la normal de la esfera
+  vec3 l = normalize(vec3(0.6, 0.5, 0.6));
+  float difusa = dot(n, l);                                             // ¡sin max(): negativa en la cara oscura!
+  vec3 lineal = vec3(0.9, 0.5, 0.3) * difusa + 0.04;
+  vec3 final = pow(lineal, vec3(1.0 / 2.2));                            // gamma: pow de un negativo = NaN
+  if (u_vista == 0) color = vec4(final, 1.0);
+  else if (u_vista == 1) color = vec4(n * 0.5 + 0.5, 1.0);
+  else if (u_vista == 2) color = vec4(max(difusa, 0.0), 0.0, max(-difusa, 0.0), 1.0);
+  else if (u_vista == 3) color = any(isnan(final)) ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(vec3(dot(final, vec3(0.333))), 1.0);
+  else color = vec4(final, difusa);                                     // vista 4: valores crudos, para leerlos
+}`);
+const vao = GLKit.trianguloPantalla(gl);
+const loc = { res: gl.getUniformLocation(programa, 'u_resolucion'), vista: gl.getUniformLocation(programa, 'u_vista') };
+const selVista = document.getElementById('vista');
+let lectura = null, fboFloat = null;
+
+function dibujar(vista) {
+  gl.useProgram(programa);
+  gl.uniform2f(loc.res, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.uniform1i(loc.vista, vista);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function leer(x, y) {                                   // el printf: vista 4 en un FBO float, un solo píxel
+  if (!hayFloat) { console.log('sin EXT_color_buffer_float no hay destino float'); return; }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fboFloat.fbo);
+  gl.viewport(0, 0, fboFloat.ancho, fboFloat.alto);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(x, y, 1, 1);
+  dibujar(4);
+  const v = new Float32Array(4);
+  gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, v);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const f = (n) => (Number.isNaN(n) ? 'NaN' : n.toFixed(3));
+  console.log('píxel (' + x + ', ' + y + '): dot(n, l) = ' + f(v[3]) + ' · color final = (' + f(v[0]) + ', ' + f(v[1]) + ', ' + f(v[2]) + ')');
+}
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect();
+  lectura = [Math.floor((e.clientX - r.left) * canvas.width / r.width), Math.floor((r.bottom - e.clientY) * canvas.height / r.height)];
+});
+
+GLKit.bucle((t, dt, frame) => {
+  if (GLKit.ajustarTamaño(canvas) || !fboFloat) {
+    if (fboFloat) { gl.deleteFramebuffer(fboFloat.fbo); gl.deleteTexture(fboFloat.textura); }
+    fboFloat = hayFloat ? GLKit.crearFBO(gl, gl.drawingBufferWidth, gl.drawingBufferHeight,
+      { formatoInterno: gl.RGBA32F, formato: gl.RGBA, tipo: gl.FLOAT, filtro: gl.NEAREST }) : null;
+  }
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  if (frame === 0) lectura = [Math.floor((w - 0.45 * h) / 2), Math.floor(0.3 * h)];   // un punto de la cara oscura
+  if (lectura) { leer(lectura[0], lectura[1]); lectura = null; }
+  gl.viewport(0, 0, w, h);
+  dibujar(+selVista.value);
+});
+</script>
+  </div>
+  <p>En la vista normal, la cara oscura es negro puro, con un borde duro: parece una sombra muy marcada. La vista <code>dot(n, l)</code> muestra que ahí la difusa es negativa (azul), y la vista de NaN la pinta entera de magenta. La lectura exacta lo confirma: <code>dot(n, l)</code> negativo y color final <code>NaN</code>. Con <code>lineal</code> negativo, <code>pow</code> no tiene resultado real. El arreglo es el <code>max(dot(n, l), 0.0)</code> de 5.6: entonces la cara oscura recibe solo la luz ambiente (0,04, que tras la gamma es un gris azulado oscuro) en lugar de NaN. La lectura con <code>readPixels</code> en float es la herramienta más precisa que tienes: úsala cuando el falso color no baste para saber si un valor es 0,001 o −0,001.</p>
+</section>
+
+<div class="callout nota" id="m5-nan-negro">
+  <p><strong>Manchas negras que no deberían estar ahí.</strong> Zonas de negro puro con bordes duros, o píxeles negros sueltos, sin ningún error: casi siempre, un NaN, que en un canvas de 8 bits por canal se guarda como 0. Es el comportamiento raro <a href="../03-matematicas/07-precision.html#m3-nan-pixel-negro">«Píxeles negros sueltos o manchas negras que crecen»</a> de 3.7. Las causas que comprobamos aquí: <code>pow</code> con base negativa (la gamma de un color que se volvió negativo, como en el ejemplo), <code>sqrt</code> o <code>log</code> de un negativo, <code>normalize</code> de un vector cero y <code>0.0 / 0.0</code> (con la salvedad del recuadro sobre <code>isnan</code>). Localízalo con <code>any(isnan(valor)) ? vec4(1.0, 0.0, 1.0, 1.0) : …</code> y corrige la entrada: <code>max(x, 0.0)</code> antes de <code>pow</code> o <code>sqrt</code>, la longitud antes de <code>normalize</code>, nada de divisiones entre valores que pueden ser 0.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu shader termina con <code>color = vec4(pow(c, vec3(1.0 / 2.2)), 1.0);</code> y algunas zonas salen de negro puro con bordes duros. ¿Cuál es la comprobación más directa?</p>
+  <ul>
+    <li>Subir la luz ambiente hasta que desaparezca el negro.<div class="explicacion">Puede tapar el síntoma sin enseñarte la causa, y fallará con otros valores.</div></li>
+    <li data-correcta>Pintar de magenta los píxeles donde <code>any(isnan(...))</code> sea cierto.<div class="explicacion">Correcto: si el negro se vuelve magenta, es NaN, casi seguro de un <code>pow</code> con base negativa. Luego se corrige la entrada con <code>max</code>.</div></li>
+    <li>Llamar a <code>gl.getError()</code> después de dibujar.<div class="explicacion">Un NaN no es un error de WebGL: el dibujo es válido y <code>getError</code> devuelve 0.</div></li>
+  </ul>
+</div>
+
+<h2>¿Me frena la CPU o la GPU?</h2>
+<p>Antes de optimizar nada hay que saber qué parte limita el frame, porque optimizar la otra no sirve de nada. Un frame pasa por tres etapas que trabajan en paralelo: tu JavaScript, el proceso de la GPU con el driver (en la CPU, 5.1 y 5.9) y la propia GPU. El más lento marca el ritmo. Tres pruebas baratas lo revelan:</p>
+<ol>
+  <li><strong>Mide tu JavaScript</strong> con <code>performance.now()</code> al principio y al final del frame. Si se acerca a los 16,7 ms de un frame a 60 fps, el cuello de botella es tu código.</li>
+  <li><strong>Reduce la resolución</strong> (el tamaño del búfer, no el del canvas en CSS). Si los fps suben mucho, estás limitado por los fragmentos: la GPU no da abasto pintando píxeles. Lo medimos con un fragment shader pesado a pantalla completa: 5,1 ms a 800 × 500, 16,7 ms a 1600 × 1000 y 35,9 ms a 2400 × 1500 (lo que tendría ese canvas con DPR 1, 2 y 3). Una escena de 20 000 llamadas de dibujo pequeñas tardó 5,4, 5,6 y 6,7 ms: casi igual, porque su límite no son los píxeles.</li>
+  <li><strong>Reduce el número de objetos o de llamadas.</strong> Si los fps suben, el límite está en el coste por llamada (5.9) o en los vértices.</li>
+</ol>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.10.5 — El laboratorio</h3>
+  <p>Una escena con tres mandos independientes: la resolución del búfer, el coste del fragment shader de fondo (iteraciones de un bucle) y un número de llamadas de dibujo extra (cuadraditos, uno por llamada). Muévelos de uno en uno y observa qué cifra cambia: los fps, el JavaScript por frame o el tiempo de GPU (si tu navegador ofrece el temporizador, que se explica más abajo).</p>
+  <div class="js-playground" data-titulo="Laboratorio CPU/GPU" data-altura="330" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label>resolución <select id="res"><option value="0.25">25 %</option><option value="0.5">50 %</option><option value="1" selected>100 %</option><option value="2">200 %</option></select></label>
+  <label>coste del shader <input id="coste" type="range" min="0" max="300" step="10" value="60"></label>
+  <label>llamadas extra <input id="llamadas" type="range" min="0" max="30000" step="1000" value="0"></label>
+</div>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; flex-wrap: wrap; gap: 14px; padding: 6px 12px 0; font: 12px ui-monospace, monospace; color: #b4bccb; }
+select { font: 12px ui-monospace, monospace; }
+#info { font: 12px ui-monospace, monospace; color: #3fd0e8; padding: 6px 12px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const progFondo = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec2 u_resolucion;
+uniform float u_t;
+uniform int u_n;
+out vec4 color;
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolucion.y;          // misma imagen a cualquier resolución
+  float s = 0.0;
+  for (int i = 0; i < u_n; i++) s += sin(p.x * (2.0 + float(i) * 0.03) + u_t) * cos(p.y * 3.0 + float(i) * 0.07);
+  float k = u_n > 0 ? 4.0 / float(u_n) : 0.0;         // el mismo aspecto con cualquier número de vueltas
+  color = vec4(0.5 + 0.4 * sin(s * k + vec3(0.0, 2.0, 4.0)), 1.0) * 0.6;
+}`);
+const progMini = GLKit.crearPrograma(gl, `#version 300 es
+uniform vec2 u_pos;
+void main() {
+  vec2 P[6] = vec2[6](vec2(0, 0), vec2(1, 0), vec2(0, 1), vec2(0, 1), vec2(1, 0), vec2(1, 1));
+  gl_Position = vec4(u_pos + P[gl_VertexID] * 0.01, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.8, 0.4, 1.0); }`);
+const vaoPantalla = GLKit.trianguloPantalla(gl);
+const vaoVacio = gl.createVertexArray();
+const pos = new Float32Array(60000);
+for (let i = 0; i < pos.length; i++) pos[i] = Math.random() * 1.96 - 0.98;
+const locF = { res: gl.getUniformLocation(progFondo, 'u_resolucion'), t: gl.getUniformLocation(progFondo, 'u_t'), n: gl.getUniformLocation(progFondo, 'u_n') };
+const locPos = gl.getUniformLocation(progMini, 'u_pos');
+const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+const pendientes = [], tiemposGPU = [];
+const selRes = document.getElementById('res'), entCoste = document.getElementById('coste'), entLlamadas = document.getElementById('llamadas');
+const info = document.getElementById('info');
+let frames = 0, msJS = 0, tInfo = 0;
+
+GLKit.bucle((t) => {
+  const inicio = performance.now();
+  const escala = +selRes.value, n = +entCoste.value, llamadas = +entLlamadas.value;
+  const w = Math.max(1, Math.round(canvas.clientWidth * escala)), h = Math.max(1, Math.round(canvas.clientHeight * escala));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  gl.viewport(0, 0, w, h);
+  let q = null;
+  if (ext) { q = gl.createQuery(); gl.beginQuery(ext.TIME_ELAPSED_EXT, q); }
+  gl.useProgram(progFondo);
+  gl.uniform2f(locF.res, w, h);
+  gl.uniform1f(locF.t, t);
+  gl.uniform1i(locF.n, n);
+  gl.bindVertexArray(vaoPantalla);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.useProgram(progMini);
+  gl.bindVertexArray(vaoVacio);
+  for (let i = 0; i < llamadas; i++) { gl.uniform2f(locPos, pos[i * 2], pos[i * 2 + 1]); gl.drawArrays(gl.TRIANGLES, 0, 6); }
+  if (q) { gl.endQuery(ext.TIME_ELAPSED_EXT); pendientes.push(q); }
+  while (pendientes.length && gl.getQueryParameter(pendientes[0], gl.QUERY_RESULT_AVAILABLE)) {   // resultados de frames anteriores
+    const c = pendientes.shift();
+    if (!gl.getParameter(ext.GPU_DISJOINT_EXT)) tiemposGPU.push(gl.getQueryParameter(c, gl.QUERY_RESULT) / 1e6);
+    gl.deleteQuery(c);
+  }
+  msJS += performance.now() - inicio; frames++;
+  if (t - tInfo > 0.5) {
+    const gpu = tiemposGPU.length ? (tiemposGPU.reduce((a, b) => a + b, 0) / tiemposGPU.length).toFixed(2) + ' ms (aprox.)' : (ext ? '…' : 'sin temporizador');
+    info.textContent = w + '×' + h + ' px · ' + Math.round(frames / (t - tInfo)) + ' fps · JS ' + (msJS / frames).toFixed(2) + ' ms/frame · GPU ' + gpu;
+    frames = 0; msJS = 0; tInfo = t; tiemposGPU.length = 0;
+  }
+});
+</script>
+  </div>
+  <p>Lo que deberías observar: con el coste del shader alto, la resolución manda (al 25 % hay 16 veces menos píxeles que al 100 %). Con muchas llamadas extra, sube el JavaScript por frame y la resolución apenas importa. Si una escena real se comporta como el primer caso, optimiza el fragment shader o dibuja a menor resolución; si se comporta como el segundo, reduce llamadas (instancing, 5.9) o trabajo en JavaScript.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Tu escena va a 30 fps. Reduces la resolución del búfer a la mitad en cada eje y pasa a 60 fps. ¿Qué la limitaba?</p>
+  <ul>
+    <li>El número de llamadas de dibujo.<div class="explicacion">El coste por llamada no depende de la resolución: esa prueba no habría cambiado los fps.</div></li>
+    <li data-correcta>El trabajo por píxel en la GPU: fragment shader, overdraw o ancho de banda.<div class="explicacion">Correcto. Con un cuarto de píxeles, un cuarto de fragmentos. Las opciones: shader más barato, menos capas o menos resolución (DPR limitado, efectos a media resolución).</div></li>
+    <li>El JavaScript del frame.<div class="explicacion">El JavaScript no depende del tamaño del búfer (salvo que hagas trabajo por píxel en la CPU).</div></li>
+  </ul>
+</div>
+
+<h2>Las causas habituales, medidas</h2>
+<p>Estas son las causas de lentitud que más aparecen en WebGL, con lo que medimos en la máquina de pruebas (Apple M1 con Chrome). Tus cifras serán otras; los órdenes de magnitud y las proporciones suelen mantenerse.</p>
+<ul>
+  <li><strong>Llamadas de dibujo.</strong> Cada una tiene un coste fijo en la CPU: con 200 000 por frame, 29 fps (5.9). La solución es agrupar: instancing, fusionar mallas estáticas.</li>
+  <li><strong>Cambios de estado entre llamadas.</strong> 10 000 dibujos alternando entre dos programas tardaron 8,4 ms; los mismos, agrupados por programa, 3,6 ms. Alternando dos texturas, 6,3 ms frente a 4,1. Ordena lo que dibujas por programa y, dentro de cada programa, por textura (ejercicio 5.10.5).</li>
+  <li><strong>Overdraw</strong>: pintar el mismo píxel varias veces. Con mezcla, cada capa se paga entera: 16 capas semitransparentes a pantalla completa tardaron 85,9 ms, frente a 5,9 ms una sola. Las partículas grandes y los efectos a pantalla completa superpuestos son los sospechosos habituales. Con capas opacas, depende de la GPU (ver el recuadro siguiente).</li>
+  <li><strong>Subir texturas en cada frame.</strong> Subir 4 MB desde un array (<code>texSubImage2D</code> de 1024 × 1024 RGBA) costó 1 ms por frame; desde un canvas 2D del mismo tamaño, 0,3 ms. Es razonable para un vídeo o un canvas que cambia, pero no vuelvas a subir cada frame una textura que no ha cambiado.</li>
+  <li><strong>Esperas: <code>readPixels</code> y <code>getError</code>.</strong> Obligan a la CPU a esperar a la GPU: <code>readPixels</code> tras un dibujo pesado tardó lo que tardaba el dibujo (5.8), y cada <code>getError</code>, unos 37 µs. Fuera del bucle de animación, o detrás de un interruptor de depuración.</li>
+  <li><strong>La resolución.</strong> Con DPR 3, el canvas tiene 9 veces los píxeles de DPR 1, y el shader pesado de antes tardó 7 veces más. <code>GLKit.ajustarTamaño(canvas, dprMax)</code> limita el DPR (a 2 por defecto) por esta razón. Para efectos caros, un DPR de 1, o dibujar en un FBO a media resolución y ampliarlo (5.8), suele ser imperceptible y mucho más rápido.</li>
+</ul>
+
+<div class="callout senior" data-titulo="Overdraw opaco: en algunas GPUs es casi gratis">
+  <p>La recomendación clásica es dibujar los objetos opacos de delante a atrás, para que el test de profundidad descarte los fragmentos tapados antes de ejecutar su fragment shader. En la GPU de pruebas pasa algo distinto, y ya lo mediste en <a href="../04-gpu/02-pipeline-grafico.html#early-z-probar-la-profundidad-antes-de-sombrear">4.2</a> con 32 capas: las GPUs de Apple, como muchas de móvil, trabajan por teselas y solo ejecutan el fragment shader del fragmento opaco que queda visible. Con el shader de esta lección, 16 capas opacas a pantalla completa costaron lo mismo que una (6,1 a 6,5 ms frente a 6,4), en cualquier orden, <em>e incluso sin test de profundidad</em>. Esa optimización se rompe con la mezcla (85,9 ms con 16 capas) y con <code>discard</code>: las mismas 16 capas con un <code>discard</code> en el shader (que nunca se ejecutaba, pero podía) tardaron 86,9 ms. No pudimos medir otras arquitecturas; en las GPUs que no hacen esta eliminación, el orden de delante a atrás sigue siendo la recomendación. La lección general: <code>discard</code> y la mezcla no son gratis, y el mismo código puede comportarse muy distinto en otra GPU.</p>
+</div>
+
+<div class="callout bestiario" data-id="m5-finish-no-espera" data-titulo="Medir con gl.finish() da 0 ms">
+  <p><strong>Síntoma:</strong> mides el tiempo de un dibujo con <code>performance.now()</code> antes y después de <code>gl.finish()</code>, y sale prácticamente 0, aunque la escena va claramente lenta.</p>
+  <p><strong>Causa:</strong> en teoría, <code>finish</code> espera a que la GPU termine todo lo pendiente. En el Chrome de pruebas no esperó (ya lo viste en <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>: se comporta como <code>flush</code>): tras un dibujo que tardaba 3,6 ms en la GPU, <code>finish</code> volvió en 0,00 ms. <code>readPixels</code> sobre el mismo dibujo sí esperó los 3,6 ms.</p>
+  <p><strong>Solución:</strong> no uses <code>finish</code> para medir. Para una medida puntual de «todo lo encolado hasta aquí», un <code>readPixels</code> de un píxel (sabiendo que añade una espera y que no debe quedarse en el bucle). Para medir la GPU de forma continua, el temporizador de la sección siguiente, y siempre, los fps.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Quieres saber cuánto tarda en la GPU la pasada de post-proceso de tu escena. ¿Qué método da una respuesta con sentido?</p>
+  <ul>
+    <li><code>performance.now()</code> antes y después de la pasada, con un <code>gl.finish()</code> al final.<div class="explicacion">En el Chrome de pruebas, <code>finish</code> no esperó a la GPU: la medida sale prácticamente 0.</div></li>
+    <li><code>performance.now()</code> antes y después de las llamadas de la pasada.<div class="explicacion">Eso mide lo que tarda JavaScript en <em>encolar</em> las órdenes, no lo que tarda la GPU en ejecutarlas.</div></li>
+    <li data-correcta>El temporizador de la GPU alrededor de la pasada completa, promediando varios frames y descartando los perturbados.<div class="explicacion">Correcto, si la extensión existe. Y aun así, contrástalo con los fps o con el efecto de cambiar la resolución.</div></li>
+  </ul>
+</div>
+
+<h2>Medir la GPU: EXT_disjoint_timer_query_webgl2</h2>
+<p><code>performance.now()</code> mide la CPU. Para medir cuánto tarda la GPU en ejecutar algo existe una extensión con nombre largo, <code>EXT_disjoint_timer_query_webgl2</code>: marcas un intervalo de órdenes y, unos frames después, la GPU te dice cuántos nanosegundos tardó. No está garantizada (se retiró de los navegadores en 2018 por un ataque que usaba temporizadores precisos de la GPU, y no todos la han vuelto a ofrecer), así que compruébala siempre. En el Chrome de pruebas está disponible.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+if (ext) {
+  const q = gl.createQuery();
+  gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+  dibujarEscena();
+  gl.endQuery(ext.TIME_ELAPSED_EXT);
+  pendientes.push(q);
+}
+// en frames posteriores:
+const q = pendientes[0];
+if (q && gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)) {
+  pendientes.shift();
+  const perturbado = gl.getParameter(ext.GPU_DISJOINT_EXT);
+  const ns = gl.getQueryParameter(q, gl.QUERY_RESULT);
+  if (!perturbado) registrar(ns / 1e6);
+  gl.deleteQuery(q);
+}
+</script>
+<ol>
+  <li data-l="1-2"><code>getExtension</code> devuelve <code>null</code> si no está: todo lo demás va dentro del <code>if</code>.</li>
+  <li data-l="3">Una consulta (<em>query</em>) es un objeto de WebGL2 que recogerá el resultado.</li>
+  <li data-l="4-6"><code>beginQuery(ext.TIME_ELAPSED_EXT, q)</code> y <code>endQuery(ext.TIME_ELAPSED_EXT)</code> delimitan las órdenes que se medirán. Solo puede haber una consulta de tiempo activa a la vez.</li>
+  <li data-l="7">El resultado no está listo en el mismo frame (lo comprobamos: justo después de <code>endQuery</code>, <code>QUERY_RESULT_AVAILABLE</code> era <code>false</code>). Se guarda para preguntar más tarde.</li>
+  <li data-l="10-11"><code>QUERY_RESULT_AVAILABLE</code> dice, sin esperar, si el resultado ya está. Hasta que diga <code>true</code>, no se pide el resultado.</li>
+  <li data-l="13"><code>GPU_DISJOINT_EXT</code> se activa si algo perturbó la medida (un cambio de frecuencia de la GPU, por ejemplo). Si vale <code>true</code>, se descarta el resultado: de ahí el <em>disjoint</em> del nombre.</li>
+  <li data-l="14-16">El resultado llega en nanosegundos: dividido entre 10<sup>6</sup> son milisegundos. Y la consulta se borra.</li>
+</ol>
+</div>
+
+<div class="callout senior" data-titulo="Lo que el temporizador no te dice">
+  <p>Probamos el temporizador en la máquina de pruebas, con una consulta por frame alrededor de un único dibujo, y los resultados enseñan a desconfiar. Un dibujo ligero (limitado por el scissor a un píxel) midió 0,03 ms: bien. Un dibujo pesado midió 3,2 ms, 7,5 ms, 9,8 ms y 9,7 ms en cuatro frames seguidos, haciendo exactamente lo mismo y sin que se activara <code>GPU_DISJOINT_EXT</code> (no sabemos si por cambios de frecuencia de la GPU o por cómo mide esta implementación). Y el dibujo ligero, cuando le precedía uno pesado <em>fuera</em> de la consulta en el mismo frame, midió de 3,1 a 10,2 ms, lo mismo que el pesado: en esta GPU, que procesa cada pasada de dibujo de una vez, la consulta no aísla los dibujos que encierra. Conclusiones prácticas: mide frames o pasadas completas, no dibujos sueltos; promedia muchas muestras; compara siempre con otra medida (los fps, o el efecto de cambiar la resolución); y desconfía de los números que no cuadran.</p>
+</div>
+
+<h2>Fugas de memoria</h2>
+<p>Los buffers, texturas, framebuffers, renderbuffers, programas, shaders y VAOs ocupan memoria de la GPU hasta que se borran con su función <code>delete…</code> (<code>deleteTexture</code>, <code>deleteBuffer</code>…). En teoría, cuando el objeto de JavaScript que los representa se recoge como basura, el navegador también libera la memoria. En la práctica, eso llega tarde: el recolector se activa por la presión sobre la memoria de JavaScript, y un <code>WebGLTexture</code> ocupa unos pocos bytes de JavaScript aunque represente 4 MB en la GPU. Lo comprobamos con un <code>FinalizationRegistry</code>: 30 texturas de 4 MB sin ninguna referencia siguieron vivas durante 6 segundos; en cuanto generamos basura de JavaScript, se recogieron las 30 de golpe. Un programa que crea texturas o FBOs en cada redimensionado (5.8) o por cada imagen que carga, sin borrarlos, puede acumular cientos de megabytes antes de que el recolector se entere.</p>
+<p>La regla: quien crea, borra. Al recrear un recurso, borra el viejo en ese momento, como en los ejemplos de post-proceso de 5.8. Y al destruir un componente con WebGL (en una aplicación de una sola página, por ejemplo), borra todo lo suyo; si el contexto entero sobra, <code>gl.getExtension('WEBGL_lose_context').loseContext()</code> libera todos sus recursos a la vez (lo usamos en 5.1 para simular la pérdida del contexto).</p>
+
+<div class="callout bestiario" data-id="m5-objeto-borrado" data-titulo="«attempt to use a deleted object»">
+  <p><strong>Síntoma:</strong> una textura (o buffer, o programa) deja de verse, y la consola dice <code>WebGL: INVALID_OPERATION: bindTexture: attempt to use a deleted object</code> (texto exacto comprobado).</p>
+  <p><strong>Causa:</strong> se llamó a <code>deleteTexture</code> y después se siguió usando la variable, que ya no representa nada: <code>gl.isTexture(t)</code> devuelve <code>false</code> nada más borrarla. Suele pasar al recrear recursos: se borra el viejo, pero alguna parte del código conserva la referencia antigua.</p>
+  <p><strong>Solución:</strong> al borrar, pon la variable a <code>null</code> y sustitúyela por el recurso nuevo en todos los sitios que la usaban. Centralizar la creación y el borrado (una función que recrea el FBO y actualiza su referencia, como en 5.8) evita la mitad de estos fallos.</p>
+</div>
+
+<div class="callout bestiario" data-id="m5-memoria-sin-liberar" data-titulo="La memoria crece y crece (hasta perder el contexto)">
+  <p><strong>Síntoma:</strong> tras un rato redimensionando la ventana, cargando imágenes o navegando por la aplicación, todo va más lento, el sistema avisa de poca memoria o el contexto se pierde (5.1).</p>
+  <p><strong>Causa:</strong> se crean recursos de WebGL sin borrarlos, confiando en que el recolector de basura los libere. Lo hace, pero cuando le presiona la memoria de JavaScript, no la de la GPU: en nuestra prueba, 120 MB de texturas sin referencias esperaron a que hubiera basura de JavaScript para liberarse.</p>
+  <p><strong>Solución:</strong> borra explícitamente con <code>delete…</code> cada recurso que ya no uses, en el momento en que lo sustituyes. En depuración, lleva la cuenta: suma uno en cada <code>create…</code> y resta uno en cada <code>delete…</code> (el mismo truco del <code>Proxy</code> sirve para contarlos). Si el contador crece sin parar mientras repites una acción, tienes una fuga.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.10.1 — Que hable el envoltorio</h3>
+  <p>Este triángulo debería girar, pero no aparece, y la consola del playground no dice nada. El código ya incluye el envoltorio <code>depurar</code>, desactivado. Actívalo, lee lo que dice y arregla el fallo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.10.1" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const NOMBRES = { 0x500: 'INVALID_ENUM', 0x501: 'INVALID_VALUE', 0x502: 'INVALID_OPERATION', 0x506: 'INVALID_FRAMEBUFFER_OPERATION' };
+function depurar(gl) {
+  return new Proxy(gl, {
+    get(objetivo, prop) {
+      const valor = objetivo[prop];
+      if (typeof valor !== 'function') return valor;
+      return (...args) => {
+        const resultado = valor.apply(objetivo, args);
+        if (prop !== 'getError') {
+          const e = objetivo.getError();
+          if (e !== objetivo.NO_ERROR) throw new Error('gl.' + prop + ' → ' + (NOMBRES[e] || e));
+        }
+        return resultado;
+      };
+    },
+  });
+}
+const DEPURAR = false;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('webgl2');
+const gl = DEPURAR ? depurar(ctx) : ctx;
+
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform mat3 u_giro;
+out vec3 v_color;
+void main() {
+  vec2 P[3] = vec2[3](vec2(-0.5, -0.4), vec2(0.5, -0.4), vec2(0.0, 0.6));
+  v_color = vec3(gl_VertexID == 0, gl_VertexID == 1, gl_VertexID == 2) * 0.8 + 0.2;
+  gl_Position = vec4((u_giro * vec3(P[gl_VertexID], 1.0)).xy, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+const locGiro = gl.getUniformLocation(programa, 'u_giro');
+gl.bindVertexArray(gl.createVertexArray());
+
+GLKit.bucle((t) => {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  const c = Math.cos(t), s = Math.sin(t), k = gl.drawingBufferHeight / gl.drawingBufferWidth;
+  gl.uniformMatrix4fv(locGiro, false, new Float32Array([c * k, s, 0, 0,  -s * k, c, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]));
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+});
+</script>
+<script type="text/x-js" data-solucion>
+const NOMBRES = { 0x500: 'INVALID_ENUM', 0x501: 'INVALID_VALUE', 0x502: 'INVALID_OPERATION', 0x506: 'INVALID_FRAMEBUFFER_OPERATION' };
+function depurar(gl) {
+  return new Proxy(gl, {
+    get(objetivo, prop) {
+      const valor = objetivo[prop];
+      if (typeof valor !== 'function') return valor;
+      return (...args) => {
+        const resultado = valor.apply(objetivo, args);
+        if (prop !== 'getError') {
+          const e = objetivo.getError();
+          if (e !== objetivo.NO_ERROR) throw new Error('gl.' + prop + ' → ' + (NOMBRES[e] || e));
+        }
+        return resultado;
+      };
+    },
+  });
+}
+const DEPURAR = true;                                   // activado: ya no protesta
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('webgl2');
+const gl = DEPURAR ? depurar(ctx) : ctx;
+
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform mat3 u_giro;
+out vec3 v_color;
+void main() {
+  vec2 P[3] = vec2[3](vec2(-0.5, -0.4), vec2(0.5, -0.4), vec2(0.0, 0.6));
+  v_color = vec3(gl_VertexID == 0, gl_VertexID == 1, gl_VertexID == 2) * 0.8 + 0.2;
+  gl_Position = vec4((u_giro * vec3(P[gl_VertexID], 1.0)).xy, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+const locGiro = gl.getUniformLocation(programa, 'u_giro');
+gl.bindVertexArray(gl.createVertexArray());
+
+GLKit.bucle((t) => {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  const c = Math.cos(t), s = Math.sin(t), k = gl.drawingBufferHeight / gl.drawingBufferWidth;
+  // u_giro es mat3: uniformMatrix3fv y 9 valores (por columnas)
+  gl.uniformMatrix3fv(locGiro, false, new Float32Array([c * k, s, 0,  -s * k, c, 0,  0, 0, 1]));
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Cambia <code>DEPURAR</code> a <code>true</code> y ejecuta. ¿Qué función nombra el mensaje?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Compara el tipo del uniform en el shader con el método que usa JavaScript. ¿Cuántos valores tiene una <code>mat3</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con el envoltorio activado, la primera llamada al bucle lanza <code>gl.uniformMatrix4fv → INVALID_OPERATION</code>: el uniform es <code>mat3</code> y el método es el de <code>mat4</code> (5.4). Sin el envoltorio, esa llamada no hacía nada, <code>u_giro</code> se quedaba en su valor inicial, la matriz de ceros, y los tres vértices se colapsaban en el origen: triángulo invisible, sin error visible. La solución usa <code>uniformMatrix3fv</code> con los 9 valores de la matriz 3 × 3 por columnas (el giro con la corrección de aspecto, y la tercera columna (0, 0, 1)). Con el arreglo, el envoltorio puede quedarse activado: no protesta, porque ya no hay errores.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.10.2 — Los puntos negros del terreno</h3>
+  <p>Un terreno de colinas con mesetas (cimas y fondos planos), iluminado y calculado píxel a píxel a partir de una función de altura. Las mesetas salen negras y la luz de las laderas se ve rara. Usa la vista de NaN (<code>VER_NAN</code>) para confirmar qué es ese negro, y arregla el cálculo de la normal.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.10.2" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const VER_NAN = false;                        // true: los NaN se pintan de magenta
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec2 u_resolucion;
+uniform bool u_verNaN;
+out vec4 color;
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolucion.y * 6.0;             // coordenadas del terreno
+  // altura: colinas sin(x)·cos(y), recortadas por arriba y por abajo (mesetas)
+  float s = 1.8 * sin(p.x) * cos(p.y);
+  float h = 0.25 * clamp(s, -1.0, 1.0);
+  bool meseta = abs(s) > 1.0;                                   // donde se recorta, el terreno es plano
+  float dhdx = meseta ? 0.0 : 0.25 * 1.8 * cos(p.x) * cos(p.y); // derivadas parciales de h
+  float dhdy = meseta ? 0.0 : -0.25 * 1.8 * sin(p.x) * sin(p.y);
+  vec3 n = normalize(vec3(-dhdx, -dhdy, 0.0));                 // la normal de la superficie
+  vec3 l = normalize(vec3(-0.5, 0.6, 0.6));
+  float luz = 0.15 + 0.85 * max(dot(n, l), 0.0);
+  vec3 c = mix(vec3(0.2, 0.45, 0.25), vec3(0.85, 0.8, 0.6), h * 2.0 + 0.5) * luz;
+  color = (u_verNaN && any(isnan(c))) ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(c, 1.0);
+}`);
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(programa);
+gl.uniform2f(gl.getUniformLocation(programa, 'u_resolucion'), gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.uniform1i(gl.getUniformLocation(programa, 'u_verNaN'), VER_NAN);
+gl.bindVertexArray(GLKit.trianguloPantalla(gl));
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const VER_NAN = true;                         // ya no aparece ningún magenta
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec2 u_resolucion;
+uniform bool u_verNaN;
+out vec4 color;
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolucion.y * 6.0;
+  float s = 1.8 * sin(p.x) * cos(p.y);
+  float h = 0.25 * clamp(s, -1.0, 1.0);
+  bool meseta = abs(s) > 1.0;
+  float dhdx = meseta ? 0.0 : 0.25 * 1.8 * cos(p.x) * cos(p.y);
+  float dhdy = meseta ? 0.0 : -0.25 * 1.8 * sin(p.x) * sin(p.y);
+  // La normal de z = h(x, y) es (-dh/dx, -dh/dy, 1): la z vale 1, no 0
+  vec3 n = normalize(vec3(-dhdx, -dhdy, 1.0));
+  vec3 l = normalize(vec3(-0.5, 0.6, 0.6));
+  float luz = 0.15 + 0.85 * max(dot(n, l), 0.0);
+  vec3 c = mix(vec3(0.2, 0.45, 0.25), vec3(0.85, 0.8, 0.6), h * 2.0 + 0.5) * luz;
+  color = (u_verNaN && any(isnan(c))) ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(c, 1.0);
+}`);
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(programa);
+gl.uniform2f(gl.getUniformLocation(programa, 'u_resolucion'), gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.uniform1i(gl.getUniformLocation(programa, 'u_verNaN'), VER_NAN);
+gl.bindVertexArray(GLKit.trianguloPantalla(gl));
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En una meseta, las dos derivadas valen exactamente 0. ¿Qué vector se normaliza entonces?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En un terreno plano (<code>h</code> constante), la normal debe apuntar hacia arriba, (0, 0, 1). ¿Qué da la fórmula del shader en ese caso?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>VER_NAN = true</code>, las mesetas negras se vuelven magenta: son NaN. Donde el terreno es plano, las dos derivadas valen exactamente 0, el shader normaliza <code>vec3(0.0)</code>, que da NaN, y el NaN se contagia a la luz y al color. Pero el fallo es más general: la normal de una superficie <em>z = h(x, y)</em> es <em>(−∂h/∂x, −∂h/∂y, 1)</em>, normalizada. Con la <em>z</em> a 0, todas las normales de las laderas eran horizontales, por eso su luz también se veía rara. Con la <em>z</em> a 1, una meseta tiene normal (0, 0, 1) y el vector nunca es cero, así que desaparecen los NaN y la iluminación se vuelve coherente.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.10.3 — Descifrar el log</h3>
+  <p>Este shader no compila. Lee el log del error (los números de línea y lo que hay entre comillas) y corrige los dos fallos. Resultado esperado: un degradado de colores cálidos.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.10.3" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro" data-error-esperado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  float brillo = 1;
+  vec3 c = vec3(v_uv.x, 0.4 + 0.3 * v_uv.y, 0.25) * brillo;
+  color = c;
+}`);
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(programa);
+gl.bindVertexArray(GLKit.trianguloPantalla(gl));
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  float brillo = 1.0;                                  // un literal float lleva punto
+  vec3 c = vec3(v_uv.x, 0.4 + 0.3 * v_uv.y, 0.25) * brillo;
+  color = vec4(c, 1.0);                                // vec3 → vec4: falta el alfa
+}`);
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(programa);
+gl.bindVertexArray(GLKit.trianguloPantalla(gl));
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El log marca dos líneas del fragment shader. Busca cada mensaje en la tabla de esta lección.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>«cannot convert from 'const int'»: ¿qué tipo tiene el literal <code>1</code>? «dimension mismatch»: ¿cuántas componentes tiene <code>c</code> y cuántas <code>color</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El log da dos errores. En la línea 6, <code>cannot convert from 'const int' to 'highp float'</code>: <code>1</code> es un entero y GLSL no lo convierte solo; se escribe <code>1.0</code>. En la línea 8, <code>dimension mismatch</code> y <code>cannot convert from 'highp 3-component vector of float' to 'out highp 4-component vector of float'</code>: se asigna un <code>vec3</code> a la salida <code>vec4</code>; falta el alfa, <code>vec4(c, 1.0)</code>. Los números de línea cuentan desde la primera línea del fragment shader (<code>#version 300 es</code> es la 1), y el listado numerado de GLKit marca las dos líneas.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.10.4 — El frame que espera</h3>
+  <p>Esta animación funciona, pero su JavaScript tarda mucho más de lo necesario en cada frame (lo muestra el texto de abajo). Encuentra las tres cosas que no deberían estar en el bucle y arréglalo sin cambiar lo que se ve.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.10.4" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+#info { font: 12px ui-monospace, monospace; color: #3fd0e8; padding: 6px 12px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform float u_t;
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  float c = cos(u_t * 0.3), s = sin(u_t * 0.3);
+  v_uv = mat2(c, s, -s, c) * (a_posicion * vec2(u_aspecto, 1.0)) * 0.35;   // cuadros cuadrados, girando
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+const vao = GLKit.trianguloPantalla(gl);
+const lienzo = document.createElement('canvas');           // un damero de 1024 × 1024 que nunca cambia
+lienzo.width = lienzo.height = 1024;
+const g = lienzo.getContext('2d');
+const textura = gl.createTexture();
+const locT = gl.getUniformLocation(programa, 'u_t'), locA = gl.getUniformLocation(programa, 'u_aspecto');
+const info = document.getElementById('info');
+let frames = 0, msJS = 0, tInfo = 0;
+
+GLKit.bucle((t) => {
+  const inicio = performance.now();
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  // la textura
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    g.fillStyle = (x + y) % 2 ? '#2b3a67' : '#e8b44c';
+    g.fillRect(x * 64, y * 64, 64, 64);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, textura);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, lienzo);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  GLKit.revisarError(gl, 'textura');
+  // dibujar
+  gl.useProgram(programa);
+  gl.uniform1f(locT, t);
+  gl.uniform1f(locA, gl.drawingBufferWidth / gl.drawingBufferHeight);
+  GLKit.revisarError(gl, 'uniforms');
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  GLKit.revisarError(gl, 'dibujo');
+  // comprobar que se dibujó algo
+  const px = new Uint8Array(4);
+  gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  if (px[3] === 0) console.log('¡no se dibujó nada!');
+  msJS += performance.now() - inicio; frames++;
+  if (t - tInfo > 0.5) { info.textContent = 'JS ' + (msJS / frames).toFixed(2) + ' ms/frame'; frames = 0; msJS = 0; tInfo = t; }
+});
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform float u_t;
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  float c = cos(u_t * 0.3), s = sin(u_t * 0.3);
+  v_uv = mat2(c, s, -s, c) * (a_posicion * vec2(u_aspecto, 1.0)) * 0.35;   // cuadros cuadrados, girando
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+const vao = GLKit.trianguloPantalla(gl);
+// 1) La textura no cambia: se dibuja y se sube UNA vez, fuera del bucle
+const lienzo = document.createElement('canvas');
+lienzo.width = lienzo.height = 1024;
+const g = lienzo.getContext('2d');
+for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+  g.fillStyle = (x + y) % 2 ? '#2b3a67' : '#e8b44c';
+  g.fillRect(x * 64, y * 64, 64, 64);
+}
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, lienzo);
+gl.generateMipmap(gl.TEXTURE_2D);
+GLKit.revisarError(gl, 'textura');                           // 2) comprobar errores una vez, al preparar
+const locT = gl.getUniformLocation(programa, 'u_t'), locA = gl.getUniformLocation(programa, 'u_aspecto');
+const info = document.getElementById('info');
+let frames = 0, msJS = 0, tInfo = 0;
+
+GLKit.bucle((t) => {
+  const inicio = performance.now();
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.useProgram(programa);
+  gl.bindTexture(gl.TEXTURE_2D, textura);
+  gl.uniform1f(locT, t);
+  gl.uniform1f(locA, gl.drawingBufferWidth / gl.drawingBufferHeight);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // 3) sin readPixels: nada obliga a esperar a la GPU
+  msJS += performance.now() - inicio; frames++;
+  if (t - tInfo > 0.5) { info.textContent = 'JS ' + (msJS / frames).toFixed(2) + ' ms/frame'; frames = 0; msJS = 0; tInfo = t; }
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Cambia el damero de un frame a otro? ¿Hace falta dibujarlo en el canvas 2D, subirlo y generar sus mipmaps en cada frame?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Busca las llamadas que obligan a la CPU a esperar respuesta del proceso de la GPU: las hay de dos tipos en el bucle.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Las tres cosas: (1) el damero se redibujaba en el canvas 2D, se subía con <code>texImage2D</code> y se le generaban los mipmaps en cada frame, aunque nunca cambia: se hace una vez, al preparar. (2) <code>GLKit.revisarError</code> tres veces por frame: cada una consulta <code>getError</code>, que espera al proceso de la GPU; se comprueba una vez al preparar, o solo en modo depuración. (3) <code>readPixels</code> para «comprobar que se dibujó algo»: obliga a esperar a que la GPU termine el frame, justo lo que el pipeline intenta evitar. Sin ellas, el JavaScript del frame baja a una fracción de lo que era, y la imagen es idéntica. El bucle solo debe contener lo que de verdad cambia cada frame: aquí, dos uniforms y el dibujo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.10.5 — Ordenar antes de dibujar</h3>
+  <p>24 000 figuras: la mitad son círculos (programa A) y la otra mitad, rombos (programa B), mezclados en un orden aleatorio. El bucle cambia de programa en casi cada figura. Reorganiza el dibujo para que haya solo dos cambios de programa por frame, y compara los fps y el JavaScript por frame. La imagen puede cambiar en qué figura queda encima de cuál, pero nada más.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.10.5" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+#info { font: 12px ui-monospace, monospace; color: #3fd0e8; padding: 6px 12px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const VS = `#version 300 es
+uniform vec2 u_pos;
+uniform float u_aspecto;
+out vec2 v_local;
+void main() {
+  vec2 P[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(-1, 1), vec2(1, -1), vec2(1, 1));
+  v_local = P[gl_VertexID];
+  gl_Position = vec4(u_pos + P[gl_VertexID] * 0.02 * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`;
+const progA = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_local;
+out vec4 color;
+void main() { if (length(v_local) > 1.0) discard; color = vec4(1.0, 0.55, 0.3, 1.0); }`);
+const progB = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_local;
+out vec4 color;
+void main() { if (abs(v_local.x) + abs(v_local.y) > 1.0) discard; color = vec4(0.3, 0.75, 1.0, 1.0); }`);
+const N = 24000;
+const figuras = [];
+for (let i = 0; i < N; i++) figuras.push({ x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, tipo: Math.random() < 0.5 ? 'A' : 'B' });
+const loc = { A: { pos: gl.getUniformLocation(progA, 'u_pos'), aspecto: gl.getUniformLocation(progA, 'u_aspecto') },
+              B: { pos: gl.getUniformLocation(progB, 'u_pos'), aspecto: gl.getUniformLocation(progB, 'u_aspecto') } };
+const prog = { A: progA, B: progB };
+gl.bindVertexArray(gl.createVertexArray());
+const info = document.getElementById('info');
+let frames = 0, msJS = 0, tInfo = 0, cambios = 0;
+
+GLKit.bucle((t) => {
+  const inicio = performance.now();
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.06, 0.07, 0.1, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const aspecto = gl.drawingBufferHeight / gl.drawingBufferWidth;
+  let actual = null;
+  cambios = 0;
+  for (const f of figuras) {
+    if (f.tipo !== actual) {                                   // cambio de programa
+      actual = f.tipo;
+      gl.useProgram(prog[actual]);
+      gl.uniform1f(loc[actual].aspecto, aspecto);
+      cambios++;
+    }
+    gl.uniform2f(loc[actual].pos, f.x, f.y);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+  msJS += performance.now() - inicio; frames++;
+  if (t - tInfo > 0.5) {
+    info.textContent = cambios + ' cambios de programa por frame · ' + Math.round(frames / (t - tInfo)) + ' fps · JS ' + (msJS / frames).toFixed(2) + ' ms/frame';
+    frames = 0; msJS = 0; tInfo = t;
+  }
+});
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const VS = `#version 300 es
+uniform vec2 u_pos;
+uniform float u_aspecto;
+out vec2 v_local;
+void main() {
+  vec2 P[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(-1, 1), vec2(1, -1), vec2(1, 1));
+  v_local = P[gl_VertexID];
+  gl_Position = vec4(u_pos + P[gl_VertexID] * 0.02 * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`;
+const progA = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_local;
+out vec4 color;
+void main() { if (length(v_local) > 1.0) discard; color = vec4(1.0, 0.55, 0.3, 1.0); }`);
+const progB = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_local;
+out vec4 color;
+void main() { if (abs(v_local.x) + abs(v_local.y) > 1.0) discard; color = vec4(0.3, 0.75, 1.0, 1.0); }`);
+const N = 24000;
+const figuras = [];
+for (let i = 0; i < N; i++) figuras.push({ x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, tipo: Math.random() < 0.5 ? 'A' : 'B' });
+// Ordenar UNA vez, al preparar: primero todas las A, luego todas las B
+figuras.sort((a, b) => (a.tipo < b.tipo ? -1 : a.tipo > b.tipo ? 1 : 0));
+const loc = { A: { pos: gl.getUniformLocation(progA, 'u_pos'), aspecto: gl.getUniformLocation(progA, 'u_aspecto') },
+              B: { pos: gl.getUniformLocation(progB, 'u_pos'), aspecto: gl.getUniformLocation(progB, 'u_aspecto') } };
+const prog = { A: progA, B: progB };
+gl.bindVertexArray(gl.createVertexArray());
+const info = document.getElementById('info');
+let frames = 0, msJS = 0, tInfo = 0, cambios = 0;
+
+GLKit.bucle((t) => {
+  const inicio = performance.now();
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.06, 0.07, 0.1, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const aspecto = gl.drawingBufferHeight / gl.drawingBufferWidth;
+  let actual = null;
+  cambios = 0;
+  for (const f of figuras) {                                   // el mismo bucle: ahora solo cambia dos veces
+    if (f.tipo !== actual) {
+      actual = f.tipo;
+      gl.useProgram(prog[actual]);
+      gl.uniform1f(loc[actual].aspecto, aspecto);
+      cambios++;
+    }
+    gl.uniform2f(loc[actual].pos, f.x, f.y);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+  msJS += performance.now() - inicio; frames++;
+  if (t - tInfo > 0.5) {
+    info.textContent = cambios + ' cambios de programa por frame · ' + Math.round(frames / (t - tInfo)) + ' fps · JS ' + (msJS / frames).toFixed(2) + ' ms/frame';
+    frames = 0; msJS = 0; tInfo = t;
+  }
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El bucle ya evita llamar a <code>useProgram</code> si el programa no cambia. ¿Qué habría que hacer con el array <code>figuras</code> para que casi nunca cambie?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Una sola línea, antes del bucle de animación: <code>figuras.sort(…)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con las figuras en orden aleatorio, dos figuras seguidas son de distinto tipo la mitad de las veces: unos 12 000 cambios de programa por frame, cada uno con su <code>useProgram</code> y su <code>uniform1f</code>. Ordenando el array una vez por tipo, quedan todas las A seguidas de todas las B, y el mismo bucle cambia de programa solo dos veces. Las figuras son opacas (<code>discard</code> fuera de la forma, sin mezcla), así que el orden solo cambia cuál queda encima donde se solapan. En la máquina de pruebas, el JavaScript por frame bajó de 2,6 a 1,9 ms, y las dos versiones iban a 60 fps. Buena parte del coste de un cambio de programa no se ve con <code>performance.now()</code>, porque lo paga el proceso de la GPU: con la medida sincronizada de esta lección, 10 000 dibujos alternando programas tardaron 8,4 ms, frente a 3,6 ms agrupados. El siguiente paso sería el de 5.9: dos llamadas instanciadas en lugar de 24 000.</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Pantalla negra: descarta en orden. Consola, color de borrado magenta, color fijo en el fragment shader, geometría (culling, profundidad, viewport, FBO, atributos, <code>count</code>, <code>w</code>), y el estado real con un inspector como <code>diagnosticar(gl)</code>.</li>
+    <li>Envoltorio de depuración con <code>Proxy</code>: <code>getError</code> tras cada llamada y excepción con el nombre de la función. Caro (74,6 ms por 2000 llamadas): solo con un interruptor. La consola de Chrome se calla tras 256 avisos por contexto.</li>
+    <li>Logs de ANGLE: <code>ERROR: 0:línea: 'elemento' : explicación</code>. Arregla el primero y recompila; un <code>syntax error</code> suele estar en la línea anterior.</li>
+    <li><code>WEBGL_debug_shaders</code> enseña el shader traducido (Metal en el Mac de pruebas): nombres prefijados, salidas inicializadas a cero, <code>mediump</code> calculado en 32 bits.</li>
+    <li>Falso color para ver valores intermedios, <code>isnan</code> en magenta para los NaN (que en un canvas de 8 bits se ven negros), y <code>readPixels</code> en float como <code>printf</code>.</li>
+    <li>CPU o GPU: mide el JavaScript, baja la resolución (si mejora, fragmentos), reduce llamadas (si mejora, coste por llamada). Causas típicas: llamadas, cambios de estado (ordena por programa y textura), overdraw con mezcla o <code>discard</code>, subidas de texturas innecesarias, <code>readPixels</code> y <code>getError</code> en el bucle, DPR alto.</li>
+    <li><code>gl.finish()</code> no sirve para medir en Chrome. <code>EXT_disjoint_timer_query_webgl2</code> mide la GPU, pero no siempre existe y sus resultados son gruesos: mide pasadas o frames, promedia y contrasta.</li>
+    <li>Quien crea, borra: el recolector de basura no libera a tiempo la memoria de la GPU.</li>
+  </ul>
+</div>
+
+<p>Con esto termina el módulo 5: ya sabes montar a mano todo el pipeline de WebGL2, de un triángulo a miles de instancias con post-proceso, y averiguar qué pasa cuando algo falla. En el <a href="../06-glsl/01-lenguaje.html">módulo 6</a> nos quedamos dentro del fragment shader, que es donde vive la mayor parte de la magia visual: el lenguaje GLSL a fondo, pensar en paralelo, formas, ruido y animación.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices">MDN: WebGL best practices</a>, una lista extensa de recomendaciones de rendimiento y robustez.</li>
+  <li><a href="https://spector.babylonjs.com/">Spector.js</a>, para capturar e inspeccionar frames.</li>
+  <li><a href="https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query_webgl2/">Especificación de <code>EXT_disjoint_timer_query_webgl2</code></a> y de <a href="https://registry.khronos.org/webgl/extensions/WEBGL_debug_shaders/"><code>WEBGL_debug_shaders</code></a>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

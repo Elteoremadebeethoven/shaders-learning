@@ -1,0 +1,1053 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.7 · Animar dentro del shader — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/b-m6.css">
+</head>
+<body data-leccion="06-glsl/animacion-shaders">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>Animar dentro del shader</h1>
+  <p class="resumen">Un fragment shader no recuerda nada del frame anterior: cada imagen es una función del píxel y del tiempo. Esta lección convierte esa limitación en un método: oscilar, repetir y avanzar a saltos con <code>sin</code>, <code>fract</code> y <code>floor</code>, bucles que cierran perfectos, easings, animaciones escalonadas, líneas de tiempo, motion blur, y el criterio para decidir qué se anima en el shader y qué en JavaScript.</p>
+  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 2.3, 2.4, 3.4, 6.3, 6.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Pensarás cada animación como una función cerrada del tiempo, $\text{color} = f(\text{píxel}, t)$, y sabrás qué no se puede hacer así.</li>
+      <li>Construirás oscilaciones, bucles y pasos discretos, y bucles perfectos de periodo T que no saltan al reiniciar.</li>
+      <li>Portarás los easings de 2.4 a GLSL y los combinarás con desfases por celda y con ventanas de tiempo para secuenciar animaciones.</li>
+      <li>Entenderás el aliasing temporal (la rueda que gira al revés), el motion blur, la precisión del tiempo y por qué <code>u_frame</code> hace que la velocidad dependa de la pantalla.</li>
+      <li>Sabrás cuándo una animación pertenece al shader y cuándo a JavaScript, y cómo se reparten el trabajo.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El tiempo es una entrada más</h2>
+<p>En JavaScript animas modificando un estado: en cada frame, <code>x += v * dt</code>. La posición de ahora depende de la de antes, y la de antes, de la anterior. Así integraste muelles en <a href="../02-animacion/05-fisica-muelles.html">2.5</a>. Un fragment shader no puede hacer eso: cada invocación empieza de cero, sin memoria del frame anterior (el modelo de <a href="02-pensar-en-paralelo.html">6.2</a>). Lo único que cambia de un frame a otro son sus entradas, y la más importante es <code>u_time</code>.</p>
+<p>La consecuencia es un cambio de mentalidad: en un shader, una animación no es un proceso sino una <strong>función del tiempo</strong>. En lugar de «avanza un poco cada frame», escribes «en el instante $t$, el círculo está en $x(t)$». Si se mueve a velocidad constante, $x(t) = x_0 + v\,t$; si oscila, $x(t) = A\sin(\omega t)$. Todo el frame es</p>
+$$\text{color}(\vec p, t) = f(\vec p, t)$$
+<p>Eso tiene ventajas enormes. Puedes <strong>saltar a cualquier instante</strong> sin calcular los anteriores (el botón <em>t=0</em> del editor, o un vídeo que se renderiza fotograma a fotograma). La animación es <strong>determinista</strong>: el mismo $t$ da siempre la misma imagen. Y es <strong>independiente de los fps</strong>: si un frame tarda el doble, el siguiente se evalúa en un $t$ mayor, y ya está. El precio: todo lo que dependa de la historia (una pelota que rebota contra obstáculos que mueve el ratón, un muelle que se estira al arrastrar, una partícula que choca) no se puede expresar así, o solo si encuentras una fórmula cerrada para ello.</p>
+
+<div class="callout senior" data-titulo="El u_time de los editores no es el reloj de la página">
+  <p>Cada editor de este curso lleva <strong>su propio reloj</strong>: empieza en 0 (o en <code>data-tiempo</code>), avanza solo mientras el editor es visible y no está en pausa, y en cada frame suma como mucho 0,1 s (lo viste en <code>GLKit.bucle</code>, <a href="../05-webgl/04-uniforms-animacion.html">5.4</a>). Por eso, si te vas a otra pestaña o desplazas el editor fuera de la pantalla, la animación continúa donde la dejaste en lugar de saltar. Es una decisión de diseño, no una ley: en tu propia aplicación, <code>u_time</code> vale lo que tú le mandes, y si le mandas <code>performance.now() / 1000</code> sin más, tras volver de otra pestaña verás el salto (el bicho de <a href="../02-animacion/03-raf.html">2.3</a>).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Quieres que una bola caiga con gravedad dentro de un fragment shader. ¿Cuál de estas ideas funciona?</p>
+  <ul>
+    <li>Declarar <code>float velocidad = 0.0;</code> fuera de <code>main</code> y hacer <code>velocidad += 9.8 * dt</code> en cada ejecución.<div class="explicacion">Una variable global de un shader no persiste entre ejecuciones: cada invocación arranca con el valor inicial. Y aunque persistiera, millones de invocaciones la modificarían a la vez.</div></li>
+    <li data-correcta>Calcular la altura con la fórmula cerrada $y(t) = y_0 - \tfrac12 g t^2$ a partir de <code>u_time</code>.<div class="explicacion">Exacto. Para un movimiento que tiene solución cerrada, el shader evalúa la solución en el instante t. Si la física depende de la historia (choques con cosas que cambian, fuerzas del ratón), la integración se hace en JavaScript o en una textura de estado que se lee y escribe con ping-pong (<a href="../05-webgl/08-framebuffers.html">5.8</a>).</div></li>
+    <li>Guardar la velocidad en el color de salida (<code>fragColor</code>) y leerla en el frame siguiente.<div class="explicacion">Un fragment shader no puede leer lo que escribió en el frame anterior en la pantalla. Lo que sí puedes hacer es escribir en una textura y leerla en la pasada siguiente (ping-pong), que es otra forma de tener estado, fuera de la función pura.</div></li>
+  </ul>
+</div>
+
+<h2>Tres herramientas: oscilar, repetir y avanzar a saltos</h2>
+<p>Casi todas las animaciones sin estado se construyen con tres funciones que ya conoces de <a href="../03-matematicas/04-funciones-forma.html">3.4</a>, ahora aplicadas al tiempo:</p>
+<ul>
+  <li><code>sin(ω t)</code>: <strong>oscilar</strong>. Va y vuelve de forma suave, con frenado en los extremos. Periodo $2\pi/\omega$ segundos.</li>
+  <li><code>fract(t / T)</code>: <strong>repetir</strong>. Un progreso de 0 a 1 que tarda $T$ segundos y vuelve a 0 de golpe: un diente de sierra. Es el «reloj de ciclo» sobre el que se construye todo lo demás.</li>
+  <li><code>floor(t / T)</code>: <strong>contar</strong>. Un entero que sube de uno en uno cada $T$ segundos. Sirve para avanzar a saltos (fotogramas de un sprite, un segundero que salta) y para numerar ciclos (el ciclo 7 puede tener un color distinto que el 8: <code>hash(floor(t / T))</code>).</li>
+</ul>
+
+<div class="glsl-playground" data-titulo="Oscilar, repetir y avanzar a saltos" data-altura="260">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+// Disco antialiasado (SDF de un círculo, 6.3)
+float disco(vec2 p, vec2 centro, float radio, float px) {
+  return 1.0 - smoothstep(radio - px, radio + px, length(p - centro));
+}
+
+void main() {
+  float px = 1.0 / u_resolution.y;                  // un píxel en estas unidades
+  vec2 p = gl_FragCoord.xy * px;                    // y de 0 a 1; x de 0 al aspecto
+  float ancho = u_resolution.x * px;
+  float margen = 0.12, recorrido = ancho - 2.0 * margen;
+  float t = u_time;
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  for (int k = 0; k < 3; k++) {                     // tres raíles
+    float y = 0.8 - 0.3 * float(k);
+    color = mix(color, vec3(0.22), 1.0 - smoothstep(0.0, px, abs(p.y - y) - px));
+  }
+
+  float x1 = margen + recorrido * (0.5 + 0.5 * sin(t * 2.0));             // oscila
+  float x2 = margen + recorrido * fract(t / 2.0);                           // repite cada 2 s
+  float x3 = margen + recorrido * floor(fract(t / 2.0) * 5.0) / 4.0;        // 5 paradas
+
+  color = mix(color, vec3(0.55, 0.48, 1.00), disco(p, vec2(x1, 0.8), 0.05, px));
+  color = mix(color, vec3(0.25, 0.82, 0.91), disco(p, vec2(x2, 0.5), 0.05, px));
+  color = mix(color, vec3(1.00, 0.42, 0.71), disco(p, vec2(x3, 0.2), 0.05, px));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+float x1 = margen + recorrido * (0.5 + 0.5 * sin(t * 2.0));
+float x2 = margen + recorrido * fract(t / 2.0);
+float x3 = margen + recorrido * floor(fract(t / 2.0) * 5.0) / 4.0;
+</script>
+<ol>
+  <li data-l="1"><code>sin(t * 2.0)</code> va de −1 a 1 con periodo $2\pi/2 \approx 3{,}14$ s; <code>0.5 + 0.5 * …</code> lo lleva a $[0, 1]$ (el remapeo de <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>), y el resto lo convierte en una posición entre los márgenes. El disco frena al llegar a cada extremo porque la pendiente del seno es 0 en sus máximos.</li>
+  <li data-l="2"><code>fract(t / 2.0)</code> sube de 0 a 1 en 2 segundos y vuelve a 0: el disco cruza el raíl y reaparece a la izquierda. Dividir el tiempo por el periodo antes del <code>fract</code> es el idioma: <code>fract(t / T)</code> es «qué fracción del ciclo actual ha pasado».</li>
+  <li data-l="3">El mismo progreso, cuantizado: <code>floor(progreso * 5.0)</code> vale 0, 1, 2, 3 o 4, y dividir por 4 da cinco posiciones de 0 a 1. Es la función <code>steps(5, jump-none)</code> de CSS que viste en <a href="../02-animacion/02-css-transiciones.html">2.2</a>, escrita a mano.</li>
+</ol>
+</div>
+
+<p>Estas formas de onda son las piezas con las que se combina todo lo demás. El graficador las dibuja en función del tiempo (el eje x es $t$ en segundos, con periodo 1):</p>
+<div class="graficador" data-x="-0.25,3.25" data-y="-0.2,1.2" data-titulo="Formas de onda de periodo 1">
+<script type="text/x-exprs">
+0.5 + 0.5 * sin(x * 6.2831853)
+fract(x)
+floor(fract(x) * 4.0) / 4.0
+1.0 - abs(fract(x) * 2.0 - 1.0)
+step(0.5, fract(x))
+</script>
+</div>
+<ul>
+  <li>La <strong>sinusoide</strong> (seno remapeado): suave en todo momento.</li>
+  <li>El <strong>diente de sierra</strong>, <code>fract(x)</code>: subida lineal y caída instantánea.</li>
+  <li>La <strong>escalera</strong>: el diente de sierra cuantizado a 4 niveles.</li>
+  <li>El <strong>triángulo</strong>, <code>1 − |2·fract(x) − 1|</code>: sube y baja a velocidad constante. Es el «ping-pong»: ir y volver sin salto, con una esquina en cada extremo. Sobre él aplicarás easings dentro de un momento.</li>
+  <li>La <strong>onda cuadrada</strong>, <code>step(0.5, fract(x))</code>: encendido/apagado, para parpadeos. Cambia el 0.5 y cambias la proporción de tiempo encendido (el <em>ciclo de trabajo</em>).</li>
+</ul>
+
+<h2>Bucles perfectos</h2>
+<p>Un bucle perfecto es una animación de duración $T$ cuyo último fotograma enlaza con el primero sin que se note: el fotograma en $t = T$ es idéntico al de $t = 0$. Lo necesitas para exportar un GIF o un vídeo en bucle, para un fondo animado que no debe «reiniciarse» a la vista, o por pura limpieza. La condición es sencilla de enunciar: <strong>todo lo que se mueve debe tener un periodo que divida a $T$</strong>. Es decir, en $T$ segundos, cada elemento tiene que completar un número entero de ciclos.</p>
+<ul>
+  <li><code>sin(2π k t / T)</code> con $k$ entero completa $k$ ciclos en $T$ segundos. ✓</li>
+  <li><code>fract(k t / T)</code> con $k$ entero completa $k$ repeticiones. ✓</li>
+  <li><code>sin(t)</code> tiene periodo $2\pi \approx 6{,}283$ s: en un bucle de 4 s completa 0,64 ciclos. ✗</li>
+  <li><code>sin(3.0 * t)</code> tiene periodo $2\pi/3 \approx 2{,}094$ s: tampoco divide a 4. ✗</li>
+</ul>
+<p>El truco para no equivocarse es no escribir nunca frecuencias «a ojo». Define un único progreso de ciclo, $s = \operatorname{fract}(t/T)$, y construye todo a partir de él con multiplicadores enteros: <code>sin(6.2831853 * 2.0 * s)</code> son exactamente 2 oscilaciones por ciclo, pase lo que pase con T.</p>
+
+<div class="glsl-playground" data-titulo="Un comprobador de bucles" data-altura="300"
+     data-uniforms='{"u_T":{"tipo":"float","min":1,"max":8,"valor":4,"paso":0.5,"etiqueta":"periodo T"},"u_diferencia":{"tipo":"bool","valor":false,"etiqueta":"diferencia"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_T;
+uniform bool u_diferencia;
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+
+float disco(vec2 p, vec2 c, float r, float px) { return 1.0 - smoothstep(r - px, r + px, length(p - c)); }
+
+// La escena en el instante t. Tres elementos con periodos distintos.
+// p tiene el origen en el centro del lienzo y la altura va de -0.5 a 0.5.
+vec3 escena(vec2 p, float t, float px) {
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  // 1) Un disco que orbita: una vuelta cada 2 s
+  vec2 c1 = vec2(-0.22, 0.05) + 0.2 * vec2(cos(TAU * t / 2.0), sin(TAU * t / 2.0));
+  color = mix(color, vec3(0.55, 0.48, 1.0), disco(p, c1, 0.05, px));
+  // 2) Un disco que late con sin(3t): periodo 2π/3 ≈ 2,09 s
+  float r2 = 0.07 + 0.04 * sin(3.0 * t);
+  color = mix(color, vec3(1.0, 0.42, 0.71), disco(p, vec2(0.3, 0.05), r2, px));
+  // 3) Una barra que se llena cada 4 s (abajo, de borde a borde)
+  float mitad = 0.5 * u_resolution.x * px;
+  float lleno = fract(t / 4.0);
+  if (p.y < -0.44 && p.x + mitad < lleno * 2.0 * mitad) color = vec3(0.25, 0.82, 0.91);
+  return color;
+}
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;
+  if (u_diferencia) {
+    // Rojo donde el fotograma de t = T no coincide con el de t = 0
+    vec3 d = abs(escena(p, u_T, px) - escena(p, 0.0, px));
+    fragColor = vec4(vec3(0.05) + vec3(1.0, 0.2, 0.2) * step(0.02, max(d.r, max(d.g, d.b))), 1.0);
+  } else {
+    fragColor = vec4(escena(p, mod(u_time, u_T), px), 1.0);   // la animación, en bucle de T s
+  }
+}
+</script>
+</div>
+<p>La animación se reproduce en bucle con <code>mod(u_time, u_T)</code>, así que al final de cada ciclo verás si algo salta. Activa «diferencia»: el shader evalúa la escena en $t = 0$ y en $t = T$ y pinta de rojo los píxeles que no coinciden. Con T = 4, el disco morado (periodo 2 s) y la barra (periodo 4 s) enlazan bien; el rosa, que late con <code>sin(3t)</code>, no. Prueba T = 2: ahora falla también la barra. ¿Hay algún T que funcione para los tres? Necesitarías un múltiplo común de 2, 4 y $2\pi/3$, y como $\pi$ es irracional, no existe: la única solución es cambiar la frecuencia del disco rosa (es el ejercicio 6.7.1). Esta técnica de comprobar evaluando la función en dos instantes solo es posible porque la animación es una función pura del tiempo.</p>
+
+<div class="callout bestiario" data-id="m6b-bucle-salta" data-titulo="El bucle da un salto al volver a empezar">
+  <p><strong>Síntoma:</strong> exportas una animación en bucle (o la reproduces con <code>mod(t, T)</code>) y al reiniciar cada ciclo algo da un salto: un objeto se teletransporta, un color cambia de golpe, una rotación retrocede.</p>
+  <p><strong>Causa:</strong> algún elemento tiene un periodo que no divide a T: en T segundos no completa un número entero de ciclos, así que el fotograma final no coincide con el inicial. El caso típico es <code>sin(t)</code> o <code>sin(3.0 * t)</code> escrito a ojo (periodos de $2\pi$ y $2\pi/3$ segundos), o una velocidad de rotación en «radianes por segundo» que no es múltiplo de $2\pi/T$.</p>
+  <p><strong>Solución:</strong> calcula un único progreso de ciclo, <code>s = fract(t / T)</code>, y expresa todo con multiplicadores enteros: <code>sin(TAU * k * s)</code>, <code>fract(k * s)</code>, ángulo <code>TAU * k * s</code>. Compruébalo evaluando la escena en 0 y en T y restando, como en el editor de arriba.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un logo gira con <code>angulo = u_time * 1.5</code> (radianes) y quieres un bucle perfecto de 4 segundos. ¿Qué cambio lo consigue?</p>
+  <ul>
+    <li>Envolver el tiempo: <code>angulo = mod(u_time, 4.0) * 1.5</code>.<div class="explicacion">Eso reinicia el ángulo cada 4 s, pero justo antes de reiniciar el ángulo vale 6 radianes y de golpe pasa a 0: 6 rad no es una vuelta completa (una vuelta son 6,283 rad), así que el logo da un salto de unos 0,28 rad (16°) en cada ciclo, en el sentido del giro.</div></li>
+    <li>Nada: una rotación siempre es periódica, así que ya hace bucle.<div class="explicacion">La rotación es periódica, sí, pero con su propio periodo: $2\pi/1{,}5 \approx 4{,}19$ s, que no es 4. En 4 s no llega a completar la vuelta.</div></li>
+    <li data-correcta><code>angulo = 6.2831853 * u_time / 4.0</code>: una vuelta exacta cada 4 s.<div class="explicacion">Correcto. En 4 s el ángulo aumenta $2\pi$, una vuelta entera: el fotograma de t = 4 es idéntico al de t = 0. Si quieres que vaya más rápido, multiplica por un entero: dos vueltas cada 4 s, $4\pi t/4$.</div></li>
+  </ul>
+</div>
+
+<h2>Easings en GLSL</h2>
+<p>En <a href="../02-animacion/04-interpolacion-easing.html">2.4</a> escribiste easings en JavaScript: funciones que reciben un progreso lineal en $[0, 1]$ y devuelven otro con la forma que quieres. En GLSL son exactamente iguales. La receta para animar en el shader es componerlas con el reloj de ciclo: <strong>progreso lineal → easing → valor</strong>.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+float easeInOutCubic(float p) {
+  return p < 0.5 ? 4.0 * p * p * p : 1.0 - 4.0 * pow(1.0 - p, 3.0);
+}
+float easeOutBack(float p) {
+  const float c1 = 1.70158, c3 = c1 + 1.0;
+  float q = p - 1.0;
+  return 1.0 + c3 * q * q * q + c1 * q * q;
+}
+float easeOutElastic(float p) {
+  if (p <= 0.0) return 0.0;
+  if (p >= 1.0) return 1.0;
+  return pow(2.0, -10.0 * p) * sin((p * 10.0 - 0.75) * 6.2831853 / 3.0) + 1.0;
+}
+float easeOutBounce(float p) {
+  const float n1 = 7.5625, d1 = 2.75;
+  if (p < 1.0 / d1) return n1 * p * p;
+  if (p < 2.0 / d1) { p -= 1.5 / d1;   return n1 * p * p + 0.75; }
+  if (p < 2.5 / d1) { p -= 2.25 / d1;  return n1 * p * p + 0.9375; }
+  p -= 2.625 / d1;
+  return n1 * p * p + 0.984375;
+}
+</script>
+<ol>
+  <li data-l="1-3">La cúbica <em>in-out</em> de 2.4, con sus dos ramas. <code>pow(1.0 - p, 3.0)</code> es seguro aquí porque la base nunca es negativa si $p \le 1$; si pudiera serlo (un progreso que se sale de rango), recuerda que <code>pow</code> con base negativa es indefinido en GLSL (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>): mejor <code>q * q * q</code>.</li>
+  <li data-l="4-8"><em>easeOutBack</em>: la versión <em>out</em> de $c_3p^3 - c_1p^2$, obtenida con $1 - \text{in}(1 - p)$ y simplificada. Se pasa un 10&nbsp;% del final y vuelve. <code>const</code> dentro de la función: constantes de compilación, gratis.</li>
+  <li data-l="9-13"><em>easeOutElastic</em>: una sinusoide amortiguada por $2^{-10p}$ que se asienta en 1. Los dos <code>if</code> fijan los extremos: con la fórmula sola, en $p = 1$ saldría 1,00049 y no 1 (el factor $2^{-10}$ es pequeño, pero no cero), y fuera de $[0, 1]$ la curva seguiría oscilando.</li>
+  <li data-l="14-21"><em>easeOutBounce</em>: cuatro parábolas encadenadas, cada rebote más bajo y más corto. Las constantes (7,5625 y 2,75) son las clásicas de Robert Penner: con ellas las parábolas se tocan en los puntos de rebote.</li>
+</ol>
+</div>
+
+<div class="graficador" data-x="-0.1,1.1" data-y="-0.2,1.45" data-titulo="Los cuatro easings (x es el progreso)">
+<script type="text/x-exprs">
+easeInOutCubic(x)
+easeOutBack(x)
+easeOutElastic(x)
+easeOutBounce(x)
+</script>
+<script type="text/x-glsl">
+float easeInOutCubic(float p) { p = clamp(p, 0.0, 1.0); return p < 0.5 ? 4.0 * p * p * p : 1.0 - 4.0 * pow(1.0 - p, 3.0); }
+float easeOutBack(float p) { p = clamp(p, 0.0, 1.0); const float c1 = 1.70158, c3 = c1 + 1.0; float q = p - 1.0; return 1.0 + c3 * q * q * q + c1 * q * q; }
+float easeOutElastic(float p) { if (p <= 0.0) return 0.0; if (p >= 1.0) return 1.0; return pow(2.0, -10.0 * p) * sin((p * 10.0 - 0.75) * 6.2831853 / 3.0) + 1.0; }
+float easeOutBounce(float p) {
+  p = clamp(p, 0.0, 1.0);
+  const float n1 = 7.5625, d1 = 2.75;
+  if (p < 1.0 / d1) return n1 * p * p;
+  if (p < 2.0 / d1) { p -= 1.5 / d1; return n1 * p * p + 0.75; }
+  if (p < 2.5 / d1) { p -= 2.25 / d1; return n1 * p * p + 0.9375; }
+  p -= 2.625 / d1; return n1 * p * p + 0.984375;
+}
+</script>
+</div>
+
+<p>Para usarlos en bucle hay que decidir qué pasa al final de cada ciclo. Tres patrones, los tres con un reloj de ciclo $s = \operatorname{fract}(t/T)$:</p>
+<ul>
+  <li><strong>Reinicio</strong>: <code>ease(s)</code>. Va de 0 a 1 y salta a 0. Útil si el objeto sale por un lado y entra por otro, o si el salto queda oculto (un icono que se desvanece al final).</li>
+  <li><strong>Ping-pong</strong>: <code>ease(1.0 - abs(2.0 * s - 1.0))</code>. La onda triangular lleva el progreso de 0 a 1 y de vuelta a 0; con un easing <em>in-out</em>, la ida y la vuelta arrancan y frenan suaves. Bucle perfecto sin saltos.</li>
+  <li><strong>Con pausas</strong>: <code>ease(clamp((s - a) / (b - a), 0.0, 1.0))</code>. El progreso se queda en 0 hasta la fracción <code>a</code> del ciclo, avanza entre <code>a</code> y <code>b</code> y se queda en 1 hasta el final. Es la interpolación inversa recortada de 2.4 aplicada al tiempo, y es la base de las líneas de tiempo de más abajo.</li>
+</ul>
+
+<div class="glsl-playground" data-titulo="Easings en bucle, con pausas" data-altura="300"
+     data-uniforms='{"u_T":{"tipo":"float","min":1,"max":4,"valor":2,"etiqueta":"periodo T"},"u_pingpong":{"tipo":"bool","valor":true,"etiqueta":"ping-pong"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_T;
+uniform bool u_pingpong;
+out vec4 fragColor;
+
+float easeInOutCubic(float p) { return p < 0.5 ? 4.0 * p * p * p : 1.0 - 4.0 * pow(1.0 - p, 3.0); }
+float easeOutBack(float p) { const float c1 = 1.70158, c3 = c1 + 1.0; float q = p - 1.0; return 1.0 + c3 * q * q * q + c1 * q * q; }
+float easeOutElastic(float p) {
+  if (p <= 0.0) return 0.0;
+  if (p >= 1.0) return 1.0;
+  return pow(2.0, -10.0 * p) * sin((p * 10.0 - 0.75) * 6.2831853 / 3.0) + 1.0;
+}
+float easeOutBounce(float p) {
+  const float n1 = 7.5625, d1 = 2.75;
+  if (p < 1.0 / d1) return n1 * p * p;
+  if (p < 2.0 / d1) { p -= 1.5 / d1; return n1 * p * p + 0.75; }
+  if (p < 2.5 / d1) { p -= 2.25 / d1; return n1 * p * p + 0.9375; }
+  p -= 2.625 / d1; return n1 * p * p + 0.984375;
+}
+
+float disco(vec2 p, vec2 c, float r, float px) { return 1.0 - smoothstep(r - px, r + px, length(p - c)); }
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = gl_FragCoord.xy * px;
+  float ancho = u_resolution.x * px;
+  float s = fract(u_time / u_T);                               // reloj de ciclo, 0 → 1
+  if (u_pingpong) s = 1.0 - abs(2.0 * s - 1.0);                // 0 → 1 → 0
+  float prog = clamp((s - 0.15) / 0.7, 0.0, 1.0);              // pausa al principio y al final
+  float e[4] = float[4](easeInOutCubic(prog), easeOutBack(prog), easeOutElastic(prog), easeOutBounce(prog));
+  vec3 colores[4] = vec3[4](vec3(0.55, 0.48, 1.0), vec3(1.0, 0.42, 0.71), vec3(0.25, 0.82, 0.91), vec3(0.96, 0.72, 0.29));
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  float a = 0.15, b = ancho - 0.35;                            // inicio y fin (deja sitio a la derecha: elastic llega a 1,37)
+  for (int k = 0; k < 4; k++) {
+    float y = 0.84 - 0.22 * float(k);
+    color = mix(color, vec3(0.2), (1.0 - smoothstep(0.0, px, abs(p.y - y) - px)) * step(a, p.x) * step(p.x, b));
+    color = mix(color, colores[k], disco(p, vec2(mix(a, b, e[k]), y), 0.055, px));
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>Los cuatro discos usan el mismo progreso con pausas y cada uno lo pasa por un easing distinto. Fíjate en el rosa (<em>back</em>) y el azul (<em>elastic</em>): se salen del raíl, más allá de la posición final, porque sus easings superan el 1. Con ping-pong desactivado, al final de cada ciclo saltan al principio: el patrón «reinicio».</p>
+<p>Un detalle del código: <code>float e[4] = float[4](…)</code> es un array con constructor, algo que GLSL ES 3.00 permite y 1.00 no (lo verás en <a href="10-codigo-ajeno.html">6.10</a>). Y el bucle indexa <code>e[k]</code> con el índice del bucle, que en cualquier versión es seguro.</p>
+
+<div class="callout senior" data-titulo="Los easings que se salen de [0, 1]">
+  <p><em>back</em> y <em>elastic</em> devuelven valores fuera de $[0, 1]$ a propósito: <em>easeOutBack</em> llega a 1,10 y <em>easeInBack</em> baja a −0,10. Eso es inofensivo cuando el easing mueve una posición, pero peligroso cuando alimenta otra cosa: un radio que se hace negativo (la SDF de un círculo con radio −0,01 no pinta nada: el disco «desaparece» un instante), un <code>mix</code> de colores que se pasa del color final (produce tonos que no estaban en ninguno de los dos), un <code>smoothstep</code> con bordes que se cruzan (indefinido, <a href="../03-matematicas/04-funciones-forma.html">3.4</a>), o un índice que se sale de un array. Antes de conectar un easing a algo, pregúntate qué pasa con 1,1 y con −0,1, y recorta con <code>clamp</code> donde haga falta.</p>
+</div>
+
+<h2>Escalonar: el desfase por celda</h2>
+<p>Muchos elementos haciendo lo mismo a la vez resultan mecánicos. Si cada uno empieza un poco después que el anterior, el conjunto cobra vida: es el <em>stagger</em> de las librerías de animación. En un shader, «cada elemento» es cada celda de un patrón (<a href="05-patrones.html">6.5</a>), y el desfase es tan simple como darle a cada celda su propio tiempo local:</p>
+$$t_{\text{celda}} = t - \text{retraso}(\text{celda})$$
+<p>Todo el arte está en la función de retraso:</p>
+<ul>
+  <li><strong>Por fila o columna</strong>: <code>retraso = celda.x * 0.1</code>. Una ola que recorre la rejilla en línea recta.</li>
+  <li><strong>Por distancia a un punto</strong>: <code>retraso = length(celda - centro) * 0.08</code>. Anillos que se expanden, como una piedra en un estanque. Con el ratón como centro, la animación «sale» de donde tocas.</li>
+  <li><strong>Al azar</strong>: <code>retraso = hash12(celda) * 0.8</code> (<a href="06-ruido.html">6.6</a>). Cada celda a su aire, como estrellas que titilan.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.7.1 — Una rejilla que respira en ola</h3>
+  <p>Una rejilla de puntos donde cada uno crece y decrece con un easing, desfasado según la función de retraso que elijas. El planteamiento: celdas con <code>floor</code>/<code>fract</code>, un tiempo local por celda, un reloj de ciclo ping-pong y un easing aplicado al radio.</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.7.1 — Stagger" data-altura="320"
+       data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":2,"valor":1,"etiqueta":"retraso"},"u_escala":{"tipo":"float","min":0,"max":0.3,"valor":0.12,"etiqueta":"desfase"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_modo;
+uniform float u_escala;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float easeInOutCubic(float p) { return p < 0.5 ? 4.0 * p * p * p : 1.0 - 4.0 * pow(1.0 - p, 3.0); }
+
+void main() {
+  const float CELDA = 28.0;                          // tamaño de celda en píxeles
+  vec2 celda = floor(gl_FragCoord.xy / CELDA);
+  vec2 f = fract(gl_FragCoord.xy / CELDA) - 0.5;     // -0.5..0.5 dentro de la celda
+  vec2 centro = floor(u_resolution / CELDA * 0.5);   // la celda del centro
+
+  float retraso;
+  if (u_modo == 0)      retraso = celda.x;                         // columnas
+  else if (u_modo == 1) retraso = length(celda - centro);          // anillos
+  else                  retraso = hash12(celda) * 10.0;            // al azar
+  retraso *= u_escala;
+
+  float T = 2.0;
+  float s = fract((u_time - retraso) / T);           // reloj de ciclo de ESTA celda
+  s = 1.0 - abs(2.0 * s - 1.0);                      // ping-pong
+  float radio = mix(0.08, 0.42, easeInOutCubic(s));
+
+  float d = length(f) * CELDA;                       // distancia al centro de la celda, en px
+  float punto = 1.0 - smoothstep(radio * CELDA - 1.0, radio * CELDA + 1.0, d);
+  vec3 color = mix(vec3(0.07, 0.08, 0.10), mix(vec3(0.25, 0.82, 0.91), vec3(0.55, 0.48, 1.0), s), punto);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <p>El deslizador <code>retraso</code> elige la función: 0 = por columnas, 1 = por distancia al centro, 2 = al azar. Paso a paso:</p>
+  <ol>
+    <li><strong>La celda y la posición local.</strong> Con celdas de 28 píxeles, <code>celda</code> es un par de enteros y <code>f</code> va de −0,5 a 0,5 dentro de cada una. Medir en píxeles (sin dividir por la resolución) hace que las celdas tengan el mismo tamaño en cualquier lienzo.</li>
+    <li><strong>El retraso</strong> sale de la celda y se escala con <code>u_escala</code> (segundos de retraso por unidad). Con escala 0, todas las celdas laten a la vez: comprueba lo mecánico que resulta.</li>
+    <li><strong>El reloj local.</strong> <code>fract((u_time - retraso) / T)</code> es el reloj de ciclo de la celda, desplazado. Como el patrón es periódico, da igual que <code>u_time - retraso</code> sea negativo al principio: <code>fract</code> de un negativo sigue estando en $[0, 1)$ y el ciclo empieza a mitad, sin más. Para una animación que <em>no</em> se repite eso sería un error (mira el bicho de abajo).</li>
+    <li><strong>Ping-pong y easing.</strong> El triángulo evita el salto al final del ciclo; el easing hace que cada punto arranque y frene suave. El radio y el color salen del mismo progreso: un solo «reloj» por celda gobierna todas sus propiedades.</li>
+    <li><strong>El dibujo.</strong> Un disco antialiasado de ±1 píxel alrededor del radio (la técnica de <a href="03-formas-sdf.html">6.3</a>). Su radio máximo, 0,42, deja un margen dentro de la celda: si pasara de 0,5, el disco se cortaría en el borde, porque cada píxel solo mira su propia celda.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m6b-desfase-fract" data-titulo="Al arrancar, algunas celdas ya están a mitad de animación">
+  <p><strong>Síntoma:</strong> una animación de entrada escalonada (los elementos aparecen uno tras otro, una sola vez) se ve mal en el primer segundo: algunas celdas aparecen ya a medias o parpadean antes de su turno.</p>
+  <p><strong>Causa:</strong> el progreso se calculó con <code>fract((t - retraso) / duración)</code>, que es para bucles. Mientras <code>t &lt; retraso</code>, el argumento es negativo y <code>fract</code> lo convierte en un valor entre 0 y 1: la celda está «a mitad» de un ciclo que en realidad aún no ha empezado.</p>
+  <p><strong>Solución:</strong> para animaciones de una sola vez usa la rampa recortada: <code>clamp((t - retraso) / duración, 0.0, 1.0)</code>. Vale 0 antes de su turno, sube durante la duración y se queda en 1 para siempre. <code>fract</code> solo para lo que se repite.</p>
+</div>
+
+<div class="callout hack" data-titulo="Variedad gratis con el hash de la celda">
+  <p>El desfase no es lo único que puede salir del hash de la celda. Con <code>hash12(celda + 1.0)</code>, <code>hash12(celda + 2.0)</code>… obtienes números independientes para variar la duración (<code>T * (0.8 + 0.4 * h)</code>), la amplitud, el color o hasta el easing (<code>h &lt; 0.5 ? easeA(s) : easeB(s)</code>) de cada elemento. Cuatro o cinco hashes por celda cuestan casi nada y convierten una rejilla mecánica en algo que parece hecho a mano.</p>
+</div>
+
+<h2>Una línea de tiempo dentro del shader</h2>
+<p>Para animaciones con guion («primero aparece el círculo, luego se desplaza, luego cambia de color, luego se va») necesitas <strong>tramos</strong>: intervalos de tiempo durante los cuales avanza una sola cosa. Todo sale de una función de tres parámetros:</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="El progreso de un tramo de la línea de tiempo">
+// 0 antes de t0, sube linealmente entre t0 y t1, 1 después de t1
+float tramo(float t, float t0, float t1) {
+  return clamp((t - t0) / (t1 - t0), 0.0, 1.0);
+}
+</script>
+<p>Es la interpolación inversa recortada de 2.4 aplicada al tiempo. Con ella, un guion de 4 segundos se escribe casi como se piensa:</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Un guion de cuatro tramos">
+float t = mod(u_time, 4.0);                              // el guion dura 4 s y se repite
+float aparecer  = easeOutBack(tramo(t, 0.0, 0.8));       // 0,0–0,8 s
+float moverse   = easeInOutCubic(tramo(t, 0.8, 1.8));    // 0,8–1,8 s
+float colorear  = tramo(t, 1.8, 2.4);                    // 1,8–2,4 s
+float irse      = easeInOutCubic(tramo(t, 3.2, 3.9));    // 3,2–3,9 s
+</script>
+<p>Cada variable vale 0 hasta que llega su momento, avanza durante su tramo y se queda en 1. Después, cada propiedad de la escena combina los progresos que le afectan: el radio es <code>aparecer * (1.0 - irse)</code>, la posición <code>mix(izquierda, derecha, moverse)</code>, el color <code>mix(colorA, colorB, colorear)</code>. Los tramos pueden solaparse (dos cosas a la vez) o dejar huecos (pausas).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.7.2 — Una intro de cuatro segundos</h3>
+  <p>Un círculo aparece con rebote, se desplaza a la derecha, se convierte en un cuadrado redondeado mientras cambia de color y gira un cuarto de vuelta, y desaparece. La barra de abajo muestra el guion: cada tramo en su color y una marca en el instante actual. Pausa el editor y arrastra mentalmente el tiempo: con <em>t=0</em> y <em>Reanudar</em> puedes ver cada tramo con calma.</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.7.2 — Línea de tiempo" data-altura="320">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float tramo(float t, float t0, float t1) { return clamp((t - t0) / (t1 - t0), 0.0, 1.0); }
+float easeInOutCubic(float p) { return p < 0.5 ? 4.0 * p * p * p : 1.0 - 4.0 * pow(1.0 - p, 3.0); }
+float easeOutBack(float p) { const float c1 = 1.70158, c3 = c1 + 1.0; float q = p - 1.0; return 1.0 + c3 * q * q * q + c1 * q * q; }
+
+// SDF de una caja redondeada centrada en el origen (6.3): semilado b, radio de esquina r
+float cajaRedondeada(vec2 p, vec2 b, float r) {
+  vec2 q = abs(p) - b + r;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+mat2 rotar(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;      // origen en el centro
+  float t = mod(u_time, 4.0);
+
+  float aparecer = easeOutBack(tramo(t, 0.0, 0.8));
+  float moverse  = easeInOutCubic(tramo(t, 0.8, 1.8));
+  float cambiar  = easeInOutCubic(tramo(t, 1.8, 2.6));       // forma, color y giro a la vez
+  float irse     = easeInOutCubic(tramo(t, 3.2, 3.9));
+
+  float tam = 0.16 * aparecer * (1.0 - irse);
+  vec2 centro = vec2(mix(-0.45, 0.35, moverse), 0.05);
+  vec2 q = rotar(3.14159265 * 0.5 * cambiar) * (p - centro);
+  // De círculo (radio de esquina = semilado) a cuadrado redondeado (radio de esquina pequeño)
+  float d = cajaRedondeada(q, vec2(max(tam, 0.0)), max(tam, 0.0) * mix(1.0, 0.25, cambiar));
+  vec3 colorFigura = mix(vec3(0.55, 0.48, 1.0), vec3(0.96, 0.72, 0.29), cambiar);
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  color = mix(color, colorFigura, 1.0 - smoothstep(-px, px, d));
+
+  // La barra del guion, abajo: tramos coloreados y el instante actual
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  if (uv.y < 0.06) {
+    float tb = uv.x * 4.0;                                    // de 0 a 4 s a lo ancho
+    vec3 c = vec3(0.16);
+    if (tb < 0.8) c = vec3(0.35, 0.3, 0.7);
+    else if (tb < 1.8) c = vec3(0.2, 0.5, 0.55);
+    else if (tb < 2.6) c = vec3(0.6, 0.45, 0.2);
+    else if (tb > 3.2 && tb < 3.9) c = vec3(0.6, 0.25, 0.4);
+    if (abs(tb - t) < 0.012 * 4.0) c = vec3(1.0);
+    color = c;
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>El reloj del guion.</strong> <code>mod(u_time, 4.0)</code> reinicia el guion cada 4 segundos. Como el último tramo termina con la figura invisible y el primero empieza con ella invisible, el salto del <code>mod</code> no se ve: el bucle es perfecto por construcción.</li>
+    <li><strong>Los tramos.</strong> Cuatro progresos, cada uno con su easing. <code>cambiar</code> gobierna a la vez la forma, el color y el giro: tres propiedades sincronizadas con un solo tramo.</li>
+    <li><strong>El tamaño</strong> combina dos tramos: crece con <code>aparecer</code> y se anula con <code>irse</code>. Como <em>easeOutBack</em> se pasa de 1, el tamaño llega a 0,176 antes de asentarse en 0,16: el rebote. El <code>max(tam, 0.0)</code> protege la SDF de un semilado negativo (el peligro del senior sobre los easings que se salen de rango).</li>
+    <li><strong>La transformación.</strong> Primero se lleva el píxel al sistema de la figura (restar su centro) y después se rota. Rotar las coordenadas del píxel gira la figura en sentido contrario al de la matriz (el bicho de la rotación inversa de <a href="../03-matematicas/05-matrices.html">3.5</a>). El giro es de 90° (<code>0.5 * π</code>): un cuadrado girado un cuarto de vuelta tiene la misma silueta que al principio, así que el giro termina «limpio», sin dejar la figura torcida.</li>
+    <li><strong>El morphing.</strong> Una caja con radio de esquina igual al semilado es un círculo; con radio pequeño, un cuadrado redondeado. Interpolar el radio de esquina transforma una figura en la otra sin cambiar de función SDF.</li>
+  </ol>
+</section>
+
+<div class="callout hack" data-titulo="Ventanas: un tramo que se enciende y se apaga">
+  <p>Para algo que aparece y desaparece dentro del guion (un destello entre 1,2 y 1,6 s) no hacen falta dos tramos: la resta de dos <code>smoothstep</code> es una <strong>ventana</strong>, 0 fuera y 1 dentro, con bordes suaves de anchura <code>e</code>:</p>
+  <script type="text/plain" class="codigo" data-lang="glsl">
+float ventana(float t, float a, float b, float e) {
+  return smoothstep(a - e, a + e, t) - smoothstep(b - e, b + e, t);
+}
+</script>
+  <p>Con <code>e = 0</code> sería una resta de dos escalones, pero ojo: <code>smoothstep(a, a, t)</code> tiene los bordes iguales y es indefinido según la especificación (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>). Para ventanas duras usa <code>step(a, t) - step(b, t)</code>.</p>
+</div>
+
+<h2>Movimiento rápido: aliasing temporal y motion blur</h2>
+<p>Una pantalla muestra una animación como una sucesión de fotografías instantáneas, una por frame. Si algo se mueve demasiado deprisa entre dos fotografías, el ojo no puede reconstruir el movimiento real y ve otro. El caso célebre es la rueda de carreta de los westerns que gira hacia atrás: si en el tiempo entre dos fotogramas la rueda gira casi exactamente lo que separa dos radios, cada fotograma parece la rueda un poquito girada hacia atrás. Es el mismo aliasing del teorema de muestreo que viste con las octavas de ruido en <a href="06-ruido.html">6.6</a>, pero en el tiempo: para representar un patrón que se repite (aquí, un radio cada 45°), hacen falta al menos dos fotogramas por cada periodo del patrón.</p>
+<p>El editor simula una cámara que toma <code>fps</code> fotografías por segundo (el tiempo se cuantiza con <code>floor(t * fps) / fps</code>), para que el efecto no dependa de la frecuencia de tu pantalla. La rueda tiene 8 radios, así que se ve idéntica cada 1/8 de vuelta.</p>
+
+<div class="glsl-playground" data-titulo="La rueda de carreta" data-altura="300"
+     data-uniforms='{"u_vueltas":{"tipo":"float","min":0,"max":8,"valor":3.5,"paso":0.05,"etiqueta":"vueltas/s"},"u_fps":{"tipo":"float","min":10,"max":60,"valor":30,"paso":1,"etiqueta":"fps cámara"},"u_muestras":{"tipo":"int","min":1,"max":32,"valor":1,"etiqueta":"muestras"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_vueltas, u_fps;
+uniform int u_muestras;
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+
+// La rueda en el instante t: 8 radios, llanta y buje
+float rueda(vec2 p, float t, float px) {
+  float r = length(p);
+  float a = atan(p.y, p.x) - TAU * u_vueltas * t;           // girar = restar al ángulo
+  float sector = TAU / 8.0;
+  float aRadio = abs(mod(a + 0.5 * sector, sector) - 0.5 * sector);   // ángulo al radio más cercano
+  float radio = (1.0 - smoothstep(0.012 - px, 0.012 + px, r * sin(aRadio))) * step(r, 0.36);
+  float llanta = 1.0 - smoothstep(0.012 - px, 0.012 + px, abs(r - 0.37));
+  float buje = 1.0 - smoothstep(0.04 - px, 0.04 + px, r);
+  return max(max(radio, llanta), buje);
+}
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;
+  float tFoto = floor(u_time * u_fps) / u_fps;               // instante de la foto actual
+  // Motion blur: promedio de N instantes repartidos en el tiempo de exposición (un frame)
+  float suma = 0.0;
+  for (int k = 0; k < 32; k++) {
+    if (k >= u_muestras) break;
+    float tk = tFoto - (float(k) / float(u_muestras)) / u_fps;
+    suma += rueda(p, tk, px);
+  }
+  float v = suma / float(u_muestras);
+  fragColor = vec4(mix(vec3(0.07, 0.08, 0.10), vec3(0.9, 0.85, 0.75), v), 1.0);
+}
+</script>
+</div>
+<p>Con 3,5 vueltas/s y 30 fps, en cada fotograma la rueda gira $3{,}5/30$ de vuelta, es decir, 42°. Los radios están cada 45°, así que el ojo interpreta que la rueda ha girado −3°: <strong>la ves girar despacio hacia atrás</strong>. Pon 3,75 vueltas/s: 45° por fotograma, la rueda parece quieta. Pon 30 fps y 1 vuelta/s: 12° por fotograma, se ve bien. La regla: el giro por fotograma tiene que ser menor que la mitad del ángulo entre radios.</p>
+<p>La cura del cine es el <strong>motion blur</strong>: el obturador de la cámara está abierto durante una parte del frame, y lo que se mueve deja un rastro borroso que el ojo interpreta correctamente como velocidad. En un shader se imita promediando la escena en varios instantes dentro del tiempo de exposición: sube <code>muestras</code> a 16 o 32 y la rueda de 3,5 vueltas/s se convierte en un disco borroso, que es lo que vería una cámara de verdad. Con 1 vuelta/s y 8 muestras, los radios dejan una estela corta y el giro se lee mejor que sin blur.</p>
+
+<div class="callout bestiario" data-id="m6b-rueda-atras" data-titulo="Algo que gira rápido parece quieto o gira al revés">
+  <p><strong>Síntoma:</strong> una rueda, un ventilador, un patrón de franjas que se desplaza o un spinner de carga va bien a velocidad baja, pero al acelerarlo parece detenerse, girar hacia atrás o moverse a trompicones. Y cambia de una pantalla a otra (60 Hz frente a 120 Hz).</p>
+  <p><strong>Causa:</strong> aliasing temporal. La pantalla muestra instantáneas a intervalos fijos; si el patrón avanza entre dos frames más de medio periodo espacial (medio ángulo entre radios, media anchura de franja), el movimiento aparente es otro. Como la frecuencia de muestreo es la de la pantalla, el resultado depende del monitor.</p>
+  <p><strong>Solución:</strong> limita la velocidad para que el avance por frame sea menor que medio periodo del patrón (a 60 Hz, una rueda de 8 radios aguanta menos de 3,75 vueltas/s), añade motion blur (promediar varios instantes, o estirar la forma en la dirección del movimiento), o, a velocidades muy altas, sustituye el patrón por su versión borrosa (lo que hacen las animaciones de hélices en los juegos).</p>
+</div>
+
+<div class="callout senior" data-titulo="Cuánto cuesta y cuánto dura el obturador">
+  <p>El motion blur por muestras multiplica el coste del shader por N: 16 muestras de una escena cara es un lujo. Por eso en tiempo real se usan atajos: estirar analíticamente la forma en la dirección de su velocidad (para un disco que se mueve, dibujar una cápsula entre su posición en $t - \Delta$ y en $t$ con un degradado de alfa), o un post-proceso que emborrona cada píxel a lo largo de un vector de velocidad guardado en una textura. Y la duración del obturador es una decisión de estilo: el cine usa, por tradición, un obturador abierto la mitad del frame (el «ángulo de obturador de 180°»); el editor de arriba reparte las muestras en un frame entero (360°), que emborrona más. Para 180°, divide el intervalo por 2: <code>tk = tFoto - 0.5 * (k / N) / fps</code>.</p>
+</div>
+
+<h2>El tiempo que crece y cómo envolverlo</h2>
+<p>Ya lo sabes de <a href="../03-matematicas/07-precision.html">3.7</a> y <a href="../05-webgl/04-uniforms-animacion.html">5.4</a>: <code>u_time</code> es un float32, pierde resolución a medida que crece (pasos de 0,0078 s tras un día abierto) y, además, <code>sin</code> y <code>cos</code> de argumentos grandes son imprecisos en la GPU. La receta allí era envolver el tiempo en JavaScript, con doble precisión, antes de mandarlo: <code>(performance.now() / 1000) % PERIODO</code>, con PERIODO múltiplo de todos los periodos de la animación. Con lo que has visto en esta lección, eso último ya tiene nombre: <strong>PERIODO tiene que ser un bucle perfecto</strong> de toda la escena, o el envoltorio producirá el salto del bicho de arriba.</p>
+<p>¿Y hacer el <code>mod</code> dentro del shader, <code>mod(u_time, T)</code>? Ayuda solo a medias:</p>
+<ul>
+  <li>Sí evita que <code>sin</code> reciba argumentos enormes: <code>sin(TAU * mod(u_time, T) / T)</code> calcula el seno de un número pequeño, con precisión.</li>
+  <li>No recupera la resolución perdida: el uniform <em>ya llegó</em> redondeado a float32. Si tras cuatro días <code>u_time</code> solo avanza a saltos de 0,031 s, <code>mod(u_time, 4.0)</code> también avanza a saltos de 0,031 s. La resolución solo se salva envolviendo en la CPU, antes de convertir a float32.</li>
+</ul>
+<p>En los editores del curso no te afecta (cada reloj empieza en 0 al cargar la página), pero en un fondo animado de una web que alguien deja abierta días, sí.</p>
+
+<h2>u_time frente a u_frame</h2>
+<p>El editor también te da <code>u_frame</code>, el número de frames dibujados. Es tentador: <code>fract(float(u_frame) / 120.0)</code> es «una vuelta cada 120 frames», que a 60 fps son 2 segundos. Pero en una pantalla de 120 Hz son 1 segundo. Es el bicho de <a href="../02-animacion/03-raf.html">2.3</a> trasladado al shader: <strong>animar por frames hace que la velocidad dependa de la pantalla</strong>. Animar con <code>u_time</code> lo evita sin esfuerzo, porque el tiempo es el mismo en todas las pantallas; solo cambia cuántas veces por segundo lo muestreas.</p>
+
+<div class="glsl-playground" data-titulo="Dos relojes: por tiempo y por frames" data-altura="220">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_frame;
+out vec4 fragColor;
+
+float disco(vec2 p, vec2 c, float r, float px) { return 1.0 - smoothstep(r - px, r + px, length(p - c)); }
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = gl_FragCoord.xy * px;
+  float ancho = u_resolution.x * px;
+  float a = fract(u_time / 2.0);                  // una pasada cada 2 segundos
+  float b = fract(float(u_frame) / 120.0);        // una pasada cada 120 frames
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  color = mix(color, vec3(0.25, 0.82, 0.91), disco(p, vec2(0.1 + a * (ancho - 0.2), 0.68), 0.07, px));
+  color = mix(color, vec3(1.0, 0.42, 0.71), disco(p, vec2(0.1 + b * (ancho - 0.2), 0.32), 0.07, px));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>En una pantalla de 60 Hz, los dos discos van casi a la par (se desincronizan poco a poco si algún frame se pierde, porque entonces el tiempo avanza y el contador no). En una de 120 Hz, el rosa va al doble. Pulsa <em>Pausa</em> y <em>Reanudar</em>: los dos se congelan, porque este editor detiene también el contador de frames al pausar; en tu aplicación, eso depende de cómo lo programes.</p>
+<p><code>u_frame</code> tiene usos legítimos, precisamente cuando quieres algo <em>por frame</em> y no por segundo: la nieve del ejercicio 6.6.1 (un sorteo nuevo en cada imagen), el <em>dithering</em> temporal que alterna un patrón en frames pares e impares, o saber en qué paso de una simulación ping-pong estás.</p>
+
+<div class="callout bestiario" data-id="m6b-u-frame-hz" data-titulo="La animación del shader va el doble de rápido en otra pantalla">
+  <p><strong>Síntoma:</strong> una animación hecha en un shader va bien en tu monitor, pero en un portátil con pantalla de 120 Hz (o en un móvil de 90 Hz) va más rápida, y en un equipo que no llega a 60 fps, más lenta.</p>
+  <p><strong>Causa:</strong> la animación depende del número de frame (<code>u_frame</code>, <code>iFrame</code> en Shadertoy, o un contador que incrementas en JavaScript una vez por frame) en lugar del tiempo. Es el bicho de JavaScript <a href="../02-animacion/03-raf.html#m2-velocidad-depende-hz">«La animación va más rápida (o más lenta) en otra pantalla»</a> de 2.3, trasladado al shader.</p>
+  <p><strong>Solución:</strong> expresa toda animación en función del tiempo en segundos. Deja el número de frame para lo que de verdad es «por imagen» (un sorteo nuevo cada frame, alternar patrones pares e impares).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un shader hace <code>float angulo = float(u_frame) * 0.05;</code>. En tu pantalla de 60 Hz gira a una vuelta cada 2,1 s. ¿Qué pasa en una pantalla de 144 Hz?</p>
+  <ul>
+    <li data-correcta>Gira 2,4 veces más rápido (144/60): una vuelta cada 0,87 s.<div class="explicacion">Correcto. El ángulo avanza 0,05 rad por frame, y ahora hay 144 frames por segundo en lugar de 60. La solución es <code>angulo = u_time * velocidad</code>, con la velocidad en radianes por segundo.</div></li>
+    <li>Nada: la GPU dibuja siempre a 60 fps en el navegador.<div class="explicacion">requestAnimationFrame se sincroniza con la frecuencia de la pantalla: en una de 144 Hz, el navegador intenta dibujar 144 frames por segundo (<a href="../02-animacion/03-raf.html">2.3</a>).</div></li>
+    <li>Gira igual de rápido, pero más fluido.<div class="explicacion">Eso pasaría si la animación dependiera del tiempo. Con el número de frame, más frames por segundo significa más avance por segundo.</div></li>
+  </ul>
+</div>
+
+<h2>¿En el shader o en JavaScript?</h2>
+<p>Todo lo que has visto en esta lección tiene algo en común: es <strong>periódico o está programado de antemano</strong>, y no depende de lo que haya pasado antes. Esa es la frontera. Una tabla para decidir:</p>
+<table>
+  <thead><tr><th>La animación…</th><th>Dónde</th><th>Por qué</th></tr></thead>
+  <tbody>
+    <tr><td>es periódica o tiene guion fijo (ondas, loaders, fondos, intros)</td><td>shader</td><td>es una función de t; cada píxel la calcula por su cuenta, gratis en paralelo</td></tr>
+    <tr><td>tiene muchos elementos iguales con desfases (rejillas, partículas decorativas)</td><td>shader</td><td>el desfase sale de la celda o del hash; en JS serían miles de objetos</td></tr>
+    <tr><td>reacciona a eventos (hover, clic, scroll) con transiciones</td><td>JS calcula el progreso; shader lo usa</td><td>el momento de inicio y el estado (¿ida o vuelta?, ¿interrumpida?) viven en JS</td></tr>
+    <tr><td>usa física (muelles, inercia, arrastrar y soltar)</td><td>JS</td><td>depende de la historia: integración paso a paso (<a href="../02-animacion/05-fisica-muelles.html">2.5</a>)</td></tr>
+    <tr><td>tiene estado que persiste o se acumula (una simulación, un rastro)</td><td>JS, o texturas de estado con ping-pong</td><td>el shader no recuerda; la memoria tiene que estar fuera (<a href="../05-webgl/08-framebuffers.html">5.8</a>)</td></tr>
+  </tbody>
+</table>
+<p>El reparto habitual es híbrido: JavaScript decide <em>cuánto</em> (un único número, el progreso de una transición o la posición de un muelle) y el shader decide <em>cómo se ve</em> ese número en cada píxel. Así se conserva lo mejor de cada lado: el estado y la física donde hay memoria, el dibujo masivo donde hay paralelismo. Es el tema central del módulo 7: en <a href="../07-integracion/01-arquitectura.html">7.1</a> montarás la arquitectura y en <a href="../07-integracion/03-transiciones-shader.html">7.3</a> transiciones completas con esta idea.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.7.3 — Un muelle en JavaScript, una onda en el shader</h3>
+  <p>Pasa el ratón por encima del lienzo: un anillo de ondas se expande desde el centro con un rebote elástico, y se recoge al salir. El «cuánto» (la expansión, entre 0 y 1 con rebote) lo calcula un muelle amortiguado de 2.5, con un amortiguamiento bajo (ζ = 0,45) para que rebote. El «cómo» (las ondas, el color, el grosor) lo pinta el shader. El código usa GLKit, la librería del módulo 5, para no repetir las cincuenta líneas del triángulo.</p>
+  <div class="js-playground" data-titulo="Ejemplo 6.7.3 — Muelle en JS + shader" data-altura="300" data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+html, body { margin: 0; height: 100%; background: #0e1014; }
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+
+const vs = `#version 300 es
+layout(location = 0) in vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+
+const fs = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_expansion;      // lo decide JavaScript (el muelle)
+out vec4 fragColor;
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  float r = length(p);
+  float borde = mix(0.05, 0.45, u_expansion);             // radio del frente de ondas
+  float ondas = 0.5 + 0.5 * sin(r * 60.0 - u_time * 6.0); // ondas que corren (periódico: shader)
+  float dentro = 1.0 - smoothstep(borde - 0.01, borde + 0.01, r);
+  vec3 color = mix(vec3(0.07, 0.08, 0.10), vec3(0.25, 0.82, 0.91), ondas * dentro * 0.8);
+  color += vec3(0.55, 0.48, 1.0) * (1.0 - smoothstep(0.0, 0.012, abs(r - borde)));
+  fragColor = vec4(color, 1.0);
+}`;
+
+const programa = GLKit.crearPrograma(gl, vs, fs);
+const u = GLKit.uniforms(gl, programa);
+const vao = GLKit.trianguloPantalla(gl);
+
+// Estado de la animación: vive en JavaScript
+let objetivo = 0;              // 0 = recogido, 1 = expandido
+let x = 0, v = 0;              // posición y velocidad del muelle
+const w = 2 * Math.PI * 1.6;   // frecuencia natural: 1,6 Hz
+const zeta = 0.45;             // amortiguamiento < 1: rebota
+
+canvas.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') objetivo = 1; });
+canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') objetivo = 0; });
+// En móvil (sin hover), un toque alterna
+canvas.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse') objetivo = 1 - objetivo; });
+
+GLKit.bucle((t, dt) => {
+  // Muelle amortiguado, Euler semi-implícito en pasos de como mucho 1/120 s (2.5)
+  let resto = dt;
+  while (resto > 0) {
+    const h = Math.min(resto, 1 / 120);
+    const a = -w * w * (x - objetivo) - 2 * zeta * w * v;
+    v += a * h;
+    x += v * h;
+    resto -= h;
+  }
+  if (GLKit.ajustarTamaño(canvas)) gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(programa);
+  GLKit.ponerUniform(gl, u.u_resolution, [canvas.width, canvas.height]);
+  GLKit.ponerUniform(gl, u.u_time, t);
+  GLKit.ponerUniform(gl, u.u_expansion, Math.max(0, x));
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+});
+console.log('Pasa el ratón por encima del lienzo (o tócalo en un móvil).');
+</script>
+  </div>
+  <ol>
+    <li><strong>El reparto.</strong> El shader recibe <code>u_expansion</code> y no sabe nada de muelles ni de ratones: para él es un número más, como <code>u_time</code>. Las ondas que corren (<code>sin(r * 60.0 - u_time * 6.0)</code>) sí son del shader: son periódicas y no dependen de la historia.</li>
+    <li><strong>El estado.</strong> <code>x</code> y <code>v</code> viven en JavaScript y se actualizan en cada frame. Si sales del lienzo a mitad de la expansión, el muelle da la vuelta desde donde está, con la velocidad que llevaba: una transición interrumpible, lo que un tramo de tiempo fijo en el shader no puede hacer (el problema de interrumpir de <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>).</li>
+    <li><strong>La integración</strong> es la de 2.5: Euler semi-implícito con subpasos de como mucho 1/120 s, para que el muelle sea estable con cualquier dt (y <code>GLKit.bucle</code> ya limita dt a 0,1 s al volver de otra pestaña).</li>
+    <li><strong>El recorte.</strong> Un muelle subamortiguado puede pasarse por debajo de 0 al recogerse; un radio negativo no tiene sentido, así que se envía <code>Math.max(0, x)</code>. Es el senior de los easings que se salen de rango, en versión muelle.</li>
+  </ol>
+</section>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.7.1 — Que el bucle cierre</h3>
+  <p>Esta escena tiene que exportarse como un bucle perfecto de 4 segundos, pero dos de sus elementos no cierran: el disco rosa late con <code>sin(3.0 * t)</code> y el cuadrado gira con <code>t * 2.0</code> radianes. Cámbialos (sin alterar mucho su velocidad: el latido debe seguir siendo de unos 2 segundos y el giro, de unos 3 segundos por vuelta) para que el mapa de «diferencia» quede completamente negro.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.7.1" data-altura="280"
+       data-uniforms='{"u_diferencia":{"tipo":"bool","valor":false,"etiqueta":"diferencia"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform bool u_diferencia;
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+const float T = 4.0;       // duración del bucle
+
+float disco(vec2 p, vec2 c, float r, float px) { return 1.0 - smoothstep(r - px, r + px, length(p - c)); }
+float caja(vec2 p, vec2 b) { vec2 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0); }
+mat2 rotar(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+vec3 escena(vec2 p, float t, float px) {
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  // Disco morado que orbita: una vuelta cada 2 s (este ya cierra)
+  vec2 c1 = vec2(-0.3, 0.0) + 0.17 * vec2(cos(TAU * t / 2.0), sin(TAU * t / 2.0));
+  color = mix(color, vec3(0.55, 0.48, 1.0), disco(p, c1, 0.05, px));
+  // Disco rosa que late
+  float r2 = 0.06 + 0.03 * sin(3.0 * t);
+  color = mix(color, vec3(1.0, 0.42, 0.71), disco(p, vec2(0.08, 0.0), r2, px));
+  // Cuadrado que gira
+  vec2 q = rotar(t * 2.0) * (p - vec2(0.38, 0.0));
+  color = mix(color, vec3(0.25, 0.82, 0.91), 1.0 - smoothstep(-px, px, caja(q, vec2(0.08))));
+  return color;
+}
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;    // origen en el centro
+  if (u_diferencia) {
+    vec3 d = abs(escena(p, T, px) - escena(p, 0.0, px));
+    fragColor = vec4(vec3(0.05) + vec3(1.0, 0.2, 0.2) * step(0.02, max(d.r, max(d.g, d.b))), 1.0);
+  } else {
+    fragColor = vec4(escena(p, mod(u_time, T), px), 1.0);
+  }
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform bool u_diferencia;
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+const float T = 4.0;
+
+float disco(vec2 p, vec2 c, float r, float px) { return 1.0 - smoothstep(r - px, r + px, length(p - c)); }
+float caja(vec2 p, vec2 b) { vec2 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0); }
+mat2 rotar(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+vec3 escena(vec2 p, float t, float px) {
+  float s = t / T;         // progreso del bucle: 0 al empezar, 1 al terminar
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  vec2 c1 = vec2(-0.3, 0.0) + 0.17 * vec2(cos(TAU * 2.0 * s), sin(TAU * 2.0 * s));   // 2 vueltas por bucle
+  color = mix(color, vec3(0.55, 0.48, 1.0), disco(p, c1, 0.05, px));
+  // Latido: 2 ciclos por bucle = periodo 2 s (antes, 2,09 s)
+  float r2 = 0.06 + 0.03 * sin(TAU * 2.0 * s);
+  color = mix(color, vec3(1.0, 0.42, 0.71), disco(p, vec2(0.08, 0.0), r2, px));
+  // Giro: un cuadrado es idéntico a sí mismo cada cuarto de vuelta, así que basta con girar un
+  // múltiplo de 90° por bucle. 1,25 vueltas (450°) en 4 s = 3,2 s por vuelta (antes: 3,14 s).
+  vec2 q = rotar(TAU * 1.25 * s) * (p - vec2(0.38, 0.0));
+  color = mix(color, vec3(0.25, 0.82, 0.91), 1.0 - smoothstep(-px, px, caja(q, vec2(0.08))));
+  return color;
+}
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;    // origen en el centro
+  if (u_diferencia) {
+    vec3 d = abs(escena(p, T, px) - escena(p, 0.0, px));
+    fragColor = vec4(vec3(0.05) + vec3(1.0, 0.2, 0.2) * step(0.02, max(d.r, max(d.g, d.b))), 1.0);
+  } else {
+    fragColor = vec4(escena(p, mod(u_time, T), px), 1.0);
+  }
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En 4 s, cada elemento debe completar un número entero de ciclos. <code>sin(3.0 * t)</code> tiene periodo $2\pi/3 \approx 2{,}09$ s: ¿qué frecuencia angular da un periodo de 2 s exactos?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para el cuadrado, piensa en qué ángulo de giro lo deja igual que al principio. No hace falta una vuelta entera: un cuadrado es idéntico a sí mismo cada 90°.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La forma sistemática es expresarlo todo con el progreso del bucle, $s = t/T$, y multiplicadores enteros. El latido pasa a <code>sin(TAU * 2.0 * s)</code>: 2 ciclos por bucle, periodo 2 s (antes 2,09 s: casi no cambia la sensación). El giro es la parte con truco. Una vuelta entera por bucle (<code>TAU * 1.0 * s</code>) cierra seguro, pero son 4 s por vuelta, más lento que los 3,14 s originales. Como el cuadrado es idéntico a sí mismo cada 90°, basta con que gire un múltiplo de $\pi/2$ por bucle: con $5\pi/2$ (1,25 vueltas, <code>TAU * 1.25 * s</code>) salen 3,2 s por vuelta, casi la velocidad original. El giro original, 2 rad/s, daba 8 rad en 4 s, y el múltiplo de $\pi/2$ más cercano es justo $5\pi/2 \approx 7{,}85$.</p>
+    <p>Ese truco solo vale por la simetría: una figura sin simetría (una flecha, una letra) necesitaría vueltas enteras. Con el mapa de diferencia comprobado en negro, puedes estar seguro sin tener que mirar el salto con lupa: es exactamente la comparación del fotograma final con el inicial.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.7.2 — Un semáforo con guion</h3>
+  <p>Programa un semáforo con una línea de tiempo de 5 segundos que se repite: rojo encendido de 0 a 2 s, verde de 2 a 4 s, y ámbar de 4 a 5 s <strong>parpadeando</strong> dos veces. Las luces deben encenderse y apagarse con una transición suave de unos 0,15 s. Las tres luces apagadas se ven en gris oscuro; el código de partida ya las dibuja.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.7.2" data-altura="300">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float disco(vec2 p, vec2 c, float r, float px) { return 1.0 - smoothstep(r - px, r + px, length(p - c)); }
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;
+  float t = mod(u_time, 5.0);
+
+  // TODO: cuánto está encendida cada luz (0 a 1) según t
+  float rojo = 0.0, ambar = 0.0, verde = 0.0;
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  // Carcasa
+  vec2 q = abs(p) - vec2(0.13, 0.4);
+  float carcasa = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 0.04;
+  color = mix(color, vec3(0.16), 1.0 - smoothstep(-px, px, carcasa));
+  // Luces: apagadas en gris; encendidas en su color
+  color = mix(color, mix(vec3(0.22), vec3(1.0, 0.18, 0.15), rojo),  disco(p, vec2(0.0, 0.27), 0.1, px));
+  color = mix(color, mix(vec3(0.22), vec3(1.0, 0.7, 0.1), ambar),   disco(p, vec2(0.0, 0.0), 0.1, px));
+  color = mix(color, mix(vec3(0.22), vec3(0.2, 0.95, 0.4), verde),  disco(p, vec2(0.0, -0.27), 0.1, px));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float disco(vec2 p, vec2 c, float r, float px) { return 1.0 - smoothstep(r - px, r + px, length(p - c)); }
+
+// 1 entre a y b, 0 fuera, con bordes suaves de anchura e
+float ventana(float t, float a, float b, float e) {
+  return smoothstep(a - e, a + e, t) - smoothstep(b - e, b + e, t);
+}
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;
+  float t = mod(u_time, 5.0);
+  const float E = 0.075;                      // medio ancho de la transición: 0,15 s en total
+
+  // El rojo ocupa 0–2 s, pero también el final del ciclo anterior se enlaza con él:
+  // añadimos una ventana en t ≈ 5 para que su encendido no dé un salto en el mod.
+  float rojo  = ventana(t, 0.0, 2.0, E) + ventana(t, 5.0, 7.0, E);
+  float verde = ventana(t, 2.0, 4.0, E);
+  // Ámbar: dos parpadeos en 4–5 s → dos ventanas de 0,3 s
+  float ambar = ventana(t, 4.1, 4.4, E) + ventana(t, 4.6, 4.9, E);
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  vec2 q = abs(p) - vec2(0.13, 0.4);
+  float carcasa = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 0.04;
+  color = mix(color, vec3(0.16), 1.0 - smoothstep(-px, px, carcasa));
+  color = mix(color, mix(vec3(0.22), vec3(1.0, 0.18, 0.15), rojo),  disco(p, vec2(0.0, 0.27), 0.1, px));
+  color = mix(color, mix(vec3(0.22), vec3(1.0, 0.7, 0.1), ambar),   disco(p, vec2(0.0, 0.0), 0.1, px));
+  color = mix(color, mix(vec3(0.22), vec3(0.2, 0.95, 0.4), verde),  disco(p, vec2(0.0, -0.27), 0.1, px));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Cada luz es una o varias <strong>ventanas</strong> de tiempo: 1 dentro del intervalo, 0 fuera. La función <code>ventana</code> de la caja de hack, con dos <code>smoothstep</code>, te da los bordes suaves.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El parpadeo del ámbar son dos ventanas cortas dentro de 4–5 s, sumadas. Y fíjate en qué pasa con el rojo justo al reiniciar el ciclo (t pasa de 4,99 a 0): con la transición suave, el rojo debería empezar a encenderse un poco antes de t = 0.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada luz es una suma de ventanas. El verde es la más simple: <code>ventana(t, 2.0, 4.0, E)</code>. El ámbar son dos ventanas de 0,3 s (4,1–4,4 y 4,6–4,9), separadas por huecos apagados: el parpadeo es solo la suma. Como las ventanas no se solapan, la suma nunca pasa de 1.</p>
+    <p>El detalle fino es el rojo en el borde del bucle. <code>smoothstep(0.0 - E, 0.0 + E, t)</code> quiere empezar a subir en t = −0,075, pero con <code>mod</code> el tiempo nunca es negativo: en t = 0 el rojo estaría a medio encender y daría un pequeño salto. La segunda ventana, <code>ventana(t, 5.0, 7.0, E)</code>, es la «siguiente» aparición del rojo vista desde el ciclo actual: su borde de subida empieza en 4,925 s, así que el encendido empieza al final de un ciclo y termina al principio del siguiente, sin salto. Es el mismo razonamiento del bucle perfecto: al envolver con <code>mod</code>, lo que pasa en t = T tiene que coincidir con lo que pasa en t = 0.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.7.3 — Baldosas que se voltean en ola</h3>
+  <p>Una rejilla de baldosas cuadradas; cada 3 segundos, una ola diagonal (de la esquina inferior izquierda a la superior derecha) las voltea: cada baldosa gira sobre su eje vertical (se estrecha hasta desaparecer y vuelve a ensancharse) y, a mitad del giro, cambia de color, como una carta que muestra su reverso. Usa un easing <em>in-out</em> para el giro. El código de partida dibuja las baldosas quietas.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.7.3" data-altura="300">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float easeInOutCubic(float p) { return p < 0.5 ? 4.0 * p * p * p : 1.0 - 4.0 * pow(1.0 - p, 3.0); }
+
+void main() {
+  const float CELDA = 40.0;
+  vec2 celda = floor(gl_FragCoord.xy / CELDA);
+  vec2 f = fract(gl_FragCoord.xy / CELDA) - 0.5;      // -0.5..0.5
+
+  // TODO: progreso del volteo de esta baldosa (0 → 1) con retraso diagonal,
+  //       anchura aparente = |cos(ángulo)|, y color según la cara visible.
+  float anchura = 1.0;
+  vec3 cara = vec3(0.55, 0.48, 1.0);
+
+  // Baldosa: un cuadrado de semilado 0.42, estrechado en x según la anchura
+  float dentro = step(abs(f.x), 0.42 * anchura) * step(abs(f.y), 0.42);
+  fragColor = vec4(mix(vec3(0.07, 0.08, 0.10), cara, dentro), 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float easeInOutCubic(float p) { return p < 0.5 ? 4.0 * p * p * p : 1.0 - 4.0 * pow(1.0 - p, 3.0); }
+
+void main() {
+  const float CELDA = 40.0;
+  vec2 celda = floor(gl_FragCoord.xy / CELDA);
+  vec2 f = fract(gl_FragCoord.xy / CELDA) - 0.5;
+
+  float T = 3.0;
+  float retraso = (celda.x + celda.y) * 0.05;             // ola diagonal
+  float s = fract((u_time - retraso) / T);                 // reloj de ciclo de esta baldosa
+  float giro = easeInOutCubic(clamp(s / 0.4, 0.0, 1.0));   // gira en el primer 40 % del ciclo
+  float angulo = 3.14159265 * giro;                        // media vuelta
+  float anchura = abs(cos(angulo));                        // la proyección de una carta que gira
+  // Número de volteos completados hasta ahora: alterna la cara de un ciclo al siguiente
+  float ciclo = floor((u_time - retraso) / T);
+  bool reverso = (giro > 0.5) != (mod(ciclo, 2.0) == 1.0);
+  vec3 cara = reverso ? vec3(0.96, 0.72, 0.29) : vec3(0.55, 0.48, 1.0);
+  cara *= 0.75 + 0.25 * anchura;                           // un poco más oscura de canto
+
+  float dentro = step(abs(f.x), 0.42 * anchura) * step(abs(f.y), 0.42);
+  fragColor = vec4(mix(vec3(0.07, 0.08, 0.10), cara, dentro), 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El retraso diagonal es proporcional a <code>celda.x + celda.y</code>. Con él, el reloj de cada baldosa es <code>fract((u_time - retraso) / T)</code>. Para que la baldosa esté quieta parte del ciclo, haz que el giro ocurra solo en una fracción: <code>clamp(s / 0.4, 0.0, 1.0)</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Una carta que gira un ángulo θ sobre su eje vertical se ve con anchura $|\cos\theta|$: 1 de frente, 0 de canto. Para media vuelta, θ va de 0 a π. La cara visible cambia cuando el giro pasa de la mitad, y además alterna de un ciclo al siguiente: <code>floor((u_time - retraso) / T)</code> cuenta los ciclos.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Tres herramientas de la lección juntas. El <strong>desfase por celda</strong> (<code>(celda.x + celda.y) * 0.05</code>) convierte un volteo simultáneo en una ola diagonal: las baldosas con la misma suma de coordenadas están en la misma diagonal y giran a la vez. El <strong>tramo con pausa</strong> (<code>clamp(s / 0.4, 0.0, 1.0)</code>) hace que cada baldosa gire durante el 40&nbsp;% del ciclo y descanse el resto, y el easing le da peso al giro. Y <strong><code>floor</code> para contar</strong>: el número de ciclo completado decide qué cara estaba arriba al empezar este volteo, de modo que las baldosas alternan de color de un ciclo al siguiente en vez de volver siempre al morado.</p>
+    <p>Un detalle sutil: aquí sí usamos <code>fract</code> y <code>floor</code> de un tiempo que puede ser negativo al principio (<code>u_time - retraso</code> con u_time pequeño). Como la animación es periódica, no pasa nada: esas baldosas empiezan «en un ciclo anterior». Si fuera una animación de entrada de una sola vez, sería el bicho del desfase con <code>fract</code>. Y el <code>abs(cos(angulo))</code> es una proyección, no una rotación 3D real: sin perspectiva, la baldosa se estrecha de forma simétrica. Para una rotación en perspectiva necesitarías el raymarching de <a href="09-raymarching.html">6.9</a> o una malla real (<a href="../07-integracion/04-vertex-animacion.html">7.4</a>).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.7.4 — Motion blur de una pelota que rebota</h3>
+  <p>Una pelota rebota contra el suelo con una trayectoria parabólica (fórmula cerrada, sin estado), dos botes por segundo. A esa velocidad, en cada frame se ve nítida en una posición distinta y el movimiento parece entrecortado. Añade motion blur temporal: promedia la escena en N instantes repartidos en un frame (1/60 s), con N controlado por el deslizador. Cuando esté bien, con N = 16 la pelota debe verse estirada en vertical cuando va rápido (cerca del suelo) y nítida en lo alto, donde casi se para.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.7.4" data-altura="320"
+       data-uniforms='{"u_muestras":{"tipo":"int","min":1,"max":32,"valor":16,"etiqueta":"muestras"},"u_lento":{"tipo":"float","min":0.05,"max":1,"valor":1,"etiqueta":"velocidad"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_muestras;
+uniform float u_lento;
+out vec4 fragColor;
+
+// Altura de la pelota en el instante t: parábolas de 0,5 s (dos botes por segundo)
+float altura(float t) {
+  float s = fract(t * 2.0);             // progreso dentro de cada bote
+  return 0.08 + 0.7 * 4.0 * s * (1.0 - s);   // 0 en el suelo, máximo a mitad del bote
+}
+
+// La escena en el instante t (1 = pelota, 0 = fondo)
+float escena(vec2 p, float t, float px) {
+  vec2 centro = vec2(0.0, altura(t) - 0.4);
+  return 1.0 - smoothstep(0.06 - px, 0.06 + px, length(p - centro));
+}
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;
+  float t = u_time * u_lento;
+  // TODO: promediar la escena en u_muestras instantes dentro de un frame (1/60 s)
+  float v = escena(p, t, px);
+  vec3 color = mix(vec3(0.07, 0.08, 0.10), vec3(1.0, 0.42, 0.71), v);
+  if (p.y < -0.34) color = vec3(0.16);  // el suelo
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_muestras;
+uniform float u_lento;
+out vec4 fragColor;
+
+float altura(float t) {
+  float s = fract(t * 2.0);
+  return 0.08 + 0.7 * 4.0 * s * (1.0 - s);
+}
+
+float escena(vec2 p, float t, float px) {
+  vec2 centro = vec2(0.0, altura(t) - 0.4);
+  return 1.0 - smoothstep(0.06 - px, 0.06 + px, length(p - centro));
+}
+
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) * px;
+  float t = u_time * u_lento;
+  const float FRAME = 1.0 / 60.0;
+  float suma = 0.0;
+  for (int k = 0; k < 32; k++) {                    // límite constante + salida (6.6)
+    if (k >= u_muestras) break;
+    // Instantes repartidos en el intervalo [t - FRAME, t), en el mismo tiempo "lento"
+    float tk = t - (float(k) / float(u_muestras)) * FRAME * u_lento;
+    suma += escena(p, tk, px);
+  }
+  float v = suma / float(u_muestras);
+  vec3 color = mix(vec3(0.07, 0.08, 0.10), vec3(1.0, 0.42, 0.71), v);
+  if (p.y < -0.34) color = vec3(0.16);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Un bucle con límite constante (32) y un <code>break</code> cuando <code>k</code> llegue a <code>u_muestras</code>. En cada vuelta, evalúa <code>escena</code> en un instante un poco anterior: <code>t - (k / N) * (1/60)</code>. Divide la suma por N al final.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con el deslizador <code>velocidad</code> por debajo de 1, el tiempo va a cámara lenta. Si el intervalo de exposición no se escala igual, a cámara lenta verás el mismo rastro que a velocidad normal, lo cual es falso: una cámara lenta real tiene menos rastro. Multiplica también el intervalo por <code>u_lento</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El motion blur es una media temporal: la cámara «ve» todo lo que ocurre durante la exposición, y cada instante aporta lo mismo. Cerca del suelo la pelota recorre mucha distancia en 1/60 s (su velocidad es máxima al tocar el suelo), así que las N copias se reparten a lo largo de un tramo largo y se ve estirada y translúcida; en lo alto, la velocidad es casi 0, las copias caen unas sobre otras y la pelota queda nítida. Nadie ha programado «estirar donde va rápido»: sale solo de la física.</p>
+    <p>El coste es N veces la escena. Aquí la escena es un disco y 32 muestras no se notan; con una escena de raymarching (<a href="09-raymarching.html">6.9</a>) serían 32 escenas completas por píxel. Y el escalado por <code>u_lento</code> importa: el intervalo de exposición se mide en tiempo real, no en tiempo de la animación. En la cámara lenta, el mismo 1/60 s de exposición abarca 1/60 × 0,05 s de animación, y el rastro casi desaparece, como en un vídeo a cámara lenta de verdad grabado con alta velocidad de obturación.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>En un shader una animación es una <strong>función del tiempo</strong>: $\text{color} = f(\vec p, t)$. Puedes saltar a cualquier instante y es independiente de los fps; lo que depende de la historia (física, interacción) no cabe.</li>
+    <li><code>sin</code> oscila, <code>fract(t / T)</code> repite (el reloj de ciclo) y <code>floor(t / T)</code> cuenta. Con ellos salen el triángulo (ping-pong), la onda cuadrada y la escalera.</li>
+    <li><strong>Bucle perfecto</strong>: todo debe completar un número entero de ciclos en T. Expresa todo con $s = \operatorname{fract}(t/T)$ y multiplicadores enteros, y compruébalo comparando la escena en 0 y en T.</li>
+    <li>Easings en GLSL = los de 2.4. Patrones: reinicio, ping-pong y con pausas (<code>clamp((s − a)/(b − a), 0, 1)</code>). <em>back</em> y <em>elastic</em> se salen de $[0, 1]$: protege radios, índices y bordes.</li>
+    <li><strong>Stagger</strong>: tiempo local por celda, $t - \text{retraso}(\text{celda})$, con retraso por fila, por distancia o por hash. <code>fract</code> para bucles, <code>clamp</code> para animaciones de una sola vez.</li>
+    <li><strong>Líneas de tiempo</strong>: <code>tramo(t, t0, t1)</code> y ventanas con dos <code>smoothstep</code>; un guion que empieza y acaba igual hace bucle sin salto.</li>
+    <li>El movimiento rápido sufre <strong>aliasing temporal</strong> (la rueda que gira al revés); el <strong>motion blur</strong> promedia instantes dentro del frame, a N veces el coste.</li>
+    <li>Envolver el tiempo en el shader no recupera la resolución perdida del float32: eso se hace en JavaScript. <strong><code>u_frame</code></strong> hace que la velocidad dependa de la pantalla: anima con segundos.</li>
+    <li>Reparto: lo periódico y sin estado, en el shader; el estado, los eventos y la física, en JavaScript, que manda al shader uno o dos números.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://easings.net/">easings.net</a>: la referencia visual de los easings de Penner, con sus fórmulas.</li>
+  <li><a href="https://thebookofshaders.com/05/">The Book of Shaders, capítulo 5 (Shaping functions)</a>: funciones de forma aplicadas al tiempo y al espacio, con editores en vivo.</li>
+  <li>Iñigo Quilez, <a href="https://iquilezles.org/articles/functions/">Remapping functions</a>: funciones de forma pensadas para animar (impulsos, parábolas, pulsos cúbicos).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.3 · requestAnimationFrame y el tiempo — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m2.css">
+</head>
+<body data-leccion="02-animacion/raf">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 2 · Animación con CSS y JavaScript</p>
+  <h1>requestAnimationFrame y el tiempo</h1>
+  <p class="resumen">Cuando la animación la calculas tú, el tiempo es tu responsabilidad. Aquí verás qué es exactamente el número que te pasa <code>requestAnimationFrame</code>, por qué tu animación va el doble de rápido en una pantalla de 120 Hz, cómo evitar saltos al volver a la pestaña y cómo hacer una simulación estable y determinista con paso fijo.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: 1.5, 2.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás cuándo se ejecuta un callback de <code>requestAnimationFrame</code>, qué significa su argumento y por qué todos los callbacks de un frame reciben el mismo tiempo.</li>
+      <li>Escribirás bucles que se mueven igual a 30, 60, 120 o 144 Hz, usando <em>delta time</em>.</li>
+      <li>Protegerás tus animaciones de los saltos (pestaña oculta, pausas, iframes fuera de pantalla) limitando <code>dt</code>.</li>
+      <li>Implementarás un paso fijo con acumulador e interpolación, y sabrás cuándo compensa.</li>
+      <li>Explicarás por qué <code>setInterval</code> no sirve para animar y medirás los FPS sin engañarte.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El bug de los 120 Hz</h2>
+<p>Este bucle mueve una pelota 3 píxeles en cada frame:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  function bucle() {
+    x += 3;                        // 3 px por frame
+    pelota.style.transform = `translateX(${x}px)`;
+    requestAnimationFrame(bucle);
+  }
+  requestAnimationFrame(bucle);
+</script>
+<p>En tu portátil de 60 Hz, la pelota avanza 180 px por segundo. En el móvil de un usuario con pantalla de 120 Hz, <code>requestAnimationFrame</code> se llama 120 veces por segundo, así que avanza 360 px por segundo: <strong>el doble de rápido</strong>. En un monitor de 144 Hz, 432 px/s. Y si el dispositivo va justo y solo consigue 30 fps, la mitad. La animación no se ha definido en el tiempo, sino en frames, y cada pantalla tiene su propio ritmo.</p>
+<p>Esta demo simula tres pantallas a la vez. En el modo «px por frame», cada pelota avanza 3 px en cada uno de sus frames. En el modo «velocidad × dt», avanza <code>180 * dt</code> píxeles, siendo <code>dt</code> los segundos transcurridos desde su frame anterior:</p>
+
+<div class="demo" id="demo-hz">
+  <div class="demo-lienzo" style="height:260px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">…</div>
+</div>
+
+<p>Con «px por frame», la pelota de 120 Hz saca enseguida una vuelta de ventaja. Con «velocidad × dt», las tres llevan exactamente la misma velocidad: la de 30 Hz se ve más «a saltos» (se actualiza menos veces), pero siempre está donde tiene que estar. Esa es la idea central de la lección: <strong>la posición es una función del tiempo, no del número de frames</strong>.</p>
+
+<div class="callout bestiario" data-id="m2-velocidad-depende-hz" data-titulo="La animación va más rápida (o más lenta) en otra pantalla">
+  <p><strong>Síntoma:</strong> la animación se ve bien en tu equipo, pero en un móvil reciente, un iPad Pro o un monitor «gaming» va al doble (o más) de velocidad; o en un equipo lento va a cámara lenta. Los tiempos de un juego (saltos, disparos) cambian según el dispositivo.</p>
+  <p><strong>Causa:</strong> el código avanza una cantidad fija <em>por frame</em> (<code>x += 3</code>, <code>angulo += 0.01</code>, <code>vida--</code>), y <code>requestAnimationFrame</code> se ejecuta a la frecuencia de la pantalla: 60, 90, 120, 144 Hz… o menos si el dispositivo no llega.</p>
+  <p><strong>Solución:</strong> expresa velocidades en unidades por segundo y multiplícalas por <code>dt</code>, los segundos transcurridos desde el frame anterior, calculados con el argumento del callback (<code>x += 180 * dt</code>). Limita <code>dt</code> para evitar saltos y, si hay física, usa un paso fijo (lección <a href="../02-animacion/03-raf.html#paso-fijo-con-acumulador">2.3</a>).</p>
+</div>
+
+<h2><code>requestAnimationFrame</code> a fondo</h2>
+<p>La firma es mínima:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  const id = requestAnimationFrame(callback);   // callback(tiempo) se ejecutará antes del próximo frame
+  cancelAnimationFrame(id);                     // anula esa petición si aún no se ha ejecutado
+</script>
+<p>Detrás de esas dos líneas hay cinco reglas que conviene saber de memoria:</p>
+<ol>
+  <li><strong>Es de un solo disparo.</strong> Cada llamada programa <em>una</em> ejecución. Para un bucle, el callback tiene que volver a pedir otra. Si lo olvidas, la animación se ejecuta una vez y se para.</li>
+  <li><strong>Se ejecuta en la fase de renderizado.</strong> En el event loop (lección <a href="../01-web/05-event-loop.html">1.5</a>), cuando el navegador decide pintar un frame, primero ejecuta todos los callbacks de rAF pendientes y después calcula estilos, layout y pintado (<a href="01-pipeline-render.html">2.1</a>). Por eso es el sitio perfecto para escribir en el DOM: tus cambios entran en el frame que se está preparando.</li>
+  <li><strong>Lo que pides dentro de un callback va al frame siguiente.</strong> El navegador toma la lista de callbacks pendientes al empezar la fase y la vacía; los que se añaden mientras tanto esperan al próximo frame. Lo medimos: un rAF pedido dentro de otro recibió un tiempo 16,6 ms posterior (un frame a 60 Hz). Así es imposible bloquear la página con un «bucle infinito» de rAF.</li>
+  <li><strong><code>cancelAnimationFrame(id)</code> solo anula esa petición.</strong> Si tu bucle pide un rAF nuevo en cada frame, tienes que guardar siempre el último <code>id</code> para poder cancelarlo.</li>
+  <li><strong>Solo se ejecuta cuando el navegador produce frames.</strong> Si la pestaña está oculta (o el iframe de otro origen no se ve), no hay frames y no hay callbacks (lo vemos enseguida). Que tu callback no cambie nada visible no importa: si hay frames, se ejecuta.</li>
+</ol>
+
+<h3>El argumento: el tiempo del frame</h3>
+<p>El callback recibe un número: un <code>DOMHighResTimeStamp</code>, en <strong>milisegundos</strong> con decimales, medido con el mismo reloj que <code>performance.now()</code> (milisegundos desde que empezó a cargarse la página). Pero no es «el momento en que se ejecuta tu callback»: es <strong>el instante de inicio del frame</strong>, el mismo para todos los callbacks de ese frame. Lo comprobamos con dos callbacks en el mismo frame, el primero con un bucle que tardaba unos milisegundos:</p>
+<table class="m2-medidas">
+  <thead><tr><th></th><th class="num">tiempo recibido</th><th class="num"><code>performance.now()</code> al empezar el callback</th></tr></thead>
+  <tbody>
+    <tr><td>callback A</td><td class="num">182,1</td><td class="num">190,6</td></tr>
+    <tr><td>callback B</td><td class="num">182,1</td><td class="num">193,2</td></tr>
+  </tbody>
+</table>
+<p>Los dos reciben 182,1, aunque B empezó casi 3 ms más tarde que A, y los dos reciben un tiempo <em>anterior</em> al momento real en que se ejecutan. Esto es una ventaja: todas las animaciones de la página calculan su estado para el mismo instante, así que se mueven perfectamente sincronizadas aunque el código de unas tarde más que el de otras. Si usaras <code>performance.now()</code> dentro de cada callback, cada animación viviría en un instante ligeramente distinto.</p>
+<p>¿Cuánto más tarde que el inicio del frame empieza tu primer callback? Depende de lo que el navegador tenga que hacer antes (por ejemplo, despachar los eventos de <code>resize</code> y de <code>scroll</code>, que el estándar ejecuta justo antes de los callbacks de rAF): en la tabla de arriba fueron 8,5 ms, y en un bucle de rAF ya en marcha, sin nada más en la página, medimos entre 0,7 y 2,6 ms (mediana de 2,3 ms en 180 frames; Apple M1, Chrome 154), en línea con lo que viste en la lección <a href="../01-web/05-event-loop.html">1.5</a>. No es un número fijo, y por eso no debes calcular el tiempo con <code>performance.now()</code> dentro del callback.</p>
+
+<div class="js-playground" data-titulo="Anatomía de requestAnimationFrame" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<p style="padding:10px;margin:0">Mira la consola ↓</p>
+</script>
+<script type="text/x-js">
+// Dos callbacks en el mismo frame
+requestAnimationFrame((t) => {
+  const ahora = performance.now();
+  for (let i = 0; i < 2e6; i++) {}             // tardamos un poco a propósito
+  console.log('A: t =', t.toFixed(1), '· performance.now() =', ahora.toFixed(1));
+  // pedido DENTRO de un callback → va al frame siguiente
+  requestAnimationFrame((t2) => console.log('C (pedido dentro de A): t =', t2.toFixed(1),
+                                            '→ un frame después:', (t2 - t).toFixed(1), 'ms'));
+});
+requestAnimationFrame((t) => {
+  console.log('B: t =', t.toFixed(1), '· performance.now() =', performance.now().toFixed(1));
+  console.log('document.timeline.currentTime =', document.timeline.currentTime.toFixed(1));
+});
+
+// Cancelar: esta petición nunca se ejecuta
+const id = requestAnimationFrame(() => console.log('esto no se imprime'));
+cancelAnimationFrame(id);
+console.log('id devuelto por rAF:', id, '(un entero > 0)');
+</script>
+</div>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+let anterior = null;
+let id = 0;
+
+function bucle(t) {
+  const dt = anterior === null ? 0 : (t - anterior) / 1000;
+  anterior = t;
+
+  actualizar(dt);
+  dibujar();
+
+  id = requestAnimationFrame(bucle);
+}
+id = requestAnimationFrame(bucle);
+
+function parar() { cancelAnimationFrame(id); anterior = null; }
+</script>
+<ol>
+  <li data-l="1"><code>anterior</code> guarda el tiempo del frame anterior. <code>null</code> significa «todavía no hay frame anterior».</li>
+  <li data-l="2">Guardamos el último <code>id</code> para poder cancelar el bucle en cualquier momento.</li>
+  <li data-l="4">El navegador nos pasa <code>t</code>, el inicio del frame en milisegundos.</li>
+  <li data-l="5">El delta time, en <strong>segundos</strong>: trabajar en segundos permite escribir velocidades con unidades humanas (px/s, rad/s). En el primer frame no hay anterior, así que <code>dt = 0</code>: nada se mueve un frame, en vez de dar un salto con un <code>dt</code> absurdo.</li>
+  <li data-l="6">Actualizamos <code>anterior</code> para el frame siguiente.</li>
+  <li data-l="8-9">Separar «actualizar el estado» de «dibujarlo» es la costumbre que usaremos siempre (y la base del paso fijo de más abajo).</li>
+  <li data-l="11">Volvemos a pedir el siguiente frame y guardamos su <code>id</code>.</li>
+  <li data-l="15">Para parar: cancelar la petición pendiente y olvidar <code>anterior</code>, para que al reanudar el primer <code>dt</code> vuelva a ser 0.</li>
+</ol>
+</div>
+
+<div class="callout senior" data-titulo="resolución del reloj y document.timeline">
+  <p>El tiempo que da rAF y <code>performance.now()</code> no tienen resolución infinita: en nuestra prueba, en una página normal, ambos venían redondeados a 0,1 ms. Los navegadores reducen la precisión de sus relojes a propósito para dificultar ataques de canal lateral como Spectre (lo contamos en la lección <a href="../01-web/05-event-loop.html">1.5</a>); en páginas con aislamiento de origen cruzado (<em>cross-origin isolation</em>) puede ser más fina. Por eso los intervalos entre frames salen 16,6 o 16,7 y nunca 16,666…</p>
+  <p>Si necesitas el «tiempo del frame» fuera de un callback de rAF (por ejemplo, en un manejador de <code>pointermove</code> para sincronizarte con las animaciones), existe <code>document.timeline.currentTime</code>: lo medimos y coincidía exactamente con el argumento de rAF del frame en curso, y en una tarea posterior seguía valiendo el tiempo del último frame, mientras <code>performance.now()</code> avanzaba. Es el reloj que usan las animaciones CSS y la Web Animations API (<a href="07-waapi-flip.html">2.7</a>).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Dos módulos de tu página tienen su propio bucle de rAF. En un mismo frame, el primero tarda 5 ms en ejecutarse. ¿Qué tiempo recibe el segundo?</p>
+  <ul>
+    <li data-correcta>Exactamente el mismo que el primero.<div class="explicacion">Correcto: el argumento es el instante de inicio del frame y es idéntico para todos los callbacks de ese frame. Así las dos animaciones calculan su estado para el mismo instante.</div></li>
+    <li>5 ms más que el primero.<div class="explicacion">Eso sería <code>performance.now()</code>. El argumento de rAF no mide cuándo empieza tu callback.</div></li>
+    <li>El tiempo del frame siguiente, porque el primero lo retrasó.<div class="explicacion">No: los dos callbacks ya estaban en la lista de este frame. Solo los rAF pedidos <em>durante</em> la ejecución de los callbacks pasan al frame siguiente.</div></li>
+  </ul>
+</div>
+
+<h2>Cuándo no se llama tu callback</h2>
+<h3>Pestañas ocultas</h3>
+<p>Lo viste en la lección <a href="../01-web/05-event-loop.html">1.5</a>: si el usuario cambia de pestaña o minimiza la ventana, la página deja de producir frames y <strong>rAF deja de ejecutarse por completo</strong>. Lo volvimos a medir abriendo otra pestaña encima durante 3 segundos: cero callbacks. Es lo que quieres (no gastar batería en animar algo que nadie ve), pero tiene una consecuencia: al volver, el primer callback recibe un tiempo muy posterior al del último frame. En nuestra prueba, tras 16 segundos oculta, el primer <code>dt</code> fue de 16 segundos. Si tu código hace <code>x += velocidad * dt</code>, la pelota se teletransporta; si hace física, puede explotar (lo verás en <a href="05-fisica-muelles.html">2.5</a>).</p>
+<p>Los temporizadores no se paran, pero se ralentizan: con los ajustes normales de Chrome, un <code>setInterval</code> de 100 ms pasó a ejecutarse una vez por segundo nada más ocultarse la pestaña. Según la documentación de Chrome, si la página lleva más de 5 minutos oculta, las cadenas de temporizadores se agrupan todavía más: una vez por minuto.</p>
+
+<h3>Iframes fuera de pantalla</h3>
+<p>Hay un caso menos conocido. Chrome también deja de dar frames a los <code>iframe</code> de <strong>otro origen</strong> que no se ven: fuera de la pantalla o con <code>display: none</code>. Lo comprobamos en 5 segundos: un iframe con <code>sandbox</code> (origen opaco, como los playgrounds de este curso) recibió 301 callbacks estando visible, 1 estando 3000 px por debajo de la pantalla y 0 con <code>display: none</code>. Un iframe del mismo origen, igual de lejos, siguió recibiendo sus 300.</p>
+
+<div class="callout bestiario" data-id="m2-salto-al-volver" data-titulo="Una animación dentro de un iframe salta al volver a verla">
+  <p><strong>Síntoma:</strong> una animación o una simulación dentro de un <code>iframe</code> (un anuncio, un widget incrustado, una demo de CodePen, los playgrounds de este curso) aparece desplazada de golpe, con una cuenta atrás adelantada o con la física disparada cuando vuelves a hacer scroll hasta ella, aunque la pestaña nunca estuvo oculta.</p>
+  <p><strong>Causa:</strong> Chrome deja de dar frames a los <code>iframe</code> de otro origen que no se ven (fuera de la pantalla o con <code>display: none</code>). Medido: un iframe con <code>sandbox</code> recibió 1 callback de rAF en 5 s estando 3000 px por debajo de la pantalla, frente a 301 visible. Al volver a verse, el primer <code>dt</code> incluye todo el tiempo que estuvo fuera. Es el mismo efecto que el de las pestañas ocultas (<a href="../01-web/05-event-loop.html#m1-segundo-plano">«Al volver a la pestaña, la animación da un salto enorme»</a>, lección 1.5), pero sin ningún <code>visibilitychange</code> que te avise.</p>
+  <p><strong>Solución:</strong> limita <code>dt</code> (<code>Math.min(dt, 0.1)</code>) en todo bucle de animación, y para simulaciones usa un paso fijo con un máximo de pasos por frame (<a href="../02-animacion/03-raf.html#paso-fijo-con-acumulador">2.3</a>). Si necesitas saber si el iframe se ve, un <code>IntersectionObserver</code> dentro del propio documento te lo dice.</p>
+</div>
+
+<h2>Delta time: medir en segundos, no en frames</h2>
+<p>La receta tiene tres partes: calcular <code>dt</code>, expresar todo por segundo y protegerse de los valores extremos.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.3.1 — Pasar un bucle «por frame» a «por segundo»</h3>
+  <p>Partimos de un bucle escrito pensando en 60 Hz:</p>
+  <script type="text/plain" class="codigo" data-lang="js">
+    function bucle() {
+      x += 3;              // px por frame
+      angulo += 0.05;      // rad por frame
+      opacidad -= 0.01;    // por frame
+      requestAnimationFrame(bucle);
+    }
+  </script>
+  <p><strong>Paso 1: traducir cada constante a «por segundo».</strong> Si el autor lo ajustó a 60 Hz, cada constante por frame equivale a 60 veces esa cantidad por segundo: 3 px/frame = 180 px/s; 0,05 rad/frame = 3 rad/s; 0,01/frame = 0,6/s (la opacidad llega a 0 en 1,67 s).</p>
+  <p><strong>Paso 2: multiplicar por <code>dt</code>.</strong> <code>dt</code> son segundos, así que <code>(px/s) × s = px</code>: las unidades cuadran, que es la mejor comprobación de que la fórmula tiene sentido.</p>
+  <script type="text/plain" class="codigo" data-lang="js" data-lineas>
+    const VELOCIDAD = 180;     // px/s
+    const GIRO = 3;            // rad/s
+    const DESVANECER = 0.6;    // opacidad/s
+    let anterior = null;
+
+    function bucle(t) {
+      let dt = anterior === null ? 0 : (t - anterior) / 1000;
+      anterior = t;
+      dt = Math.min(dt, 0.1);                     // nunca más de 100 ms de golpe
+      x += VELOCIDAD * dt;
+      angulo += GIRO * dt;
+      opacidad = Math.max(0, opacidad - DESVANECER * dt);
+      requestAnimationFrame(bucle);
+    }
+    requestAnimationFrame(bucle);
+  </script>
+  <p><strong>Paso 3: el límite de <code>dt</code>.</strong> La línea 9 evita los saltos al volver de otra pestaña y los provocados por frames larguísimos. Tiene un precio: si el dispositivo no llega a 10 fps, la animación irá a cámara lenta en lugar de a saltos. Casi siempre es preferible.</p>
+  <p><strong>Paso 4: los valores que no son lineales.</strong> <code>x += v * dt</code> es exacto para velocidad constante. Pero cuidado con las fórmulas del tipo <code>x *= 0.95</code> por frame (un frenado): <strong>no</strong> se arreglan multiplicando por <code>dt</code>. Su versión correcta es <code>x *= Math.pow(0.95, dt * 60)</code>, porque el frenado es exponencial. Lo estudiaremos con calma en <a href="04-interpolacion-easing.html">2.4</a>, con el truco de <code>x += (objetivo - x) * k</code>.</p>
+  <p><strong>Paso 5: animaciones con duración.</strong> Si la animación tiene principio y fin, ni siquiera necesitas acumular: calcula el progreso directamente, <code>p = (t - inicio) / duracion</code>, y el valor como función de <code>p</code>. No acumula errores, y es la base de los tweens de la lección siguiente.</p>
+</section>
+
+<div class="js-playground" data-titulo="dt y velocidad en px/s" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth;          // (en 2.6 veremos cómo hacerlo nítido con devicePixelRatio)
+canvas.height = canvas.clientHeight;
+
+const VELOCIDAD = 200;                      // px/s
+let x = 0, anterior = null, frames = 0, tiempoTotal = 0;
+
+function bucle(t) {
+  let dt = anterior === null ? 0 : (t - anterior) / 1000;
+  anterior = t;
+  dt = Math.min(dt, 0.1);
+  x = (x + VELOCIDAD * dt) % canvas.width;  // da la vuelta al llegar al borde
+  tiempoTotal += dt;
+
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath();
+  ctx.arc(x, canvas.height / 2, 14, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (++frames % 120 === 0) {
+    console.log(`${frames} frames en ${tiempoTotal.toFixed(2)} s → ` +
+                `${(frames / tiempoTotal).toFixed(1)} fps de media`);
+  }
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+</script>
+</div>
+
+<h2 id="paso-fijo-con-acumulador">Paso fijo con acumulador</h2>
+<p>Multiplicar por <code>dt</code> resuelve la velocidad, pero no todo. Cuando hay física (gravedad, choques, muelles), el resultado de integrar con pasos de distinto tamaño <strong>no es el mismo</strong>. Calculamos la altura máxima de un salto (velocidad inicial 5 m/s, gravedad 9,8 m/s²) integrando con el método que usaremos en <a href="05-fisica-muelles.html">2.5</a> a distintas frecuencias:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Frecuencia del bucle</th><th class="num">Altura máxima</th></tr></thead>
+  <tbody>
+    <tr><td>Valor exacto ($v_0^2 / 2g$)</td><td class="num">1,2755 m</td></tr>
+    <tr><td>30 Hz</td><td class="num">1,1933 m</td></tr>
+    <tr><td>60 Hz</td><td class="num">1,2342 m</td></tr>
+    <tr><td>120 Hz</td><td class="num">1,2547 m</td></tr>
+    <tr><td>144 Hz</td><td class="num">1,2582 m</td></tr>
+  </tbody>
+</table>
+<p>Un 5 % de diferencia entre 30 y 144 Hz. En un juego de plataformas, el jugador con el monitor rápido salta más alto y llega a sitios a los que el del portátil lento no llega. Además, un <code>dt</code> grande puede hacer que un objeto atraviese una pared (en un frame está delante y en el siguiente, detrás) o que un muelle rígido se vuelva inestable. Y dos ejecuciones con los mismos datos de entrada darán resultados distintos según cómo caigan los frames: la simulación no es <strong>determinista</strong>.</p>
+<p>La solución clásica (el artículo de Glenn Fiedler «Fix Your Timestep!» la popularizó) es desacoplar la simulación de la pantalla: <strong>la física avanza siempre con el mismo paso</strong> (por ejemplo, 1/60 s), tantas veces como haga falta para alcanzar al tiempo real, y la pantalla dibuja cuando le toca.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const PASO = 1 / 60;          // s: la física SIEMPRE avanza esto
+const MAX_PASOS = 5;          // protección contra la espiral de la muerte
+let acumulador = 0, anterior = null;
+let previo = copiar(estado);
+
+function bucle(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.25);
+  anterior = t;
+  acumulador += dt;
+
+  let pasos = 0;
+  while (acumulador >= PASO && pasos < MAX_PASOS) {
+    previo = copiar(estado);
+    simular(estado, PASO);
+    acumulador -= PASO;
+    pasos++;
+  }
+  if (pasos === MAX_PASOS) acumulador = 0;
+
+  const alfa = acumulador / PASO;
+  dibujar(interpolar(previo, estado, alfa));
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+</script>
+<ol>
+  <li data-l="1">El paso fijo. Todas las simulaciones del mundo, en cualquier pantalla, avanzan en rodajas de 1/60 s: mismos datos de entrada, mismos resultados.</li>
+  <li data-l="2">Un tope de pasos por frame. Sin él, si un frame tarda mucho, el siguiente tendrá que simular muchos pasos, que tardan todavía más, y así sucesivamente: la <em>espiral de la muerte</em>.</li>
+  <li data-l="3">El acumulador es el «tiempo real que aún no hemos simulado».</li>
+  <li data-l="4">Guardamos también el estado anterior: lo necesitaremos para interpolar.</li>
+  <li data-l="7">El <code>dt</code> real de la pantalla, limitado a 0,25 s para que una vuelta de otra pestaña no genere una avalancha de pasos.</li>
+  <li data-l="9">Añadimos el tiempo real transcurrido a la cuenta pendiente.</li>
+  <li data-l="11-17">Mientras quede al menos un paso entero pendiente, simulamos un paso fijo. En una pantalla de 60 Hz con física a 60 Hz habrá casi siempre un paso por frame; a 120 Hz, un paso cada dos frames; a 30 Hz, dos pasos por frame.</li>
+  <li data-l="13">Antes de cada paso copiamos el estado: así <code>previo</code> es siempre el penúltimo estado y <code>estado</code> el último.</li>
+  <li data-l="18">Si llegamos al tope, descartamos el tiempo pendiente: la simulación se ralentiza en lugar de hundirse.</li>
+  <li data-l="20">Lo que sobra en el acumulador es una fracción de paso: <code>alfa</code> ∈ [0, 1) dice cuánto hemos avanzado entre el último estado simulado y el siguiente.</li>
+  <li data-l="21">Dibujamos una mezcla de los dos últimos estados. Sin esto, la pantalla mostraría el estado a saltos.</li>
+</ol>
+</div>
+
+<p>La interpolación tiene un coste curioso: dibujamos un instante entre el penúltimo y el último estado simulado, así que la imagen va hasta un paso <em>por detrás</em> de la simulación (hasta 16,7 ms con paso de 1/60 s). A cambio, el movimiento es perfectamente suave aunque la física vaya a otra frecuencia que la pantalla. Compruébalo: la física de esta demo va a la frecuencia que elijas. La pelota de arriba se dibuja en el último estado simulado y la de abajo interpola.</p>
+
+<div class="demo" id="demo-paso-fijo">
+  <div class="demo-lienzo" style="height:260px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">…</div>
+</div>
+
+<ul>
+  <li>Con física a 10 Hz, la de arriba va claramente a saltos (en una pantalla de 60 Hz: 6 frames iguales, salto, 6 iguales…; en una de 120 Hz, 12) y la de abajo se desliza suave.</li>
+  <li>Con 50 Hz en una pantalla de 60 Hz, el problema es más sutil y más feo: la mayoría de frames tienen un paso, pero cada 6 frames uno no tiene ninguno y la pelota se detiene un instante. Frecuencias «casi iguales» producen tirones periódicos.</li>
+  <li>Fíjate en la tira de abajo, que muestra cuántos pasos se simularon en cada frame: incluso con la física a la misma frecuencia que la pantalla aparecen frames con 0 y con 2 pasos. Es el redondeo a 0,1 ms del reloj: un frame «mide» 16,6 ms, el acumulador se queda a 0,07 ms de un paso completo y ese frame no simula nada; el siguiente simula dos. La interpolación lo oculta por completo.</li>
+</ul>
+
+<div class="callout senior" data-titulo="determinismo de verdad">
+  <p>El paso fijo hace que la secuencia de operaciones sea la misma en todas las pantallas. En un mismo navegador, las operaciones de coma flotante de JavaScript (IEEE 754, lección <a href="../03-matematicas/07-precision.html">3.7</a>) son deterministas: mismas operaciones en el mismo orden, mismos bits. Entre navegadores distintos hay una trampa: la especificación de JavaScript permite que <code>Math.sin</code>, <code>Math.exp</code> y compañía sean aproximaciones que dependen de la implementación, así que pueden diferir en el último bit. Para una animación da igual; para un juego en red que simula lo mismo en dos máquinas (lockstep), no.</p>
+</div>
+
+<div class="callout hack">
+  <p>La interpolación entre <code>previo</code> y <code>estado</code> no tiene por qué ser lineal en todo. Posiciones y escalas se interpolan con <code>lerp</code>; los ángulos, por el camino corto; y los estados discretos (un objeto que acaba de nacer o de morir), sin interpolar. Un truco habitual: si un objeto se teletransporta en un paso (reaparece por el otro lado de la pantalla), marca ese paso para que el dibujo use directamente el estado nuevo, o verás una estela cruzando la pantalla.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.3.2 — ¿Cuántos pasos y qué alfa en cada frame?</h3>
+  <p>Física a 50 Hz (paso de 20 ms) en una pantalla de 60 Hz (frames cada 16,67 ms). Sigamos el acumulador, en milisegundos, empezando en 0:</p>
+  <table class="m2-medidas">
+    <thead><tr><th>Frame</th><th class="num">acumulador + dt</th><th class="num">pasos</th><th class="num">queda</th><th class="num">alfa</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="num">0 + 16,67 = 16,67</td><td class="num">0</td><td class="num">16,67</td><td class="num">0,83</td></tr>
+      <tr><td>2</td><td class="num">16,67 + 16,67 = 33,33</td><td class="num">1</td><td class="num">13,33</td><td class="num">0,67</td></tr>
+      <tr><td>3</td><td class="num">13,33 + 16,67 = 30,00</td><td class="num">1</td><td class="num">10,00</td><td class="num">0,50</td></tr>
+      <tr><td>4</td><td class="num">10,00 + 16,67 = 26,67</td><td class="num">1</td><td class="num">6,67</td><td class="num">0,33</td></tr>
+      <tr><td>5</td><td class="num">6,67 + 16,67 = 23,33</td><td class="num">1</td><td class="num">3,33</td><td class="num">0,17</td></tr>
+      <tr><td>6</td><td class="num">3,33 + 16,67 = 20,00</td><td class="num">1</td><td class="num">0,00</td><td class="num">0,00</td></tr>
+      <tr><td>7</td><td class="num">0 + 16,67 = 16,67</td><td class="num">0</td><td class="num">16,67</td><td class="num">0,83</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Lectura:</strong> el patrón se repite cada 6 frames (100 ms = 5 pasos de física = 6 frames de pantalla). Sin interpolar, los frames 6 y 7 muestran el mismo estado: la pelota se para un frame de cada seis. Con interpolación, el estado dibujado avanza en cada frame exactamente $16{,}67/20 = 0{,}833$ pasos de física: los valores de alfa (0,83; 0,67; 0,50…) compensan que unos frames tengan un paso y otros ninguno.</p>
+</section>
+
+<h2><code>setInterval</code> no sirve para animar</h2>
+<p>Parece natural escribir <code>setInterval(actualizar, 1000 / 60)</code>. Tiene cuatro problemas, todos medidos:</p>
+<ol>
+  <li><strong>No está sincronizado con la pantalla.</strong> El temporizador y el vsync son relojes independientes. Durante 600 frames contamos cuántas veces se había ejecutado <code>setInterval(f, 1000/60)</code> entre dos frames: 563 frames recibieron una actualización, 26 recibieron <strong>dos</strong> y alguno ninguna. Cada frame con dos actualizaciones es un salto doble: un tirón periódico, aproximadamente cada 25 frames.</li>
+  <li><strong>El retardo se trunca a milisegundos enteros.</strong> El argumento de <code>setInterval</code> se convierte a un entero (por las reglas de WebIDL): <code>1000 / 60</code> = 16,67 se convierte en 16. Medimos un periodo medio de 16,001 ms con <code>1000/60</code> y de 16,008 ms con <code>16.9</code>. 16 ms frente a 16,67 ms del frame: 62,5 actualizaciones por segundo para 60 frames, una actualización de más cada 24 frames. Ese es exactamente el origen del tirón del punto anterior.</li>
+  <li><strong>Deriva y latencia.</strong> Una cadena de <code>setTimeout(f, 16)</code> se retrasa un poco en cada vuelta (medimos una media de 16,77 ms), y además los temporizadores anidados más de 5 niveles tienen un mínimo de 4 ms (lo medimos con una cadena de <code>setTimeout(f, 0)</code> lanzada desde un script: los seis primeros a ~0 ms y, a partir del séptimo, a 4–5 ms, como en la lección <a href="../01-web/05-event-loop.html">1.5</a>).</li>
+  <li><strong>No se pausa en segundo plano, se ralentiza</strong> a una vez por segundo: sigue gastando, y al volver tiene los mismos problemas de salto.</li>
+</ol>
+
+<div class="js-playground" data-titulo="setInterval contra requestAnimationFrame" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth;
+canvas.height = canvas.clientHeight;
+
+let xIntervalo = 0, xRaf = 0;
+let actualizacionesEsteFrame = 0;
+const histograma = { 0: 0, 1: 0, 2: 0, 3: 0 };
+
+// Pelota 1: la mueve un setInterval "a 60 Hz"
+setInterval(() => {
+  xIntervalo = (xIntervalo + 4) % canvas.width;
+  actualizacionesEsteFrame++;
+}, 1000 / 60);
+
+// Pelota 2: la mueve rAF (también 4 px por frame, para comparar la regularidad)
+let frames = 0;
+function frame() {
+  xRaf = (xRaf + 4) % canvas.width;
+  histograma[Math.min(actualizacionesEsteFrame, 3)]++;
+  actualizacionesEsteFrame = 0;
+
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ff6bb5';
+  ctx.beginPath(); ctx.arc(xIntervalo, canvas.height * 0.3, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#3fd0e8';
+  ctx.beginPath(); ctx.arc(xRaf, canvas.height * 0.7, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#8791a5';
+  ctx.font = '12px monospace';
+  ctx.fillText('setInterval(f, 1000/60)', 10, canvas.height * 0.3 - 20);
+  ctx.fillText('requestAnimationFrame', 10, canvas.height * 0.7 - 20);
+
+  if (++frames % 300 === 0) console.log('actualizaciones de setInterval por frame:', JSON.stringify(histograma));
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+
+<div class="callout bestiario" data-id="m2-setinterval-tirones" data-titulo="Una animación con setInterval da un tirón cada medio segundo">
+  <p><strong>Síntoma:</strong> una animación movida con <code>setInterval(f, 1000/60)</code> (o <code>16</code>) va casi fluida, pero pega un pequeño salto periódico, más o menos cada 0,4 s en una pantalla de 60 Hz; en una de 120 Hz, los tirones son otros.</p>
+  <p><strong>Causa:</strong> el temporizador no está sincronizado con el refresco. El retardo se trunca a 16 ms, así que se ejecuta 62,5 veces por segundo para 60 frames: cada 24 frames, uno recibe dos actualizaciones (salto doble). Con otras frecuencias de pantalla, el desajuste produce otros patrones.</p>
+  <p><strong>Solución:</strong> anima con <code>requestAnimationFrame</code> y <code>dt</code>. Si necesitas lógica a frecuencia fija (física, red), usa un acumulador dentro del bucle de rAF, no un temporizador.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué ocurre con <code>setInterval(actualizar, 1000 / 60)</code> en una pantalla de 60 Hz?</p>
+  <ul>
+    <li>Se ejecuta exactamente una vez por frame, justo antes de pintar.<div class="explicacion">No hay ninguna relación entre el temporizador y el vsync: se ejecuta cuando le toca según su propio reloj, entre frames.</div></li>
+    <li>Se ejecuta cada 16,67 ms y va perfecto mientras la pestaña esté visible.<div class="explicacion">El valor se trunca a milisegundos enteros, y aunque fuera exacto, dos relojes independientes acaban desfasándose.</div></li>
+    <li data-correcta>Se ejecuta cada 16 ms, así que algunos frames reciben dos actualizaciones.<div class="explicacion">Correcto: el retardo se convierte a entero (16 ms), 62,5 veces por segundo frente a 60 frames. Periódicamente, dos ejecuciones caen entre los mismos dos frames y la animación salta el doble.</div></li>
+  </ul>
+</div>
+
+<h2>Medir los FPS sin engañarte</h2>
+<p>Los FPS instantáneos, <code>1 / dt</code>, son inútiles tal cual: con intervalos de 16,6 y 16,7 ms oscilan entre 59,9 y 60,2, y un solo frame largo los hunde. Hay que promediar. Y aquí viene el detalle que distingue a quien sabe lo que mide: <strong>se promedian los tiempos de frame, no los FPS</strong>.</p>
+<p>Un ejemplo: frames alternos de 10 ms y 30 ms. Sus FPS instantáneos son 100 y 33,3; su media, 66,7 fps. Pero en realidad has mostrado 2 frames en 40 ms, es decir, 50 fps. La media de los FPS está sesgada hacia los frames rápidos (es la media aritmética de unas inversas; lo correcto es la media armónica). Promediando los tiempos, $(10 + 30)/2 = 20$ ms → 50 fps: correcto.</p>
+<p>Para una media móvil barata, sin guardar un historial, se usa una <strong>media móvil exponencial</strong> (EMA):</p>
+$$\overline{dt} \leftarrow \overline{dt} + \alpha\,(dt - \overline{dt}), \qquad \text{fps} = \frac{1}{\overline{dt}}$$
+<p>Con $\alpha = 0{,}05$, cada frame nuevo pesa un 5 % y los antiguos se van olvidando poco a poco (el «recuerdo» dura unos 20 frames). Y como ya viste en <a href="01-pipeline-render.html">2.1</a>, la media no basta: muestra también el peor frame del último segundo, que es lo que el ojo nota.</p>
+
+<div class="quiz">
+  <p class="pregunta">En un segundo tu página muestra 30 frames de 10 ms y 20 frames de 35 ms. ¿Cuántos FPS de media ha tenido?</p>
+  <ul>
+    <li>Unos 71 fps, la media de los FPS de los 50 frames.<div class="explicacion">Esa es la media de 100 fps (×30) y 28,6 fps (×20): (30 · 100 + 20 · 28,6) / 50 ≈ 71. Sobrevalora los frames rápidos y no es lo que ve el usuario.</div></li>
+    <li data-correcta>50 fps.<div class="explicacion">Correcto: 30 × 10 + 20 × 35 = 1000 ms, en los que se mostraron 50 frames. Tiempo medio de frame = 20 ms → 50 fps. Promedia tiempos, no FPS.</div></li>
+    <li>28,6 fps, lo que marcan los frames lentos.<div class="explicacion">Ese es el ritmo de los frames lentos (35 ms). Es una buena medida del «peor caso», pero no de la media.</div></li>
+  </ul>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 2.3.1 — Que vaya igual en todas las pantallas</h3>
+  <p>El código usa <code>rafSim</code>, una versión de <code>requestAnimationFrame</code> que simula una pantalla de <code>HZ</code> hercios (explicada abajo). La pelota avanza 3 px por frame, así que con <code>HZ = 120</code> va el doble de rápido que con 60. Cámbialo para que recorra <strong>180 px por segundo</strong> sea cual sea <code>HZ</code> (pruébalo con 30, 60 y 120). La consola imprime cuántos píxeles avanza por segundo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.3.1" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const HZ = 120;   // ← prueba 30, 60, 120
+
+// ----- rafSim: simula una pantalla de HZ hercios (no hace falta tocarlo) -----
+let tVirtual = null;
+const pendientes = [];
+function rafSim(cb) { pendientes.push(cb); }
+function motor(t) {
+  if (tVirtual === null) tVirtual = t;
+  while (tVirtual + 1000 / HZ <= t + 0.5) {
+    tVirtual += 1000 / HZ;
+    pendientes.splice(0).forEach((cb) => cb(tVirtual));
+  }
+  requestAnimationFrame(motor);
+}
+requestAnimationFrame(motor);
+// ---------------------------------------------------------------------------
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+let x = 0, recorrido = 0, t0 = null;
+
+function bucle(t) {
+  if (t0 === null) t0 = t;
+  x += 3;                              // ← el problema
+  recorrido += 3;
+  if ((t - t0) >= 2000) { console.log('px por segundo:', (recorrido / ((t - t0) / 1000)).toFixed(0)); t0 = t; recorrido = 0; }
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath(); ctx.arc(x % canvas.width, canvas.height / 2, 14, 0, Math.PI * 2); ctx.fill();
+  rafSim(bucle);
+}
+rafSim(bucle);
+</script>
+<script type="text/x-js" data-solucion>
+const HZ = 120;   // ← prueba 30, 60, 120
+
+// ----- rafSim: simula una pantalla de HZ hercios (no hace falta tocarlo) -----
+let tVirtual = null;
+const pendientes = [];
+function rafSim(cb) { pendientes.push(cb); }
+function motor(t) {
+  if (tVirtual === null) tVirtual = t;
+  while (tVirtual + 1000 / HZ <= t + 0.5) {
+    tVirtual += 1000 / HZ;
+    pendientes.splice(0).forEach((cb) => cb(tVirtual));
+  }
+  requestAnimationFrame(motor);
+}
+requestAnimationFrame(motor);
+// ---------------------------------------------------------------------------
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const VELOCIDAD = 180;                 // px/s
+let x = 0, recorrido = 0, t0 = null, anterior = null;
+
+function bucle(t) {
+  if (t0 === null) t0 = t;
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  x += VELOCIDAD * dt;                 // px/s × s = px
+  recorrido += VELOCIDAD * dt;
+  if ((t - t0) >= 2000) { console.log('px por segundo:', (recorrido / ((t - t0) / 1000)).toFixed(0)); t0 = t; recorrido = 0; }
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath(); ctx.arc(x % canvas.width, canvas.height / 2, 14, 0, Math.PI * 2); ctx.fill();
+  rafSim(bucle);
+}
+rafSim(bucle);
+</script>
+  </div>
+  <details class="plegable"><summary>¿Cómo funciona <code>rafSim</code>?</summary>
+    <p>El motor es un bucle de rAF real. En cada frame real mira cuánto tiempo ha pasado y ejecuta los callbacks pendientes tantas veces como frames «virtuales» de periodo <code>1000 / HZ</code> quepan, pasándoles tiempos virtuales espaciados exactamente un periodo. Con <code>HZ = 120</code> en una pantalla de 60 Hz, tu callback se ejecuta dos veces por frame real, con tiempos separados 8,33 ms; con <code>HZ = 30</code>, una vez cada dos frames reales. <code>pendientes.splice(0)</code> vacía la lista antes de llamarlos, igual que hace el navegador: lo que pidas dentro va al frame virtual siguiente. El <code>+ 0.5</code> tolera el redondeo del reloj.</p>
+  </details>
+  <details class="pista"><summary>Pista</summary><p>Calcula <code>dt</code> en segundos con el argumento <code>t</code> y el tiempo del frame anterior, como en el código anotado de la lección, y usa una velocidad en px/s.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>dt = (t - anterior) / 1000</code>, el avance de cada frame es <code>180 * dt</code>: con <code>HZ = 120</code>, <code>dt</code> ≈ 0,00833 s y avanza 1,5 px por frame; con 30, <code>dt</code> ≈ 0,0333 s y avanza 6 px por frame. En un segundo, siempre 180 px: la consola debería marcar 180 con cualquier <code>HZ</code>. El primer frame tiene <code>dt = 0</code> y el límite de 0,1 s evita saltos si el playground estuvo fuera de la pantalla.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.3.2 — Volver de la pestaña sin teletransporte</h3>
+  <p>El botón simula lo que hace el navegador al ocultar la pestaña: deja de dar frames durante 3 segundos (cancela el rAF) y luego los reanuda. Al volver, la pelota salta de golpe a otro sitio. Arréglalo de dos formas complementarias: limita <code>dt</code> y, además, al reanudar, haz que el primer frame no cuente el tiempo de la pausa. Añade también el manejador de <code>visibilitychange</code> que harías en una página real.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.3.2" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="pausa" style="position:absolute;left:10px;top:10px">Simular pestaña oculta 3 s</button>
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const VELOCIDAD = 150;   // px/s
+let x = 40, anterior = null, id = 0;
+
+function bucle(t) {
+  const dt = anterior === null ? 0 : (t - anterior) / 1000;
+  anterior = t;
+  x = (x + VELOCIDAD * dt) % canvas.width;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#3ecf8e';
+  ctx.beginPath(); ctx.arc(x, canvas.height * 0.6, 14, 0, Math.PI * 2); ctx.fill();
+  id = requestAnimationFrame(bucle);
+}
+id = requestAnimationFrame(bucle);
+
+// Simulación de pestaña oculta: sin frames durante 3 s
+document.getElementById('pausa').onclick = () => {
+  cancelAnimationFrame(id);
+  setTimeout(() => { id = requestAnimationFrame(bucle); }, 3000);
+};
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const VELOCIDAD = 150;   // px/s
+const DT_MAX = 0.1;      // s
+let x = 40, anterior = null, id = 0;
+
+function bucle(t) {
+  let dt = anterior === null ? 0 : (t - anterior) / 1000;
+  anterior = t;
+  dt = Math.min(dt, DT_MAX);                  // 1) nunca más de 100 ms de golpe
+  x = (x + VELOCIDAD * dt) % canvas.width;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#3ecf8e';
+  ctx.beginPath(); ctx.arc(x, canvas.height * 0.6, 14, 0, Math.PI * 2); ctx.fill();
+  id = requestAnimationFrame(bucle);
+}
+id = requestAnimationFrame(bucle);
+
+function reanudar() {
+  anterior = null;                            // 2) el primer frame tras la pausa tendrá dt = 0
+  id = requestAnimationFrame(bucle);
+}
+
+document.getElementById('pausa').onclick = () => {
+  cancelAnimationFrame(id);
+  setTimeout(reanudar, 3000);
+};
+
+// 3) En una página real: la pestaña se oculta y vuelve
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) cancelAnimationFrame(id);   // opcional: el navegador ya no da frames
+  else reanudar();
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>Math.min(dt, 0.1)</code> reduce el salto a 15 px como máximo. Para que no haya salto en absoluto, el primer <code>dt</code> tras la pausa debe ser 0: ¿qué variable controla eso?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Un evento en <code>document</code> avisa cuando la pestaña se oculta o vuelve; la propiedad <code>document.hidden</code> dice en qué estado está.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El límite de <code>dt</code> es la red de seguridad general: da igual por qué llegue un frame tarde (pestaña, un bloqueo, el iframe fuera de pantalla), nunca avanzarás más de 0,1 s de golpe. Reiniciar <code>anterior</code> a <code>null</code> al reanudar va más allá: el primer frame tiene <code>dt = 0</code> y la animación continúa exactamente donde se quedó, como si el tiempo se hubiera detenido. En una página real, ese reinicio se hace en <code>visibilitychange</code> cuando <code>document.hidden</code> vuelve a ser <code>false</code>. Cancelar al ocultar es opcional (el navegador ya no ejecuta rAF), pero evita tener dos bucles vivos si reanudas pidiendo otro rAF.</p>
+    <p>¿Cuál elegir? Depende de la semántica: para una animación decorativa, pausar el tiempo (reiniciar <code>anterior</code>) es lo natural. Para un reloj o una cuenta atrás, lo correcto es lo contrario: calcular el estado desde un instante absoluto (<code>t - inicio</code>) para que, al volver, marque la hora real.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 2.3.3 — Física a paso fijo con interpolación</h3>
+  <p>La función <code>simular(estado, dt)</code> mueve una pelota con gravedad que rebota en el suelo. Ahora mismo se llama con el <code>dt</code> variable de cada frame. Implementa el bucle con <strong>paso fijo de 1/15 s</strong> (muy bajo a propósito, para que se note), un máximo de 5 pasos por frame e <strong>interpolación</strong> al dibujar. La casilla permite comparar con y sin interpolar: sin interpolar debe verse a saltos; interpolando, suave.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.3.3" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<label style="position:absolute;left:10px;top:8px;color:#b4bccb;font:13px system-ui"><input type="checkbox" id="interp" checked> interpolar</label>
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const SUELO = canvas.height - 20, G = 900;          // px/s²
+
+let estado = { x: 30, y: 40, vx: 140, vy: 0 };
+
+function simular(e, dt) {                            // semi-implícito (lo veremos en 2.5)
+  e.vy += G * dt;
+  e.x += e.vx * dt;
+  e.y += e.vy * dt;
+  if (e.y > SUELO) { e.y = SUELO; e.vy = -Math.abs(e.vy) * 0.85; }   // rebote con pérdida
+  if (e.x > canvas.width - 14 || e.x < 14) e.vx = -e.vx;
+}
+
+function dibujar(e) {
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath(); ctx.arc(e.x, e.y - 14, 14, 0, Math.PI * 2); ctx.fill();
+}
+
+let anterior = null;
+function bucle(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.25);
+  anterior = t;
+  simular(estado, dt);          // ← paso variable: sustitúyelo por un paso fijo de 1/15 s
+  dibujar(estado);
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const SUELO = canvas.height - 20, G = 900;          // px/s²
+
+let estado = { x: 30, y: 40, vx: 140, vy: 0 };
+
+function simular(e, dt) {                            // semi-implícito (lo veremos en 2.5)
+  e.vy += G * dt;
+  e.x += e.vx * dt;
+  e.y += e.vy * dt;
+  if (e.y > SUELO) { e.y = SUELO; e.vy = -Math.abs(e.vy) * 0.85; }   // rebote con pérdida
+  if (e.x > canvas.width - 14 || e.x < 14) e.vx = -e.vx;
+}
+
+function dibujar(e) {
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath(); ctx.arc(e.x, e.y - 14, 14, 0, Math.PI * 2); ctx.fill();
+}
+
+const PASO = 1 / 15, MAX_PASOS = 5;
+const casilla = document.getElementById('interp');
+let anterior = null, acumulador = 0;
+let previo = { ...estado };
+
+function bucle(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.25);
+  anterior = t;
+  acumulador += dt;
+  let pasos = 0;
+  while (acumulador >= PASO && pasos < MAX_PASOS) {
+    previo = { ...estado };            // copia superficial: basta para un objeto de números
+    simular(estado, PASO);
+    acumulador -= PASO;
+    pasos++;
+  }
+  if (pasos === MAX_PASOS) acumulador = 0;
+  const a = acumulador / PASO;         // alfa en [0, 1)
+  if (casilla.checked) {
+    dibujar({ x: previo.x + (estado.x - previo.x) * a, y: previo.y + (estado.y - previo.y) * a });
+  } else {
+    dibujar(estado);
+  }
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Copia la estructura del código anotado de la sección «Paso fijo con acumulador». Para copiar el estado, <code>{ ...estado }</code> basta (solo contiene números).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para interpolar solo necesitas la posición: <code>x = previo.x + (estado.x - previo.x) * alfa</code>, y lo mismo con <code>y</code>. <code>dibujar</code> solo lee <code>x</code> e <code>y</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con un paso de 1/15 s y una pantalla de 60 Hz, se simula un paso cada 4 frames. Sin interpolar, la pelota se queda quieta 4 frames y salta: un movimiento a 15 fps. Con la interpolación, cada frame dibuja una mezcla ponderada por <code>alfa</code> (0; 0,25; 0,5; 0,75…) entre los dos últimos estados, y el movimiento vuelve a verse a 60 fps, con un retraso de hasta un paso (67 ms, que aquí se nota poco).</p>
+    <p>Un detalle fino: en el rebote, <code>previo</code> puede estar justo antes del suelo y <code>estado</code> justo después, y la interpolación dibuja una posición intermedia que nunca existió en la simulación (la pelota no llega a tocar el suelo en ese frame). A 1/15 s se aprecia; con un paso normal de 1/60 s es invisible. Por eso los motores reales usan pasos pequeños y reservan la interpolación para suavizar, no para compensar pasos enormes. Y fíjate en que ahora la altura de cada rebote es idéntica en cualquier pantalla: la simulación es determinista.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.3.4 — Un medidor de FPS honesto</h3>
+  <p>Completa <code>medir(dt)</code> para mantener una media móvil exponencial del tiempo de frame (α = 0,05) y el peor frame del último segundo, y que <code>pintarTexto</code> muestre «NN fps · peor: XX ms». El botón añade 30 ms de trabajo por frame durante 2 segundos: tu medidor debe reflejarlo sin volverse loco.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.3.4" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="carga" style="margin:10px">Carga de 30 ms/frame durante 2 s</button>
+<div id="marcador" style="font:22px ui-monospace,monospace;color:#e4e7ee;padding:0 10px">—</div>
+</script>
+<script type="text/x-js">
+const marcador = document.getElementById('marcador');
+let dtMedio = 1 / 60;          // media móvil exponencial (s)
+let peor = 0;                  // peor dt del último segundo (s)
+let cargaHasta = 0;
+
+function medir(dt) {
+  // 1. actualiza dtMedio con α = 0.05
+  // 2. actualiza el peor frame (y reinícialo cada segundo)
+}
+
+function pintarTexto() {
+  marcador.textContent = '…';  // 3. "NN fps · peor: XX ms"
+}
+
+let anterior = null;
+function bucle(t) {
+  const dt = anterior === null ? 0 : (t - anterior) / 1000;
+  anterior = t;
+  if (dt > 0) medir(dt);
+  pintarTexto();
+  if (t < cargaHasta) { const t0 = performance.now(); while (performance.now() - t0 < 30) {} }
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+document.getElementById('carga').onclick = () => { cargaHasta = performance.now() + 2000; };
+</script>
+<script type="text/x-js" data-solucion>
+const marcador = document.getElementById('marcador');
+let dtMedio = 1 / 60;          // media móvil exponencial (s)
+let peor = 0;                  // peor dt del último segundo (s)
+let peorVentana = 0, inicioVentana = 0, reloj = 0;
+let cargaHasta = 0;
+
+function medir(dt) {
+  dtMedio += 0.05 * (dt - dtMedio);      // EMA de los tiempos (¡no de los fps!)
+  reloj += dt;
+  peorVentana = Math.max(peorVentana, dt);
+  if (reloj - inicioVentana >= 1) {      // cada segundo, cerramos la ventana
+    peor = peorVentana;
+    peorVentana = 0;
+    inicioVentana = reloj;
+  }
+}
+
+function pintarTexto() {
+  marcador.textContent = (1 / dtMedio).toFixed(0) + ' fps · peor: ' + (peor * 1000).toFixed(1) + ' ms';
+}
+
+let anterior = null;
+function bucle(t) {
+  const dt = anterior === null ? 0 : (t - anterior) / 1000;
+  anterior = t;
+  if (dt > 0) medir(dt);
+  pintarTexto();
+  if (t < cargaHasta) { const t0 = performance.now(); while (performance.now() - t0 < 30) {} }
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+document.getElementById('carga').onclick = () => { cargaHasta = performance.now() + 2000; };
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La EMA es una línea: <code>dtMedio += 0.05 * (dt - dtMedio)</code>. Los FPS salen de invertir la media, <code>1 / dtMedio</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para el peor frame «del último segundo», acumula el máximo en una variable de ventana y, cada vez que acumules un segundo de <code>dt</code>, cópialo a <code>peor</code> y reinicia la ventana.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La EMA con α = 0,05 reacciona en unos 20 frames: al pulsar el botón, los FPS bajan de forma gradual hacia ~30 (con 30 ms de trabajo, los frames duran 33,3 ms): unos 37 tras 20 frames (0,7 s) y unos 31 al final de los 2 s. Al terminar, vuelven a 60 con la misma lentitud. Promediamos <code>dt</code> y lo invertimos al final porque la media de los FPS instantáneos estaría sesgada. El peor frame se calcula por ventanas de un segundo de tiempo acumulado, así que no depende de la frecuencia de la pantalla. Actualizar el texto del DOM en cada frame cuesta poco aquí, pero en una aplicación real conviene hacerlo 4 o 5 veces por segundo: el texto que cambia 60 veces por segundo no se puede leer y fuerza trabajo de estilo y pintado en cada frame.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><code>requestAnimationFrame</code> es de un solo disparo, se ejecuta antes del cálculo de estilos del frame y lo que pidas dentro va al frame siguiente. Guarda el <code>id</code> para cancelarlo.</li>
+    <li>Su argumento es el instante de inicio del frame (ms, mismo reloj que <code>performance.now()</code>), idéntico para todos los callbacks del frame. <code>document.timeline.currentTime</code> da ese mismo tiempo fuera de rAF.</li>
+    <li>rAF va a la frecuencia de la pantalla (60, 120, 144 Hz…): avanza en unidades por segundo multiplicadas por <code>dt</code>, nunca una cantidad fija por frame.</li>
+    <li>Sin frames no hay rAF: pestañas ocultas e iframes de otro origen que no se ven. Limita <code>dt</code> y reinicia la referencia de tiempo al volver.</li>
+    <li>Para física y determinismo, paso fijo con acumulador, tope de pasos por frame e interpolación con <code>alfa = acumulador / paso</code>.</li>
+    <li><code>setInterval</code> no está sincronizado con la pantalla y su retardo se trunca a ms enteros: produce tirones periódicos. Para medir FPS, promedia tiempos de frame (EMA) y vigila el peor frame.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://gafferongames.com/post/fix_your_timestep/">Fix Your Timestep!</a> (Glenn Fiedler): el artículo clásico sobre paso fijo, acumulador e interpolación.</li>
+  <li><a href="https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#animation-frames">Animation frames</a> en la especificación HTML: la definición exacta de rAF.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame">requestAnimationFrame</a> y <a href="https://developer.mozilla.org/en-US/docs/Web/API/Page_Visibility_API">Page Visibility API</a> en MDN.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m2.js"></script>
+<script>
+Curso.alListo(() => {
+  /* ---------- Demo 1: tres pantallas simuladas ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-hz");
+    const info = raiz.querySelector(".demo-info");
+    let modo = "frame";
+    const carriles = [{ hz: 30, acc: 0, x: 0 }, { hz: 60, acc: 0, x: 0 }, { hz: 120, acc: 0, x: 0 }];
+    let W = 600;
+    function actualizar(c, dt) {
+      c.x += modo === "frame" ? 3 : 180 * dt;
+      if (c.x > W) c.x -= W;
+    }
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      dibujar(ctx, e) {
+        W = e.w - 60;
+        for (const c of carriles) {
+          const paso = 1 / c.hz;
+          c.acc += e.dt;
+          let n = 0;
+          // tolerancia del 2 %: absorbe el redondeo del reloj (16,6 / 16,7 ms)
+          while (c.acc >= paso * 0.98 && n < 8) { c.acc -= paso; actualizar(c, paso); n++; }
+        }
+        const col = e.colores;
+        ctx.fillStyle = col.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        const colores = [col.rosa, col.acento, col.acento2];
+        carriles.forEach((c, i) => {
+          const y = 45 + i * 75;
+          ctx.strokeStyle = col.borde; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(30, y + 0.5); ctx.lineTo(30 + W, y + 0.5); ctx.stroke();
+          ctx.fillStyle = col.tenue; ctx.font = "12px " + col.mono; ctx.textBaseline = "bottom"; ctx.textAlign = "left";
+          ctx.fillText("pantalla de " + c.hz + " Hz", 30, y - 16);
+          ctx.fillStyle = colores[i];
+          ctx.beginPath(); ctx.arc(30 + c.x, y, 12, 0, Math.PI * 2); ctx.fill();
+        });
+        if (e.frame % 15 === 0) info.textContent = modo === "frame"
+          ? "modo «px por frame»: x += 3 en cada frame de cada pantalla → 90, 180 y 360 px/s"
+          : "modo «velocidad × dt»: x += 180 · dt → 180 px/s en las tres pantallas";
+      },
+    });
+    const ctrls = raiz.querySelector(".demo-controles");
+    Curso.selector(ctrls, { etiqueta: "modo", opciones: [["frame", "px por frame (x += 3)"], ["dt", "velocidad × dt (x += 180·dt)"]], valor: "frame", alCambiar: (v) => { modo = v; } });
+    Curso.boton(ctrls, "Alinear las pelotas", () => carriles.forEach((c) => { c.x = 0; c.acc = 0; }));
+  })();
+
+  /* ---------- Demo 2: paso fijo con y sin interpolación ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-paso-fijo");
+    const info = raiz.querySelector(".demo-info");
+    let hz = 10, acc = 0, s = 0, sPrev = 0;
+    const VEL = 0.45;                 // recorridos (ida) por segundo
+    const hist = [];
+    const tri = (u) => { const m = u % 2; return m < 1 ? m : 2 - m; };
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      dibujar(ctx, e) {
+        const paso = 1 / hz;
+        acc += e.dt;
+        let n = 0;
+        while (acc >= paso && n < 10) { sPrev = s; s += VEL * paso; acc -= paso; n++; }
+        if (n === 10) acc = 0;
+        const alfa = acc / paso;
+        if (e.dt > 0) { hist.push(n); if (hist.length > 120) hist.shift(); }
+        const col = e.colores, W = e.w - 80;
+        ctx.fillStyle = col.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        const filas = [
+          { y: 50, u: s, texto: "sin interpolar: se dibuja el último estado simulado", color: col.rosa },
+          { y: 125, u: sPrev + (s - sPrev) * alfa, texto: "interpolando entre los dos últimos estados (alfa = " + alfa.toFixed(2) + ")", color: col.acento2 },
+        ];
+        for (const f of filas) {
+          ctx.strokeStyle = col.borde; ctx.beginPath(); ctx.moveTo(40, f.y + 0.5); ctx.lineTo(40 + W, f.y + 0.5); ctx.stroke();
+          ctx.fillStyle = col.tenue; ctx.font = "12px " + col.mono; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+          ctx.fillText(f.texto, 40, f.y - 16);
+          ctx.fillStyle = f.color; ctx.beginPath(); ctx.arc(40 + tri(f.u) * W, f.y, 12, 0, Math.PI * 2); ctx.fill();
+        }
+        // tira de pasos por frame
+        const y0 = e.h - 70, alto = 40, ancho = (e.w - 80) / 120;
+        ctx.fillStyle = col.tenue; ctx.fillText("pasos de física en cada frame (últimos 120 frames)", 40, y0 - 6);
+        hist.forEach((v, i) => {
+          ctx.fillStyle = v === 0 ? col.error : v === 1 ? col.ok : col.aviso;
+          const h = Math.max(2, v * alto / 3);
+          ctx.fillRect(40 + i * ancho, y0 + alto - h, Math.max(1, ancho - 1), h);
+        });
+        if (e.frame % 10 === 0 && hist.length) {
+          const c = [0, 0, 0, 0]; hist.forEach((v) => c[Math.min(3, v)]++);
+          info.textContent = "física a " + hz + " Hz (paso " + (1000 / hz).toFixed(1) + " ms) · frames con 0 pasos: " + c[0] +
+            " · con 1: " + c[1] + " · con 2 o más: " + (c[2] + c[3]) + "   (verde = 1, rojo = 0, ámbar = 2+)";
+        }
+      },
+    });
+    Curso.selector(raiz.querySelector(".demo-controles"), {
+      etiqueta: "frecuencia de la física",
+      opciones: [["10", "10 Hz"], ["20", "20 Hz"], ["30", "30 Hz"], ["50", "50 Hz"], ["60", "60 Hz"], ["144", "144 Hz"]],
+      valor: "10", alCambiar: (v) => { hz = +v; acc = 0; hist.length = 0; },
+    });
+  })();
+});
+</script>
+</body>
+</html>

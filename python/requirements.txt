@@ -1,0 +1,9 @@
+# Código Python del curso «Shaders + Animación» (módulo 4).
+# Versiones probadas el 2026-09-28 con Python 3.14.7 (Homebrew) en macOS 26 / Apple M1.
+# La GPU de juguete (gpu_juguete/) NO necesita nada de esto: solo la biblioteca estándar.
+moderngl==5.12.0      # OpenGL moderno con una API cómoda (contexto sin ventana incluido)
+glcontext==3.0.0      # dependencia de moderngl: crea el contexto OpenGL (CGL en macOS)
+numpy==2.5.3          # PyOpenGL lo usa para devolver arrays
+pillow==12.3.0        # leer/guardar PNG en los scripts de moderngl
+PyOpenGL==3.1.10      # llamadas OpenGL crudas: glGenBuffers, glBindBuffer...
+glfw==2.10.2          # ventanas y contexto para PyOpenGL (trae GLFW 3.4 compilado)

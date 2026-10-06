@@ -1,0 +1,35 @@
+/* =====================================================================
+   m7.css — estilos propios del módulo 7 (JavaScript + shaders juntos)
+   Solo variables del tema: funciona en claro y en oscuro.
+   ===================================================================== */
+
+/* Tablas de datos medidos */
+table.m7-medidas td, table.m7-medidas th { font-size: 14px; }
+table.m7-medidas td.num { text-align: right; font-family: var(--mono); white-space: nowrap; }
+table.m7-medidas th.num { text-align: right; }
+table.m7-medidas td.c { text-align: center; }
+
+/* Tabla de responsabilidades (quién puede tocar qué) */
+table.m7-reglas td:first-child { font-family: var(--mono); white-space: nowrap; color: var(--text); }
+.leccion .m7-si { color: var(--ok); font-weight: 600; }
+.leccion .m7-no { color: var(--err); font-weight: 600; }
+
+/* Fórmula o dato destacado en una línea */
+.m7-destacado {
+  border-left: 3px solid var(--accent); background: var(--accent-soft);
+  padding: 10px 14px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; margin: 1.2rem 0;
+}
+
+/* Lista de comprobación (proyecto final) */
+ul.m7-checklist { list-style: none; padding-left: 0; }
+ul.m7-checklist li { padding-left: 1.7em; position: relative; margin: 0.35em 0; }
+ul.m7-checklist li::before {
+  content: "☐"; position: absolute; left: 0.2em; top: 0; color: var(--accent); font-weight: 700;
+}
+
+/* Tabla de equivalencias (7.7) */
+table.m7-equivalencias td:nth-child(2), table.m7-equivalencias td:nth-child(3) { font-family: var(--mono); font-size: 13px; }
+
+/* Cifras en vivo bajo una demo de la página */
+.m7-cifras { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 13px/1.5 var(--mono); color: var(--text-2); }
+.m7-cifras b { color: var(--text); font-weight: 600; }

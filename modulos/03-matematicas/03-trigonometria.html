@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3.3 · Trigonometría útil: ondas, ángulos y polares — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m3.css">
+</head>
+<body data-leccion="03-matematicas/trigonometria">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 3 · Matemáticas para gráficos</p>
+  <h1>Trigonometría útil: ondas, ángulos y polares</h1>
+  <p class="resumen">Todo lo que gira, oscila o se repite en una animación sale de dos funciones: el seno y el coseno. Aquí las entiendes como sombras de un punto que da vueltas, y con ellas construyes órbitas, ondas, rotaciones, patrones polares y el campo de visión de una cámara. De paso, descubres por qué <code>sin(u_time)</code> empieza a fallar si dejas la página abierta un día.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 3.1, 3.2</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Entenderás los radianes y el círculo unidad, y verás el seno y el coseno como proyecciones de un punto que gira.</li>
+      <li>Pasarás de coordenadas polares a cartesianas y viceversa, y sabrás por qué <code>atan2</code> (en GLSL, <code>atan(y, x)</code>) y no <code>atan(y/x)</code>.</li>
+      <li>Controlarás una onda con amplitud, frecuencia, fase y desplazamiento, y combinarás ondas para animaciones orgánicas y curvas de Lissajous.</li>
+      <li>Derivarás la fórmula para rotar un punto y relacionarás la tangente con el campo de visión de una cámara.</li>
+      <li>Conocerás los límites de precisión de <code>sin</code> y <code>cos</code> con argumentos grandes en la GPU.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué la trigonometría está en todas partes</h2>
+<p>Una luz que parpadea suavemente, un botón que «respira», una hoja que flota, una luna que orbita, un radar que barre la pantalla, un patrón de rayos que gira, una cámara con 60° de campo de visión. Todas son la misma idea: <strong>algo que da vueltas</strong>, o su sombra. La trigonometría del instituto, con sus triángulos y sus identidades interminables, se queda aquí en unas pocas herramientas muy concretas: medir ángulos, convertir entre ángulos y direcciones, y generar oscilaciones.</p>
+<p>Ya usaste un coseno en la lección <a href="02-producto-punto-cruz.html">3.2</a>, escondido en el producto punto. Ahora lo sacamos a la luz.</p>
+
+<h2>El círculo unidad y los radianes</h2>
+<p>Dibuja una circunferencia de radio 1 centrada en el origen: el <strong>círculo unidad</strong>. Un ángulo $\theta$ se mide desde el eje x positivo, <strong>en sentido antihorario</strong> (con la y hacia arriba). El punto de la circunferencia que está en ese ángulo tiene coordenadas:</p>
+$$P(\theta) = (\cos\theta,\; \sin\theta)$$
+<p>Esa es la definición útil: <strong>el coseno es la x y el seno es la y</strong> de un punto que recorre el círculo unidad. Todo lo demás se deduce de aquí.</p>
+
+<h3>¿Por qué radianes y no grados?</h3>
+<p>Los grados son una convención babilónica: 360 porque es un número con muchos divisores. Los <strong>radianes</strong> miden el ángulo por la <strong>longitud del arco</strong> que recorre en el círculo unidad: un ángulo de 1 radián recorre un arco de longitud 1 (tanto como el radio). Como la circunferencia completa mide $2\pi$, una vuelta son $2\pi$ radianes, media vuelta $\pi$ y un ángulo recto $\pi/2$.</p>
+$$\text{radianes} = \text{grados}\cdot\frac{\pi}{180}, \qquad 180° = \pi \approx 3.14159, \qquad 1\ \text{rad} \approx 57.3°$$
+<p>No es una manía de matemáticos. Con radianes, las fórmulas quedan limpias: la derivada de $\sin x$ es $\cos x$ (en grados sería $\tfrac{\pi}{180}\cos x$), un arco de ángulo $\theta$ en un círculo de radio $r$ mide $r\theta$, y para ángulos pequeños $\sin\theta \approx \theta$. Por eso <strong>todas</strong> las funciones trigonométricas de JavaScript (<code>Math.sin</code>, <code>Math.cos</code>, <code>Math.atan2</code>), de Canvas (<code>ctx.rotate</code>, <code>ctx.arc</code>) y de GLSL trabajan en radianes. CSS es la excepción amable: acepta <code>deg</code>, <code>rad</code>, <code>grad</code> y <code>turn</code> (vueltas).</p>
+
+<p>La demo muestra el punto recorriendo el círculo unidad. El arco grueso mide exactamente $\theta$ (en radianes). A la derecha, la altura del punto (su seno) se va dibujando en función del ángulo; abajo, su x (el coseno). Pausa y arrastra el deslizador para estudiar un ángulo concreto.</p>
+
+<div class="demo" id="demo-circulo">
+  <div class="demo-lienzo" style="height:360px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="callout bestiario" data-id="m3-grados-radianes" data-titulo="Math.sin(90) no da 1">
+  <p><strong>Síntoma:</strong> <code>Math.sin(90)</code> devuelve <code>0.8939966636005579</code>; un objeto que debería girar 45° da vueltas como loco; <code>ctx.rotate(90)</code> deja la imagen en un ángulo raro.</p>
+  <p><strong>Causa:</strong> las funciones esperan radianes y les has dado grados. 90 radianes son unas 14.3 vueltas, y el seno de eso es 0.894.</p>
+  <p><strong>Solución:</strong> convierte en la frontera: <code>const rad = grados * Math.PI / 180</code>. JavaScript no trae una función para esto; GLSL sí: <code>radians(90.0)</code> y <code>degrees(x)</code>. Mejor aún, trabaja en radianes en todo el código y usa grados solo para mostrar números a personas.</p>
+</div>
+
+<h2>Seno y coseno como proyecciones</h2>
+<p>Mira la demo otra vez: cuando el punto está arriba ($\theta = \pi/2$), su x es 0 y su y es 1; a la izquierda ($\theta = \pi$), x = −1 e y = 0. El seno y el coseno son las <strong>sombras</strong> del punto sobre los ejes. De ahí salen casi todas las propiedades que necesitarás:</p>
+<ul>
+  <li><strong>Van de −1 a 1</strong>, porque el punto no sale del círculo de radio 1.</li>
+  <li><strong>Son periódicas</strong> con periodo $2\pi$: dar una vuelta completa te deja donde estabas. $\sin(\theta + 2\pi) = \sin\theta$.</li>
+  <li><strong>$\cos^2\theta + \sin^2\theta = 1$</strong>: es Pitágoras aplicado al punto $P$, que está a distancia 1 del origen. Por eso $(\cos\theta, \sin\theta)$ es siempre un vector unitario: la forma más directa de fabricar una dirección a partir de un ángulo.</li>
+  <li><strong>El coseno es el seno adelantado un cuarto de vuelta</strong>: $\cos\theta = \sin(\theta + \pi/2)$. Son la misma onda, desplazada.</li>
+  <li><strong>Simetrías</strong>: $\cos(-\theta) = \cos\theta$ (reflejar en el eje x no cambia la x) y $\sin(-\theta) = -\sin\theta$.</li>
+  <li><strong>La tangente</strong> es $\tan\theta = \sin\theta/\cos\theta$: la pendiente de la recta que va del origen al punto. Se dispara a infinito cuando $\cos\theta = 0$ (recta vertical). La usaremos para el campo de visión.</li>
+</ul>
+
+<h2>Coordenadas polares</h2>
+<p>Un punto del plano se puede describir de dos maneras: con sus coordenadas <strong>cartesianas</strong> $(x, y)$ o con sus coordenadas <strong>polares</strong> $(r, \theta)$: a qué distancia está del origen y en qué dirección. Si el punto $(\cos\theta, \sin\theta)$ está en el círculo unidad, el punto en la misma dirección a distancia $r$ es ese vector unitario multiplicado por $r$:</p>
+$$x = r\cos\theta, \qquad y = r\sin\theta$$
+<p>Es el patrón <em>dirección × longitud</em> de la lección <a href="01-vectores.html">3.1</a>, con la dirección fabricada a partir de un ángulo. El camino inverso: la distancia es la longitud del vector, $r = \sqrt{x^2 + y^2}$, y el ángulo sale de la tangente, $\tan\theta = y/x$. Pero despejar $\theta$ de ahí tiene trampa.</p>
+
+<h3>atan contra atan2</h3>
+<p>El arcotangente de toda la vida, $\arctan(y/x)$, devuelve ángulos entre $-\pi/2$ y $\pi/2$: solo la mitad derecha del plano. El motivo es que al dividir se pierde información: $(1, 1)$ y $(-1, -1)$ tienen el mismo cociente $y/x = 1$, pero apuntan en direcciones opuestas. Y si $x = 0$, ni siquiera se puede dividir.</p>
+<p>La solución es una función que recibe <strong>los dos números por separado</strong> y mira sus signos para saber en qué cuadrante está el punto: <code>Math.atan2(y, x)</code> en JavaScript, y en GLSL la versión de dos argumentos de <code>atan</code>: <code>atan(y, x)</code>. Devuelve el ángulo en $(-\pi, \pi]$ (estrictamente, la especificación de GLSL dice $[-\pi, \pi]$: con un cero negativo, <code>atan(-0.0, -1.0)</code> da $-\pi$; lo mismo que <code>Math.atan2(-0, -1)</code> en JavaScript). Ojo con el orden: <strong>primero y, después x</strong>, al revés de lo habitual. Arrastra el punto por los cuatro cuadrantes:</p>
+
+<div class="demo" id="demo-polar">
+  <div class="demo-lienzo"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="callout senior" data-titulo="Los casos raros de atan2">
+  <p>En JavaScript, <code>Math.atan2(0, 0)</code> devuelve 0 (y distingue el cero negativo: <code>Math.atan2(-0, -1)</code> es −π, <code>Math.atan2(0, -1)</code> es π). En GLSL, la especificación dice que <code>atan(y, x)</code> es <strong>indefinido si x e y son ambos 0</strong>: en nuestra prueba en un Apple M1 dio NaN (y 0 si el shader contenía un <code>isnan</code>: el compilador cambia de estrategia, como verás en <a href="07-precision.html#m3-isnan-heisenbug">3.7</a> y en <a href="../05-webgl/10-depuracion.html#ver-lo-que-calcula-la-gpu">5.10</a>). Si calculas el ángulo del vector que va del centro a cada píxel, el píxel del centro exacto puede salir negro o de un color arbitrario. Y la versión de un argumento, <code>atan(y_over_x)</code>, tiene exactamente el problema de cuadrantes de arriba: en GLSL, <code>atan(-1.0 / -1.0)</code> da π/4 cuando el punto $(-1,-1)$ está en −3π/4.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En GLSL, <code>vec2 d = vec2(-1.0, -1.0);</code> ¿Qué ángulo da <code>atan(d.y, d.x)</code>, y qué da <code>atan(d.y / d.x)</code>?</p>
+  <ul>
+    <li>Los dos dan π/4<div class="explicacion">El segundo sí (el cociente es 1 y el arcotangente de 1 es π/4), pero el primero mira los signos: el punto está en el tercer cuadrante, abajo a la izquierda.</div></li>
+    <li data-correcta><code>atan(y, x)</code> da −3π/4 (−135°); <code>atan(y / x)</code> da π/4 (45°), el cuadrante opuesto<div class="explicacion">Exacto. La versión de dos argumentos recupera el cuadrante con los signos; la de uno solo ve el cociente y se equivoca en la mitad izquierda del plano.</div></li>
+    <li><code>atan(y, x)</code> da 5π/4<div class="explicacion">5π/4 (225°) es el mismo ángulo geométrico, pero <code>atan</code> devuelve valores en (−π, π], así que lo expresa como −3π/4. Si necesitas un ángulo entre 0 y 2π, súmale 2π cuando salga negativo.</div></li>
+  </ul>
+</div>
+
+<h3>Pensar en polares dentro de un shader</h3>
+<p>En un fragment shader, cada píxel puede calcular sus propias coordenadas polares respecto al centro: <code>r = length(p)</code> y <code>a = atan(p.y, p.x)</code>. Cualquier cosa que dependa de <code>a</code> gira alrededor del centro; cualquier cosa que dependa de <code>r</code> forma anillos. El shader siguiente colorea según el ángulo, dibuja rayos con una onda en el ángulo y anillos con una onda en el radio.</p>
+
+<div class="glsl-playground" data-titulo="Coordenadas polares en cada píxel" data-altura="360" data-apilado
+     data-uniforms='{"u_rayos":{"tipo":"float","min":1,"max":12,"valor":6,"paso":0.25,"etiqueta":"número de rayos"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_rayos;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = length(p);          // polar: distancia al centro
+  float a = atan(p.y, p.x);     // polar: ángulo en (−π, π]
+
+  // Rueda de color: tres cosenos del ángulo, desfasados un tercio de vuelta (2π/3 ≈ 2.094)
+  vec3 rueda = 0.5 + 0.5 * cos(a + vec3(0.0, 2.094, 4.189));
+  // Rayos: una onda en el ángulo que gira con el tiempo
+  float rayos = 0.5 + 0.5 * sin(a * u_rayos + u_time);
+  // Anillos: una onda en el radio que se aleja del centro
+  float anillos = 0.5 + 0.5 * sin(r * 20.0 - u_time * 3.0);
+
+  vec3 color = rueda * (0.25 + 0.75 * rayos) * (0.7 + 0.3 * anillos);
+  color *= max(1.0 - 0.45 * r, 0.0);           // viñeta suave
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Cada línea es una idea de esta lección. La <strong>rueda de color</strong> usa tres cosenos desfasados $2\pi/3$: cuando uno está en su máximo, los otros dos valen −0.5 (uno bajando y otro subiendo), así que en cada ángulo domina un canal distinto y juntos recorren todos los tonos. Los <strong>rayos</strong> son una onda cuyo argumento es el ángulo multiplicado por el número de rayos: al dar una vuelta completa ($a$ recorre $2\pi$), el seno completa <code>u_rayos</code> ciclos. Sumar <code>u_time</code> al argumento desplaza la onda, y eso se ve como un giro. Los <strong>anillos</strong> hacen lo mismo con el radio. Ahora pon el número de rayos en un valor no entero, como 5.5.</p>
+
+<div class="callout bestiario" data-id="m3-costura-atan" data-titulo="Una costura recta a la izquierda del centro">
+  <p><strong>Síntoma:</strong> un patrón radial perfecto tiene una línea de corte, un salto brusco, que sale del centro hacia la izquierda (el eje x negativo). A veces solo aparece con ciertos valores de un parámetro.</p>
+  <p><strong>Causa:</strong> <code>atan</code> devuelve ángulos en $(-\pi, \pi]$, así que al cruzar el eje x negativo el ángulo salta de π a −π. Si lo que calculas con el ángulo es periódico con periodo $2\pi$ (<code>sin(a * 6.0)</code>, con un número entero de ciclos por vuelta), el salto no se nota: los dos lados dan el mismo valor. Si no lo es (<code>sin(a * 5.5)</code>, o el ángulo usado directamente como color), los dos lados no casan.</p>
+  <p><strong>Solución:</strong> usa solo funciones del ángulo que den un número entero de ciclos por vuelta. Si necesitas un valor que crezca con el ángulo (un degradado que dé la vuelta), acepta la costura y colócala donde no se vea, girando el ángulo antes: <code>atan(p.y, p.x) + desfase</code>, o intercambiando los argumentos.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.3.1 — Una flor polar</h3>
+  <p>En polares, una curva se describe dando el radio en función del ángulo: $r(\theta)$. Una circunferencia es $r = 0.5$; una flor de 5 pétalos es un radio que oscila 5 veces por vuelta: $r(\theta) = 0.5 + 0.15\cos(5\theta)$. En un shader no trazamos la curva: cada píxel mira su propio ángulo, calcula el radio de la flor en esa dirección y comprueba si está más cerca del centro que ese radio.</p>
+  <div class="glsl-playground" data-titulo="Flor polar" data-altura="320">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = length(p);
+  float a = atan(p.y, p.x);
+
+  float petalos = 5.0;
+  float borde = 0.5 + 0.15 * cos(petalos * a + u_time);   // r(θ) de la flor
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  if (r < borde) color = mix(vec3(1.0, 0.8, 0.3), vec3(1.0, 0.35, 0.5), r / borde);
+  if (abs(r - borde) < 0.008) color = vec3(1.0);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>El radio de la flor en la dirección del píxel</strong>: <code>borde = 0.5 + 0.15 * cos(5a + t)</code>. En 5 direcciones el coseno vale 1 y el radio es 0.65 (puntas de los pétalos); entre medias vale −1 y el radio es 0.35.</li>
+    <li><strong>¿Dentro o fuera?</strong> El píxel está dentro si su distancia al centro es menor que el radio de la flor en su dirección. Es una comparación en polares que en cartesianas sería una ecuación complicada.</li>
+    <li><strong>El giro</strong>: sumar <code>u_time</code> dentro del coseno desplaza la onda en el ángulo, así que la flor gira. ¿A qué velocidad y hacia dónde? La punta de un pétalo está donde el argumento vale 0: $5a + t = 0$, es decir, $a = -t/5$. La flor gira en sentido horario a 1/5 de radián por segundo: el número de pétalos divide la velocidad. Para que gire a ω rad/s en sentido antihorario, escribe <code>cos(petalos * (a - ω * u_time))</code>.</li>
+    <li><strong>Sin costura</strong>: 5 es entero, así que <code>cos(5a)</code> vale lo mismo a los dos lados del salto de π a −π. Prueba a poner 5.5 pétalos.</li>
+  </ol>
+</section>
+
+<h2>Ondas: amplitud, frecuencia, fase y desplazamiento</h2>
+<p>Si el punto recorre el círculo a velocidad constante, su altura dibuja en el tiempo una <strong>onda sinusoidal</strong>. Con cuatro parámetros controlas cualquier oscilación suave:</p>
+$$y(t) = A\,\sin(2\pi f\,t + \varphi) + c$$
+<table>
+  <thead><tr><th>Parámetro</th><th>Qué hace</th><th>Unidades</th></tr></thead>
+  <tbody>
+    <tr><td>$A$, amplitud</td><td>cuánto se aleja del centro: la onda va de $c - A$ a $c + A$</td><td>las de <code>y</code> (px, escala…)</td></tr>
+    <tr><td>$f$, frecuencia</td><td>cuántos ciclos completos por segundo. El periodo es $T = 1/f$</td><td>hercios (Hz), ciclos/s</td></tr>
+    <tr><td>$\varphi$, fase</td><td>en qué punto del ciclo empieza: desplaza la onda en el tiempo $\varphi/(2\pi f)$ segundos</td><td>radianes</td></tr>
+    <tr><td>$c$, desplazamiento</td><td>el valor central alrededor del que oscila</td><td>las de <code>y</code></td></tr>
+  </tbody>
+</table>
+<p>¿Por qué $2\pi f t$? Porque el seno completa un ciclo cuando su argumento avanza $2\pi$; para que eso ocurra $f$ veces por segundo, el argumento debe crecer $2\pi f$ por segundo. A $\omega = 2\pi f$ se le llama <strong>frecuencia angular</strong> (radianes por segundo); si ves <code>sin(t * 3.0)</code> en un shader, eso es $\omega = 3$, es decir, $f = 3/2\pi \approx 0.48$ Hz. En el graficador, <code>x</code> hace de tiempo. Mueve los cuatro deslizadores:</p>
+
+<div class="graficador" data-x="-0.25,3.25" data-y="-1.6,1.6" data-titulo="A·sin(2πf·x + fase) + c" data-uniforms='{"A":{"min":0,"max":1.5,"valor":1},"f":{"min":0.25,"max":4,"valor":1},"fase":{"min":0,"max":6.2832,"valor":0},"c":{"min":-0.5,"max":0.5,"valor":0}}'>
+<script type="text/x-exprs">
+A * sin(6.2832 * f * x + fase) + c
+sin(6.2832 * x)
+</script>
+</div>
+
+<div class="callout hack">
+  <p><strong>De [−1, 1] a [0, 1]</strong>: los colores, las opacidades y los parámetros de <code>mix</code> viven entre 0 y 1, y el seno entre −1 y 1. La conversión <code>0.5 + 0.5 * sin(x)</code> aparece en casi todos los shaders (ya la usaste para convertir direcciones en colores en <a href="01-vectores.html">3.1</a>). Y para oscilar entre dos valores cualesquiera, <code>mix(a, b, 0.5 + 0.5 * sin(x))</code>.</p>
+</div>
+
+<h3>Combinar ondas</h3>
+<p>Una sola sinusoide es perfectamente regular, y eso se nota: parece mecánica. Las oscilaciones naturales (una llama, el agua, una bandera) son sumas y mezclas de varias. Cuatro recetas:</p>
+<ul>
+  <li><strong>Sumar</strong> ondas de frecuencias distintas: $\sin(x) + 0.5\sin(2.7x)$ produce una forma irregular. Si las frecuencias no guardan una proporción entera (2.7 no es entero), el patrón tarda mucho en repetirse.</li>
+  <li><strong>Multiplicar</strong> una onda rápida por otra lenta: $\sin(20x)\cdot\sin(x)$. La lenta hace de «envolvente» que sube y baja el volumen de la rápida (modulación de amplitud).</li>
+  <li><strong>Valor absoluto</strong>: $|\sin(x)|$ son rebotes, como una pelota que bota.</li>
+  <li><strong>Una onda dentro de otra</strong>: $\sin(x + 2\sin(3x))$ acelera y frena la fase (modulación de frecuencia).</li>
+</ul>
+
+<div class="graficador" data-x="-0.5,12.5" data-y="-2,2" data-titulo="Combinaciones de ondas">
+<script type="text/x-exprs">
+sin(x) + 0.5 * sin(2.7 * x)
+sin(20.0 * x) * sin(x)
+abs(sin(x))
+</script>
+</div>
+
+<h3>Oscilaciones en animación: respirar y flotar</h3>
+<p>Las dos oscilaciones más usadas en interfaces y juegos: <strong>respirar</strong> (una escala que sube y baja un poco: <code>escala = 1 + 0.06 * sin(2π · 0.3 · t)</code>, un ciclo cada 3.3 s) y <strong>flotar</strong> (una posición vertical que oscila: <code>y = base + 6 * sin(2π · 0.5 · t + φ)</code>). El detalle que separa una animación mecánica de una natural es la <strong>fase</strong> de cada objeto. Compara las tres opciones:</p>
+
+<div class="demo" id="demo-oscilar">
+  <div class="demo-lienzo" style="height:220px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Con la misma fase, los objetos suben y bajan a la vez, como soldados. Con una fase escalonada ($\varphi_i = i\cdot\Delta\varphi$) aparece una ola que recorre la fila: si el desfase entre vecinos es $2\pi/N$, la ola da exactamente una vuelta a lo largo de los $N$ objetos. Con fases aleatorias (una por objeto, elegida una vez) el conjunto parece vivo. Y si además cada objeto tiene una frecuencia ligeramente distinta, nunca vuelven a coincidir.</p>
+
+<div class="callout bestiario" data-id="m3-salto-frecuencia" data-titulo="Al cambiar la frecuencia en vivo, la onda da un salto">
+  <p><strong>Síntoma:</strong> una animación oscilante funciona bien, pero cuando cambias su velocidad sobre la marcha (con un deslizador, o acelerando al pasar el ratón), el objeto pega un salto brusco, y cuanto más tiempo lleva abierta la página, más violento es el salto.</p>
+  <p><strong>Causa:</strong> en $\sin(2\pi f t)$ la fase es $2\pi f t$. Si cambias $f$ de repente, cambias también toda la fase acumulada: con $t = 100$ s, pasar de 1 Hz a 1.005 Hz desplaza la fase $2\pi\cdot 0.005 \cdot 100 = \pi$ radianes de golpe: el objeto salta al extremo opuesto de su recorrido. La fórmula calcula dónde <em>estaría</em> el objeto si siempre hubiera ido a la nueva frecuencia.</p>
+  <p><strong>Solución:</strong> acumula la fase en lugar de calcularla desde el tiempo: en cada frame, <code>fase += 2 * Math.PI * f * dt</code>, y dibuja con <code>Math.sin(fase)</code>. Al cambiar <code>f</code> solo cambia la velocidad a partir de ahora. (En un shader, acumula la fase en JavaScript y pásala como uniform.) En la demo siguiente, mueve el deslizador de frecuencia y compara los dos puntos.</p>
+</div>
+
+<div class="demo" id="demo-frecuencia">
+  <div class="demo-lienzo" style="height:200px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Quieres que un icono haga un «latido» completo cada 2 segundos, escalando entre 0.9 y 1.1. ¿Qué expresión es correcta (con <code>t</code> en segundos)?</p>
+  <ul>
+    <li><code>1.0 + 0.1 * sin(2.0 * t)</code><div class="explicacion">Oscila entre 0.9 y 1.1, pero <code>sin(2t)</code> tiene frecuencia angular 2 rad/s: su periodo es $2\pi/2 = \pi \approx 3.14$ s, no 2 s. Confundir ω con f es el error más común con las ondas.</div></li>
+    <li data-correcta><code>1.0 + 0.1 * sin(2.0 * 3.14159 * 0.5 * t)</code><div class="explicacion">Frecuencia 0.5 Hz (medio ciclo por segundo = un ciclo cada 2 s), amplitud 0.1 alrededor de 1: de 0.9 a 1.1. Es la forma $A\sin(2\pi f t) + c$ con cada parámetro en su sitio.</div></li>
+    <li><code>0.9 + 0.1 * sin(3.14159 * t)</code><div class="explicacion">El periodo es correcto ($2\pi/\pi = 2$ s), pero va de 0.8 a 1.0: el desplazamiento debe ser el centro del intervalo (1.0), no su mínimo. O bien <code>0.9 + 0.2 * (0.5 + 0.5 * sin(...))</code>.</div></li>
+  </ul>
+</div>
+
+<h3>Curvas de Lissajous</h3>
+<p>¿Y si la x y la y de un punto oscilan con frecuencias distintas? $x = \sin(a\,t + \delta)$, $y = \sin(b\,t)$. Si $a = b$ y $\delta = \pi/2$, el punto recorre un círculo (coseno en x, seno en y). Con otras proporciones aparecen las <strong>curvas de Lissajous</strong>: lazos, ochos y rosetones que se cierran si $a/b$ es una fracción. Son el recorrido perfecto para una cámara que «deambula» o una partícula decorativa, y la señal que dibujaban los osciloscopios en las películas de ciencia ficción.</p>
+
+<div class="demo" id="demo-lissajous">
+  <div class="demo-lienzo"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<h2>Rotar un punto</h2>
+<p>Queremos girar el punto $P = (x, y)$ un ángulo $\theta$ alrededor del origen. En polares es trivial: si $P$ está a distancia $r$ y ángulo $\alpha$, el punto girado está a la misma distancia y ángulo $\alpha + \theta$:</p>
+$$P = (r\cos\alpha,\; r\sin\alpha), \qquad P' = (r\cos(\alpha + \theta),\; r\sin(\alpha + \theta))$$
+<p>Ahora aplica las fórmulas del ángulo suma, $\cos(\alpha + \theta) = \cos\alpha\cos\theta - \sin\alpha\sin\theta$ y $\sin(\alpha + \theta) = \sin\alpha\cos\theta + \cos\alpha\sin\theta$, y sustituye $r\cos\alpha = x$, $r\sin\alpha = y$:</p>
+$$x' = x\cos\theta - y\sin\theta, \qquad y' = x\sin\theta + y\cos\theta$$
+<p>El ángulo $\alpha$ y el radio $r$ han desaparecido: para girar no hace falta calcularlos. Hay una segunda forma de verlo que será la clave de la lección <a href="05-matrices.html">3.5</a>. El punto es $P = x\,\hat\imath + y\,\hat\jmath$, una combinación de los vectores de los ejes. Girar es lineal, así que basta con girar los dos ejes: $\hat\imath = (1, 0)$ pasa a $(\cos\theta, \sin\theta)$ y $\hat\jmath = (0, 1)$ pasa a $(-\sin\theta, \cos\theta)$ (un cuarto de vuelta por delante). Entonces</p>
+$$P' = x\,(\cos\theta, \sin\theta) + y\,(-\sin\theta, \cos\theta)$$
+<p>que es la misma fórmula. Para girar alrededor de otro punto $C$ (un pivote), traslada para que $C$ quede en el origen, gira y deshaz la traslación: $P' = C + \operatorname{rotar}(P - C, \theta)$.</p>
+<p>En código, con un pivote:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function rotar(p, pivote, ang) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  const dx = p.x - pivote.x, dy = p.y - pivote.y;
+  return {
+    x: pivote.x + dx * c - dy * s,
+    y: pivote.y + dx * s + dy * c,
+  };
+}
+</script>
+<ol>
+  <li data-l="2">El seno y el coseno se calculan una sola vez. Si vas a girar mil puntos con el mismo ángulo (los vértices de una forma), calcúlalos <em>fuera</em> del bucle: son lo más caro de la función.</li>
+  <li data-l="3">Trasladar para que el pivote quede en el origen: el vector del pivote al punto (destino menos origen, como en <a href="01-vectores.html">3.1</a>).</li>
+  <li data-l="5-6">Girar ese vector con la fórmula derivada arriba y deshacer la traslación sumando el pivote. Punto + vector = punto.</li>
+</ol>
+</div>
+<p>En la demo, arrastra el punto y el pivote:</p>
+
+<div class="demo" id="demo-rotar">
+  <div class="demo-lienzo"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="callout cuidado">
+  <p><strong>En pantalla, los ángulos positivos giran en sentido horario.</strong> La fórmula es la misma, pero con la y hacia abajo el dibujo sale reflejado: <code>ctx.rotate(0.3)</code> en Canvas y <code>transform: rotate(20deg)</code> en CSS giran en el sentido de las agujas del reloj. Es la misma historia que la del producto cruz en <a href="02-producto-punto-cruz.html">3.2</a>. Por suerte, si todo tu cálculo está en coordenadas de pantalla, las piezas encajan solas, como verás en el ejemplo siguiente.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En Canvas 2D (y hacia abajo) aplicas <code>rotar(p, centro, 0.5)</code>, con la fórmula de arriba, a un punto que está justo a la derecha del centro. ¿Hacia dónde se mueve en la pantalla?</p>
+  <ul>
+    <li>Hacia arriba: los ángulos positivos giran en sentido antihorario<div class="explicacion">Eso es cierto con la y hacia arriba. Aquí la fórmula suma <code>dx · sin(0.5)</code> a la y, y en pantalla una y mayor está más abajo.</div></li>
+    <li data-correcta>Hacia abajo: la misma fórmula, con la y hacia abajo, se ve como un giro horario<div class="explicacion">Correcto. Los números son los mismos que en papel; lo que cambia es cómo se dibujan. Por eso <code>ctx.rotate</code> y <code>rotate()</code> de CSS giran en sentido horario con ángulos positivos.</div></li>
+    <li>La fórmula no vale en coordenadas de pantalla: primero hay que convertir a y hacia arriba<div class="explicacion">La fórmula vale en cualquier sistema: rota con el ángulo en el sentido «de x hacia y». Solo hay que saber interpretar el sentido. Convertir y deshacer la conversión es innecesario (aunque tampoco sería un error).</div></li>
+  </ul>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.3.2 — Apuntar hacia el ratón</h3>
+  <p>Una torreta debe apuntar hacia el ratón. Primero de golpe, y después girando suavemente con una velocidad angular máxima. Mueve el ratón alrededor, y sobre todo cruza por la izquierda de la torreta.</p>
+  <div class="js-playground" data-titulo="Torreta que apunta" data-altura="280" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+
+const torretas = [
+  { x: W * 0.3, y: H / 2, ang: 0, nombre: 'ingenua' },
+  { x: W * 0.7, y: H / 2, ang: 0, nombre: 'camino corto' },
+];
+const raton = { x: W / 2, y: 40 };
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = e.clientX - r.left; raton.y = e.clientY - r.top;
+});
+const OMEGA = 4;                                  // velocidad angular máxima, rad/s
+
+// Lleva un ángulo cualquiera al intervalo (−π, π]
+function envolver(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
+
+let previo = null;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min(0.05, (ms - previo) / 1000);
+  previo = ms;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  torretas.forEach((T, i) => {
+    const objetivo = Math.atan2(raton.y - T.y, raton.x - T.x);   // ¡y primero!
+    let diff = objetivo - T.ang;                                  // cuánto falta por girar
+    if (i === 1) diff = envolver(diff);                           // el camino corto
+    const paso = OMEGA * dt;
+    T.ang += Math.max(-paso, Math.min(paso, diff));               // girar como mucho OMEGA·dt
+    if (i === 1) T.ang = envolver(T.ang);
+
+    ctx.save();
+    ctx.translate(T.x, T.y);
+    ctx.rotate(T.ang);                  // mismo convenio que atan2 en pantalla: encajan
+    ctx.fillStyle = i ? '#3fd0e8' : '#ff6b7a';
+    ctx.fillRect(0, -5, 46, 10);        // el cañón apunta hacia +x local
+    ctx.beginPath(); ctx.arc(0, 0, 16, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = '#8791a5'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(T.nombre + ': ' + (T.ang * 180 / Math.PI).toFixed(0) + '°', T.x, T.y + 42);
+  });
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Lo importante:</p>
+  <ol>
+    <li><strong><code>Math.atan2(dy, dx)</code></strong> da la dirección hacia el ratón. Estamos en coordenadas de pantalla (y hacia abajo), así que el ángulo crece en sentido horario visual… y <code>ctx.rotate</code> también gira en sentido horario visual. Los dos usan el mismo convenio, así que encajan sin ninguna corrección. El dibujo se hace con el cañón apuntando hacia la x positiva local, que es el ángulo 0.</li>
+    <li><strong>Girar con velocidad máxima</strong>: en lugar de asignar el ángulo objetivo, avanzamos como mucho <code>OMEGA · dt</code> hacia él, con un <code>clamp</code> de la diferencia. Es el <code>moverHacia</code> de <a href="01-vectores.html">3.1</a>, pero con ángulos.</li>
+    <li><strong>El camino corto</strong>: cuando el ratón cruza por la izquierda, <code>atan2</code> salta de π a −π. Para la torreta roja, la diferencia pasa de repente de casi 0 a casi $-2\pi$, así que da una vuelta completa en sentido contrario. La azul envuelve la diferencia a $(-\pi, \pi]$ antes de usarla: gira siempre por el lado más corto.</li>
+    <li><strong><code>envolver</code></strong> usa un truco elegante: <code>atan2(sin(a), cos(a))</code> convierte el ángulo en un punto del círculo unidad y vuelve a leer su ángulo, que <code>atan2</code> siempre devuelve en $(-\pi, \pi]$. Es robusto con cualquier número de vueltas; la alternativa con aritmética modular es más rápida, y la verás en <a href="04-funciones-forma.html">3.4</a>.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m3-giro-largo" data-titulo="La torreta da una vuelta completa al cruzar por la izquierda">
+  <p><strong>Síntoma:</strong> un objeto que gira hacia su objetivo lo hace bien casi siempre, pero cuando el objetivo cruza cierta línea (a la izquierda del objeto en pantalla), gira 360° en sentido contrario en lugar de moverse un poco. Con interpolación de ángulos (<code>lerp</code> entre 170° y −170°) pasa lo mismo: recorre 340° en lugar de 20°.</p>
+  <p><strong>Causa:</strong> los ángulos son circulares: −170° y 190° son la misma dirección, pero como números están lejos. <code>atan2</code> devuelve valores en $(-\pi, \pi]$ y salta al cruzar π.</p>
+  <p><strong>Solución:</strong> antes de usar una diferencia de ángulos, llévala a $(-\pi, \pi]$: <code>d = Math.atan2(Math.sin(d), Math.cos(d))</code>. Para interpolar ángulos, interpola <code>a + envolver(b - a) * t</code>. O evita los ángulos: interpola las direcciones como vectores y normaliza.</p>
+</div>
+
+<h2>La tangente y el campo de visión</h2>
+<p>Una cámara (o un ojo) ve un cono, o en 2D un triángulo, de apertura <strong>fov</strong>. ¿Qué altura del mundo cabe en la imagen a una distancia $d$? Parte el triángulo por la mitad: queda un triángulo rectángulo con un ángulo de $\text{fov}/2$ en la cámara, un cateto contiguo $d$ (la distancia) y un cateto opuesto $h$ (la mitad de la altura visible). La tangente es opuesto entre contiguo:</p>
+$$\tan\frac{\text{fov}}{2} = \frac{h}{d} \quad\Longrightarrow\quad h = d\cdot\tan\frac{\text{fov}}{2}$$
+<p>A doble distancia, doble altura visible: por eso los objetos lejanos se ven más pequeños (ocupan menos fracción de la imagen). La proyección en perspectiva de la lección <a href="06-espacios-coordenadas.html">3.6</a> divide la altura de cada punto por esa altura visible para llevarla al intervalo $[-1, 1]$, y el factor que aparece en su matriz es exactamente $1/\tan(\text{fov}/2)$ (en <code>glkit.js</code>, <code>const f = 1 / Math.tan(fovY / 2)</code>).</p>
+
+<div class="demo" id="demo-fov">
+  <div class="demo-lienzo"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Acerca el fov a 180°: la tangente de 90° es infinita, la altura visible se dispara y la imagen se deforma sin remedio. Los juegos usan entre 60° y 100° de fov horizontal; más allá, los bordes se estiran de forma exagerada (el efecto «ojo de pez» de los fov extremos).</p>
+
+<h2>Precisión: sin y cos con argumentos grandes</h2>
+<p>En un shader es tentador escribir <code>sin(u_time)</code> y olvidarse. Funciona perfectamente… durante un rato. Hay dos problemas que crecen con el tiempo, y los dos vienen de que <code>u_time</code> es un <strong>float de 32 bits</strong>:</p>
+<ol>
+  <li><strong>El propio número pierde resolución.</strong> Un float32 tiene unos 7 dígitos significativos, así que cuanto más grande es, más separados están los valores que puede representar. Cerca de 1000 s (17 minutos), dos valores consecutivos distan 0.00006 s; cerca de 86 400 s (un día), 0.0078 s; cerca de un millón de segundos (11.6 días), 0.0625 s: el tiempo avanza a saltos de cuatro frames.</li>
+  <li><strong>El seno pierde precisión.</strong> Para calcular $\sin(x)$ con $x$ grande, la GPU primero reduce el argumento restándole múltiplos de $2\pi$, y esa resta se hace con precisión limitada. La especificación de GLSL ES 3.00 lo deja claro: las funciones trigonométricas tienen <strong>precisión indefinida</strong>. En nuestras medidas en un M1, el error de <code>sin(x)</code> fue de 0.00002 con x = 1000, de 0.0007 con x = 10 000, de 0.03 con x = 1 000 000 y, con x = 10 000 000, el resultado (0.707) no se parecía en nada al correcto (0.421). <code>Math.sin</code> de JavaScript, en cambio, trabaja en doble precisión con una reducción exacta: <code>Math.sin(1e22)</code> da el valor correcto.</li>
+</ol>
+<p>El graficador evalúa en la GPU y deja ver los dos efectos. Sube <strong>D</strong>: la curva <code>sin(x + D)</code> se desplaza (la fase cambia, eso es normal) pero además se convierte en una escalera, porque <code>x + D</code> solo puede tomar valores separados por la resolución del float cerca de D. Acerca el zoom para verlo mejor.</p>
+
+<div class="graficador" data-x="0,6.2832" data-y="-1.3,1.3" data-titulo="sin(x + D) con D grande" data-uniforms='{"D":{"min":0,"max":4000000,"valor":1000000,"paso":50000}}'>
+<script type="text/x-exprs">
+sin(x + D)
+sin(x)
+</script>
+</div>
+
+<div class="callout senior" data-titulo="Qué hacer con el tiempo">
+  <p>Con <code>D</code> = 1 000 000 la escalera tiene peldaños de 0.0625, y con 4 000 000 de 0.25: ya no hay onda. Eso es lo que verá tu shader tras 11 o 46 días con la página abierta, lo cual no es tan raro en una pantalla de exposición o en un fondo animado de una web que alguien deja en una pestaña. Y mucho antes, con horas, ya se notan tirones. La solución general es no mandar nunca a la GPU números que crecen sin límite: envuelve el tiempo en JavaScript (en doble precisión) con un periodo que sea múltiplo de todos los ciclos de tu animación, o acumula la fase de cada oscilación en JavaScript y pasa solo la fase envuelta a $[0, 2\pi)$. La lección <a href="07-precision.html">3.7</a> desmonta el formato float32 bit a bit y vuelve sobre este problema con una demo completa.</p>
+</div>
+
+<div class="callout nota">
+  <p><code>radians()</code> y <code>degrees()</code> de GLSL son conversiones sin misterio (multiplicar por π/180 o por 180/π), pero tienen una ventaja: si el argumento es una constante, el compilador calcula el resultado al compilar, así que <code>radians(60.0)</code> no cuesta nada en tiempo de ejecución. GLSL, en cambio, no trae la constante π: tendrás que definirla (<code>const float PI = 3.14159265;</code>) o escribir <code>radians(180.0)</code>.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 3.3.1 — Diseña ondas</h3>
+  <p>Escribe en el graficador (en las filas vacías) una expresión para cada onda, usando <code>x</code> como tiempo:</p>
+  <ol>
+    <li>Oscila entre 0.2 y 0.8, completa 2 ciclos por unidad de x y en x = 0 vale 0.5 y está subiendo.</li>
+    <li>La misma, pero adelantada un cuarto de ciclo: en x = 0 debe estar en su máximo.</li>
+    <li>Un «rebote»: arcos positivos que tocan 0 en x = 0, 0.5, 1, 1.5… y llegan a 1 entre medias.</li>
+  </ol>
+  <div class="graficador" data-x="-0.25,2.25" data-y="-0.25,1.25" data-titulo="Ejercicio 3.3.1">
+<script type="text/x-exprs">
+0.5 + 0.3 * sin(6.2832 * x * 0.5)
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Oscilar entre 0.2 y 0.8 significa centro $c = 0.5$ y amplitud $A = 0.3$. Dos ciclos por unidad es $f = 2$. La expresión de partida tiene $f = 0.5$: corrígela.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Adelantar un cuarto de ciclo es sumar $\pi/2$ a la fase, o cambiar el seno por un coseno. Para el rebote, piensa en qué hace <code>abs</code> con los arcos negativos de un seno, y en cuál es el periodo de $|\sin(k x)|$.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <ol>
+      <li><code>0.5 + 0.3 * sin(6.2832 * 2.0 * x)</code>. El seno vale 0 y sube en su argumento 0, así que en x = 0 la onda vale el centro, 0.5, y va hacia arriba.</li>
+      <li><code>0.5 + 0.3 * cos(6.2832 * 2.0 * x)</code>, o <code>0.5 + 0.3 * sin(6.2832 * 2.0 * x + 1.5708)</code>. Un cuarto de ciclo son $\pi/2$ radianes de fase, sea cual sea la frecuencia: la fase se mide en ángulo, no en tiempo. En tiempo, ese cuarto de ciclo son $1/(4f) = 0.125$ unidades.</li>
+      <li><code>abs(sin(6.2832 * x))</code>. El valor absoluto convierte los arcos negativos en positivos, así que $|\sin|$ tiene la mitad de periodo que $\sin$: con $\sin(2\pi x)$ (periodo 1) los ceros de $|\sin|$ caen cada 0.5. Fíjate en las esquinas en los ceros: la derivada salta, y eso es lo que da el aspecto de «bote». (En la lección siguiente verás cómo suavizar esquinas así.)</li>
+    </ol>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.3.2 — Un reloj analógico</h3>
+  <p>Dibuja las tres agujas de un reloj con la hora real. El problema son los convenios: un reloj mide el ángulo <strong>desde las 12</strong> (arriba) y gira en <strong>sentido horario</strong>, mientras que <code>cos</code>/<code>sin</code> miden desde la derecha, y en pantalla la y crece hacia abajo. Completa <code>puntaDeAguja</code>, que recibe la fracción de vuelta (0 = las 12, 0.25 = las 3…) y la longitud, y devuelve el extremo de la aguja. Las agujas deben moverse de forma continua (la de las horas avanza también con los minutos).</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.3.2" data-altura="280" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const cx = canvas.width / 2, cy = canvas.height / 2, R = Math.min(cx, cy) * 0.85;
+
+// fraccion: 0 = las 12, 0.25 = las 3, 0.5 = las 6... (sentido horario)
+function puntaDeAguja(fraccion, longitud) {
+  // TODO: convierte la fracción en un ángulo y el ángulo en un punto (en pantalla)
+  return { x: cx, y: cy - longitud };
+}
+
+function aguja(fraccion, longitud, grosor, color) {
+  const p = puntaDeAguja(fraccion, longitud);
+  ctx.strokeStyle = color; ctx.lineWidth = grosor; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(p.x, p.y); ctx.stroke();
+}
+
+function frame() {
+  const ahora = new Date();
+  const s = ahora.getSeconds() + ahora.getMilliseconds() / 1000;
+  const m = ahora.getMinutes() + s / 60;
+  const h = (ahora.getHours() % 12) + m / 60;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < 12; i++) {                         // marcas de las horas
+    const a = puntaDeAguja(i / 12, R), b = puntaDeAguja(i / 12, R * 0.88);
+    ctx.strokeStyle = '#8791a5'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  aguja(h / 12, R * 0.5, 7, '#e4e7ee');
+  aguja(m / 60, R * 0.75, 4, '#8b7bff');
+  aguja(s / 60, R * 0.85, 2, '#ff6b7a');
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const cx = canvas.width / 2, cy = canvas.height / 2, R = Math.min(cx, cy) * 0.85;
+
+function puntaDeAguja(fraccion, longitud) {
+  const a = fraccion * 2 * Math.PI;          // ángulo desde las 12, en sentido horario
+  // Desde las 12 (arriba) en sentido horario, con la y hacia abajo:
+  // a = 0 → (0, -1);  a = π/2 → (1, 0);  a = π → (0, 1)
+  return { x: cx + longitud * Math.sin(a), y: cy - longitud * Math.cos(a) };
+}
+
+function aguja(fraccion, longitud, grosor, color) {
+  const p = puntaDeAguja(fraccion, longitud);
+  ctx.strokeStyle = color; ctx.lineWidth = grosor; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(p.x, p.y); ctx.stroke();
+}
+
+function frame() {
+  const ahora = new Date();
+  const s = ahora.getSeconds() + ahora.getMilliseconds() / 1000;
+  const m = ahora.getMinutes() + s / 60;
+  const h = (ahora.getHours() % 12) + m / 60;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < 12; i++) {
+    const a = puntaDeAguja(i / 12, R), b = puntaDeAguja(i / 12, R * 0.88);
+    ctx.strokeStyle = '#8791a5'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  aguja(h / 12, R * 0.5, 7, '#e4e7ee');
+  aguja(m / 60, R * 0.75, 4, '#8b7bff');
+  aguja(s / 60, R * 0.85, 2, '#ff6b7a');
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La fracción de vuelta se convierte en ángulo multiplicando por $2\pi$. El reto es colocar ese ángulo: comprueba tu fórmula con tres casos, las 12, las 3 y las 6.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con el convenio matemático, el ángulo 0 es $(1, 0)$. El reloj quiere que el ángulo 0 sea «arriba», que en pantalla es $(0, -1)$, y que el ángulo $\pi/2$ sea «derecha», $(1, 0)$. ¿Qué pasa si intercambias el papel del seno y el coseno?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con $a$ = fracción × 2π, la punta es $(c_x + L\sin a,\; c_y - L\cos a)$. Compruébalo: a las 12 ($a = 0$), $(c_x, c_y - L)$: arriba. A las 3 ($a = \pi/2$), $(c_x + L, c_y)$: derecha. A las 6 ($a = \pi$), $(c_x, c_y + L)$: abajo (la y crece hacia abajo). Intercambiar seno y coseno equivale a medir desde el eje y en lugar del x, y el signo menos en la y deshace la inversión de la pantalla.</p>
+    <p>La lección general: los ángulos no tienen un «origen» ni un «sentido» universales. Cada sistema (matemáticas, pantalla, reloj, brújula, CSS) elige los suyos. Antes de escribir un seno, decide desde dónde mides y hacia dónde giras, y comprueba la fórmula con dos o tres ángulos conocidos. Fíjate también en que la aguja de las horas avanza continuamente: <code>h</code> incluye la fracción de los minutos, y <code>m</code> la de los segundos.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.3.3 — Un radar</h3>
+  <p>Programa el barrido de un radar: una línea que gira alrededor del centro a 1.5 rad/s en sentido antihorario, dejando detrás una estela que se desvanece a lo largo de un cuarto de vuelta. La estela debe estar <strong>detrás</strong> de la línea (según el sentido de giro) y no puede tener costuras. Necesitarás una función que aún no has visto a fondo: <code>fract(x) = x − floor(x)</code>, la parte decimal, que «da la vuelta» a los valores al llegar a 1 (la lección siguiente la estudia con detalle).</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.3.3" data-altura="320">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+const float PI = 3.14159265;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = length(p);
+  float a = atan(p.y, p.x);
+
+  float barrido = u_time * 1.5;          // ángulo de la línea (crece sin límite)
+  // TODO: cuánto va el píxel por DETRÁS de la línea, como fracción de vuelta (0..1)
+  float detras = 0.0;
+  float estela = 0.0;                    // TODO: 1 en la línea, 0 a un cuarto de vuelta
+
+  vec3 color = vec3(0.02, 0.06, 0.04);
+  if (r < 0.9) color += vec3(0.1, 1.0, 0.4) * estela;
+  if (abs(r - 0.9) < 0.006 || (r < 0.9 && abs(fract(r * 3.0 + 0.5) - 0.5) < 0.004)) color += vec3(0.05, 0.25, 0.1);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+const float PI = 3.14159265;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = length(p);
+  float a = atan(p.y, p.x);
+
+  float barrido = u_time * 1.5;
+  // Ángulo que ha recorrido la línea desde que pasó por este píxel, en vueltas.
+  // fract hace la cuenta "modulo una vuelta": da igual en qué vuelta vaya la línea
+  // y da igual el salto de π a −π de atan (una vuelta entera de diferencia no cambia fract).
+  float detras = fract((barrido - a) / (2.0 * PI));
+  // 1 justo en la línea, bajando a 0 cuando la línea ya pasó hace un cuarto de vuelta
+  float estela = max(1.0 - detras / 0.25, 0.0);
+  estela = estela * estela;              // caída más rápida al principio: parece fósforo
+
+  vec3 color = vec3(0.02, 0.06, 0.04);
+  if (r < 0.9) color += vec3(0.1, 1.0, 0.4) * estela;
+  if (abs(r - 0.9) < 0.006 || (r < 0.9 && abs(fract(r * 3.0 + 0.5) - 0.5) < 0.004)) color += vec3(0.05, 0.25, 0.1);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>barrido - a</code> es cuánto ha girado la línea desde el ángulo del píxel. Pasado a vueltas (dividiendo por $2\pi$), la parte decimal dice cuánto va el píxel por detrás, entre 0 y 1, en cualquier vuelta.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con <code>detras</code> entre 0 y 1, la estela es 1 cuando <code>detras</code> es 0 y baja a 0 cuando llega a 0.25: <code>max(1.0 - detras / 0.25, 0.0)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El truco es medir diferencias de ángulo <strong>módulo una vuelta</strong>. <code>(barrido - a) / 2π</code> es la diferencia en vueltas: puede valer 37.8 o −0.2, pero su parte decimal (0.8 en los dos casos) dice exactamente cuánto va el píxel por detrás de la línea dentro de la vuelta actual. Esto resuelve a la vez los dos problemas de los ángulos: que <code>barrido</code> crece sin límite y que <code>atan</code> salta de π a −π (ese salto cambia la diferencia en una vuelta entera, que <code>fract</code> ignora). Por eso no hay costura.</p>
+    <p>El sentido: la línea gira en sentido antihorario (su ángulo crece), así que los píxeles que ya ha barrido tienen ángulos <em>menores</em> que el barrido, y <code>barrido − a</code> es pequeño y positivo justo detrás de ella. Si escribieras <code>a − barrido</code>, la estela iría por delante, como si la línea «anticipara» el barrido. Elevar la estela al cuadrado hace que caiga rápido al principio y lento al final, que recuerda al fósforo de las pantallas de radar. Y recuerda la sección de precisión: <code>u_time * 1.5</code> crece sin límite; en una instalación que funcione días, habría que envolver el tiempo en JavaScript.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 3.3.4 — Sistema solar anidado</h3>
+  <p>Dibuja un sol en el centro, un planeta que orbita a su alrededor (radio 110 px, una vuelta cada 6 s) y una luna que orbita alrededor del <strong>planeta</strong> (radio 30 px, una vuelta cada 1.2 s). Añade la estela de la luna para ver la curva que describe respecto al sol. Después responde en la consola: ¿cuántas vueltas da la luna alrededor del planeta en una órbita del planeta? ¿Se cierra la curva de la estela? Usa solo senos, cosenos y sumas (nada de <code>ctx.rotate</code>).</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.3.4" data-altura="300" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const cx = canvas.width / 2, cy = canvas.height / 2;
+const estela = [];
+
+function frame(ms) {
+  const t = ms / 1000;
+  // TODO: posición del planeta alrededor del sol y de la luna alrededor del planeta
+  const planeta = { x: cx + 110, y: cy };
+  const luna = { x: planeta.x + 30, y: planeta.y };
+
+  estela.push(luna); if (estela.length > 600) estela.shift();
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = 'rgba(139,123,255,0.5)'; ctx.beginPath();
+  estela.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.stroke();
+  const disco = (p, r, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill(); };
+  disco({ x: cx, y: cy }, 20, '#f5b84b'); disco(planeta, 9, '#3fd0e8'); disco(luna, 4, '#e4e7ee');
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const cx = canvas.width / 2, cy = canvas.height / 2;
+const estela = [];
+const TP = 6, TL = 1.2;                         // periodos (s)
+const wP = 2 * Math.PI / TP, wL = 2 * Math.PI / TL;  // velocidades angulares (rad/s)
+console.log('vueltas de la luna por órbita del planeta:', TP / TL);
+
+function frame(ms) {
+  const t = ms / 1000;
+  // Polar → cartesiana, relativa a su centro de giro: centro + r·(cos, sin)
+  const planeta = { x: cx + 110 * Math.cos(wP * t), y: cy + 110 * Math.sin(wP * t) };
+  const luna = { x: planeta.x + 30 * Math.cos(wL * t), y: planeta.y + 30 * Math.sin(wL * t) };
+
+  estela.push(luna); if (estela.length > 600) estela.shift();
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = 'rgba(139,123,255,0.5)'; ctx.beginPath();
+  estela.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.stroke();
+  const disco = (p, r, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill(); };
+  disco({ x: cx, y: cy }, 20, '#f5b84b'); disco(planeta, 9, '#3fd0e8'); disco(luna, 4, '#e4e7ee');
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Una órbita es polar → cartesiana: <code>centro + radio · (cos ωt, sin ωt)</code>, con <code>ω = 2π / periodo</code>. La luna usa el mismo patrón, pero su centro es la posición del planeta en este frame.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para la pregunta: en el tiempo que el planeta tarda en dar una vuelta (6 s), ¿cuántos periodos de la luna caben? La curva se cierra si ese número es racional (y, en el tiempo del planeta, si es entero).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada cuerpo es «centro + radio × dirección», con la dirección fabricada a partir de un ángulo que crece a velocidad constante: $\omega = 2\pi/T$. La luna suma su propio desplazamiento polar a la posición del planeta, así que su movimiento respecto al sol es la <strong>suma de dos movimientos circulares</strong>. En 6 s la luna da $6/1.2 = 5$ vueltas alrededor del planeta, y como es un número entero, la estela se cierra en cada órbita del planeta. Pero cuenta los lazos: son <strong>4</strong>, no 5. Las 5 vueltas se miden respecto a direcciones fijas (el ángulo $\omega_L t$ se mide desde el eje x), pero mientras tanto la línea sol-planeta también ha dado una vuelta; respecto a esa línea, la luna solo la adelanta $5 - 1 = 4$ veces, y cada lazo aparece cuando la luna pasa por el lado del sol y retrocede respecto a él. (Es la misma diferencia que hay entre el mes sideral y el mes sinódico de la Luna de verdad.) La curva es un <em>epitrocoide</em>, de la familia de las que dibujan los juguetes de espirógrafo, y es la que usaba Ptolomeo con sus epiciclos para explicar por qué los planetas parecen retroceder en el cielo.</p>
+    <p>Nota que no hemos usado <code>ctx.rotate</code>: cuando tengas jerarquías más profundas (brazo, antebrazo, mano, dedos), sumar desplazamientos a mano se complica, porque cada pieza también gira con su padre. Para eso existen las matrices y la composición de transformaciones de la lección <a href="05-matrices.html">3.5</a>, que convierten esto en «multiplicar la matriz del padre por la del hijo».</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>En el <strong>círculo unidad</strong>, el punto de ángulo θ es (cos θ, sin θ): el coseno es la x, el seno la y. Por Pitágoras, cos² + sin² = 1, así que (cos θ, sin θ) es siempre una dirección unitaria.</li>
+    <li><strong>Radianes</strong>: el ángulo medido por la longitud de arco; una vuelta = 2π. Todas las APIs los usan (CSS acepta también deg y turn). GLSL trae <code>radians()</code> y <code>degrees()</code>, pero no la constante π.</li>
+    <li><strong>Polares</strong>: x = r cos θ, y = r sin θ; r = length, θ = <code>atan2(y, x)</code> (en GLSL, <code>atan(y, x)</code>, con la y primero). <code>atan(y/x)</code> pierde el cuadrante. <code>atan(0, 0)</code> es indefinido en GLSL.</li>
+    <li>Los ángulos saltan de π a −π: usa funciones con un número entero de ciclos por vuelta (sin costura) y envuelve las diferencias de ángulo a (−π, π] para girar por el camino corto.</li>
+    <li><strong>Ondas</strong>: A·sin(2πft + φ) + c. No confundas la frecuencia f (Hz) con la angular ω = 2πf. Para cambiar la frecuencia en vivo, acumula la fase. Combina ondas (sumas, productos, abs) y desfasa objetos para animaciones naturales.</li>
+    <li><strong>Rotar</strong>: x' = x cos θ − y sin θ, y' = x sin θ + y cos θ (los ejes girados son las columnas de la futura matriz). Alrededor de un pivote: trasladar, rotar, deshacer. En pantalla, los ángulos positivos giran en sentido horario.</li>
+    <li><strong>Campo de visión</strong>: altura visible a distancia d = d · tan(fov/2); la proyección usa 1/tan(fov/2).</li>
+    <li>En la GPU, <code>sin</code> y <code>cos</code> tienen <strong>precisión indefinida</strong> y el tiempo en float32 pierde resolución: no mandes a la GPU argumentos que crecen sin límite.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://thebookofshaders.com/05/?lan=es">The Book of Shaders — Funciones de forma</a> y <a href="https://thebookofshaders.com/07/?lan=es">Formas</a>: senos, cosenos y polares en shaders.</li>
+  <li><a href="https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Global_Objects/Math/atan2">MDN — Math.atan2()</a>, con sus casos especiales.</li>
+  <li><a href="https://iquilezles.org/articles/palettes/">Iñigo Quilez — Palettes</a>: paletas de color construidas con cosenos, la generalización de la rueda de color de esta lección.</li>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">Especificación de GLSL ES 3.00</a>: sección 4.5.1 (rango y precisión: «Built-in functions not listed above […] have undefined precision. These include, for example, the trigonometric functions and determinant») y 8.1 (funciones trigonométricas).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m3.js"></script>
+<script src="recursos/demos-03.js"></script>
+</body>
+</html>

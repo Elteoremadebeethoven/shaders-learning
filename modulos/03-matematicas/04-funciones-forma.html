@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3.4 · Funciones de forma: step, smoothstep, fract, mod… — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m3.css">
+</head>
+<body data-leccion="03-matematicas/funciones-forma">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 3 · Matemáticas para gráficos</p>
+  <h1>Funciones de forma: step, smoothstep, fract, mod…</h1>
+  <p class="resumen">Un fragment shader no tiene <code>fillRect</code> ni <code>arc</code>: solo puede calcular un número por píxel. Las funciones built-in de GLSL son las herramientas con las que ese número se convierte en bordes, bandas, repeticiones, pulsos y curvas. Aquí las conoces una a una, con sus casos raros, y aprendes a combinarlas.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: 3.1–3.3</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Dibujarás cualquier función 1D como imagen en un shader, y leerás una curva como si fuera una máscara.</li>
+      <li>Usarás <code>step</code>, <code>smoothstep</code> (y sabrás derivarla), <code>clamp</code>, <code>mix</code>, <code>fract</code>, <code>floor</code>, <code>mod</code>, <code>abs</code>, <code>sign</code>, <code>pow</code>, <code>exp</code> y compañía, con sus casos indefinidos.</li>
+      <li>Distinguirás el <code>mod</code> de GLSL del <code>%</code> de JavaScript, y el <code>round</code> de GLSL del <code>Math.round</code> de JavaScript.</li>
+      <li>Conocerás las funciones de forma de Iñigo Quilez y combinarás funciones para construir pulsos, bandas, repeticiones y formas 2D.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Pintar con funciones</h2>
+<p>En Canvas 2D, para dibujar un círculo llamas a <code>arc</code>. En un fragment shader cada píxel se pregunta a sí mismo, sin saber nada de sus vecinos: «¿estoy dentro del círculo? ¿cuánto?». La respuesta es un número, casi siempre entre 0 y 1, que después se usa para mezclar colores. Toda la gramática de ese mundo son <strong>funciones de forma</strong>: funciones que toman un valor (una coordenada, una distancia, el tiempo) y devuelven otro con la forma que te interesa (un escalón, una rampa suave, un diente de sierra, un pulso).</p>
+<p>Para entenderlas hay que verlas, y la forma más directa es la de <em>The Book of Shaders</em>: dibujar $y = f(x)$ dentro de un shader. El graficador de este curso hace exactamente eso (evalúa tu expresión en GLSL, en la GPU), pero merece la pena escribirlo una vez a mano.</p>
+
+<div class="glsl-playground" data-titulo="Una función 1D dibujada por un shader" data-altura="320">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+// La función que quieres ver. Prueba: step(0.5, x)   smoothstep(0.1, 0.9, x)
+// fract(x * 4.0)   abs(sin(x * 6.2832))   pow(x, 5.0)   0.5 + 0.5 * sin(x * 20.0 + u_time)
+float f(float x) {
+  return x;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;   // x e y de 0 a 1
+  float y = f(uv.x);                          // el valor de la función en esta columna
+  vec3 color = vec3(y);                       // 1) la función como brillo
+  if (abs(uv.y - y) < 2.0 / u_resolution.y)   // 2) la función como curva
+    color = vec3(0.3, 1.0, 0.5);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+float f(float x) {
+  return x;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float y = f(uv.x);
+  vec3 color = vec3(y);
+  if (abs(uv.y - y) < 2.0 / u_resolution.y)
+    color = vec3(0.3, 1.0, 0.5);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<ol>
+  <li data-l="1-3">La función que estudiamos. GLSL permite definir funciones propias antes de <code>main</code>, con tipos explícitos en parámetros y retorno.</li>
+  <li data-l="6">Coordenadas uv: 0 a 1 en cada eje. Aquí queremos que la gráfica llene el lienzo, así que no nos importa que estén estiradas.</li>
+  <li data-l="7">Cada columna de píxeles tiene la misma <code>uv.x</code>, así que toda la columna calcula el mismo <code>y</code>.</li>
+  <li data-l="8">Primera lectura: el valor como <strong>brillo</strong>. Así es como lo usarás casi siempre: como máscara o como parámetro de <code>mix</code>. Negro = 0, blanco = 1 (lo que pase de 1 se recorta al escribir el color).</li>
+  <li data-l="9-10">Segunda lectura: el valor como <strong>curva</strong>. Se pintan de verde los píxeles cuya altura está a menos de 2 píxeles de <code>f(x)</code>. Como la tolerancia es vertical, en los tramos muy inclinados la línea se adelgaza hasta romperse. El graficador lo corrige dividiendo la distancia vertical por √(1 + f′(x)²), que la convierte en distancia perpendicular a la curva.</li>
+</ol>
+</div>
+
+<h2>step: el escalón</h2>
+<p>La más simple, y la especificación de GLSL la define así: <code>step(edge, x)</code> <em>«devuelve 0.0 si x &lt; edge; en otro caso, 1.0»</em>. Dos detalles: el <strong>borde va primero</strong> (es el error más frecuente: <code>step(x, 0.5)</code> no es lo mismo que <code>step(0.5, x)</code>, sino casi su inverso), y en el borde exacto devuelve 1, porque la condición es estricta: <code>step(0.5, 0.5)</code> vale 1.0.</p>
+<p><code>step</code> es un <code>if</code> sin <code>if</code>: <code>step(0.5, uv.x)</code> vale 0 en la mitad izquierda y 1 en la derecha. Para invertirlo, <code>1.0 - step(0.5, x)</code>. Funciona con vectores componente a componente: <code>step(vec2(0.5), uv)</code> da un <code>vec2</code> de ceros y unos.</p>
+
+<div class="graficador" data-x="-0.25,1.25" data-y="-0.25,1.25" data-titulo="step y sus variantes">
+<script type="text/x-exprs">
+step(0.5, x)
+step(x, 0.3) * 0.9
+1.0 - step(0.8, x) * 0.5
+</script>
+</div>
+
+<div class="callout senior" data-titulo="¿Es más rápido step que un if?">
+  <p>Es un mito a medias. En la GPU, grupos de píxeles vecinos ejecutan las mismas instrucciones a la vez (lo verás en <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>), y un <code>if</code> en el que unos píxeles van por una rama y otros por otra obliga a ejecutar las dos. Pero un <code>if</code> que solo elige entre dos valores (<code>x &lt; 0.5 ? a : b</code>) no es una bifurcación real: el compilador lo convierte en una instrucción de selección, igual de barata que <code>step</code>. Usa lo que se lea mejor. Donde <code>step</code> sí brilla es en el estilo: permite escribir las máscaras como aritmética (<code>step(a, x) * step(x, b)</code>) y combinarlas con sumas y productos.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué devuelve <code>step(0.5, 0.5)</code> en GLSL?</p>
+  <ul>
+    <li><code>0.0</code><div class="explicacion">Solo devuelve 0 si <code>x &lt; edge</code>, estrictamente. Con <code>x == edge</code> la condición no se cumple.</div></li>
+    <li data-correcta><code>1.0</code><div class="explicacion">La definición es «0.0 si x &lt; edge, si no 1.0». En el borde exacto, 1. Casi nunca importa (que un float caiga exactamente en el borde es raro), pero explica algunos píxeles sueltos en patrones con coordenadas exactas.</div></li>
+    <li><code>0.5</code><div class="explicacion"><code>step</code> solo devuelve 0 o 1, nunca valores intermedios. Si quieres una transición, necesitas <code>smoothstep</code>.</div></li>
+  </ul>
+</div>
+
+<h2>smoothstep: el escalón suave</h2>
+<p>Un borde duro produce dientes de sierra: cada píxel está entero dentro o entero fuera. <code>smoothstep(edge0, edge1, x)</code> sustituye el salto por una transición suave entre <code>edge0</code> y <code>edge1</code>. La especificación da su código exacto:</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="smoothstep según la especificación de GLSL ES 3.00">
+genType t;
+t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+return t * t * (3.0 - 2.0 * t);
+</script>
+<p>Dos pasos: primero una <strong>interpolación inversa</strong> recortada (¿qué fracción del camino de <code>edge0</code> a <code>edge1</code> ha recorrido <code>x</code>?, recortada a $[0, 1]$), y después la curva $3t^2 - 2t^3$. ¿De dónde sale esa curva? Queremos un polinomio $p(t)$ que vaya de 0 a 1 y que llegue a los extremos <strong>sin pendiente</strong>, para que no haya «codos» donde se une con los tramos planos. Cuatro condiciones: $p(0) = 0$, $p(1) = 1$, $p'(0) = 0$, $p'(1) = 0$. Con cuatro condiciones hace falta un polinomio de cuatro coeficientes, un cúbico $p(t) = at^3 + bt^2 + ct + d$:</p>
+<ul>
+  <li>$p(0) = d = 0$.</li>
+  <li>$p'(t) = 3at^2 + 2bt + c$, así que $p'(0) = c = 0$.</li>
+  <li>$p(1) = a + b = 1$ y $p'(1) = 3a + 2b = 0$. De la segunda, $b = -\tfrac32 a$; en la primera, $a - \tfrac32 a = 1$, así que $a = -2$ y $b = 3$.</li>
+</ul>
+$$p(t) = 3t^2 - 2t^3 = t^2(3 - 2t)$$
+<p>Es un <strong>polinomio de Hermite</strong>: los que se construyen fijando valores y pendientes en los extremos (ya viste su gráfica como curva de easing en la lección <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>). Su pendiente, $p'(t) = 6t(1 - t)$, vale 0 en los extremos y 1.5 en el centro: la transición es un 50&nbsp;% más empinada que una rampa lineal en su punto medio. ¿Y la segunda derivada? $p''(t) = 6 - 12t$ vale 6 en $t = 0$: la curvatura salta. Ken Perlin necesitó eliminar también ese salto para su ruido mejorado y usó un quíntico con seis condiciones, el <strong>smootherstep</strong>: $6t^5 - 15t^4 + 10t^3$.</p>
+
+<div class="graficador" data-x="-0.25,1.25" data-y="-0.2,1.6" data-titulo="Rampa lineal, smoothstep, smootherstep y la pendiente de smoothstep">
+<script type="text/x-exprs">
+clamp(x, 0.0, 1.0)
+smoothstep(0.0, 1.0, x)
+smootherstep(x)
+6.0 * x * (1.0 - x) * step(0.0, x) * step(x, 1.0)
+</script>
+<script type="text/x-glsl">
+float smootherstep(float x) {
+  float t = clamp(x, 0.0, 1.0);
+  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+</script>
+</div>
+
+<p>Usos de <code>smoothstep</code>: bordes suaves y <strong>antialiasing</strong> (una transición de un píxel de ancho en el borde de una forma; lo harás con precisión en <a href="../06-glsl/03-formas-sdf.html">6.3</a>), aparición gradual de efectos con el tiempo, y como curva de easing barata para animaciones.</p>
+
+<div class="callout senior" data-titulo="smoothstep(1.0, 0.0, x): ¿funciona o no?">
+  <p>Es habitual invertir la transición intercambiando los bordes: <code>smoothstep(1.0, 0.0, x)</code>. Con el código de arriba, la división por <code>edge1 − edge0 = −1</code> da la vuelta a <code>t</code> y el resultado es <code>1 − smoothstep(0.0, 1.0, x)</code>. En la práctica funciona en todas las GPU que conocemos… pero la especificación dice textualmente <em>«Results are undefined if edge0 &gt;= edge1»</em>. Y no es teórico: en nuestra prueba (Chrome sobre Metal en un M1), cuando <strong>los tres argumentos son constantes</strong>, el compilador de ANGLE calcula el resultado al compilar, emite el aviso <em>«'smoothstep' : operation result is undefined for the values passed in»</em> y lo sustituye por <strong>0</strong>. La versión portable es <code>1.0 - smoothstep(0.0, 1.0, x)</code>, que cuesta una resta.</p>
+</div>
+
+<div class="callout bestiario" data-id="m3-smoothstep-invertido" data-titulo="Un smoothstep invertido da 0 (a veces)">
+  <p><strong>Síntoma:</strong> una transición escrita como <code>smoothstep(borde1, borde0, x)</code> (bordes al revés) funciona casi siempre, pero en cierto caso se vuelve negra, o funciona en un navegador y en otro no.</p>
+  <p><strong>Causa:</strong> con <code>edge0 &gt;= edge1</code> el resultado es indefinido según la especificación. Las GPU suelen aplicar la fórmula tal cual (y el resultado sale invertido), pero un compilador puede hacer otra cosa: ANGLE, cuando todos los argumentos son constantes, lo evalúa al compilar y devuelve 0. Con <code>edge0 == edge1</code> la fórmula divide por cero: en el borde exacto sale 0/0.</p>
+  <p><strong>Solución:</strong> escribe siempre los bordes en orden creciente e invierte con <code>1.0 - smoothstep(…)</code>. En el editor de abajo, el tercio izquierdo usa la versión constante, el central la misma cuenta con una variable y el derecho la versión portable. Los tres deberían ser iguales.</p>
+</div>
+
+<div class="glsl-playground" data-titulo="El mismo smoothstep invertido, dos resultados" data-altura="160" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float x = 0.25;                                   // una variable (aunque valga lo mismo)
+  float constante = smoothstep(1.0, 0.0, 0.25);     // todo constante: ANGLE lo pliega a 0
+  float variable  = smoothstep(1.0, 0.0, x);        // se calcula de verdad: 0.84375
+  float portable  = 1.0 - smoothstep(0.0, 1.0, x);  // la forma segura: 0.84375
+  float v = uv.x < 0.333 ? constante : (uv.x < 0.667 ? variable : portable);
+  fragColor = vec4(vec3(v), 1.0);
+}
+</script>
+</div>
+
+<h2>clamp, min, max: recortar</h2>
+<p><code>min(x, y)</code> y <code>max(x, y)</code> devuelven el menor y el mayor; <code>clamp(x, lo, hi)</code> es <code>min(max(x, lo), hi)</code>: recorta <code>x</code> al intervalo. Ya los usaste: <code>max(dot(N, L), 0.0)</code> para que la luz no reste (<a href="02-producto-punto-cruz.html">3.2</a>) y <code>clamp</code> antes de <code>acos</code>. Con máscaras entre 0 y 1, <code>max</code> es la <strong>unión</strong> (dentro de A <em>o</em> de B) y <code>min</code>, o el producto, la <strong>intersección</strong>.</p>
+<p><code>clamp</code> es indefinido si <code>lo &gt; hi</code>; en la práctica, la fórmula devuelve <code>hi</code> para cualquier <code>x</code> (en nuestra prueba, <code>clamp(0.5, 1.0, 0.0)</code> dio 0). Y el caso más común, <code>clamp(x, 0.0, 1.0)</code>, tiene nombre propio en HLSL (<code>saturate</code>) porque muchas GPU lo aplican gratis: sus instrucciones llevan un modificador de saturación que recorta el resultado sin coste extra.</p>
+
+<h2>mix y la interpolación inversa</h2>
+<p><code>mix(a, b, t) = a·(1 − t) + b·t</code> es el <code>lerp</code> de la lección <a href="01-vectores.html">3.1</a>: dado un <code>t</code>, da un valor entre <code>a</code> y <code>b</code>. Su operación inversa responde a la pregunta contraria: dado un valor <code>x</code> entre <code>a</code> y <code>b</code>, ¿qué <code>t</code> le corresponde? Es la <strong>interpolación inversa</strong>:</p>
+$$t = \frac{x - a}{b - a}$$
+<p>Juntas forman el <strong>remapeo</strong>, llevar un intervalo a otro: <code>mix(c, d, (x - a) / (b - a))</code> convierte $[a, b]$ en $[c, d]$. Las conversiones de coordenadas de <a href="01-vectores.html">3.1</a> eran remapeos. Y <code>smoothstep</code> es exactamente una interpolación inversa recortada seguida de una curva: <code>smoothstep(a, b, x)</code> = «qué fracción de $[a, b]$ lleva recorrida $x$, suavizada».</p>
+
+<h2>fract y floor: repetir y numerar</h2>
+<p><code>floor(x)</code> es el mayor entero menor o igual que <code>x</code>, y <code>fract(x)</code> es lo que sobra: la especificación lo define como <code>x − floor(x)</code>. Como <code>floor</code> redondea siempre hacia abajo, también con negativos, <strong><code>fract</code> está en $[0, 1)$</strong>: <code>fract(-0.25)</code> es 0.75, no −0.25 (es la parte decimal «desde abajo»). Con una letra pequeña de float32: para un negativo diminuto, <code>x − floor(x)</code> = $-10^{-9} + 1$ se redondea a <strong>exactamente 1.0</strong>, así que en la práctica el intervalo es $[0, 1]$ (lo medimos en <a href="../06-glsl/05-patrones.html">6.5</a>). Dibujada, <code>fract(x)</code> es un <strong>diente de sierra</strong>: sube de 0 a 1 y vuelve a 0 en cada entero.</p>
+
+<div class="graficador" data-x="-2.2,2.2" data-y="-2.2,2.2" data-titulo="floor, fract, ceil y round">
+<script type="text/x-exprs">
+floor(x)
+fract(x)
+ceil(x) + 0.08
+round(x) - 0.08
+</script>
+</div>
+
+<p>Esta pareja es la base de toda repetición. Si multiplicas las coordenadas por <code>N</code>, <code>floor(uv * N)</code> te dice <strong>en qué celda</strong> estás (un índice entero por eje) y <code>fract(uv * N)</code> <strong>dónde estás dentro de la celda</strong> (de 0 a 1). Todo lo que dibujes con las coordenadas locales aparece repetido en cada celda, y el índice te permite variar cada copia.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.4.1 — Una rejilla de puntos que laten</h3>
+  <p>Un punto por celda, cada uno con su propia fase según su posición en la rejilla.</p>
+  <div class="glsl-playground" data-titulo="Repetición con fract y floor" data-altura="320" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution.y;     // misma escala en x e y: celdas cuadradas
+  float N = 7.0;                                  // celdas por unidad de altura
+  vec2 celda = floor(uv * N);                     // índice entero de la celda: (0,0), (1,0)…
+  vec2 local = fract(uv * N) - 0.5;               // posición dentro de la celda: -0.5 a 0.5
+
+  float fase = (celda.x + celda.y) * 0.5;         // cada celda, su fase (diagonales iguales)
+  float radio = 0.22 + 0.12 * sin(u_time * 3.0 - fase);
+  float d = length(local);                        // distancia al centro de la celda
+  float px = N / u_resolution.y;                  // un píxel, en unidades de celda
+  float punto = 1.0 - smoothstep(radio - px, radio + px, d);
+
+  vec3 tono = 0.5 + 0.5 * cos(fase + vec3(0.0, 2.1, 4.2));
+  fragColor = vec4(mix(vec3(0.07, 0.08, 0.10), tono, punto), 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>Celdas cuadradas</strong>: dividimos las dos coordenadas por la altura, así que una unidad mide lo mismo en x que en y.</li>
+    <li><strong><code>floor(uv * N)</code></strong> numera las celdas y <strong><code>fract(uv * N) - 0.5</code></strong> da coordenadas locales centradas en la celda: el truco de restar 0.5 pone el origen en el centro de cada celda, así que <code>length(local)</code> es la distancia a ese centro.</li>
+    <li><strong>La fase depende del índice</strong>: <code>celda.x + celda.y</code> es constante a lo largo de las diagonales, así que las diagonales laten a la vez y la onda recorre la rejilla en diagonal. Prueba <code>length(celda) * 0.5</code> (ondas circulares) o <code>celda.x * 0.8</code>.</li>
+    <li><strong>El borde suave</strong>: <code>smoothstep</code> entre <code>radio − px</code> y <code>radio + px</code>, con <code>px</code> = el tamaño de un píxel en unidades locales, da un borde de dos píxeles de ancho: el antialiasing más simple. Cuanto más grande es <code>N</code>, más grande es un píxel medido en celdas.</li>
+    <li><strong>El color</strong> reutiliza la rueda de cosenos de <a href="03-trigonometria.html">3.3</a>, con la fase como ángulo.</li>
+  </ol>
+</section>
+
+<h3>round, ceil y trunc</h3>
+<p><code>ceil</code> redondea hacia arriba, <code>trunc</code> hacia el cero (quita los decimales: <code>trunc(-2.7)</code> es −2, mientras que <code>floor(-2.7)</code> es −3), y <code>round</code> al entero más cercano. El caso delicado es el empate: ¿a dónde va 2.5? La especificación de GLSL dice que <em>«la fracción 0.5 se redondeará en la dirección que elija la implementación, presumiblemente la más rápida»</em>. Para un resultado garantizado existe <code>roundEven</code>, que en los empates va al par más cercano (2.5 → 2, 3.5 → 4). Y JavaScript tiene su propia regla:</p>
+<table class="m3-num">
+  <thead><tr><th>Valor</th><th>GLSL <code>round</code> (M1)</th><th>GLSL <code>roundEven</code></th><th>JS <code>Math.round</code></th><th><code>floor(x + 0.5)</code></th></tr></thead>
+  <tbody>
+    <tr><td>0.5</td><td>1</td><td>0</td><td>1</td><td>1</td></tr>
+    <tr><td>2.5</td><td>3</td><td>2</td><td>3</td><td>3</td></tr>
+    <tr><td>−0.5</td><td>−1</td><td>±0</td><td>−0</td><td>0</td></tr>
+    <tr><td>−2.5</td><td>−3</td><td>−2</td><td>−2</td><td>−2</td></tr>
+  </tbody>
+</table>
+<p>En el M1, <code>round</code> de GLSL redondea los empates «alejándose del cero» (medido); <code>Math.round</code> de JavaScript los redondea siempre hacia $+\infty$, así que en los negativos no coinciden. Si calculas lo mismo en JavaScript y en un shader (por ejemplo, a qué celda pertenece el ratón para resaltarla), usa en los dos lados una fórmula explícita como <code>floor(x + 0.5)</code>, que se comporta igual en cualquier sitio. Sobre el cero de la tabla: el «±0» de <code>roundEven(−0.5)</code> significa que el resultado es cero pero GLSL no garantiza su signo (la especificación permite intercambiar ceros positivos y negativos; en el M1 salió +0), mientras que <code>Math.round(-0.5)</code> es un <code>-0</code> auténtico, que <code>console.log</code> muestra con su signo.</p>
+
+<div class="callout hack" data-titulo="Posterizar">
+  <p><code>floor(x * N) / N</code> convierte una rampa continua en $N$ escalones: es el efecto «póster» o <em>toon</em>, y con colores se llama cuantizar. <code>floor(uv * 16.0) / 16.0</code> como coordenada de textura pixela una imagen. Y <code>floor(u_time * 12.0) / 12.0</code> hace que una animación vaya «a 12 fps» aunque el shader se dibuje a 60, como en la animación tradicional.</p>
+</div>
+
+<h2>mod: el resto de GLSL no es el % de JavaScript</h2>
+<p>La especificación define <code>mod(x, y)</code> como <strong>$x - y\cdot\operatorname{floor}(x/y)$</strong>. Como usa <code>floor</code>, el resultado tiene siempre el signo de <code>y</code>: con <code>y</code> positivo, <code>mod</code> está en $[0, y)$, también para <code>x</code> negativos. Es el «módulo» de los matemáticos, y <code>fract(x)</code> es <code>mod(x, 1.0)</code>.</p>
+<p>El operador <code>%</code> de JavaScript es otra cosa: el <strong>resto de la división truncada</strong>, con el signo del dividendo. Para positivos coinciden; para negativos, no:</p>
+<table class="m3-num">
+  <thead><tr><th>Operación</th><th>GLSL <code>mod</code></th><th>JS <code>%</code></th></tr></thead>
+  <tbody>
+    <tr><td>7 y 3</td><td>1</td><td>1</td></tr>
+    <tr><td>−1 y 3</td><td>2</td><td>−1</td></tr>
+    <tr><td>−0.5 y 1</td><td>0.5</td><td>−0.5</td></tr>
+    <tr><td>7 y −3</td><td>−2</td><td>1</td></tr>
+  </tbody>
+</table>
+<p>Más detalles de senior: en GLSL ES 3.00 <strong>no existe <code>%</code> para floats</strong> (<code>a % 3.0</code> no compila: «no operation '%' exists that takes a left-hand operand of type 'highp float'»), y el <code>%</code> de enteros con operandos negativos es <strong>indefinido</strong> según la especificación (en el M1, <code>-7 % 3</code> dio −1, como en C). Para tener el comportamiento de <code>mod</code> en JavaScript:</p>
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="El mod de GLSL, en JavaScript">
+const mod = (x, y) => x - y * Math.floor(x / y);   // la definición de la especificación
+// o bien, para y > 0:  ((x % y) + y) % y
+mod(-1, 3);   // 2
+mod(-0.5, 1); // 0.5
+</script>
+
+<p>Con <code>mod</code> tienes también la alternativa rápida al <code>envolver</code> de ángulos de la torreta de <a href="03-trigonometria.html">3.3</a>: <code>mod(a + PI, 2.0 * PI) - PI</code> lleva cualquier ángulo a $[-\pi, \pi)$ con una resta, una suma y un <code>floor</code>, sin seno, coseno ni <code>atan</code> (en JavaScript, con la <code>mod</code> de arriba). El único matiz es el extremo: incluye −π y excluye π, al revés que <code>atan2</code>, y para girar por el camino corto da igual.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.4.2 — Un mundo que da la vuelta</h3>
+  <p>En muchos juegos, lo que sale por la izquierda entra por la derecha (un mundo «toroidal», como en Asteroids). La forma natural de programarlo es envolver la posición con el ancho del mundo. Las partículas de la fila de arriba se mueven hacia la izquierda y usan <code>%</code>; las de abajo usan <code>mod</code>. Mira la consola.</p>
+  <div class="js-playground" data-titulo="Envolver posiciones: % contra mod" data-altura="220" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+
+const mod = (x, y) => x - y * Math.floor(x / y);
+const parts = [];
+for (let i = 0; i < 12; i++) parts.push({ x: i * W / 12, v: -60 - i * 9 });
+
+let previo = null, t = 0, avisado = false;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min(0.05, (ms - previo) / 1000);
+  previo = ms; t += dt;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  parts.forEach((p, i) => {
+    const bruto = p.x + p.v * t;              // posición sin envolver (crece hacia -∞)
+    const conResto = bruto % W;               // JS: negativo en cuanto bruto < 0
+    const conMod = mod(bruto, W);             // siempre en [0, W)
+    ctx.fillStyle = '#ff6b7a'; ctx.beginPath(); ctx.arc(conResto, H * 0.3, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3ecf8e'; ctx.beginPath(); ctx.arc(conMod, H * 0.7, 8, 0, Math.PI * 2); ctx.fill();
+    if (i === 0 && bruto < -20 && !avisado) {          // -20: la partícula (radio 8) ya ha salido entera
+      console.log('bruto =', bruto.toFixed(1), '→ % da', conResto.toFixed(1), '(fuera del lienzo), mod da', conMod.toFixed(1));
+      avisado = true;
+    }
+  });
+  ctx.fillStyle = '#8791a5'; ctx.font = '13px monospace';
+  ctx.fillText('x % W', 10, H * 0.3 - 16); ctx.fillText('mod(x, W)', 10, H * 0.7 - 16);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>En cuanto la posición bruta se hace negativa, <code>bruto % W</code> da un número negativo (entre −W y 0), que cae fuera del lienzo: las partículas rojas desaparecen por la izquierda y no vuelven nunca. <code>mod</code> las devuelve al intervalo $[0, W)$ y reaparecen por la derecha. El mismo error hace que <code>array[(i - 1) % n]</code> devuelva <code>undefined</code> para <code>i = 0</code> (índice −1), que <code>undefined * 2</code> sea <code>NaN</code>, y que el NaN se extienda por toda la animación.</p>
+</section>
+
+<div class="callout bestiario" data-id="m3-mod-negativos" data-titulo="El patrón o la animación se rompe al cruzar el cero">
+  <p><strong>Síntoma:</strong> algo que se repite (un patrón, un índice circular, un mundo que da la vuelta) funciona en los valores positivos y falla en los negativos: los objetos desaparecen por la izquierda o por abajo, un patrón se refleja como en un espejo al cruzar el origen, una celda del centro sale el doble de ancha.</p>
+  <p><strong>Causa:</strong> se ha usado una operación que trunca hacia el cero donde hacía falta una que redondee hacia abajo. El <code>%</code> de JavaScript devuelve restos negativos para dividendos negativos; <code>int(x)</code> y <code>trunc(x)</code> en GLSL mandan −0.7 y 0.7 al mismo entero (0), así que la celda del 0 es el doble de ancha; y el <code>%</code> de enteros en GLSL con negativos es indefinido.</p>
+  <p><strong>Solución:</strong> para envolver y para numerar celdas, <code>floor</code> y <code>mod</code> (en JavaScript, <code>x - y * Math.floor(x / y)</code>). En GLSL, <code>floor(p)</code> en lugar de <code>int(p)</code>, y <code>mod(a, b)</code> con floats en lugar de <code>%</code> con enteros negativos.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Cuánto valen <code>mod(-1.0, 3.0)</code> en GLSL y <code>-1 % 3</code> en JavaScript?</p>
+  <ul>
+    <li>−1 y −1<div class="explicacion">Eso es el resto truncado, el de JavaScript. <code>mod</code> de GLSL usa <code>floor</code>: −1 − 3·floor(−1/3) = −1 − 3·(−1) = 2.</div></li>
+    <li data-correcta>2 y −1<div class="explicacion">GLSL: −1 − 3·floor(−0.333) = −1 + 3 = 2, siempre en [0, 3). JavaScript: el resto de la división truncada lleva el signo del dividendo, −1.</div></li>
+    <li>2 y 2<div class="explicacion">JavaScript no ajusta el signo: <code>%</code> es el resto de la división truncada hacia el cero, y con dividendo negativo sale negativo. Para obtener 2 en JavaScript: <code>((-1 % 3) + 3) % 3</code>.</div></li>
+  </ul>
+</div>
+
+<h2>abs y sign: espejos</h2>
+<p><code>abs(x)</code> <strong>refleja</strong> la mitad negativa sobre la positiva: cualquier cosa que dibujes con <code>abs(x)</code> es simétrica respecto al eje. Aplicado a coordenadas, <code>p = abs(p)</code> copia el primer cuadrante en los otros tres: el principio de los caleidoscopios (lección <a href="../06-glsl/05-patrones.html">6.5</a>). Combinado con <code>fract</code> da la <strong>onda triangular</strong>, que sube y baja linealmente:</p>
+$$\operatorname{tri}(x) = 1 - |2\operatorname{fract}(x) - 1|$$
+<p>Léela de dentro afuera: <code>fract(x)</code> es un diente de sierra de 0 a 1; <code>2·fract(x) − 1</code> lo lleva a $[-1, 1]$; el valor absoluto convierte la rampa en una «V» (1 → 0 → 1); y restarlo de 1 la da la vuelta: 0 → 1 → 0, un pico por unidad.</p>
+<p><code>sign(x)</code> devuelve −1, 0 o 1. Cuidado con el 0 central: <code>sign(0.0)</code> es 0, así que si lo usas para «conservar el signo» (<code>sign(x) * f(abs(x))</code>) el cero se queda en cero, que suele ser lo correcto, pero si lo usas como dirección (<code>velocidad * sign(x)</code>) un objeto en el 0 exacto no se moverá.</p>
+
+<div class="graficador" data-x="-2.2,2.2" data-y="-1.3,1.3" data-titulo="abs, sign y la onda triangular">
+<script type="text/x-exprs">
+abs(x) - 1.0
+sign(x) * 0.8
+1.0 - abs(2.0 * fract(x) - 1.0)
+abs(sin(x * 3.0)) * 0.6 - 0.6
+</script>
+</div>
+
+<h2>pow, exp, log y sqrt: curvar</h2>
+<p><code>pow(x, k)</code> con $x \in [0, 1]$ es la forma más simple de <strong>curvar</strong> una rampa sin mover sus extremos (0 y 1 siguen en su sitio, porque $0^k = 0$ y $1^k = 1$): con $k > 1$ la curva se hunde (empieza lenta, termina rápida: un <em>ease-in</em>), con $k &lt; 1$ se abomba (<em>ease-out</em>). Es también la corrección gamma de los colores (lección <a href="../06-glsl/04-color.html">6.4</a>).</p>
+<p><code>exp(-k * x)</code> es la <strong>caída exponencial</strong>: empieza en 1 y se aproxima a 0 sin llegar nunca, perdiendo la misma fracción en cada intervalo igual de $x$. Es la forma de la atenuación, del eco, del <code>lerp</code> independiente de los fps de <a href="01-vectores.html">3.1</a>. <code>log</code> hace lo contrario: comprime los valores grandes. <code>sqrt</code> es <code>pow(x, 0.5)</code>, y <code>inversesqrt(x)</code>, $1/\sqrt{x}$, existe porque es más barata que calcular la raíz y dividir: <code>normalize</code> la usa por dentro.</p>
+
+<h3>Los casos indefinidos</h3>
+<p>Aquí está la letra pequeña más traicionera de GLSL. La especificación declara indefinidos:</p>
+<ul>
+  <li><code>pow(x, y)</code> si $x &lt; 0$, o si $x = 0$ con $y \le 0$.</li>
+  <li><code>sqrt(x)</code> si $x &lt; 0$; <code>inversesqrt(x)</code> si $x \le 0$.</li>
+  <li><code>log(x)</code> y <code>log2(x)</code> si $x \le 0$.</li>
+</ul>
+<p>¿Por qué <code>pow</code> con base negativa, si $(-2)^2 = 4$ está perfectamente definido? Porque la GPU no calcula potencias multiplicando: la especificación dice que su precisión se «hereda» de <code>exp2(y * log2(x))</code>, que es como se implementa, y $\log_2$ de un negativo no existe. En la práctica <strong>el resultado depende de quién lo calcule</strong>. Medido en Chrome sobre un M1:</p>
+<table>
+  <thead><tr><th>Código</th><th>Resultado</th><th>Por qué</th></tr></thead>
+  <tbody>
+    <tr><td><code>pow(x, k)</code> con <code>k</code> uniform, <code>x = −2</code></td><td>NaN</td><td>se calcula de verdad: exp2(k·log2(−2))</td></tr>
+    <tr><td><code>pow(x, 2.0)</code> con <code>x = −2</code></td><td>4 (a veces NaN)</td><td>el compilador puede convertir un exponente entero constante en multiplicaciones</td></tr>
+    <tr><td><code>pow(-2.0, 2.0)</code>, todo constante</td><td>0</td><td>ANGLE lo evalúa al compilar, avisa y devuelve 0</td></tr>
+    <tr><td><code>pow(0.0, 0.0)</code> con uniforms</td><td>NaN</td><td>exp2(0 · log2(0)) = exp2(0 · (−∞))</td></tr>
+  </tbody>
+</table>
+<p>El «a veces» de la segunda fila es real: en el mismo navegador, la misma línea dio 4 o NaN según qué otras cosas hubiera en el shader. En la lección <a href="07-precision.html">3.7</a> verás el motivo, que tiene que ver con la función <code>isnan()</code> (y que el graficador de este curso usa por dentro: en él, <code>pow</code> con base negativa siempre da NaN).</p>
+
+<div class="callout bestiario" data-id="m3-pow-negativo" data-titulo="Manchas negras o huecos con pow">
+  <p><strong>Síntoma:</strong> un efecto que usa <code>pow</code> tiene zonas negras, o una curva desaparece en ciertos tramos; o funciona con <code>pow(x, 2.0)</code> y se rompe al cambiar el 2.0 por un uniform; o funciona en un ordenador y no en otro.</p>
+  <p><strong>Causa:</strong> la base de <code>pow</code> es negativa en esos píxeles (típicamente, porque es un seno, un producto punto o una resta que a veces baja de 0). El resultado es indefinido: NaN en la mayoría de los casos, y NaN se pinta como negro y contagia todo lo que toca.</p>
+  <p><strong>Solución:</strong> asegura una base no negativa: <code>pow(max(x, 0.0), k)</code> si solo te interesa la parte positiva, o <code>sign(x) * pow(abs(x), k)</code> si quieres la curva simétrica. Para cuadrados y cubos, multiplica: <code>x * x</code> es más rápido, exacto y está definido para cualquier <code>x</code>. En el graficador de abajo, la curva violeta desaparece en los arcos negativos del seno: el graficador no dibuja los valores NaN.</p>
+</div>
+
+<div class="graficador" data-x="0,4.2" data-y="-1.3,1.3" data-titulo="pow con base negativa" data-uniforms='{"k":{"min":0.3,"max":4,"valor":2}}'>
+<script type="text/x-exprs">
+pow(sin(x * 3.0), k)
+pow(abs(sin(x * 3.0)), k) * 0.8
+sign(sin(x * 3.0)) * pow(abs(sin(x * 3.0)), k) * 0.6
+</script>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En un shader escribes <code>float brillo = pow(dot(N, L), 8.0);</code> para un brillo concentrado. ¿Qué problema tiene?</p>
+  <ul>
+    <li>Ninguno: 8 es un exponente par, así que el resultado siempre es positivo<div class="explicacion">Matemáticamente sí, pero <code>pow</code> con base negativa es indefinido en GLSL: la GPU calcula exp2(8·log2(x)), y el logaritmo de un negativo es NaN. Que salga bien depende de si el compilador decide multiplicar.</div></li>
+    <li data-correcta>Donde la luz llega por detrás, <code>dot(N, L)</code> es negativo y <code>pow</code> es indefinido: hay que escribir <code>pow(max(dot(N, L), 0.0), 8.0)</code><div class="explicacion">Correcto. Además, esas zonas no deberían brillar: el <code>max</code> arregla las dos cosas. Es el mismo patrón que el brillo especular del ejercicio 3.2.2.</div></li>
+    <li><code>pow</code> no acepta exponentes mayores que 4<div class="explicacion">No hay tal límite. Los exponentes altos solo afilan la curva (un coseno elevado a 8 cae mucho más rápido que el coseno).</div></li>
+  </ul>
+</div>
+
+<h2>Las funciones de Iñigo Quilez</h2>
+<p>Iñigo Quilez, cocreador de Shadertoy, publicó una colección de pequeñas funciones de forma que se han convertido en vocabulario común de los shaders. Todas trabajan en $[0, 1]$ (o cerca) y cada una resuelve un problema concreto. Estas son las más útiles, con el código de su <a href="https://iquilezles.org/articles/functions/">artículo</a>:</p>
+
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Funciones de forma de Iñigo Quilez (iquilezles.org/articles/functions)">
+// Casi la identidad, pero sin bajar de n cerca de 0 (suave, sin el codo de max(x, n))
+float almostIdentity(float x, float m, float n) {
+  if (x > m) return x;
+  float a = 2.0 * n - m;
+  float b = 2.0 * m - 3.0 * n;
+  float t = x / m;
+  return (a * t + b) * t * t + n;
+}
+// Impulso: sube rápido y cae lento; máximo 1 en x = 1/k
+float expImpulse(float x, float k) { float h = k * x; return h * exp(1.0 - h); }
+// Campana de soporte finito: 1 en c, 0 a distancia w (un sustituto local de la gaussiana)
+float cubicPulse(float x, float c, float w) {
+  x = abs(x - c);
+  if (x > w) return 0.0;
+  x /= w;
+  return 1.0 - x * x * (3.0 - 2.0 * x);
+}
+// Escalón exponencial: con k grande se acerca a un step que baja en x = 1
+float expStep(float x, float k) { return exp2(-pow(x, k)); }
+// Expande los lados y comprime el centro (o al revés), dejando 0.5 en 0.5
+float gain(float x, float k) {
+  float a = 0.5 * pow(2.0 * ((x < 0.5) ? x : 1.0 - x), k);
+  return (x < 0.5) ? a : 1.0 - a;
+}
+// De 0..1 a 0..1 con 0 en los extremos y 1 en el centro
+float parabola(float x, float k) { return pow(4.0 * x * (1.0 - x), k); }
+// Como parabola, pero con la forma de cada lado controlable
+float pcurve(float x, float a, float b) {
+  float k = pow(a + b, a + b) / (pow(a, a) * pow(b, b));
+  return k * pow(x, a) * pow(1.0 - x, b);
+}
+</script>
+
+<p>Fíjate en que todas evitan con cuidado las bases negativas en <code>pow</code> (dentro de $[0, 1]$, <code>x</code>, <code>1 − x</code> y <code>4x(1 − x)</code> son no negativos). Fuera de ese intervalo, <code>parabola</code>, <code>pcurve</code>, <code>gain</code> y <code>expStep</code> pueden dar NaN. En los graficadores, mueve los parámetros:</p>
+
+<div class="graficador" data-x="0,1" data-y="-0.1,1.15" data-titulo="Impulsos y campanas" data-uniforms='{"k":{"min":1,"max":30,"valor":8,"etiqueta":"k (impulso)"},"c":{"min":0,"max":1,"valor":0.6,"etiqueta":"c (centro)"},"w":{"min":0.02,"max":0.5,"valor":0.2,"etiqueta":"w (ancho)"},"kp":{"min":0.2,"max":6,"valor":1,"etiqueta":"k (parábola)"}}'>
+<script type="text/x-exprs">
+expImpulse(x, k)
+cubicPulse(x, c, w)
+parabola(x, kp)
+</script>
+<script type="text/x-glsl">
+float expImpulse(float x, float k) { float h = k * x; return h * exp(1.0 - h); }
+float cubicPulse(float x, float c, float w) {
+  x = abs(x - c);
+  if (x > w) return 0.0;
+  x /= w;
+  return 1.0 - x * x * (3.0 - 2.0 * x);
+}
+float parabola(float x, float k) { return pow(4.0 * x * (1.0 - x), k); }
+</script>
+</div>
+
+<div class="graficador" data-x="0,1" data-y="-0.1,1.15" data-titulo="Remapeos del intervalo unidad" data-uniforms='{"kg":{"min":0.2,"max":5,"valor":2.5,"etiqueta":"k (gain)"},"pa":{"min":0.3,"max":6,"valor":2,"etiqueta":"a (pcurve)"},"pb":{"min":0.3,"max":6,"valor":1,"etiqueta":"b (pcurve)"},"ke":{"min":1,"max":30,"valor":8,"etiqueta":"k (expStep)"}}'>
+<script type="text/x-exprs">
+gain(x, kg)
+pcurve(x, pa, pb)
+expStep(x * 1.6, ke)
+almostIdentity(x, 0.4, 0.12)
+x
+</script>
+<script type="text/x-glsl">
+float almostIdentity(float x, float m, float n) {
+  if (x > m) return x;
+  float a = 2.0 * n - m;
+  float b = 2.0 * m - 3.0 * n;
+  float t = x / m;
+  return (a * t + b) * t * t + n;
+}
+float expStep(float x, float k) { return exp2(-pow(x, k)); }
+float gain(float x, float k) {
+  float a = 0.5 * pow(2.0 * ((x < 0.5) ? x : 1.0 - x), k);
+  return (x < 0.5) ? a : 1.0 - a;
+}
+float pcurve(float x, float a, float b) {
+  float k = pow(a + b, a + b) / (pow(a, a) * pow(b, b));
+  return k * pow(x, a) * pow(1.0 - x, b);
+}
+</script>
+</div>
+
+<ul>
+  <li><strong><code>expImpulse</code></strong>: un «golpe» con decaimiento: un botón que al pulsarse se hincha y vuelve, un destello, el ataque de una nota. Con <code>x</code> = tiempo desde el evento, alcanza su máximo (1) en <code>x = 1/k</code>.</li>
+  <li><strong><code>cubicPulse</code></strong>: resalta una zona alrededor de <code>c</code> y es exactamente 0 fuera de <code>[c − w, c + w]</code>. Por dentro es un <code>smoothstep</code> reflejado.</li>
+  <li><strong><code>parabola</code> y <code>pcurve</code></strong>: arcos que valen 0 en los extremos, ideales para algo que aparece y desaparece a lo largo de una animación de 0 a 1. <code>pcurve</code> permite que el arco suba rápido y baje lento, o al revés.</li>
+  <li><strong><code>gain</code></strong>: con <code>k &gt; 1</code>, una S (contraste); con <code>k &lt; 1</code>, lo contrario. Siempre deja 0.5 en 0.5.</li>
+  <li><strong><code>almostIdentity</code></strong>: deja pasar el valor tal cual por encima de <code>m</code> y, por debajo, lo lleva suavemente hasta un mínimo <code>n</code> en 0. Es la versión sin codo de <code>max(x, n)</code>: útil para evitar divisiones por cero o raíces de cero sin que se note.</li>
+</ul>
+
+<h2>Combinar funciones</h2>
+<p>La potencia está en combinarlas. Unas cuantas recetas que aparecen constantemente:</p>
+<ul>
+  <li><strong>Pulso (banda)</strong>: 1 entre <code>a</code> y <code>b</code>, 0 fuera: <code>step(a, x) - step(b, x)</code>. Con bordes suaves de ancho <code>w</code>: <code>smoothstep(a - w, a, x) - smoothstep(b, b + w, x)</code>. También como producto: <code>step(a, x) * (1.0 - step(b, x))</code>.</li>
+  <li><strong>Álgebra de máscaras</strong> (valores entre 0 y 1): intersección = <code>m1 * m2</code> (o <code>min</code>), unión = <code>max(m1, m2)</code>, complemento = <code>1.0 - m</code>, diferencia = <code>m1 * (1.0 - m2)</code>.</li>
+  <li><strong>Anillo</strong>: un pulso aplicado a una distancia: <code>smoothstep(r - w, r, d) - smoothstep(r, r + w, d)</code>, con <code>d = length(p)</code>.</li>
+  <li><strong>Repetir cualquier cosa</strong>: aplicar la función a <code>fract(x * N)</code> en lugar de a <code>x</code>.</li>
+  <li><strong>Hacerla simétrica</strong>: aplicarla a <code>abs(x)</code>.</li>
+  <li><strong>Animarla</strong>: sumar el tiempo al argumento (la desplaza) o multiplicar el resultado por una onda (la hace latir).</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.4.3 — El pulso de un botón</h3>
+  <p>Un botón circular que emite una onda cada 1.5 s: un disco, un anillo que crece y se desvanece, y todo con bordes suaves.</p>
+  <div class="glsl-playground" data-titulo="Botón que emite un pulso" data-altura="320">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = length(p);
+  float px = 2.0 / u_resolution.y;               // un píxel, en estas unidades
+
+  // El botón: disco de radio 0.3 con un borde de un píxel
+  float boton = 1.0 - smoothstep(0.3 - px, 0.3, r);
+
+  // El pulso: nace en el borde cada 1.5 s y se expande hasta 0.9
+  float fase = fract(u_time / 1.5);              // diente de sierra: 0 → 1, y vuelta a 0
+  float radio = mix(0.3, 0.9, fase);             // remapeo de 0..1 a 0.3..0.9
+  float anillo = 1.0 - smoothstep(0.0, 0.035, abs(r - radio));  // banda alrededor del radio
+  float desvanecer = (1.0 - fase) * (1.0 - fase);                // se apaga al crecer
+
+  vec3 violeta = vec3(0.55, 0.48, 1.0);
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  color = mix(color, violeta, anillo * desvanecer * 0.8);
+  color = mix(color, violeta, boton);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>El disco</strong> es una máscara con borde suave: 1 dentro, 0 fuera, y un píxel de transición. Es <code>1 − smoothstep</code> porque queremos 1 en el interior (distancias pequeñas), con los bordes en orden creciente como manda la especificación.</li>
+    <li><strong><code>fract(u_time / 1.5)</code></strong> convierte el tiempo en un diente de sierra que recorre 0 → 1 cada 1.5 s: un reloj que se reinicia. Todo lo demás se calcula a partir de esa fase.</li>
+    <li><strong>El radio del anillo</strong> es un remapeo de la fase con <code>mix</code>, y el anillo es una banda: 1 donde <code>r</code> está cerca de <code>radio</code>, cayendo a 0 a distancia 0.035. Es el «pulso aplicado a una distancia» de la lista de recetas.</li>
+    <li><strong>El desvanecimiento</strong>, <code>(1 − fase)²</code>, apaga el anillo a medida que crece; al cuadrado cae rápido al principio y suave al final, que se percibe como más natural que una caída lineal.</li>
+    <li><strong>Las capas</strong> se componen con <code>mix</code> en orden: fondo, anillo encima, botón encima de todo. Cada <code>mix</code> con una máscara es «pintar esta capa donde la máscara vale 1».</li>
+  </ol>
+</section>
+
+<h3>De 1D a 2D</h3>
+<p>Cualquier función de una variable se convierte en un dibujo 2D si le das una coordenada, una distancia o un ángulo. Este shader reúne las más comunes; cambia el <code>modo</code> para ver cada una:</p>
+
+<div class="glsl-playground" data-titulo="Formas 2D con funciones 1D" data-altura="320" data-apilado
+     data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":4,"valor":0,"etiqueta":"modo"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_modo;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float v = 0.0;
+  if (u_modo == 0) {          // franjas: un diente de sierra en x, cortado con step
+    v = step(0.5, fract(p.x * 5.0));
+  } else if (u_modo == 1) {   // tablero: la paridad de la suma de los índices de celda
+    v = mod(floor(p.x * 4.0) + floor(p.y * 4.0), 2.0);
+  } else if (u_modo == 2) {   // anillos concéntricos: onda triangular de la distancia
+    v = 1.0 - abs(2.0 * fract(length(p) * 4.0 - u_time * 0.5) - 1.0);
+  } else if (u_modo == 3) {   // rombo: la "distancia" |x| + |y| (con abs, simetría en 4 cuadrantes)
+    float d = abs(p.x) + abs(p.y);
+    v = 1.0 - smoothstep(0.6 - px, 0.6 + px, d);
+  } else {                    // máscaras combinadas: disco MENOS banda horizontal, UNIÓN franja vertical
+    float disco = 1.0 - smoothstep(0.7 - px, 0.7 + px, length(p));
+    float banda = step(-0.1, p.y) - step(0.1, p.y);
+    float franja = step(-0.05, p.x) - step(0.05, p.x);
+    v = max(disco * (1.0 - banda), franja);
+  }
+  fragColor = vec4(mix(vec3(0.07, 0.08, 0.10), vec3(0.95, 0.75, 0.35), v), 1.0);
+}
+</script>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 3.4.1 — Construye funciones</h3>
+  <p>Escribe en las filas vacías del graficador:</p>
+  <ol>
+    <li>Una función que valga 1 entre 0.3 y 0.6 y 0 fuera, con bordes suaves de ancho 0.05 (hacia fuera del intervalo).</li>
+    <li>Una onda triangular de periodo 0.5 que vaya de 0 a 1 y vuelva, valiendo 0 en x = 0.</li>
+    <li>Una «escalera» que se repita en cada intervalo de longitud 0.25: 4 escalones iguales que empiecen en 0 y terminen en 1.</li>
+  </ol>
+  <div class="graficador" data-x="-0.1,1.1" data-y="-0.15,1.2" data-titulo="Ejercicio 3.4.1">
+<script type="text/x-exprs">
+step(0.3, x) - step(0.6, x)
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Para la banda suave: un <code>smoothstep</code> que sube antes de 0.3 menos otro que sube después de 0.6. Para la triangular, parte de <code>1.0 - abs(2.0 * fract(x) - 1.0)</code> y cambia el periodo multiplicando <code>x</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para la tercera: <code>fract(x / 0.25)</code> es un diente de sierra de periodo 0.25, y <code>floor(… * 4.0)</code> lo convierte en los escalones 0, 1, 2, 3. ¿Por qué número hay que dividir para que el último valga 1?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <ol>
+      <li><code>smoothstep(0.25, 0.3, x) - smoothstep(0.6, 0.65, x)</code>. El primero sube de 0 a 1 entre 0.25 y 0.3; el segundo, entre 0.6 y 0.65. Entre 0.3 y 0.6 vale 1 − 0 = 1; a la derecha, 1 − 1 = 0. Nota que los bordes suaves se añaden hacia fuera: si los pusieras hacia dentro (<code>smoothstep(0.3, 0.35, x)</code>), la banda completa solo valdría 1 entre 0.35 y 0.55.</li>
+      <li><code>1.0 - abs(2.0 * fract(x * 2.0) - 1.0)</code>. Multiplicar <code>x</code> por 2 dentro de <code>fract</code> hace que el diente de sierra se repita el doble de rápido, periodo 0.5. En x = 0, <code>fract</code> vale 0, <code>2·0 − 1 = −1</code>, su valor absoluto es 1 y 1 − 1 = 0.</li>
+      <li><code>floor(fract(x / 0.25) * 4.0) / 3.0</code>: <code>fract(x / 0.25)</code> es un diente de sierra de periodo 0.25; multiplicado por 4 y con <code>floor</code> da 0, 1, 2 y 3 en cada intervalo, y dividiendo por 3 quedan 0, 1/3, 2/3 y 1. El error típico es dividir por 4 (el número de escalones): saldrían 0, 0.25, 0.5 y 0.75, y el último no llegaría a 1. Es el eterno problema de los postes y los tramos: 4 escalones tienen 3 saltos entre ellos.</li>
+    </ol>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.4.2 — Póster con franjas</h3>
+  <p>Convierte el degradado horizontal en <strong>5 bandas verticales</strong> de brillo 0, 0.25, 0.5, 0.75 y 1 (de izquierda a derecha, todas del mismo ancho) y superpón franjas diagonales finas y blancas (10 por unidad, cada una de un 10&nbsp;% del periodo) que se desplacen continuamente.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.4.2" data-altura="260" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float brillo = uv.x;                  // TODO: 5 bandas de 0 a 1
+  float franjas = 0.0;                  // TODO: franjas diagonales que se mueven
+  vec3 color = vec3(brillo) * vec3(0.55, 0.48, 1.0);
+  color = mix(color, vec3(1.0), franjas);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  // floor(uv.x * 5) da 0, 1, 2, 3, 4; dividiendo por 4 (no por 5) el último llega a 1
+  float brillo = floor(uv.x * 5.0) / 4.0;
+  // uv.x + uv.y es constante a lo largo de diagonales; fract lo repite 10 veces por unidad;
+  // restar el tiempo desplaza el patrón; step(0.9, …) deja una franja del 10 % del periodo
+  float franjas = step(0.9, fract((uv.x + uv.y) * 10.0 - u_time));
+  vec3 color = vec3(brillo) * vec3(0.55, 0.48, 1.0);
+  color = mix(color, vec3(1.0), franjas);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>floor(uv.x * 5.0)</code> numera las bandas del 0 al 4. ¿Por qué número hay que dividir para que la última valga 1?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Una diagonal es una línea donde <code>uv.x + uv.y</code> es constante. <code>fract(… * 10.0)</code> repite ese valor 10 veces por unidad, y <code>step(0.9, …)</code> se queda con el último 10&nbsp;% de cada repetición. Para moverlas, resta <code>u_time</code> dentro de <code>fract</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Las bandas: <code>floor(uv.x * 5.0)</code> toma los valores 0 a 4, uno por quinto de pantalla. Para repartirlos entre 0 y 1 hay que dividir por 4, el número de <em>saltos</em>, no el de bandas: dividiendo por 5 la última valdría 0.8. Es el mismo problema de postes y tramos del ejercicio anterior.</p>
+    <p>Las franjas: <code>uv.x + uv.y</code> crece en dirección diagonal y es constante a lo largo de las diagonales perpendiculares a esa dirección. Multiplicado por 10 y pasado por <code>fract</code>, da 10 dientes de sierra por unidad; <code>step(0.9, …)</code> vale 1 solo en el último 10&nbsp;% de cada diente. Al restar <code>u_time</code> dentro de <code>fract</code>, el diente se desplaza una unidad por segundo en su escala, es decir, 0.1 unidades de uv por segundo en diagonal. El signo decide el sentido: <code>- u_time</code> mueve las franjas hacia arriba a la derecha. (Como las uv están estiradas, las franjas no forman exactamente 45° si el lienzo no es cuadrado.)</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.4.3 — El tablero con la fila doble</h3>
+  <p>Este tablero de ajedrez centrado en el origen tiene un error: la fila y la columna que pasan por el centro son el doble de anchas, y además en algunas zonas aparecen colores raros. Encuentra la causa y arréglalo para que todas las casillas midan lo mismo (0.25 unidades) y alternen perfectamente entre los dos colores.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.4.3" data-altura="300" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  ivec2 celda = ivec2(p * 4.0);                    // índice de la casilla
+  int paridad = (celda.x + celda.y) % 2;           // 0 o 1… ¿seguro?
+  vec3 color = paridad == 0 ? vec3(0.9) : vec3(0.15);
+  if (paridad != 0 && paridad != 1) color = vec3(1.0, 0.2, 0.4);   // ¿qué es esto?
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 celda = floor(p * 4.0);                     // floor: hacia abajo, también en negativos
+  float paridad = mod(celda.x + celda.y, 2.0);     // mod de floats: siempre 0 o 1
+  vec3 color = paridad < 0.5 ? vec3(0.9) : vec3(0.15);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿A qué entero convierte <code>int()</code> los valores −0.9 y 0.9? ¿Y cuánto mide entonces la casilla número 0?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Qué dice la especificación del <code>%</code> de enteros con operandos negativos? Las zonas rosas son justo esos casos.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Hay dos errores, los dos del bestiario de <code>mod</code>. El primero: <code>ivec2(p * 4.0)</code> <strong>trunca hacia el cero</strong>, así que todo el intervalo $(-1, 1)$ de <code>p * 4.0</code> va a parar a la casilla 0: la fila y la columna centrales miden el doble. <code>floor</code> redondea hacia abajo (−0.9 → −1, 0.9 → 0) y cada casilla mide una unidad.</p>
+    <p>El segundo: con índices negativos, <code>(celda.x + celda.y) % 2</code> puede dar −1, porque el <code>%</code> de enteros con negativos es indefinido en GLSL y en el M1 se comporta como en C (−1 % 2 = −1). Esas son las zonas rosas: ni 0 ni 1. <code>mod</code> con floats usa <code>floor</code> y siempre devuelve un valor en $[0, 2)$. Una vez corregido, fíjate en que el tablero es perfectamente regular al cruzar los ejes: es la prueba visual de que la numeración de celdas es correcta.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 3.4.4 — Un spinner de carga</h3>
+  <p>Programa el indicador de carga clásico: 8 puntos en círculo (radio 0.55) en el que un punto «encendido» avanza a 1.2 vueltas por segundo, dejando detrás una estela de puntos que se apagan poco a poco (y encogen). Un solo shader, sin bucles: cada píxel averigua a qué sector del círculo pertenece. Combina polares (<a href="03-trigonometria.html">3.3</a>), <code>floor</code>/<code>fract</code> y <code>smoothstep</code>.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.4.4" data-altura="300">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+const float PI = 3.14159265;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float N = 8.0;
+  float a = atan(p.y, p.x);
+
+  // Por ahora, un único punto fijo en el ángulo 0
+  vec2 c = 0.55 * vec2(1.0, 0.0);
+  float brillo = 1.0;
+  // TODO: sector de este píxel, centro del punto de ese sector y brillo según el tiempo
+
+  float radio = 0.06 + 0.04 * brillo;
+  float punto = 1.0 - smoothstep(radio - px, radio + px, length(p - c));
+  vec3 color = mix(vec3(0.07, 0.08, 0.10), vec3(0.55, 0.48, 1.0) * (0.2 + 0.8 * brillo), punto);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+const float PI = 3.14159265;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float N = 8.0;
+  float a = atan(p.y, p.x);                          // (−π, π]
+
+  // Sector: el ángulo pasado a vueltas (0..1) y multiplicado por N, redondeado hacia abajo
+  float sector = floor((a + PI) / (2.0 * PI) * N);   // 0 .. N−1
+  // Centro angular del sector (+0.5 = mitad del sector) y posición de su punto
+  float ac = (sector + 0.5) / N * 2.0 * PI - PI;
+  vec2 c = 0.55 * vec2(cos(ac), sin(ac));
+
+  // La "cabeza" recorre la vuelta 1.2 veces por segundo; k = cuánto hace que pasó por aquí
+  float cabeza = fract(u_time * 1.2);
+  float k = fract(cabeza - sector / N);               // 0 recién encendido … casi 1 hace una vuelta
+  float brillo = pow(1.0 - k, 3.0);                    // base en [0, 1]: pow seguro
+
+  float radio = 0.06 + 0.04 * brillo;
+  float punto = 1.0 - smoothstep(radio - px, radio + px, length(p - c));
+  vec3 color = mix(vec3(0.07, 0.08, 0.10), vec3(0.55, 0.48, 1.0) * (0.2 + 0.8 * brillo), punto);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Pasa el ángulo a «vueltas» entre 0 y 1: <code>(a + PI) / (2.0 * PI)</code>. Multiplicado por N y con <code>floor</code>, es el número de sector. El centro del punto de ese sector está en el ángulo del medio del sector.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para el brillo: <code>fract(u_time * 1.2)</code> es la posición de la cabeza en vueltas. La diferencia con la posición del sector (<code>sector / N</code>), pasada por <code>fract</code>, dice cuánto hace que la cabeza pasó por ese sector, sin costuras.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Es la repetición de <code>floor</code>/<code>fract</code> aplicada al ángulo en lugar de a una coordenada. Cada píxel calcula en qué sector está (<code>floor</code> del ángulo en vueltas por N), dónde está el centro del punto de su sector (el ángulo medio del sector, pasado a cartesianas con coseno y seno) y dibuja solo ese punto. Así, un único cálculo de distancia dibuja los 8 puntos, cada uno en su sector.</p>
+    <p>El brillo usa la misma idea que el radar de <a href="03-trigonometria.html">3.3</a>: la diferencia entre la posición de la cabeza y la del sector, «módulo una vuelta» gracias a <code>fract</code>. Vale casi 0 en el sector que se acaba de encender y crece hacia 1 en los que se encendieron hace más tiempo; <code>pow(1 − k, 3)</code> convierte eso en una estela que se apaga rápido. La base de <code>pow</code> está garantizada en $[0, 1]$, así que no hay NaN posible. El caso del ángulo π exacto (el sector N) cae en la misma posición y con el mismo brillo que el sector 0, así que tampoco hay costura. El sentido de giro es antihorario porque el número de sector crece con el ángulo. Para girar en sentido horario no basta con cambiar el signo del tiempo (la estela quedaría <em>delante</em> de la cabeza): hay que invertir también el orden de la resta, con <code>cabeza = fract(-u_time * 1.2)</code> y <code>k = fract(sector / N - cabeza)</code>.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un fragment shader dibuja convirtiendo números en máscaras: las funciones de forma son su vocabulario. Visualízalas como brillo y como curva.</li>
+    <li><code>step(edge, x)</code>: 0 si x &lt; edge, si no 1 (el borde primero). <code>smoothstep</code> = interpolación inversa recortada + $3t^2 - 2t^3$ (Hermite: pendiente 0 en los extremos). Bordes al revés = indefinido: invierte con <code>1.0 - smoothstep(…)</code>.</li>
+    <li><code>clamp</code>, <code>min</code>, <code>max</code> recortan; <code>max</code> y <code>min</code> (o el producto) son la unión y la intersección de máscaras. <code>mix</code> + interpolación inversa = remapeo.</li>
+    <li><code>fract</code> (en [0, 1), aunque en float32 puede dar 1.0 exacto con negativos diminutos) y <code>floor</code> repiten y numeran: coordenadas locales y un índice por celda. <code>round</code> tiene empates dependientes de la implementación; <code>floor(x + 0.5)</code> es portable.</li>
+    <li><code>mod(x, y) = x − y·floor(x/y)</code> ≠ <code>%</code> de JavaScript con negativos. GLSL no tiene <code>%</code> para floats, y el de enteros con negativos es indefinido. Numera celdas con <code>floor</code>, nunca con <code>int()</code>.</li>
+    <li><code>abs</code> refleja (simetrías, onda triangular); <code>sign(0.0)</code> es 0.</li>
+    <li><code>pow(x, y)</code> con x &lt; 0 es indefinido y en la práctica da NaN, 0 o el valor esperado según el compilador: usa <code>max(x, 0.0)</code>, <code>abs</code> o multiplica. Igual con <code>sqrt</code> y <code>log</code> de negativos.</li>
+    <li>Las funciones de Iñigo Quilez (<code>expImpulse</code>, <code>cubicPulse</code>, <code>parabola</code>, <code>pcurve</code>, <code>gain</code>, <code>almostIdentity</code>, <code>expStep</code>) resuelven formas habituales. Combínalas: pulsos, anillos, repeticiones, simetrías y animación.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://thebookofshaders.com/05/?lan=es">The Book of Shaders — Funciones de forma</a> (Patricio González Vivo y Jen Lowe): el origen de la técnica de dibujar funciones 1D en un shader.</li>
+  <li><a href="https://iquilezles.org/articles/functions/">Iñigo Quilez — Remapping functions</a>: todas las funciones de la lección y más, con sus derivaciones.</li>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">Especificación de GLSL ES 3.00</a>, secciones 8.2 y 8.3 (funciones exponenciales y comunes, con todos sus casos indefinidos).</li>
+  <li><a href="https://graphtoy.com/">Graphtoy</a>, también de Iñigo Quilez: un graficador en el navegador pensado para funciones de shaders.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

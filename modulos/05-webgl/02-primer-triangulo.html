@@ -1,0 +1,1721 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.2 · El primer triángulo, llamada por llamada — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/primer-triangulo">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>El primer triángulo, llamada por llamada</h1>
+  <p class="resumen">Unas 50 líneas para un triángulo naranja. Cada una es una pieza del pipeline que conoces del módulo 4: aquí las escribimos de verdad, explicamos cada argumento y después rompemos el programa de once maneras para aprender a diagnosticar una pantalla negra.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 5.1, 4.4, 4.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás compilar y enlazar shaders leyendo sus errores, y por qué comprobar el estado de compilación tiene un coste.</li>
+      <li>Entenderás qué hace cada argumento de <code>bufferData</code>, <code>vertexAttribPointer</code> y <code>drawArrays</code>, y qué estado toca cada llamada.</li>
+      <li>Distinguirás las tres formas de fijar la <em>location</em> de un atributo y sabrás por qué preferimos <code>layout(location = …)</code>.</li>
+      <li>Habrás escrito <code>crearShader</code> y <code>crearPrograma</code>, el corazón de GLKit, la librería del curso.</li>
+      <li>Tendrás una lista sistemática para diagnosticar una pantalla negra, y la habrás practicado con once programas rotos.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué 50 líneas para un triángulo</h2>
+<p>En Canvas 2D, un triángulo son cuatro llamadas: <code>beginPath</code>, tres <code>lineTo</code> y <code>fill</code>. En WebGL son unas cincuenta. No es burocracia gratuita: WebGL te da acceso directo a una máquina que dibuja millones de triángulos por frame, y para eso hay que configurarla explícitamente. Cada línea que vas a escribir corresponde a una pieza que ya conoces del <a href="../04-gpu/02-pipeline-grafico.html">pipeline</a> y de la <a href="../04-gpu/03-gpu-de-juguete.html">GPU de juguete</a>:</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Correspondencia entre las llamadas de WebGL y las etapas del pipeline">
+  <defs>
+    <marker id="m52-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="10" y="30" width="130" height="80" rx="8"/>
+  <text x="75" y="56" text-anchor="middle" style="font-weight:700">Buffer</text>
+  <text x="75" y="76" text-anchor="middle" class="texto-tenue" style="font-size:12px">bytes de los</text>
+  <text x="75" y="94" text-anchor="middle" class="texto-tenue" style="font-size:12px">vértices</text>
+  <rect class="caja" x="165" y="30" width="130" height="80" rx="8"/>
+  <text x="230" y="56" text-anchor="middle" style="font-weight:700">VAO</text>
+  <text x="230" y="76" text-anchor="middle" class="texto-tenue" style="font-size:12px">cómo leer esos</text>
+  <text x="230" y="94" text-anchor="middle" class="texto-tenue" style="font-size:12px">bytes</text>
+  <rect class="caja" x="320" y="30" width="130" height="80" rx="8"/>
+  <text x="385" y="56" text-anchor="middle" style="font-weight:700">Vertex shader</text>
+  <text x="385" y="76" text-anchor="middle" class="texto-tenue" style="font-size:12px">1 vez por vértice</text>
+  <text x="385" y="94" text-anchor="middle" class="texto-tenue" style="font-size:12px">→ gl_Position</text>
+  <rect class="caja" x="475" y="30" width="120" height="80" rx="8"/>
+  <text x="535" y="56" text-anchor="middle" style="font-weight:700">Rasterizador</text>
+  <text x="535" y="76" text-anchor="middle" class="texto-tenue" style="font-size:12px">viewport,</text>
+  <text x="535" y="94" text-anchor="middle" class="texto-tenue" style="font-size:12px">fragmentos</text>
+  <rect class="caja" x="620" y="30" width="130" height="80" rx="8"/>
+  <text x="685" y="56" text-anchor="middle" style="font-weight:700">Fragment shader</text>
+  <text x="685" y="76" text-anchor="middle" class="texto-tenue" style="font-size:12px">1 vez por píxel</text>
+  <text x="685" y="94" text-anchor="middle" class="texto-tenue" style="font-size:12px">→ color</text>
+  <path d="M142 70 L161 70" stroke="currentColor" stroke-width="2" marker-end="url(#m52-fl)"/>
+  <path d="M297 70 L316 70" stroke="currentColor" stroke-width="2" marker-end="url(#m52-fl)"/>
+  <path d="M452 70 L471 70" stroke="currentColor" stroke-width="2" marker-end="url(#m52-fl)"/>
+  <path d="M597 70 L616 70" stroke="currentColor" stroke-width="2" marker-end="url(#m52-fl)"/>
+  <text x="75" y="140" text-anchor="middle" class="texto-tenue" style="font-size:12px">createBuffer</text>
+  <text x="75" y="158" text-anchor="middle" class="texto-tenue" style="font-size:12px">bindBuffer</text>
+  <text x="75" y="176" text-anchor="middle" class="texto-tenue" style="font-size:12px">bufferData</text>
+  <text x="230" y="140" text-anchor="middle" class="texto-tenue" style="font-size:12px">createVertexArray</text>
+  <text x="230" y="158" text-anchor="middle" class="texto-tenue" style="font-size:12px">enableVertexAttribArray</text>
+  <text x="230" y="176" text-anchor="middle" class="texto-tenue" style="font-size:12px">vertexAttribPointer</text>
+  <text x="385" y="140" text-anchor="middle" class="texto-tenue" style="font-size:12px">createShader</text>
+  <text x="385" y="158" text-anchor="middle" class="texto-tenue" style="font-size:12px">compileShader</text>
+  <text x="385" y="176" text-anchor="middle" class="texto-tenue" style="font-size:12px">linkProgram</text>
+  <text x="535" y="140" text-anchor="middle" class="texto-tenue" style="font-size:12px">viewport</text>
+  <text x="535" y="158" text-anchor="middle" class="texto-tenue" style="font-size:12px">drawArrays</text>
+  <text x="685" y="140" text-anchor="middle" class="texto-tenue" style="font-size:12px">useProgram</text>
+  <text x="685" y="158" text-anchor="middle" class="texto-tenue" style="font-size:12px">clear</text>
+  <text x="380" y="225" text-anchor="middle" class="texto-tenue">debajo de cada etapa, las llamadas de WebGL que la configuran</text>
+</svg>
+
+<p>Primero verás el programa completo funcionando. Después lo recorreremos en seis pasos, con cada llamada anotada argumento a argumento. En el camino escribiremos dos funciones, <code>crearShader</code> y <code>crearPrograma</code>, que serán el núcleo de la librería del curso. Y al final romperemos el programa a propósito, una pieza cada vez, porque la habilidad más valiosa en WebGL no es escribir el triángulo: es saber por qué no aparece.</p>
+
+<h2>El programa completo</h2>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.2.1 — Un triángulo naranja</h3>
+  <p>Léelo de arriba abajo sin detenerte en los detalles: los comentarios marcan los seis pasos que desmenuzaremos después. Ejecútalo, cambia el color o las coordenadas y vuelve a ejecutar.</p>
+  <div class="js-playground" data-titulo="El primer triángulo" data-altura="260" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+// ---- 1. Los shaders: programas en GLSL, escritos como texto ----
+const fuenteVS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`;
+const fuenteFS = `#version 300 es
+precision highp float;
+out vec4 color;
+void main() {
+  color = vec4(1.0, 0.55, 0.2, 1.0);
+}`;
+
+// ---- 2. Compilar cada shader ----
+const vs = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vs, fuenteVS);
+gl.compileShader(vs);
+if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(vs));
+const fs = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fs, fuenteFS);
+gl.compileShader(fs);
+if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(fs));
+
+// ---- 3. Enlazarlos en un programa ----
+const programa = gl.createProgram();
+gl.attachShader(programa, vs);
+gl.attachShader(programa, fs);
+gl.linkProgram(programa);
+if (!gl.getProgramParameter(programa, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(programa));
+gl.detachShader(programa, vs); gl.deleteShader(vs);
+gl.detachShader(programa, fs); gl.deleteShader(fs);
+
+// ---- 4. Los datos: tres vértices (x, y) en clip space ----
+const posiciones = new Float32Array([
+  -0.7, -0.6,   // vértice 0: abajo a la izquierda
+   0.7, -0.6,   // vértice 1: abajo a la derecha
+   0.0,  0.7,   // vértice 2: arriba
+]);
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.bufferData(gl.ARRAY_BUFFER, posiciones, gl.STATIC_DRAW);
+
+// ---- 5. El VAO: cómo leer esos datos ----
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// ---- 6. Dibujar ----
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1.0);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <p>Si has hecho el módulo 4, reconocerás la estructura: un buffer con vértices, una descripción de cómo leerlos, un programa con dos shaders y una orden de dibujo. La diferencia es que ahora cada pieza tiene nombre y argumentos concretos. Vamos con ellos.</p>
+</section>
+
+<h2>Paso 1: los shaders son texto</h2>
+<p>Los shaders se escriben en GLSL ES 3.00 (el lenguaje lo estudiaremos a fondo en el <a href="../06-glsl/01-lenguaje.html">módulo 6</a>) y llegan a WebGL como <em>cadenas de texto</em> de JavaScript. Lo más cómodo es usar plantillas con comillas invertidas, que admiten varias líneas.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const fuenteVS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`;
+
+const fuenteFS = `#version 300 es
+precision highp float;
+out vec4 color;
+void main() {
+  color = vec4(1.0, 0.55, 0.2, 1.0);
+}`;
+</script>
+<ol>
+  <li data-l="1"><code>#version 300 es</code> va <strong>lo primero</strong>, pegado a la comilla. Sin ella, el shader se compila como GLSL ES 1.00 (WebGL1).</li>
+  <li data-l="2">Un <strong>atributo</strong> (<a href="../04-gpu/05-uniforms-varyings.html">4.5</a>): <code>in</code> es «entrada», <code>vec2</code> son dos números por vértice y <code>layout(location = 0)</code> fija su ranura, la 0 de las 16 disponibles.</li>
+  <li data-l="3-5"><code>main</code> corre una vez por vértice y debe escribir <code>gl_Position</code>: la posición en clip space, <code>vec4(x, y, z, w)</code>. Completamos con <code>z = 0</code> y <code>w = 1</code>.</li>
+  <li data-l="8">En el fragment shader, <code>float</code> no tiene precisión por defecto: hay que declararla.</li>
+  <li data-l="9">La salida: un <code>out vec4</code> con el nombre que quieras. Si es la única, va al búfer de color. (<code>gl_FragColor</code> ya no existe en GLSL ES 3.00.)</li>
+  <li data-l="10-12">Una vez por cada píxel cubierto. Aquí todos reciben el mismo color, RGBA de 0 a 1.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m5-version-primera-linea" data-titulo="«#version directive must occur on the first line»">
+  <p><strong>Síntoma:</strong> un shader que parece perfecto no compila. El log dice <code>ERROR: 0:2: '\n' : #version directive must occur on the first line of the shader</code>, seguido de errores absurdos como <code>'layout' : syntax error</code>.</p>
+  <p><strong>Causa:</strong> la plantilla empieza con un salto de línea (<code>`</code> y en la línea siguiente <code>#version</code>), o con espacios, o un comentario. La directiva tiene que estar en la primera línea; ni siquiera se permite una línea vacía antes. Los errores siguientes son consecuencia: sin <code>#version</code> válido, el compilador usa GLSL ES 1.00, donde <code>layout</code>, <code>in</code> y <code>out</code> no existen.</p>
+  <p><strong>Solución:</strong> escribe <code>#version 300 es</code> pegado a la comilla invertida, o aplica <code>fuente.trim()</code> antes de pasarla a <code>shaderSource</code>. Si cargas shaders de archivos o de etiquetas <code>&lt;script&gt;</code>, recorta siempre.</p>
+</div>
+
+<h2>Paso 2: compilar cada shader</h2>
+<p>Un shader es, para WebGL, un objeto con un texto dentro que hay que compilar. Son cuatro llamadas y una comprobación:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const vs = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vs, fuenteVS);
+gl.compileShader(vs);
+if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+  throw new Error('Vertex shader:\n' + gl.getShaderInfoLog(vs));
+}
+</script>
+<ol>
+  <li data-l="1"><code>createShader(tipo)</code> crea un shader vacío (<code>WebGLShader</code>). El tipo, <code>gl.VERTEX_SHADER</code> (35633) o <code>gl.FRAGMENT_SHADER</code> (35632), no se puede cambiar después.</li>
+  <li data-l="2"><code>shaderSource(shader, texto)</code> guarda el código dentro del objeto, sin compilar. Una segunda llamada lo sustituye.</li>
+  <li data-l="3"><code>compileShader(shader)</code> ordena compilar. <strong>No devuelve nada, no lanza y no activa <code>getError</code></strong> aunque haya errores (comprobado). En Chrome vuelve al instante: se compila en otro hilo.</li>
+  <li data-l="4"><code>getShaderParameter(shader, gl.COMPILE_STATUS)</code>: <code>true</code> o <code>false</code>. La única forma de saber si compiló; si no ha terminado, espera.</li>
+  <li data-l="5"><code>getShaderInfoLog(shader)</code>: el informe del compilador (vacío si todo fue bien). Lo lanzamos en una excepción para que no se pueda ignorar.</li>
+</ol>
+</div>
+
+<p>Los mensajes tienen siempre el formato <code>ERROR: 0:6: 'símbolo' : descripción</code>: el <code>0</code> es el índice de la cadena de código (siempre 0 en WebGL) y el <code>6</code>, la línea. Estos son mensajes reales del compilador de Chrome (el de ANGLE), que conviene saber reconocer:</p>
+<table>
+  <thead><tr><th>Error en el código</th><th>Lo que dice el log</th></tr></thead>
+  <tbody>
+    <tr><td>Falta un <code>;</code> al final de la línea 5</td><td><code>ERROR: 0:6: '}' : syntax error</code></td></tr>
+    <tr><td>Variable no declarada</td><td><code>ERROR: 0:4: 'rojo' : undeclared identifier</code></td></tr>
+    <tr><td>Sin <code>precision</code> en el fragment shader</td><td><code>ERROR: 0:2: '' : No precision specified for (float)</code></td></tr>
+    <tr><td>Asignar un <code>vec3</code> a una salida <code>vec4</code></td><td><code>'=' : dimension mismatch</code> y <code>cannot convert from 'const 3-component vector of float' to 'out highp 4-component vector of float'</code></td></tr>
+    <tr><td><code>float x = 1;</code> (un entero)</td><td><code>'=' : cannot convert from 'const int' to 'highp float'</code></td></tr>
+    <tr><td>Usar <code>gl_FragColor</code></td><td><code>'gl_FragColor' : undeclared identifier</code> (y tres errores más, en cascada)</td></tr>
+    <tr><td>Escribir <code>void mian()</code></td><td><code>ERROR: -1:-1: '' : Missing main()</code></td></tr>
+  </tbody>
+</table>
+
+<div class="callout bestiario" data-id="m5-error-linea-siguiente" data-titulo="El compilador señala una línea que está bien">
+  <p><strong>Síntoma:</strong> el log dice <code>ERROR: 0:6: '}' : syntax error</code> y la línea 6 es un inocente <code>}</code>.</p>
+  <p><strong>Causa:</strong> el compilador informa de dónde <em>se dio cuenta</em> del problema, no de dónde lo cometiste. Si falta el <code>;</code> al final de la línea 5, la frase sigue abierta y el parser no descubre que algo va mal hasta que tropieza con el <code>}</code> de la línea siguiente. Lo mismo pasa con paréntesis sin cerrar o comentarios <code>/*</code> sin terminar, que pueden señalar líneas muy alejadas.</p>
+  <p><strong>Solución:</strong> ante un <code>syntax error</code>, mira la línea señalada <em>y las anteriores</em>. Y recuerda que el número de línea es el del texto del shader, no el de tu archivo JavaScript: por eso <code>crearShader</code> (un poco más abajo) imprime el código con números de línea.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Llamas a <code>gl.compileShader(s)</code> con un shader lleno de errores. Justo después, <code>gl.getError()</code> devuelve <code>gl.NO_ERROR</code>. ¿Qué puedes concluir?</p>
+  <ul>
+    <li>Que el shader compiló bien: si no, habría un error.<div class="explicacion">Los errores de compilación de GLSL no pasan por <code>getError</code>. La llamada <code>compileShader</code> en sí es válida (el objeto existe y es un shader), así que no hay error de GL.</div></li>
+    <li data-correcta>Nada sobre la compilación: hay que preguntar con <code>getShaderParameter(s, gl.COMPILE_STATUS)</code>.<div class="explicacion">Exacto. <code>getError</code> informa de llamadas mal hechas a la API; que el código GLSL tenga errores se consulta aparte, con el estado de compilación y el log.</div></li>
+    <li>Que la compilación aún no ha empezado, porque es asíncrona.<div class="explicacion">Puede que no haya terminado, pero eso tampoco tiene que ver con <code>getError</code>. <code>COMPILE_STATUS</code> espera a que termine y te da la respuesta.</div></li>
+  </ul>
+</div>
+
+<h2>Paso 3: enlazar los shaders en un programa</h2>
+<p>Un vertex shader y un fragment shader por separado no sirven para dibujar: hay que enlazarlos en un <strong>programa</strong>, que es lo que la GPU ejecuta.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const programa = gl.createProgram();
+gl.attachShader(programa, vs);
+gl.attachShader(programa, fs);
+gl.linkProgram(programa);
+if (!gl.getProgramParameter(programa, gl.LINK_STATUS)) {
+  throw new Error('Enlace:\n' + gl.getProgramInfoLog(programa));
+}
+gl.detachShader(programa, vs);
+gl.deleteShader(vs);
+gl.detachShader(programa, fs);
+gl.deleteShader(fs);
+</script>
+<ol>
+  <li data-l="1"><code>createProgram()</code> crea un programa vacío (<code>WebGLProgram</code>).</li>
+  <li data-l="2-3"><code>attachShader</code> adjunta cada shader: exactamente uno de cada tipo (un segundo vertex shader da <code>INVALID_OPERATION</code>).</li>
+  <li data-l="4"><code>linkProgram</code> comprueba que las salidas del vertex shader encajan con las entradas del fragment shader, asigna las <em>locations</em> que no fijaste, verifica los límites de la GPU y genera el código final. Si falla, tampoco lanza ni activa <code>getError</code>.</li>
+  <li data-l="5-7"><code>LINK_STATUS</code> dice si enlazó; <code>getProgramInfoLog</code>, por qué no.</li>
+  <li data-l="8-11">Enlazado el programa, los shaders sobran: <code>detachShader</code> los separa y <code>deleteShader</code> los libera. El programa sigue funcionando igual (comprobado).</li>
+</ol>
+</div>
+
+<p>Dos mensajes de enlace reales: si el fragment shader espera un <code>in vec3 v_color</code> que el vertex shader no produce, <code>FRAGMENT varying v_color does not match any VERTEX varying</code>; si uno de los shaders no compiló, <code>Fragment shader is not compiled.</code> Y un detalle fino sobre el borrado: si llamas a <code>deleteShader</code> con el shader todavía adjunto, solo queda <em>marcado</em> para borrarse (<code>getShaderParameter(s, gl.DELETE_STATUS)</code> pasa a <code>true</code> y <code>isShader</code> sigue siendo <code>true</code>); se borra de verdad al separarlo. Es la regla general de los objetos de OpenGL: un objeto en uso no desaparece, se borra cuando deja de estarlo.</p>
+
+<div class="callout senior" data-titulo="Comprobar cuesta: la compilación en paralelo">
+  <p>Chrome compila y enlaza en otros hilos (la extensión <code>KHR_parallel_shader_compile</code> está disponible). <code>compileShader</code> y <code>linkProgram</code> solo encolan el trabajo; las consultas de estado obligan a esperar el resultado. Medimos 40 programas distintos de dos maneras:</p>
+  <ul>
+    <li>Comprobando <code>COMPILE_STATUS</code> y <code>LINK_STATUS</code> justo después de cada llamada: <strong>unos 530 ms</strong>.</li>
+    <li>Compilando y enlazando todo primero y comprobando solo <code>LINK_STATUS</code> al final: <strong>unos 120 ms</strong> (encolar las 200 llamadas tardó 0,2 ms).</li>
+  </ul>
+  <p>La receta profesional: lanza todas las compilaciones y enlaces, y pregunta después. Comprueba solo <code>LINK_STATUS</code> (si un shader no compila, el enlace también falla) y consulta los logs de los shaders solo cuando el enlace ha fallado. Para no bloquear en absoluto, la extensión ofrece <code>COMPLETION_STATUS_KHR</code>, que puedes consultar frame a frame sin esperar. En este curso priorizamos la claridad de los errores y comprobamos en el momento, pero en una aplicación con decenas de shaders la diferencia se nota al arrancar.</p>
+</div>
+
+<h2>Nuestra primera librería: crearShader y crearPrograma</h2>
+<p>Esas quince líneas se repiten idénticas en cualquier programa WebGL. Toca empaquetarlas, y de paso mejorar lo que peor hacen: informar de los errores. Un log que dice <code>ERROR: 0:14</code> sirve de poco si tienes que contar líneas a mano.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.2.2 — crearShader y crearPrograma con errores legibles</h3>
+  <div class="anotado" data-lang="js">
+<script type="text/plain">
+function conNumeros(fuente, marcadas) {
+  return fuente.split('\n').map((linea, i) =>
+    (marcadas.has(i + 1) ? '>> ' : '   ') + String(i + 1).padStart(3) + ' | ' + linea
+  ).join('\n');
+}
+
+function crearShader(gl, tipo, fuente) {
+  const shader = gl.createShader(tipo);
+  gl.shaderSource(shader, fuente);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader) || '(log vacío)';
+    gl.deleteShader(shader);
+    const lineas = new Set([...log.matchAll(/ERROR:\s*\d+:(\d+)/g)].map((m) => +m[1]));
+    const nombre = tipo === gl.VERTEX_SHADER ? 'vertex' : 'fragment';
+    throw new Error('Error compilando el ' + nombre + ' shader:\n' + log + '\n' + conNumeros(fuente, lineas));
+  }
+  return shader;
+}
+
+function crearPrograma(gl, fuenteVS, fuenteFS) {
+  const vs = crearShader(gl, gl.VERTEX_SHADER, fuenteVS);
+  const fs = crearShader(gl, gl.FRAGMENT_SHADER, fuenteFS);
+  const programa = gl.createProgram();
+  gl.attachShader(programa, vs);
+  gl.attachShader(programa, fs);
+  gl.linkProgram(programa);
+  gl.detachShader(programa, vs); gl.deleteShader(vs);
+  gl.detachShader(programa, fs); gl.deleteShader(fs);
+  if (!gl.getProgramParameter(programa, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(programa);
+    gl.deleteProgram(programa);
+    throw new Error('Error enlazando el programa:\n' + log);
+  }
+  return programa;
+}
+</script>
+<ol>
+  <li data-l="1-5">El código con números de línea y <code>&gt;&gt;</code> delante de las líneas culpables.</li>
+  <li data-l="7-10">Los pasos de la compilación, como antes.</li>
+  <li data-l="12-13">Si falla, guardamos el log y <strong>borramos el shader</strong>: no debe quedarse ocupando memoria.</li>
+  <li data-l="14">Extrae los números de línea de los mensajes <code>ERROR: 0:6</code>.</li>
+  <li data-l="16">Una excepción con el tipo, el log y el código numerado: imposible de ignorar sin querer.</li>
+  <li data-l="21-27">Compilar, adjuntar y enlazar. Si <code>crearShader</code> lanza, la excepción atraviesa <code>crearPrograma</code>.</li>
+  <li data-l="28-29">Los shaders sobran tanto si el enlace va bien como si no: fuera.</li>
+  <li data-l="30-34">Si el enlace falla, borramos el programa y lanzamos con su log.</li>
+</ol>
+  </div>
+  <p>Probémoslo con un fragment shader al que le falta un punto y coma. El <code>try</code>/<code>catch</code> es solo para que la demo no se detenga; en tus programas deja que la excepción salte:</p>
+  <div class="js-playground" data-titulo="Un error bien contado" data-altura="60" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:16px;font:14px monospace;color:#8791a5">El error sale en la consola ↓</p>
+</script>
+<script type="text/x-js">
+function conNumeros(fuente, marcadas) {
+  return fuente.split('\n').map((linea, i) =>
+    (marcadas.has(i + 1) ? '>> ' : '   ') + String(i + 1).padStart(3) + ' | ' + linea
+  ).join('\n');
+}
+function crearShader(gl, tipo, fuente) {
+  const shader = gl.createShader(tipo);
+  gl.shaderSource(shader, fuente);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader) || '(log vacío)';
+    gl.deleteShader(shader);
+    const lineas = new Set([...log.matchAll(/ERROR:\s*\d+:(\d+)/g)].map((m) => +m[1]));
+    const nombre = tipo === gl.VERTEX_SHADER ? 'vertex' : 'fragment';
+    throw new Error('Error compilando el ' + nombre + ' shader:\n' + log + '\n' + conNumeros(fuente, lineas));
+  }
+  return shader;
+}
+
+const gl = document.createElement('canvas').getContext('webgl2');
+try {
+  crearShader(gl, gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() {
+  color = vec4(1.0, 0.55, 0.2, 1.0)
+}`);
+} catch (e) {
+  console.log(e.message);
+}
+</script>
+  </div>
+  <p>El compilador señala la línea 6 (el <code>}</code>), como vimos en el bestiario; con el código numerado delante, ver que el problema está al final de la línea 5 es inmediato.</p>
+</section>
+
+<h2>Paso 4: los datos en un buffer</h2>
+<p>Ahora los vértices. Viven en la memoria de la GPU dentro de un <strong>buffer</strong> (el VBO de <a href="../04-gpu/04-vbo-vao.html">4.4</a>), y se suben desde un array tipado de JavaScript (<a href="../01-web/06-binario.html">1.6</a>).</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const posiciones = new Float32Array([
+  -0.7, -0.6,
+   0.7, -0.6,
+   0.0,  0.7,
+]);
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.bufferData(gl.ARRAY_BUFFER, posiciones, gl.STATIC_DRAW);
+</script>
+<ol>
+  <li data-l="1-5">Seis <code>float</code> de 32 bits: 24 bytes, tres vértices (x, y) en clip space. Las comas son para nosotros: a la GPU le llega una tira de bytes sin estructura.</li>
+  <li data-l="6"><code>createBuffer()</code> crea un nombre de buffer (<code>WebGLBuffer</code>), sin memoria todavía.</li>
+  <li data-l="7"><code>bindBuffer(destino, buffer)</code> lo coloca en un <strong>punto de enlace</strong>. <code>gl.ARRAY_BUFFER</code> es la ranura para vértices, y las llamadas siguientes actúan sobre lo que esté en ella.</li>
+  <li data-l="8"><code>bufferData(destino, datos, uso)</code> reserva <code>datos.byteLength</code> bytes para el buffer enlazado y <strong>copia</strong> los datos. <code>STATIC_DRAW</code> es una pista de uso: «lo escribo una vez y lo dibujo muchas».</li>
+</ol>
+</div>
+
+<p>Lo de «actúan sobre lo que esté enlazado» es el modelo <em>bind-to-edit</em> de OpenGL: las funciones de buffers no reciben el buffer como argumento, sino el <em>destino</em>, y operan sobre el buffer que haya en ese punto de enlace. Es la máquina de estados de <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a> en estado puro, y la fuente de muchos bugs: si enlazas otro buffer por el camino, la siguiente llamada modifica ese otro. La copia de <code>bufferData</code> es inmediata desde tu punto de vista: si después modificas el <code>Float32Array</code>, el buffer no se entera (lo comprobamos dibujando tras cambiar el array). Los otros usos (<code>DYNAMIC_DRAW</code>, <code>STREAM_DRAW</code>) y cómo actualizar solo una parte con <code>bufferSubData</code> llegan en <a href="03-buffers-atributos.html">5.3</a>.</p>
+
+<div class="callout bestiario" data-id="m5-bufferdata-array-normal" data-titulo="bufferData con un Array normal: un buffer de 0 bytes">
+  <p><strong>Síntoma:</strong> no se dibuja nada. Al dibujar, la consola del navegador dice <code>GL_INVALID_OPERATION: glDrawArrays: Vertex buffer is not big enough for the draw call</code>, pero la llamada a <code>bufferData</code> no dio ningún error.</p>
+  <p><strong>Causa:</strong> escribiste <code>gl.bufferData(gl.ARRAY_BUFFER, [-0.7, -0.6, …], gl.STATIC_DRAW)</code> con un array de JavaScript normal. <code>bufferData</code> tiene una variante que recibe un <em>tamaño</em> en bytes en lugar de datos; al no ser un array tipado, tu array se convierte a número (<code>NaN</code>, que acaba siendo 0) y se reserva un buffer de <strong>0 bytes</strong> sin ningún error. Lo comprobamos: <code>getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE)</code> devolvió 0.</p>
+  <p><strong>Solución:</strong> siempre un array tipado del tipo que declares en <code>vertexAttribPointer</code>: <code>new Float32Array([...])</code> para <code>gl.FLOAT</code>. Ojo también con <code>Float64Array</code>: sus números de 8 bytes leídos como <code>float</code> de 4 producen basura (en nuestra prueba, un triángulo de área cero: nada en pantalla y ningún error).</p>
+</div>
+
+<div class="callout senior" data-titulo="Un buffer de índices no puede ser otra cosa">
+  <p>En OpenGL ES un buffer es solo memoria y puede enlazarse a cualquier destino. WebGL añade una restricción de seguridad: un buffer que se ha enlazado alguna vez a <code>ELEMENT_ARRAY_BUFFER</code> (índices: el EBO de <a href="../04-gpu/04-vbo-vao.html">4.4</a>, que usaremos en 5.3) no puede enlazarse a ningún otro destino, y viceversa. Lo comprobamos: el intento da <code>INVALID_OPERATION: bindBuffer: element array buffers can not be bound to a different target</code>. El motivo es que WebGL tiene que validar que ningún índice se sale del buffer de vértices, y para eso necesita saber qué buffers contienen índices. Entre los demás destinos (<code>ARRAY_BUFFER</code>, <code>COPY_READ_BUFFER</code>…) sí puedes moverlo.</p>
+</div>
+
+<h2>Paso 5: el VAO y vertexAttribPointer</h2>
+<p>Los 24 bytes ya están en la GPU, pero para ella son solo bytes. Hay que decirle cómo convertirlos en valores del atributo <code>a_posicion</code>: de qué buffer leer, cuántos componentes tiene cada vértice, de qué tipo, y dónde empieza cada uno. Esa descripción se guarda en un <strong>Vertex Array Object</strong> (VAO).</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+</script>
+<ol>
+  <li data-l="1"><code>createVertexArray()</code> crea un VAO (<code>WebGLVertexArrayObject</code>). En WebGL1 era una extensión; en WebGL2 viene de serie.</li>
+  <li data-l="2"><code>bindVertexArray(vao)</code> lo hace actual: las dos llamadas siguientes <strong>se graban en él</strong>. Con <code>null</code> enlazado, se grabarían en el VAO por defecto del contexto.</li>
+  <li data-l="3"><code>enableVertexAttribArray(0)</code> activa la ranura 0: el atributo se leerá de un buffer. Sin activar, vale una constante, <code>(0, 0, 0, 1)</code> por defecto.</li>
+  <li data-l="4"><code>vertexAttribPointer</code>: cómo leer el buffer para este atributo. Sus seis argumentos, y el séptimo invisible, en la tabla de abajo.</li>
+</ol>
+</div>
+
+<table>
+  <thead><tr><th>Argumento</th><th>Aquí</th><th>Significa</th><th>Si te equivocas</th></tr></thead>
+  <tbody>
+    <tr><td><code>index</code></td><td><code>0</code></td><td>La location del atributo (la del <code>layout</code>).</td><td>Otro número alimenta otro atributo (o ninguno); −1 da <code>INVALID_VALUE</code>.</td></tr>
+    <tr><td><code>size</code></td><td><code>2</code></td><td>Componentes por vértice, de 1 a 4.</td><td>Los bytes se agrupan mal: forma rara (ejercicio 5.2.7) o lectura fuera del buffer.</td></tr>
+    <tr><td><code>type</code></td><td><code>gl.FLOAT</code></td><td>Tipo de cada componente en el buffer (aquí 4 bytes).</td><td>Los bytes se interpretan con otro formato: basura.</td></tr>
+    <tr><td><code>normalized</code></td><td><code>false</code></td><td>Si los enteros se convierten a 0…1 o −1…1. Con <code>FLOAT</code> se ignora.</td><td>Colores en bytes sin normalizar valen 0…255 (5.3).</td></tr>
+    <tr><td><code>stride</code></td><td><code>0</code></td><td>Bytes del inicio de un vértice al del siguiente. 0 = «pegados» (aquí, 2 × 4 = 8).</td><td>Vértices que empiezan donde no toca.</td></tr>
+    <tr><td><code>offset</code></td><td><code>0</code></td><td>Bytes desde el inicio del buffer hasta el primer componente.</td><td>Todo desplazado; con offset ≠ 0 y sin buffer, <code>INVALID_OPERATION</code>.</td></tr>
+    <tr><td><em>(invisible)</em></td><td><em>el buffer enlazado</em></td><td>El buffer que hay en <code>ARRAY_BUFFER</code> en este instante queda grabado en el VAO.</td><td>El atributo lee de otro buffer (ejercicio 5.2.10).</td></tr>
+  </tbody>
+</table>
+
+<svg class="diagrama" viewBox="0 0 760 190" width="760" role="img" aria-label="Cómo vertexAttribPointer interpreta los 24 bytes del buffer">
+  <text x="20" y="30" style="font-weight:700">Buffer (24 bytes)</text>
+  <g>
+    <rect class="caja" x="20" y="45" width="110" height="40"/><text x="75" y="70" text-anchor="middle">−0.7</text>
+    <rect class="caja" x="130" y="45" width="110" height="40"/><text x="185" y="70" text-anchor="middle">−0.6</text>
+    <rect class="caja" x="260" y="45" width="110" height="40"/><text x="315" y="70" text-anchor="middle">0.7</text>
+    <rect class="caja" x="370" y="45" width="110" height="40"/><text x="425" y="70" text-anchor="middle">−0.6</text>
+    <rect class="caja" x="500" y="45" width="110" height="40"/><text x="555" y="70" text-anchor="middle">0.0</text>
+    <rect class="caja" x="610" y="45" width="110" height="40"/><text x="665" y="70" text-anchor="middle">0.7</text>
+  </g>
+  <g class="texto-tenue" style="font-size:12px">
+    <text x="20" y="102">byte 0</text><text x="130" y="102">4</text><text x="260" y="102">8</text><text x="370" y="102">12</text><text x="500" y="102">16</text><text x="610" y="102">20</text>
+  </g>
+  <path d="M20 120 L240 120" class="acento" stroke-width="3"/>
+  <path d="M260 120 L480 120" class="acento" stroke-width="3"/>
+  <path d="M500 120 L720 120" class="acento" stroke-width="3"/>
+  <text x="130" y="142" text-anchor="middle">vértice 0: a_posicion = (−0.7, −0.6)</text>
+  <text x="370" y="142" text-anchor="middle">vértice 1</text>
+  <text x="610" y="142" text-anchor="middle">vértice 2</text>
+  <text x="380" y="176" text-anchor="middle" class="texto-tenue">size = 2 · type = FLOAT (4 B) · stride = 0 → 8 B · offset = 0: el vértice i empieza en el byte offset + i × 8</text>
+</svg>
+
+<p>Ese «argumento invisible» es probablemente el detalle más importante de toda la lección, así que lo comprobamos: enlazamos un buffer A, llamamos a <code>vertexAttribPointer</code>, enlazamos después un buffer B con otros datos y dibujamos. El triángulo salió con los datos de A. <code>gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)</code> devolvía A, mientras que <code>gl.getParameter(gl.ARRAY_BUFFER_BINDING)</code> devolvía B. <code>vertexAttribPointer</code> <em>fotografía</em> el buffer enlazado en ese instante; lo que enlaces después no le afecta.</p>
+
+<div class="callout senior" data-titulo="Qué guarda un VAO y qué no">
+  <p>Un VAO guarda, para cada una de las 16 ranuras: si está activada, el buffer fotografiado, el tamaño, el tipo, <code>normalized</code>, el stride, el offset (y dos cosas que veremos después: el divisor de instancing y si es un atributo entero). Es la lista que comprobamos con tres implementaciones en <a href="../04-gpu/04-vbo-vao.html#el-vao-que-guarda-exactamente-y-que-no">4.4</a>. Además guarda el buffer de índices enlazado a <code>ELEMENT_ARRAY_BUFFER</code> (5.3). Lo que <strong>no</strong> guarda es el enlace de <code>ARRAY_BUFFER</code>: ese punto de enlace es global del contexto y solo importa en el instante de llamar a <code>vertexAttribPointer</code>. Por eso da igual crear el buffer antes o después de enlazar el VAO: lo que importa es qué buffer está enlazado cuando describes el atributo.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Con el VAO enlazado, haces <code>bindBuffer(ARRAY_BUFFER, A)</code>, <code>vertexAttribPointer(0, …)</code>, luego <code>bindBuffer(ARRAY_BUFFER, B)</code> y <code>drawArrays</code>. ¿De qué buffer lee el atributo 0?</p>
+  <ul>
+    <li>De B, porque es el que está enlazado al dibujar.<div class="explicacion">El enlace de <code>ARRAY_BUFFER</code> no se consulta al dibujar. Cada atributo lee del buffer que había enlazado cuando se llamó a su <code>vertexAttribPointer</code>.</div></li>
+    <li data-correcta>De A.<div class="explicacion">Correcto: <code>vertexAttribPointer</code> graba en el VAO una referencia al buffer enlazado en ese momento. Enlazar B después solo cambia qué buffer usarán las <em>siguientes</em> llamadas de buffers.</div></li>
+    <li>De ninguno: da <code>INVALID_OPERATION</code> porque el enlace cambió.<div class="explicacion">No es ningún error: es el uso normal. De hecho, así se configuran varios atributos con buffers distintos (5.3).</div></li>
+  </ul>
+</div>
+
+<h2>Locations: layout, getAttribLocation y bindAttribLocation</h2>
+<p>El primer argumento de <code>enableVertexAttribArray</code> y <code>vertexAttribPointer</code> es la <em>location</em> del atributo: el número de ranura que conecta el lado de JavaScript con la variable <code>in</code> del shader. Hay tres formas de acordar ese número:</p>
+<ol>
+  <li><strong><code>layout(location = 0)</code> en el shader</strong> (GLSL ES 3.00). El número está escrito en el código y lo sabes sin preguntar. Es lo que usaremos siempre.</li>
+  <li><strong>Dejar que el enlazador elija y preguntar</strong> con <code>gl.getAttribLocation(programa, 'a_posicion')</code>, que devuelve el número o <strong>−1</strong> si el atributo no existe.</li>
+  <li><strong>Imponerlo desde JavaScript</strong> con <code>gl.bindAttribLocation(programa, 0, 'a_posicion')</code>, que solo tiene efecto si se llama <em>antes</em> de <code>linkProgram</code>.</li>
+</ol>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.2.3 — Las tres formas, y sus trampas</h3>
+  <p>Un vertex shader con tres atributos, uno de ellos declarado pero sin usar. Preguntamos las locations en varias situaciones.</p>
+  <div class="js-playground" data-titulo="¿Qué location tiene cada atributo?" data-altura="50" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:12px 16px;font:14px monospace;color:#8791a5">Consola ↓</p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+const fuenteFS = `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`;
+function fuenteVS(conLayout) {
+  return `#version 300 es
+${conLayout ? 'layout(location = 3) ' : ''}in vec2 a_posicion;
+in vec3 a_color;
+in float a_sinUsar;          // declarado, pero main() no lo lee
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+}
+function enlazar(fuenteV, antesDeEnlazar) {
+  const p = gl.createProgram();
+  for (const [tipo, src] of [[gl.VERTEX_SHADER, fuenteV], [gl.FRAGMENT_SHADER, fuenteFS]]) {
+    const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); gl.attachShader(p, s);
+  }
+  if (antesDeEnlazar) antesDeEnlazar(p);
+  gl.linkProgram(p);
+  return p;
+}
+const loc = (p, n) => n + '=' + gl.getAttribLocation(p, n);
+
+const p1 = enlazar(fuenteVS(false));
+console.log('1) sin layout ni bind:', loc(p1, 'a_posicion'), loc(p1, 'a_color'), loc(p1, 'a_sinUsar'), loc(p1, 'a_noExiste'));
+console.log('   atributos activos:', gl.getProgramParameter(p1, gl.ACTIVE_ATTRIBUTES));
+
+const p2 = enlazar(fuenteVS(true), (p) => {
+  gl.bindAttribLocation(p, 5, 'a_posicion');   // choca con layout(location = 3)
+  gl.bindAttribLocation(p, 7, 'a_color');
+});
+console.log('2) layout + bind:', loc(p2, 'a_posicion'), loc(p2, 'a_color'));
+
+const p3 = enlazar(fuenteVS(false));
+gl.bindAttribLocation(p3, 9, 'a_color');        // DESPUÉS de enlazar
+console.log('3) bind tras enlazar:', loc(p3, 'a_color'));
+gl.linkProgram(p3);                              // volver a enlazar
+console.log('   tras volver a enlazar:', loc(p3, 'a_color'));
+gl.getExtension('WEBGL_lose_context').loseContext();
+</script>
+  </div>
+  <p>Lo que enseña cada línea:</p>
+  <ol>
+    <li><strong>Sin layout ni bind</strong>, el enlazador asignó 0 y 1 (aquí coincide con el orden de declaración, pero la especificación no lo garantiza). <code>a_sinUsar</code> devuelve <strong>−1</strong>: como <code>main</code> no lo lee, el compilador lo eliminó. Para el programa, ese atributo no existe, igual que <code>a_noExiste</code>. Por eso los atributos activos son 2, no 3.</li>
+    <li><strong>Layout y bind a la vez</strong>: gana el <code>layout</code> (3, no 5). <code>a_color</code>, sin layout, sí obedece al bind (7).</li>
+    <li><strong>Bind después de enlazar</strong>: no tiene efecto hasta el siguiente <code>linkProgram</code>. Tras volver a enlazar, <code>a_color</code> pasa a 9.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m5-atributo-menos-uno" data-titulo="getAttribLocation devuelve −1">
+  <p><strong>Síntoma:</strong> <code>getAttribLocation</code> devuelve −1 para un atributo que está claramente declarado. Si sigues adelante, <code>enableVertexAttribArray(-1)</code> da <code>INVALID_VALUE: enableVertexAttribArray: index out of range</code> y no se dibuja nada.</p>
+  <p><strong>Causa:</strong> el nombre no coincide (mayúsculas, un typo, <code>a_pos</code> frente a <code>a_posicion</code>) o, lo más desconcertante, el shader no usa el atributo y el compilador lo ha eliminado. Pasa mucho mientras depuras: comentas la línea que usaba <code>a_color</code> y de repente <code>a_color</code> «deja de existir».</p>
+  <p><strong>Solución:</strong> usa <code>layout(location = N)</code> y no preguntes. Si preguntas, trata el −1 como un caso normal (salta ese atributo) en vez de pasarlo a otras llamadas. Para ver qué atributos sobrevivieron, recorre <code>getProgramParameter(p, gl.ACTIVE_ATTRIBUTES)</code> con <code>getActiveAttrib(p, i)</code>.</p>
+</div>
+
+<div class="callout senior" data-titulo="Por qué layout(location) es la buena">
+  <p>Con locations fijas en el shader, un mismo VAO sirve para varios programas: si todos tus shaders ponen la posición en la 0 y la normal en la 1, configuras el VAO de una malla una sola vez y lo dibujas con el programa que quieras. Con <code>getAttribLocation</code>, cada programa podría asignar números distintos y necesitarías un VAO por pareja malla-programa. Además te ahorras las consultas (que en algunas implementaciones cuestan un viaje al proceso de la GPU) y el susto del −1. <code>bindAttribLocation</code> resuelve lo mismo desde JavaScript y era la solución en WebGL1, donde GLSL ES 1.00 no tenía <code>layout</code>; GLKit la ofrece como opción (<code>crearPrograma(gl, vs, fs, { atributos: { a_posicion: 0 } })</code>) para trabajar con shaders ajenos.</p>
+</div>
+
+<h2>Paso 6: dibujar</h2>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1.0);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<ol>
+  <li data-l="1-3">Viejos conocidos de <a href="01-contexto.html">5.1</a>: el viewport al tamaño real del búfer y el fondo.</li>
+  <li data-l="4"><code>useProgram(programa)</code>: el programa con el que se harán los dibujos siguientes (y, en 5.4, al que irán los uniforms). Es estado: se queda seleccionado hasta que elijas otro. Un programa que no enlazó da <code>INVALID_OPERATION: useProgram: program not valid</code>.</li>
+  <li data-l="5"><code>bindVertexArray(vao)</code>: qué VAO alimenta los atributos. Aquí ya estaba enlazado desde el paso 5, pero en un programa real, con varios objetos, lo enlazarás justo antes de cada dibujo.</li>
+  <li data-l="6"><code>drawArrays(modo, primero, cuenta)</code>: <strong><code>gl.TRIANGLES</code></strong> (4), cada tres vértices consecutivos forman un triángulo (los demás modos, en 5.3); <strong>0</strong>, empezar por el vértice 0; <strong>3</strong>, procesar <em>tres vértices</em>. No triángulos, no floats, no bytes: vértices.</li>
+</ol>
+</div>
+
+<p>¿Qué hace la GPU con esa última llamada? Ejecuta el vertex shader 3 veces, una por vértice, con <code>a_posicion</code> valiendo (−0.7, −0.6), (0.7, −0.6) y (0.0, 0.7). Cada <code>gl_Position</code> pasa por la división por <code>w</code> (que es 1) y por el viewport. En un búfer de 600×300, el vértice 0 cae en el píxel</p>
+$$x = \frac{-0.7 + 1}{2}\cdot 600 = 90, \qquad y = \frac{-0.6 + 1}{2}\cdot 300 = 60$$
+<p>(contando desde abajo a la izquierda). El rasterizador determina qué píxeles tienen su centro dentro del triángulo y ejecuta el fragment shader una vez por cada uno: el triángulo mide 420 píxeles de base y 195 de alto, unos 41 000 fragmentos. Tres ejecuciones de un programa y cuarenta y un mil del otro, por una sola llamada de JavaScript.</p>
+
+<div class="quiz">
+  <p class="pregunta">Quieres dibujar un único triángulo cuyos vértices están en un buffer como 6 floats (x, y). ¿Qué tercer argumento pasas a <code>drawArrays(gl.TRIANGLES, 0, ?)</code>?</p>
+  <ul>
+    <li>1, porque es un triángulo.<div class="explicacion">Es el error más común. Con <code>count = 1</code> no se forma ningún triángulo (hacen falta 3 vértices) y no se dibuja nada, sin ningún error.</div></li>
+    <li data-correcta>3.<div class="explicacion">Correcto: <code>count</code> cuenta vértices. Tres vértices forman un triángulo en modo <code>TRIANGLES</code>.</div></li>
+    <li>6, porque hay 6 números.<div class="explicacion">Pedirías 6 vértices (12 floats) a un buffer que tiene 3. WebGL lo detecta: <code>GL_INVALID_OPERATION: glDrawArrays: Vertex buffer is not big enough for the draw call</code>, y no dibuja nada.</div></li>
+    <li>24, los bytes del buffer.<div class="explicacion">Ningún argumento de <code>drawArrays</code> se mide en bytes.</div></li>
+  </ul>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.2.4 — first y count sobre un buffer con dos triángulos</h3>
+  <p>El buffer tiene 6 vértices: los tres primeros forman un triángulo a la izquierda y los tres siguientes otro a la derecha. Mueve los deslizadores: <code>first</code> es el índice del primer vértice que se procesa y <code>count</code> cuántos. El código limita <code>count</code> para que <code>first + count</code> nunca pase de 6.</p>
+  <div class="js-playground" data-titulo="drawArrays(gl.TRIANGLES, first, count)" data-altura="280" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label>first <input id="first" type="range" min="0" max="5" value="0"></label>
+  <label>count <input id="count" type="range" min="0" max="6" value="6"></label>
+  <span id="info"></span>
+</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 18px; align-items: center; padding: 8px 12px; font: 13px ui-monospace, monospace; color: #b4bccb; }
+#info { color: #3fd0e8; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+function crearShader(tipo, fuente) {
+  const s = gl.createShader(tipo);
+  gl.shaderSource(s, fuente);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const programa = gl.createProgram();
+gl.attachShader(programa, crearShader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`));
+gl.attachShader(programa, crearShader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`));
+gl.linkProgram(programa);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  -0.9, -0.6,  -0.2, -0.6,  -0.55, 0.6,    // vértices 0, 1, 2: triángulo izquierdo
+   0.2, -0.6,   0.9, -0.6,   0.55, 0.6,    // vértices 3, 4, 5: triángulo derecho
+]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const deslFirst = document.getElementById('first'), deslCount = document.getElementById('count');
+function dibujar() {
+  const first = +deslFirst.value;
+  deslCount.max = 6 - first;                          // nunca pedir vértices que no existen
+  const count = Math.min(+deslCount.value, 6 - first);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, first, count);
+  document.getElementById('info').textContent =
+    'vértices ' + first + '…' + (first + count - 1) + ' → ' + Math.floor(count / 3) + ' triángulo(s)';
+}
+deslFirst.oninput = deslCount.oninput = dibujar;
+dibujar();
+</script>
+  </div>
+  <p>Observa tres cosas. Con <code>first = 0, count = 3</code> solo aparece el triángulo izquierdo; con <code>first = 3, count = 3</code>, solo el derecho: así se dibuja una parte de un buffer. Con <code>count = 4</code> o <code>5</code> sigue habiendo un solo triángulo: los vértices que no completan un trío se descartan sin error. Y con <code>first = 1, count = 3</code> el triángulo toma los vértices 1, 2 y 3 y mezcla los dos objetos: los grupos de tres se cuentan desde <code>first</code>, no desde el principio del buffer.</p>
+</section>
+
+<div class="callout hack" data-titulo="Un triángulo sin buffers">
+  <p>Lo viste en <a href="../04-gpu/05-uniforms-varyings.html#gl-vertexid-dibujar-sin-buffers">4.5</a>: WebGL2 permite dibujar sin ningún atributo activo, y el vertex shader recibe siempre <code>gl_VertexID</code>, el índice del vértice que está procesando (0, 1, 2…). Si las posiciones se pueden calcular a partir del índice, no necesitas buffer: con un VAO vacío y <code>drawArrays(gl.TRIANGLES, 0, 3)</code>, este vertex shader dibuja un triángulo que cubre toda la pantalla (es el que usaba la figura de prueba de 5.1):</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+#version 300 es
+const vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+void main() { gl_Position = vec4(P[gl_VertexID], 0.0, 1.0); }
+</script>
+  <p>¿Por qué (3, −1) y (−1, 3) y no un cuadrado de dos triángulos? Porque ese triángulo gigante contiene entero el cuadrado de −1 a 1 y el rasterizador recorta lo que sobra, así que el fragment shader se ejecuta una vez por píxel y nada más. Con dos triángulos, ningún píxel de la diagonal se <em>pinta</em> dos veces (la regla de desempate de <a href="../04-gpu/02-pipeline-grafico.html#los-pixeles-justo-sobre-una-arista">4.2</a> lo impide: lo comprobamos con blending aditivo, cero píxeles dobles), pero los bloques de 2 × 2 píxeles que la diagonal parte por la mitad se sombrean en los dos triángulos, con píxeles de relleno que se calculan y se tiran (las <em>helper invocations</em> de <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>). Es el truco estándar para las pasadas de post-proceso a pantalla completa que haremos en 5.8.</p>
+</div>
+
+<h2>El orden de las llamadas</h2>
+<p>Una máquina de estados es sensible al orden, pero no en todas partes. Esto es lo que <em>tiene</em> que ir antes de qué, y por qué:</p>
+<table>
+  <thead><tr><th>Antes de…</th><th>…tiene que haber ocurrido</th><th>Porque</th></tr></thead>
+  <tbody>
+    <tr><td><code>compileShader</code></td><td><code>shaderSource</code></td><td>Se compila el texto que hay dentro en ese momento.</td></tr>
+    <tr><td><code>linkProgram</code></td><td>los <code>attachShader</code> y los <code>bindAttribLocation</code></td><td>El enlace usa lo adjuntado y las locations impuestas en ese instante.</td></tr>
+    <tr><td><code>bufferData</code></td><td><code>bindBuffer</code> del buffer correcto</td><td>Actúa sobre el buffer enlazado, no sobre uno que le pases.</td></tr>
+    <tr><td><code>enableVertexAttribArray</code> y <code>vertexAttribPointer</code></td><td><code>bindVertexArray(vao)</code></td><td>Se graban en el VAO enlazado.</td></tr>
+    <tr><td><code>vertexAttribPointer</code></td><td><code>bindBuffer(ARRAY_BUFFER, …)</code> del buffer de ese atributo</td><td>Fotografía el buffer enlazado.</td></tr>
+    <tr><td><code>drawArrays</code></td><td><code>useProgram</code>, <code>bindVertexArray</code>, <code>viewport</code></td><td>El dibujo usa el estado vigente en ese momento.</td></tr>
+  </tbody>
+</table>
+<p>Y lo que no importa: el orden entre <code>clear</code> y <code>useProgram</code>, entre crear el buffer y crear el VAO, entre compilar los shaders y subir los datos. Todo eso es preparación independiente.</p>
+
+<h2>GLKit: la librería que acabamos de escribir</h2>
+<p>El curso incluye un archivo, <code>assets/js/glkit.js</code>, con una librería mínima llamada <strong>GLKit</strong>. No tiene magia: cada función es la versión empaquetada de algo que escribimos llamada por llamada en este módulo. Sus dos primeras funciones son las que acabas de escribir; compáralas:</p>
+
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="assets/js/glkit.js (extracto)">
+/* Compila un shader. Si falla, lanza un Error con el log del driver
+   y el código numerado, marcando las líneas culpables. */
+crearShader(gl, tipo, fuente) {
+  const sh = gl.createShader(tipo);
+  gl.shaderSource(sh, fuente);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(sh) || "(log vacío)";
+    gl.deleteShader(sh);
+    const marcadas = new Set([...log.matchAll(/ERROR:\s*\d+:(\d+)/g)].map((m) => +m[1]));
+    const nombre = tipo === gl.VERTEX_SHADER ? "vertex" : "fragment";
+    throw new Error("Error compilando el " + nombre + " shader:\n" + log + "\n" + conNumeros(fuente, marcadas));
+  }
+  return sh;
+},
+
+/* Compila ambos shaders, los enlaza en un programa y libera los shaders. */
+crearPrograma(gl, fuenteVS, fuenteFS, opciones) {
+  const vs = GLKit.crearShader(gl, gl.VERTEX_SHADER, fuenteVS);
+  const fs = GLKit.crearShader(gl, gl.FRAGMENT_SHADER, fuenteFS);
+  const p = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  // Fijar la location de atributos ANTES de enlazar (opcional).
+  if (opciones && opciones.atributos) {
+    for (const nombre in opciones.atributos) gl.bindAttribLocation(p, opciones.atributos[nombre], nombre);
+  }
+  if (opciones && opciones.varyingsTF) {
+    gl.transformFeedbackVaryings(p, opciones.varyingsTF, opciones.modoTF || gl.SEPARATE_ATTRIBS);
+  }
+  gl.linkProgram(p);
+  // Tras enlazar, el programa ya contiene el código: los shaders sobran.
+  gl.detachShader(p, vs); gl.detachShader(p, fs);
+  gl.deleteShader(vs); gl.deleteShader(fs);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(p);
+    gl.deleteProgram(p);
+    throw new Error("Error enlazando el programa:\n" + log);
+  }
+  return p;
+},
+
+/* Ajusta el búfer de dibujo al tamaño en pantalla × devicePixelRatio.
+   Devuelve true si cambió (entonces hay que llamar a gl.viewport). */
+ajustarTamaño(canvas, dprMax) {
+  const dpr = Math.min(window.devicePixelRatio || 1, dprMax || 2);
+  const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+  const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; return true; }
+  return false;
+},
+</script>
+
+<p>Salvo dos opciones que aún no necesitamos (<code>atributos</code>, que usa el <code>bindAttribLocation</code> de antes, y <code>varyingsTF</code>, para el <em>transform feedback</em> de <a href="../07-integracion/05-particulas-gpu.html">7.5</a>), es lo mismo que escribiste. <code>ajustarTamaño</code> es el ajuste de tamaño de 5.1 en su versión sencilla (<code>clientWidth × devicePixelRatio</code>), con una diferencia deliberada: limita el DPR a 2 por defecto, porque un DPR de 3 multiplica por 2,25 los píxeles que hay que pintar respecto a 2 y en un móvil eso se nota (lo discutiremos en 5.10). Devuelve <code>true</code> si el tamaño cambió, para que sepas cuándo actualizar el viewport.</p>
+<p>En los playgrounds, <code>data-incluir="glkit"</code> inyecta la librería en el iframe (ya tienes <code>GLKit</code>, <code>mat4</code> y <code>vec3</code> como globales). A partir de ahora la usaremos <strong>solo para lo ya explicado</strong>: cada función nueva de GLKit aparecerá después de la lección que la construye a mano. El triángulo queda así:</p>
+
+<div class="js-playground" data-titulo="El triángulo, con GLKit" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+</div>
+
+<div class="callout nota">
+  <p>GLKit tiene más funciones (<code>crearBuffer</code>, <code>atributo</code>, <code>uniforms</code>, <code>crearTextura</code>, <code>crearFBO</code>, <code>bucle</code>…) y te recomendamos leer el archivo entero, que es corto. Pero no las uses hasta haber hecho a mano lo que hacen: una librería que no entiendes es una caja negra más, y este curso va de abrir cajas negras.</p>
+</div>
+
+<h2>La pantalla negra: una lista sistemática</h2>
+<p>Tu programa no da error y no se ve nada. Es la situación más frecuente en WebGL y la más frustrante, porque casi todos los fallos producen el mismo síntoma. La forma de salir no es mirar el código esperando una revelación, sino recorrer una lista en orden, de lo más barato de comprobar a lo más caro:</p>
+<table>
+  <thead><tr><th>#</th><th>Pregunta</th><th>Cómo comprobarlo</th><th>Causas típicas</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>¿Hay alguna excepción o aviso?</td><td>Consola del playground y consola del navegador (F12)</td><td>Shader que no compila o no enlaza, <code>gl</code> es <code>null</code></td></tr>
+    <tr><td>2</td><td>¿<code>getError</code> dice algo?</td><td>Un <code>console.log(gl.getError())</code> tras el dibujo</td><td>Sin programa en uso, buffer demasiado pequeño, atributo activo sin buffer</td></tr>
+    <tr><td>3</td><td>¿Se ve al menos el color del <code>clear</code>?</td><td>Pon un <code>clearColor</code> llamativo</td><td>Canvas de tamaño 0, oculto por CSS, contexto perdido</td></tr>
+    <tr><td>4</td><td>¿El viewport cubre el búfer?</td><td><code>getParameter(gl.VIEWPORT)</code></td><td>Viewport olvidado tras redimensionar (5.1)</td></tr>
+    <tr><td>5</td><td>¿Son correctos <code>first</code> y <code>count</code>?</td><td>Léelos: cuentan vértices</td><td><code>count</code> = número de triángulos</td></tr>
+    <tr><td>6</td><td>¿Están enlazados el programa y el VAO correctos?</td><td><code>getParameter(gl.CURRENT_PROGRAM)</code>, <code>getParameter(gl.VERTEX_ARRAY_BINDING)</code></td><td><code>bindVertexArray(null)</code> olvidado, otro programa en uso</td></tr>
+    <tr><td>7</td><td>¿El atributo está activo y bien descrito?</td><td><code>getVertexAttrib(0, …)</code>: <code>ENABLED</code>, <code>SIZE</code>, <code>TYPE</code>, <code>STRIDE</code>, <code>BUFFER_BINDING</code></td><td>Falta <code>enableVertexAttribArray</code>, size o tipo equivocados, buffer equivocado</td></tr>
+    <tr><td>8</td><td>¿Los vértices caen dentro de clip space?</td><td>Calcula a mano un vértice; pinta el fragment en un color fijo</td><td>Coordenadas en píxeles, <code>w = 0</code>, datos en otro formato</td></tr>
+    <tr><td>9</td><td>¿El color de salida se distingue del fondo?</td><td>Devuelve <code>vec4(1.0, 0.0, 1.0, 1.0)</code> fijo</td><td>Color negro sobre negro, alfa 0 (5.7)</td></tr>
+    <tr><td>10</td><td>¿Hay estado que descarte fragmentos?</td><td><code>isEnabled(gl.CULL_FACE)</code>, <code>isEnabled(gl.DEPTH_TEST)</code>, <code>SCISSOR_TEST</code></td><td>Culling con el orden de vértices al revés, profundidad sin borrar (5.6)</td></tr>
+  </tbody>
+</table>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.2.5 — Un inspector de estado</h3>
+  <p>Los pasos 2, 4, 6 y 7 de la lista se pueden automatizar con una función que imprima el estado que importa justo antes de dibujar. Aquí la aplicamos al triángulo correcto, para que veas cómo es un estado sano; cópiala en los ejercicios de abajo cuando no sepas por dónde empezar.</p>
+  <div class="js-playground" data-titulo="inspeccionar(gl)" data-altura="160" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+function inspeccionar(gl, loc = 0) {
+  const nombre = (o) => (o ? o.constructor.name : 'null');
+  const p = gl.getParameter(gl.CURRENT_PROGRAM);
+  console.log('programa en uso:', nombre(p), p ? '· enlazado: ' + gl.getProgramParameter(p, gl.LINK_STATUS) : '');
+  console.log('VAO enlazado:   ', nombre(gl.getParameter(gl.VERTEX_ARRAY_BINDING)));
+  console.log('viewport:       ', gl.getParameter(gl.VIEWPORT), '· búfer', gl.drawingBufferWidth + '×' + gl.drawingBufferHeight);
+  const va = (q) => gl.getVertexAttrib(loc, q);
+  const buf = va(gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
+  console.log('atributo ' + loc + ':      activo=' + va(gl.VERTEX_ATTRIB_ARRAY_ENABLED) +
+    ' size=' + va(gl.VERTEX_ATTRIB_ARRAY_SIZE) + ' tipo=0x' + va(gl.VERTEX_ATTRIB_ARRAY_TYPE).toString(16) +
+    ' stride=' + va(gl.VERTEX_ATTRIB_ARRAY_STRIDE) + ' offset=' + gl.getVertexAttribOffset(loc, gl.VERTEX_ATTRIB_ARRAY_POINTER) +
+    ' buffer=' + nombre(buf));
+  console.log('getError:       ', gl.getError());
+}
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+inspeccionar(gl);                 // justo antes de dibujar
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <p>Cómo leer la salida: el programa en uso debe ser un <code>WebGLProgram</code> enlazado; el VAO, un <code>WebGLVertexArrayObject</code> (si pone <code>null</code>, estás en el VAO por defecto, que casi nunca es lo que quieres); el viewport debe coincidir con el búfer; el atributo debe estar activo, con el tamaño y el tipo que esperas (<code>0x1406</code> es <code>gl.FLOAT</code>) y un buffer asociado; <code>getError</code> debe ser 0. El <code>stride=0</code> no es un fallo: significa «pegados». Cada ejercicio de abajo rompe una de estas líneas o algo que el inspector no ve (las coordenadas, <code>count</code>, <code>w</code>), y ahí entra el resto de la lista.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-pantalla-negra-sin-error" data-titulo="Pantalla negra, sin excepciones y con getError() = 0">
+  <p><strong>Síntoma:</strong> el fondo del <code>clear</code> se ve, pero el objeto no. Ninguna excepción, ningún aviso, <code>getError()</code> devuelve 0.</p>
+  <p><strong>Causa:</strong> casi siempre, un dibujo perfectamente legal que no produce píxeles visibles: atributo sin activar (todos los vértices en el origen), <code>count</code> menor que 3, vértices fuera de clip space o con <code>w = 0</code>, el VAO por defecto enlazado en lugar del tuyo, datos leídos con el formato equivocado. Nada de eso es un error para WebGL.</p>
+  <p><strong>Solución:</strong> recorre la lista de esta sección en orden, con el inspector de estado. Y un truco de primera: haz que el fragment shader devuelva un color fijo y chillón y, si puedes, dibuja primero algo que sepas que funciona (el triángulo de este ejemplo) y ve cambiando pieza a pieza hacia tu programa.</p>
+</div>
+
+<h2>Rómpelo tú: once maneras de no ver nada</h2>
+<p>Cada ejercicio es el triángulo de arriba con <strong>un solo fallo</strong>, de los que cometerás de verdad. Antes de mirar las pistas, di qué síntoma ves (¿excepción?, ¿<code>getError</code>?, ¿nada?, ¿algo raro?) y qué paso de la lista lo detectaría. Todos usan GLKit para compilar, así que los errores de shader salen con el código numerado.</p>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.2.1 — Un punto y coma</h3>
+  <p>El programa lanza una excepción al compilar. Lee el error, localiza el fallo y arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.1" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro" data-error-esperado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() {
+  vec3 naranja = vec3(1.0, 0.55, 0.2)
+  color = vec4(naranja, 1.0);
+}`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() {
+  vec3 naranja = vec3(1.0, 0.55, 0.2);   // ← faltaba el punto y coma
+  color = vec4(naranja, 1.0);
+}`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>El log señala la línea 6 del fragment shader, marcada con <code>&gt;&gt;</code>. ¿Qué le falta a la línea 5?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Falta el <code>;</code> al final de <code>vec3 naranja = vec3(1.0, 0.55, 0.2)</code>. El compilador no lo nota hasta leer <code>color</code> en la línea siguiente, que no puede continuar la frase, y por eso informa de la línea 6. Paso 1 de la lista: una excepción que hay que leer entera, código numerado incluido.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.2.2 — La plantilla traicionera</h3>
+  <p>Este programa también lanza al compilar, pero el vertex shader parece perfecto. Encuentra el fallo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.2" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro" data-error-esperado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+
+const fuenteVS = `
+#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`;
+const fuenteFS = `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`;
+
+const programa = GLKit.crearPrograma(gl, fuenteVS, fuenteFS);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+
+// #version pegado a la comilla invertida (o fuenteVS.trim())
+const fuenteVS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`;
+const fuenteFS = `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`;
+
+const programa = GLKit.crearPrograma(gl, fuenteVS, fuenteFS);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Fíjate en la línea 1 del código numerado que imprime el error. ¿Qué hay antes de <code>#version</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La plantilla empieza con un salto de línea, así que <code>#version 300 es</code> queda en la línea 2 y el compilador lo rechaza (<code>#version directive must occur on the first line</code>). El resto de errores son una cascada: sin versión válida, se compila como GLSL ES 1.00, donde <code>layout</code> no existe. Se arregla pegando <code>#version</code> a la comilla o pasando <code>fuenteVS.trim()</code>. Es el <a href="#m5-version-primera-linea">bestiario de más arriba</a>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.2.3 — Un triángulo, una unidad</h3>
+  <p>No hay excepciones ni errores, pero no se ve el triángulo. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.3" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 1);   // dibujamos 1 triángulo
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);   // count = vértices: 1 triángulo = 3 vértices
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Paso 5 de la lista. ¿Qué cuenta el tercer argumento de <code>drawArrays</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>count</code> cuenta vértices. Con 1 vértice no se completa ningún triángulo y el vértice suelto se descarta en silencio: <code>getError</code> vale 0 porque la llamada es legal. La corrección es <code>drawArrays(gl.TRIANGLES, 0, 3)</code>. Y cuidado con el error contrario (pasar 6 porque hay 6 números): ese sí da <code>INVALID_OPERATION</code>, porque pide vértices que no existen.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.2.4 — Todos al origen</h3>
+  <p>Ni excepciones ni errores, y el triángulo no aparece. El inspector de estado te dirá qué pasa.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.4" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);                     // ← activar la ranura 0
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Pega la función <code>inspeccionar</code> del ejemplo 5.2.5 y llámala antes de dibujar. ¿Qué dice la línea del atributo 0?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si un atributo no está activo, ¿qué valor recibe el vertex shader en cada vértice?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Falta <code>gl.enableVertexAttribArray(0)</code>. El <code>vertexAttribPointer</code> describe el formato, pero sin activar la ranura el atributo no lee del buffer: recibe su valor constante, <code>(0, 0, 0, 1)</code> por defecto (lo comprobamos con <code>getVertexAttrib(0, gl.CURRENT_VERTEX_ATTRIB)</code>). Los tres vértices caen en el origen, el triángulo tiene área cero y no genera ni un fragmento. Paso 7 de la lista: el inspector muestra <code>activo=false</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.2.5 — Fuera del escenario</h3>
+  <p>Alguien ha escrito las coordenadas en <strong>píxeles del búfer</strong> (origen abajo a la izquierda), pensando en un canvas de 400×300. Sin tocar los shaders, convierte cada vértice a clip space <em>en JavaScript</em>, de forma que el triángulo ocupe la misma proporción del canvas sea cual sea su tamaño real.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.5" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+// Pensado para un canvas de 400×300, en píxeles con origen abajo a la izquierda
+const enPixeles = [60, 60,   340, 60,   200, 255];
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(enPixeles), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+const enPixeles = [60, 60,   340, 60,   200, 255];
+
+// De píxeles de un canvas de 400×300 a clip space: x/ancho*2−1, y/alto*2−1
+const ANCHO = 400, ALTO = 300;
+const enClip = enPixeles.map((v, i) => (i % 2 === 0 ? v / ANCHO : v / ALTO) * 2 - 1);
+console.log('en clip space:', enClip.map((v) => v.toFixed(3)).join(', '));
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(enClip), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Paso 8 de la lista. ¿Dónde cae un vértice con <code>x = 60</code> si lo visible va de −1 a 1?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Es la transformación del viewport de 5.1 al revés. Si \(p = \frac{x+1}{2}\,\text{ancho}\), despeja \(x\).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con coordenadas como (60, 60), (340, 60) y (200, 255), los tres vértices están muy a la derecha de <code>x = 1</code> y por encima de <code>y = 1</code>: el triángulo entero cae fuera de clip space y el recorte lo elimina sin dejar rastro. La conversión invierte el viewport:</p>
+    $$x_{\text{clip}} = \frac{x_{\text{px}}}{\text{ancho}}\cdot 2 - 1, \qquad y_{\text{clip}} = \frac{y_{\text{px}}}{\text{alto}}\cdot 2 - 1$$
+    <p>Usamos 400×300, el tamaño para el que se pensaron las coordenadas: así el triángulo ocupa la misma fracción del canvas sea cual sea su tamaño real. Si las coordenadas vinieran del ratón o del DOM (origen <em>arriba</em>), habría que invertir la y: \(y_{\text{clip}} = 1 - \frac{y}{\text{alto}}\cdot 2\). En 5.4 haremos esta conversión dentro del vertex shader con un uniform, y en 5.6 la generalizaremos con matrices.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.2.6 — El cuarto componente</h3>
+  <p>Todo parece correcto, pero no se ve nada. El fallo está en una sola cifra de un shader.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.6" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 0.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);   // w = 1: x/w e y/w quedan igual
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Tras el vertex shader, la GPU divide <code>x</code>, <code>y</code> y <code>z</code> por <code>w</code>. ¿Cuánto vale <code>w</code> aquí?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>vec4(a_posicion, 0.0, 0.0)</code> pone <code>w = 0</code>. Un vértice es visible si \(-w \le x, y, z \le w\), y con <code>w = 0</code> eso solo lo cumple el punto (0, 0, 0); además la división por <code>w</code> no tiene sentido. El recorte elimina el triángulo entero, sin error (comprobado: cero píxeles pintados, <code>getError</code> = 0). La corrección es <code>w = 1</code>. Recuerda la regla: para posiciones 2D, <code>vec4(x, y, 0.0, 1.0)</code>. El papel de <code>w</code> en la perspectiva lo viste en <a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a> y lo usaremos en 5.6.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.2.7 — Datos de tres, lectura de dos</h3>
+  <p>Estos datos traen <strong>tres</strong> números por vértice (x, y, z), pero se ve una forma que no es el triángulo esperado. Arréglalo tocando solo la llamada a <code>vertexAttribPointer</code> (hay dos soluciones; busca las dos).</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.7" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  -0.7, -0.6, 0.0,     // x, y, z
+   0.7, -0.6, 0.0,
+   0.0,  0.7, 0.0,
+]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  -0.7, -0.6, 0.0,     // x, y, z
+   0.7, -0.6, 0.0,
+   0.0,  0.7, 0.0,
+]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+// Opción A: leer 2 componentes, pero saltar 12 bytes (3 floats) de vértice a vértice
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 12, 0);
+// Opción B: leer los 3 componentes; el shader, que declara vec2, usa x e y
+// gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Con <code>size = 2</code> y <code>stride = 0</code>, ¿en qué byte empieza el vértice 1? ¿Qué dos números lee?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Una solución cambia el stride; la otra, el size. ¿Qué pasa si el buffer da 3 componentes y el shader declara <code>vec2</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>size = 2</code> y <code>stride = 0</code>, WebGL supone vértices pegados de 8 bytes: el vértice 0 lee (−0.7, −0.6), el 1 lee (0.0, 0.7) (la z del primero y la x del segundo) y el 2 lee (−0.6, 0.0). Sale un triángulo distinto, sin ningún error: los bytes se leen dentro del buffer, solo que mal agrupados.</p>
+    <p><strong>Opción A</strong>: <code>stride = 12</code>, porque de un vértice al siguiente hay 3 floats × 4 bytes; se leen 2 componentes y se salta la z. <strong>Opción B</strong>: <code>size = 3</code> con <code>stride = 0</code> (pegados de 12 bytes); el shader declara <code>vec2</code> y se queda con x e y, descartando la z, lo cual es legal. La A es la base de los datos <em>entrelazados</em> de 5.3, donde un mismo vértice mezcla posición, color y más cosas, y el stride es lo que permite saltar de uno a otro.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.2.8 — El programa que nadie usa</h3>
+  <p>No se ve el triángulo y esta vez <code>getError</code> sí dice algo. Además, en la consola del navegador (F12) verás un aviso explícito. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.8" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const e = gl.getError();
+console.log('getError →', e, e === gl.INVALID_OPERATION ? '(INVALID_OPERATION)' : '');
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);                          // ← qué programa dibuja
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const e = gl.getError();
+console.log('getError →', e, e === gl.INVALID_OPERATION ? '(INVALID_OPERATION)' : '');
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>1282 es 0x502. El aviso del navegador dice <code>drawArrays: no valid shader program in use</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Falta <code>gl.useProgram(programa)</code>. Crear y enlazar un programa no lo selecciona; sin programa en uso, <code>drawArrays</code> no puede ejecutar nada y activa <code>INVALID_OPERATION</code>. Es el paso 2 de la lista, y uno de los pocos fallos que WebGL sí denuncia.</p>
+    <p>La variante silenciosa es peor: si ya había <em>otro</em> programa en uso (el del objeto que dibujaste antes), no hay ningún error y tu objeto sale dibujado con los shaders equivocados. En programas con varios objetos, pon siempre <code>useProgram</code> y <code>bindVertexArray</code> justo antes de cada dibujo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.2.9 — El VAO que se fue</h3>
+  <p>Alguien ordenó el código en funciones y dejó el estado limpio al salir de cada una, como buen ciudadano. Ahora no se ve nada. Arréglalo sin quitar la limpieza.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.9" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+function crearTriangulo() {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);          // limpieza: no dejar el VAO enlazado
+  return vao;
+}
+
+function dibujar(vao) {
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+const triangulo = crearTriangulo();
+dibujar(triangulo);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+function crearTriangulo() {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);          // limpieza: no dejar el VAO enlazado
+  return vao;
+}
+
+function dibujar(vao) {
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);           // ← el VAO de este objeto, justo antes de dibujar
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+const triangulo = crearTriangulo();
+dibujar(triangulo);
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La función <code>dibujar</code> recibe el VAO como parámetro. ¿Lo usa?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con <code>null</code> enlazado, ¿de qué VAO salen los atributos? ¿Está activa la ranura 0 en ese VAO?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>dibujar</code> recibe el VAO pero nunca lo enlaza. Tras la limpieza de <code>crearTriangulo</code>, el VAO actual es <code>null</code>: el VAO por defecto del contexto, donde nadie activó la ranura 0. El atributo vale la constante (0, 0, 0, 1) y el triángulo degenera en un punto, sin error. La limpieza es buena práctica; lo que falta es el <code>bindVertexArray(vao)</code> justo antes de dibujar, que además es lo que necesitarás cuando haya varios objetos (5.3). El inspector habría mostrado <code>VAO enlazado: null</code> y <code>activo=false</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.2.10 — El buffer equivocado</h3>
+  <p>El programa prepara dos buffers: el del triángulo grande y el de un marcador pequeño que se dibujará más adelante. Debería verse el triángulo grande, pero aparece otra cosa. Sin cambiar los datos ni el orden en que se crean los buffers, arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.10" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+// Los dos buffers
+const bufferTriangulo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufferTriangulo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+const bufferMarcador = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufferMarcador);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0.75, 0.75, 0.9, 0.75, 0.825, 0.9]), gl.STATIC_DRAW);
+
+// El VAO del triángulo grande
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+// Los dos buffers
+const bufferTriangulo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufferTriangulo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+const bufferMarcador = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufferMarcador);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0.75, 0.75, 0.9, 0.75, 0.825, 0.9]), gl.STATIC_DRAW);
+
+// El VAO del triángulo grande
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, bufferTriangulo);   // ← el buffer que queremos fotografiar
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Dónde aparece el triángulo pequeño? ¿De qué buffer salen esas coordenadas?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Qué buffer está enlazado en <code>ARRAY_BUFFER</code> en el momento de llamar a <code>vertexAttribPointer</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>En pantalla aparece el marcador (arriba a la derecha) en vez del triángulo grande. <code>vertexAttribPointer</code> fotografía el buffer enlazado en ese instante, y el último <code>bindBuffer</code> fue el del marcador. La solución es enlazar <code>bufferTriangulo</code> justo antes de describir el atributo. Es el «argumento invisible» del paso 5, y el motivo por el que conviene escribir siempre el par <code>bindBuffer</code> + <code>vertexAttribPointer</code> juntos. El inspector de estado lo habría delatado comparando el buffer del atributo con el que esperabas.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.2.11 — El varying que no llega</h3>
+  <p>Queremos un triángulo con degradado: el fragment shader recibe un color interpolado desde los vértices. Pero el programa no enlaza. Lee el error y completa el vertex shader para que cada vértice calcule su color a partir de su posición, <code>vec3(a_posicion * 0.5 + 0.5, 0.8)</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.2.11" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro" data-error-esperado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() {
+  color = vec4(v_color, 1.0);
+}`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec3 v_color;                                 // ← salida con el mismo nombre y tipo
+void main() {
+  v_color = vec3(a_posicion * 0.5 + 0.5, 0.8);    // de −1…1 a 0…1
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() {
+  color = vec4(v_color, 1.0);
+}`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El error es de enlace, no de compilación: cada shader por separado es correcto. ¿Qué dice exactamente el log?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Un <code>in</code> del fragment shader necesita un <code>out</code> del vertex shader con el mismo nombre y tipo, y que el vertex shader le asigne un valor.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El log dice <code>FRAGMENT varying v_color does not match any VERTEX varying</code>: el fragment shader espera un <code>v_color</code> que nadie produce. Cada shader compila por separado; es el <em>enlace</em> el que comprueba que las piezas encajan. Se arregla declarando <code>out vec3 v_color;</code> en el vertex shader y asignándolo en <code>main</code>. El rasterizador interpola ese valor entre los tres vértices para cada fragmento (<a href="../04-gpu/05-uniforms-varyings.html">4.5</a>): la esquina izquierda sale azulada, la derecha rosada y la de arriba turquesa claro, con degradados suaves entre ellas. Colores por vértice «de verdad», leídos de un buffer, en <a href="03-buffers-atributos.html">5.3</a>.</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Shaders: <code>createShader</code> → <code>shaderSource</code> → <code>compileShader</code>, y solo <code>getShaderParameter(COMPILE_STATUS)</code> + <code>getShaderInfoLog</code> dicen si compiló. <code>#version 300 es</code> en la primera línea, <code>precision</code> en el fragment shader.</li>
+    <li>Programa: <code>createProgram</code> → <code>attachShader</code> ×2 → <code>linkProgram</code> → <code>LINK_STATUS</code> + <code>getProgramInfoLog</code>. El enlace comprueba que los varyings encajan. Después, <code>detachShader</code> + <code>deleteShader</code>. Comprobar el estado obliga a esperar: en apps grandes, compila todo y pregunta al final.</li>
+    <li>Datos: <code>createBuffer</code> → <code>bindBuffer(ARRAY_BUFFER)</code> → <code>bufferData(destino, arrayTipado, uso)</code>, que copia los bytes. Con un <code>Array</code> normal obtienes un buffer de 0 bytes.</li>
+    <li>VAO: <code>bindVertexArray</code> y, dentro, <code>enableVertexAttribArray(loc)</code> + <code>vertexAttribPointer(loc, size, type, normalized, stride, offset)</code>, que fotografía el buffer enlazado en ese momento. Un atributo sin activar vale (0, 0, 0, 1).</li>
+    <li>Locations: <code>layout(location = N)</code> en el shader (gana a <code>bindAttribLocation</code>); <code>getAttribLocation</code> devuelve −1 si el atributo no existe o no se usa.</li>
+    <li>Dibujar: <code>useProgram</code> + <code>bindVertexArray</code> + <code>drawArrays(modo, first, count)</code>, con <code>count</code> en vértices.</li>
+    <li>GLKit (<code>data-incluir="glkit"</code>) es la librería que hemos escrito: <code>crearShader</code>, <code>crearPrograma</code>, <code>ajustarTamaño</code>.</li>
+    <li>Pantalla negra: recorre la lista (excepciones, <code>getError</code>, clear visible, viewport, count, programa/VAO, atributos, clip space y <code>w</code>, color, estado que descarta) en orden y con el inspector de estado.</li>
+  </ul>
+</div>
+
+<p>En <a href="03-buffers-atributos.html">5.3</a> ampliamos cada pieza: varios atributos (posición y color) entrelazados en un buffer, colores como bytes normalizados, índices para reutilizar vértices, todos los modos de primitiva y geometría que se actualiza en cada frame.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/vertexAttribPointer">MDN: <code>vertexAttribPointer()</code></a>, con todos los tipos admitidos.</li>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-how-it-works.html">WebGL2 Fundamentals: How It Works</a>, otra explicación del mismo recorrido.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/KHR_parallel_shader_compile">MDN: <code>KHR_parallel_shader_compile</code></a>, para compilar sin bloquear.</li>
+  <li><a href="https://registry.khronos.org/OpenGL-Refpages/es3.0/">Páginas de referencia de OpenGL ES 3.0</a>: la documentación oficial de cada función (WebGL2 hereda su semántica).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

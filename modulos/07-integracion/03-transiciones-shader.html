@@ -1,0 +1,2092 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7.3 · Transiciones animadas con shaders — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m7.css">
+</head>
+<body data-leccion="07-integracion/transiciones-shader">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 7 · JavaScript + shaders juntos</p>
+  <h1>Transiciones animadas con shaders</h1>
+  <p class="resumen">Una transición es un número que va de 0 a 1 y un shader que decide qué significa cada valor intermedio. Aquí aprendes a mover ese número con easings y muelles, a diseñar las transiciones clásicas entre imágenes sin dejar restos, a interrumpirlas sin saltos, a encadenarlas en una línea de tiempo y a dejar que la GPU descanse cuando nada se mueve.</p>
+  <div class="meta"><span class="chip">⏱ 180 min</span><span class="chip">Requisitos: 2.4, 2.5, 5.8, 6.6, 7.1, 7.2</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Animarás un uniform <code>u_progreso</code> con easings y con muelles desde el esqueleto de 7.1, sabrás cuándo aplicar el easing en JavaScript y cuándo en el shader, y qué hacer cuando el muelle se pasa de 1.</li>
+      <li>Escribirás fundidos, cortinillas, revelados radiales, disoluciones con ruido y transiciones por desplazamiento que cumplen el contrato: empiezan exactamente en A y terminan exactamente en B.</li>
+      <li>Interrumpirás transiciones sin saltos: reapuntando un muelle, recalculando un tween o congelando en un framebuffer lo que se ve.</li>
+      <li>Montarás efectos hover y overlays de página, encadenarás uniforms en una línea de tiempo y harás que la app solo dibuje mientras algo se mueve.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Un número que va de 0 a 1</h2>
+<p>Una galería cambia de imagen. Con CSS tienes un fundido con <code>opacity</code> y, con algo de ingenio, cortinillas con <code>clip-path</code> o <code>mask-image</code> (<a href="../02-animacion/02-css-transiciones.html">2.2</a>). Pero en cuanto el diseño pide algo que dependa de cada píxel (una disolución que avanza como papel que se quema, una mancha de tinta que brota desde donde hiciste clic, una imagen que se derrite en la siguiente), necesitas un shader. Y el shader necesita dos cosas: las dos imágenes y un número.</p>
+<p>Ese número es el <strong>progreso</strong> de la transición: lo llamaremos $p$ en las fórmulas y <code>u_progreso</code> en el código. Vale 0 al empezar y 1 al terminar. Toda transición, por espectacular que sea, es una función de la posición del píxel y de $p$ que cumple un contrato:</p>
+$$T(\mathbf{uv}, 0) = A(\mathbf{uv}) \qquad\text{y}\qquad T(\mathbf{uv}, 1) = B(\mathbf{uv}) \qquad\text{para todo } \mathbf{uv}$$
+<p>Entre 0 y 1 hay libertad total de diseño; los extremos no se negocian. En $p = 0$ la pantalla debe ser <em>exactamente</em> A, porque un instante antes se veía A sin transición y cualquier diferencia se nota como un salto en el primer frame. Y en $p = 1$ debe ser exactamente B, porque B se va a quedar en pantalla: un resto de A del 2 % en una esquina pasa desapercibido mientras todo se mueve y se ve perfectamente cuando la imagen se queda quieta. Verás que casi todos los bichos de esta lección son violaciones de este contrato.</p>
+<p>El reparto del trabajo es el que anticipamos en <a href="../06-glsl/07-animacion-shaders.html">6.7</a>: <strong>JavaScript decide cuánto</strong> vale $p$ en cada frame (cuándo empieza la transición, a qué ritmo avanza, qué pasa si el usuario cambia de opinión a mitad), porque eso depende de la historia y de los eventos; <strong>el shader decide cómo se ve</strong> cada valor de $p$ en cada píxel, porque eso es trabajo masivo y paralelo. En la arquitectura de <a href="01-arquitectura.html">7.1</a>, $p$ es estado: vive en <code>app.estado</code>, lo avanza <code>actualizar</code> con el <code>dt</code> del reloj y se envía como uniform en <code>dibujar</code>.</p>
+
+<svg class="diagrama" viewBox="0 0 760 200" width="760" role="img" aria-label="Del evento al píxel: JavaScript calcula el progreso y el shader lo dibuja">
+  <defs>
+    <marker id="m73-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="8" y="30" width="118" height="64" rx="10"/>
+  <text x="67" y="56" text-anchor="middle" style="font-weight:700">eventos</text>
+  <text x="67" y="76" text-anchor="middle" class="texto-tenue" style="font-size:11px">clic, hover, teclas</text>
+  <path d="M128 62 L150 62" stroke="currentColor" stroke-width="2" marker-end="url(#m73-fl)"/>
+  <rect class="caja acento" x="154" y="30" width="182" height="64" rx="10"/>
+  <text x="245" y="56" text-anchor="middle" style="font-weight:700">actualizar(estado, dt)</text>
+  <text x="245" y="76" text-anchor="middle" class="texto-tenue" style="font-size:11px">tween · muelle · línea de tiempo</text>
+  <path d="M338 62 L360 62" stroke="currentColor" stroke-width="2" marker-end="url(#m73-fl)"/>
+  <rect class="caja" x="364" y="30" width="96" height="64" rx="10"/>
+  <text x="412" y="56" text-anchor="middle" style="font-weight:700">p = 0,37</text>
+  <text x="412" y="76" text-anchor="middle" class="texto-tenue" style="font-size:11px">un número</text>
+  <path d="M462 62 L484 62" stroke="currentColor" stroke-width="2" marker-end="url(#m73-fl)"/>
+  <rect class="caja" x="488" y="30" width="112" height="64" rx="10"/>
+  <text x="544" y="56" text-anchor="middle" style="font-weight:700">dibujar</text>
+  <text x="544" y="76" text-anchor="middle" class="texto-tenue" style="font-size:11px">uniform u_progreso</text>
+  <path d="M602 62 L624 62" stroke="currentColor" stroke-width="2" marker-end="url(#m73-fl)"/>
+  <rect class="caja acento" x="628" y="30" width="124" height="64" rx="10"/>
+  <text x="690" y="56" text-anchor="middle" style="font-weight:700">T(A, B, uv, p)</text>
+  <text x="690" y="76" text-anchor="middle" class="texto-tenue" style="font-size:11px">fragment shader</text>
+  <path d="M8 124 L598 124" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4" class="tenue"/>
+  <text x="303" y="148" text-anchor="middle" style="font-size:13px">JavaScript: <tspan style="font-weight:700">cuándo y cuánto</tspan></text>
+  <text x="303" y="168" text-anchor="middle" class="texto-tenue" style="font-size:11px">depende de la historia: eventos, interrupciones, física</text>
+  <path d="M628 124 L752 124" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4" class="tenue"/>
+  <text x="690" y="148" text-anchor="middle" style="font-size:13px">GPU: <tspan style="font-weight:700">cómo</tspan></text>
+  <text x="690" y="168" text-anchor="middle" class="texto-tenue" style="font-size:11px">cada píxel, en paralelo</text>
+</svg>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.3.1 — El arnés de una transición</h3>
+  <p>Antes de animar nada, fija el esqueleto que usaremos en toda la lección. El deslizador <code>progreso</code> es $p$: arrástralo de 0 a 1 y vuelve. De momento la transición es el fundido más simple posible. Después, sustituye la línea del <code>return</code> de <code>transicion</code> por <code>return uv.x &lt; p ? hacia(uv) : desde(uv);</code> y tendrás una cortinilla de borde duro: el resto del arnés no cambia.</p>
+  <div class="glsl-playground" data-titulo="El arnés: desde(), hacia() y transicion()" data-altura="330" data-apilado data-texturas="paisaje:clamp,texto:clamp"
+       data-uniforms='{"u_progreso":{"tipo":"float","min":0,"max":1,"valor":0.35,"etiqueta":"progreso"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;      // A: la imagen de partida
+uniform sampler2D u_tex1;      // B: la imagen de llegada
+uniform float u_progreso;      // p: 0 → A, 1 → B
+in vec2 v_uv;
+out vec4 fragColor;
+
+// object-fit: cover (6.8): uv del lienzo → uv de una imagen, sin deformarla
+vec2 cubrir(vec2 uv, vec2 lienzo, vec2 imagen) {
+  float k = (lienzo.x / lienzo.y) / (imagen.x / imagen.y);
+  vec2 escala = k > 1.0 ? vec2(1.0, 1.0 / k) : vec2(k, 1.0);
+  return (uv - 0.5) * escala + 0.5;
+}
+vec3 desde(vec2 uv) { return texture(u_tex0, cubrir(uv, u_resolution, vec2(textureSize(u_tex0, 0)))).rgb; }
+vec3 hacia(vec2 uv) { return texture(u_tex1, cubrir(uv, u_resolution, vec2(textureSize(u_tex1, 0)))).rgb; }
+
+// La transición: cualquier función con T(uv, 0) = A y T(uv, 1) = B
+vec3 transicion(vec2 uv, float p) {
+  return mix(desde(uv), hacia(uv), p);
+}
+
+void main() {
+  fragColor = vec4(transicion(v_uv, u_progreso), 1.0);
+}
+</script>
+  </div>
+  <p>Cuatro piezas, cada una con una responsabilidad:</p>
+  <ul>
+    <li><strong><code>cubrir</code></strong> es el <code>object-fit: cover</code> de <a href="../06-glsl/08-texturas-efectos.html">6.8</a> escrito como función: <code>k</code> compara el aspecto del lienzo con el de la imagen y la escala recorta lo que sobra alrededor del centro. Las dos texturas son de 512 × 512 y el lienzo es más ancho que alto, así que se ve una franja horizontal de cada imagen. Las texturas se cargan con <code>:clamp</code>: cuando una transición lea fuera de 0…1 (lo harán las de desplazamiento), obtendrá el color del borde y no el del lado contrario (<a href="../06-glsl/08-texturas-efectos.html#m6b-borde-desenfoque">6.8</a>).</li>
+    <li><strong><code>desde(uv)</code> y <code>hacia(uv)</code></strong> responden «¿de qué color es A (o B) en este punto del lienzo?». La transición nunca llama a <code>texture</code> directamente. Esa indirección es lo que permite leer cada imagen en <em>otra</em> posición (las transiciones por desplazamiento) o cambiar A por algo que no es una imagen (lo necesitaremos al interrumpir) sin tocar la transición.</li>
+    <li><strong><code>transicion(uv, p)</code></strong> es lo único que cambia de un efecto a otro. Recibe el progreso como argumento, no lo lee del uniform: así puede llamarse con un $p$ distinto en cada píxel (lo usaremos para escalonar).</li>
+    <li><strong><code>main</code></strong> se queda en una línea. El fragmento sale opaco (<code>1.0</code> de alfa): la transición sustituye lo que había, no se mezcla con la página.</li>
+  </ul>
+  <p>Esta forma no es un capricho: es la de <a href="https://gl-transitions.com/">gl-transitions</a>, una colección abierta de transiciones en GLSL que se ha convertido en el estándar de facto. Allí las funciones se llaman <code>getFromColor(uv)</code> y <code>getToColor(uv)</code>, el progreso es el uniform <code>progress</code>, el aspecto del lienzo llega en <code>ratio</code> y cada efecto es una función <code>vec4 transition(vec2 uv)</code>. Con el arnés de este ejemplo, portar cualquiera de ellas es cuestión de renombrar.</p>
+</section>
+
+<h2>Mover el número: tweens y muelles</h2>
+<p>Con el deslizador, $p$ lo mueves tú. En una aplicación lo mueve el código, frame a frame, y hay dos herramientas del módulo 2 para hacerlo: el <em>tween</em> con easing (<a href="../02-animacion/04-interpolacion-easing.html">2.4</a>), que recorre un camino en una duración fija, y el muelle (<a href="../02-animacion/05-fisica-muelles.html">2.5</a>), que persigue un objetivo con inercia y no tiene duración. Las dos encajan en el esqueleto de 7.1 igual: el evento anota un objetivo, <code>actualizar</code> avanza $p$ con <code>dt</code> y <code>dibujar</code> lo envía.</p>
+
+<h3>Con un tween</h3>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const DURACION = 0.9;                            // s para ir de 0 a 1
+const estado = { objetivo: 0, lin: 0, p: 0 };
+
+canvas.addEventListener('click', () => {         // el evento solo anota
+  estado.objetivo = 1 - estado.objetivo;
+});
+
+function actualizar(e, dt) {
+  const paso = dt / DURACION;
+  if (e.lin < e.objetivo) e.lin = Math.min(e.objetivo, e.lin + paso);
+  else if (e.lin > e.objetivo) e.lin = Math.max(e.objetivo, e.lin - paso);
+  e.p = M7.easings.cubicInOut(e.lin);
+}
+// en dibujar(): GLKit.ponerUniform(gl, u.u_progreso, e.p);
+</script>
+<ol>
+  <li data-l="1-2">Tres números de estado: adónde vamos (<code>objetivo</code>, 0 o 1), el progreso <em>lineal</em> en el tiempo (<code>lin</code>) y el progreso con forma que verá el shader (<code>p</code>). Separar <code>lin</code> de <code>p</code> es la idea de 2.4: el tiempo avanza en línea recta y el easing le da forma después.</li>
+  <li data-l="4-6">El clic no toca GL ni calcula nada: cambia el destino. Si llegan dos clics en el mismo frame, el segundo deshace el primero, que es justo lo que el usuario ha pedido.</li>
+  <li data-l="9">El <code>dt</code> es el del reloj de la aplicación (<a href="01-arquitectura.html">7.1</a>): con la escena en pausa vale 0 y a cámara lenta es más pequeño, así que la transición obedece a los dos sin una línea más. Si calcularas el progreso con <code>performance.now()</code>, la transición seguiría su camino con la escena pausada (el bicho de <a href="01-arquitectura.html#m7-camara-lenta-parcial">los relojes parciales</a>).</li>
+  <li data-l="10-11"><code>lin</code> camina hacia el objetivo y se para <em>exactamente</em> en él: <code>Math.min(e.objetivo, …)</code> deja un 1 limpio, no un 1,0000000000000002 ni un 0,99. Con el contrato, ese detalle importa. Y si el usuario cambia de opinión a mitad, <code>lin</code> da la vuelta desde donde está: la posición es continua.</li>
+  <li data-l="12">El easing convierte el progreso lineal en el que usará el shader. <code>M7.easings</code> es el catálogo de <a href="recursos/m7kit.js">m7kit</a>: <code>lineal</code>, <code>cubicIn</code>, <code>cubicOut</code>, <code>cubicInOut</code>, <code>quartOut</code>, <code>expoOut</code>, <code>backOut</code> y <code>smoothstep</code>.</li>
+</ol>
+</div>
+
+<p>Este tween acumula <code>dt</code> en lugar de calcular el progreso desde el instante de inicio, como hacía el sistema de tweens de 2.4. Con un reloj propio las dos formas son igual de exactas, y la acumulación tiene dos ventajas aquí: dar la vuelta a mitad de camino es cambiar el signo del paso, y cambiar la duración en pleno vuelo no provoca un salto. Lo que no es gratis es la velocidad al dar la vuelta: con <code>cubicInOut</code>, a mitad de camino $p$ cambia a su máxima velocidad (la derivada de la cúbica en 0,5 es 3, es decir, 3,3 unidades por segundo con 0,9 s de duración) y al invertir pasa de golpe a −3,3. La posición no salta; la velocidad, sí. Lo verás en la gráfica del ejemplo 7.3.2 y le buscaremos remedio al interrumpir.</p>
+
+<div class="callout senior" data-titulo="¿El easing en JavaScript o en el shader?">
+  <p>Si toda la imagen sigue la misma curva, aplica el easing en JavaScript y manda el resultado: se calcula una vez por frame y el shader recibe un $p$ ya con forma. Pero hay transiciones en las que cada píxel tiene su propio calendario: persianas que giran una tras otra, cuadrículas que se voltean en ola, letras que aparecen de izquierda a derecha. Entonces se manda el progreso <strong>lineal</strong> y cada píxel calcula el suyo con un retraso $r \in [0, 1]$ (su columna, su celda, un hash) y una fracción de escalonado $s$:</p>
+  $$p_{\text{local}} = \operatorname{clamp}\!\left(\frac{p - r\,s}{1 - s},\; 0,\; 1\right)$$
+  <p>Con $p = 0$ el numerador es $-r\,s \le 0$ y todos los píxeles valen 0; con $p = 1$ vale $(1 - r\,s)/(1 - s) \ge 1$ y todos valen 1: el contrato se cumple para cualquier $r$. Con $s = 0{,}6$, el píxel más adelantado ($r = 0$) hace su animación en el primer 40 % del tiempo y el más retrasado ($r = 1$), en el último 40 %. El easing se aplica después, a $p_{\text{local}}$, dentro del shader. Si aplicaras el easing en JavaScript y escalonaras después, cada píxel recorrería un trozo distinto de la curva: los primeros arrancarían despacio y los últimos, deprisa. Es la versión «por píxel» de la función <code>tramo</code> de <a href="../06-glsl/07-animacion-shaders.html">6.7</a>.</p>
+</div>
+
+<h3>Con un muelle</h3>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const muelle = new M7.Muelle(M7.parametrosMuelle(0.1, 0.6));
+
+canvas.addEventListener('click', () => {
+  muelle.objetivo = 1 - muelle.objetivo;
+});
+
+function actualizar(e, dt) {
+  muelle.actualizar(dt);
+  if (muelle.enReposo()) muelle.fijar(muelle.objetivo);
+  e.p = muelle.x;
+}
+</script>
+<ol>
+  <li data-l="1"><code>M7.parametrosMuelle(rebote, asentamiento)</code> traduce «que se pase un 10 % y se asiente en 0,6 s» a rigidez y amortiguamiento, con las fórmulas de <a href="../02-animacion/05-fisica-muelles.html">2.5</a>: aquí, $k \approx 127{,}2$ y $c \approx 13{,}3$ con masa 1. <code>M7.Muelle</code> integra con Euler semi-implícito en subpasos de 1/240 s, así que es estable aunque un frame dure 0,1 s.</li>
+  <li data-l="3-5">Interrumpir un muelle es cambiar su objetivo. Su velocidad no se toca: si iba lanzado hacia 1 y le pides que vuelva, frena con naturalidad y regresa. No hay nada que reiniciar ni que recalcular.</li>
+  <li data-l="8">Avanza con el <code>dt</code> del reloj, igual que el tween.</li>
+  <li data-l="9">Un muelle se acerca a su objetivo para siempre y no llega nunca exactamente. Simulándolo a 60 Hz con este mismo <code>M7.Muelle</code>, se pasa hasta 1,0947 y cumple <code>enReposo()</code> (posición y velocidad a menos de 0,001) a los 1,03 s. En ese momento, <code>fijar</code> lo deja en el objetivo exacto con velocidad 0: el contrato vuelve a cumplirse al pie de la letra y, como verás al final de la lección, es la señal para dejar de dibujar.</li>
+  <li data-l="10">El muelle no sabe nada del shader: su posición es $p$.</li>
+</ol>
+</div>
+
+<p>La diferencia de fondo entre las dos herramientas es quién manda. En el tween manda el reloj: la transición dura 0,9 s pase lo que pase. En el muelle manda la física: la duración sale de la rigidez y el amortiguamiento, y si el usuario interrumpe, el movimiento continúa con la velocidad que llevaba. Para una transición que el usuario provoca y puede deshacer (un hover, un botón que va y vuelve) el muelle se siente mejor. Para una transición con guion, sincronizada con otras cosas (un vídeo, un sonido, una secuencia de entrada), el tween es más fácil de razonar.</p>
+<p>Y el muelle trae una pregunta que el tween no hacía: con un poco de rebote, $p$ se sale de $[0, 1]$. Durante unas décimas vale 1,09 al llegar y −0,09 al volver. ¿Qué hace el shader con eso? Depende de la transición. En un revelado radial, un radio mayor que el máximo no se ve: el rebote queda oculto. En un zoom o en una distorsión, el exceso se ve como un rebote elástico, y suele ser justo lo que se buscaba. En un fundido con <code>mix</code>, en cambio, el exceso es un error:</p>
+
+<div class="callout bestiario" data-id="m7-3-muelle-quema" data-titulo="Con un muelle que rebota, la imagen de llegada se quema (o sale saturada) un instante">
+  <p><strong>Síntoma:</strong> la transición va guiada por un muelle con rebote. Justo al terminar, durante unas décimas de segundo, la imagen nueva se ve con colores quemados o hipersaturados, como si le hubieran subido el contraste; al volver hacia A, lo mismo con la imagen vieja. Después se estabiliza.</p>
+  <p><strong>Causa:</strong> <code>mix(a, b, p)</code> es $a + (b - a)\,p$, y con $p > 1$ no se detiene en <code>b</code>: sigue en la misma dirección y <em>extrapola</em>. Cada canal se aleja de A más allá de B, y los que se salen de $[0, 1]$ se recortan al escribir en el búfer de 8 bits (<a href="../05-webgl/01-contexto.html">5.1</a>). Lo medimos en la máquina de pruebas (Apple M1, Chrome 154, ANGLE sobre Metal), escribiendo en un búfer RGBA8 y leyéndolo con <code>readPixels</code>: entre $a = (0{,}2;\ 0{,}4;\ 0{,}9)$ y $b = (0{,}9;\ 0{,}6;\ 0{,}1)$, con $p = 1$ el píxel sale (229, 153, 26); con $p = 1{,}15$, (255, 161, 0); con $p = -0{,}15$, (24, 94, 255). Cada canal extremo acaba en 0 o en 255.</p>
+  <p><strong>Solución:</strong> decide en el shader qué significa el exceso. Para un fundido, <code>clamp(p, 0.0, 1.0)</code> antes del <code>mix</code>. Si quieres aprovechar el rebote, llévalo a una propiedad geométrica que lo admita (un radio, un zoom, la fuerza de una distorsión) y deja la mezcla de colores recortada. Y si nadie ha pensado en el exceso, usa un muelle sin rebote (<code>M7.Muelle</code> con sus valores por defecto está a un 0,3 % del amortiguamiento crítico).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu transición es una cortinilla horizontal guiada por un muelle con rebote. En la última décima de segundo, $p$ vale 1,06. ¿Qué se ve si la cortinilla calcula el borde con <code>e = mix(-w, 1.0 + w, p)</code>?</p>
+  <ul>
+    <li>Colores quemados en toda la imagen B, como con el fundido.<div class="explicacion">Eso pasa cuando $p$ entra directamente en un <code>mix</code> de colores. Aquí $p$ solo decide dónde está el borde; los colores se mezclan con el resultado de un <code>smoothstep</code>, que siempre está entre 0 y 1.</div></li>
+    <li data-correcta>Nada raro: el borde ya estaba fuera del lienzo por la derecha y ahora está un poco más fuera; la pantalla es B entera.<div class="explicacion">Correcto. El exceso mueve el borde más allá del final, donde no hay píxeles que cambiar. El rebote del muelle se ve solo en la velocidad con que el borde sale; al volver hacia A pasa lo mismo por la izquierda. En las transiciones geométricas el exceso suele ser inofensivo; en las mezclas de color, no.</div></li>
+    <li>La cortinilla da la vuelta y vuelve a mostrar un trozo de A por la izquierda.<div class="explicacion">Eso requeriría que $p$ volviera a bajar hacia 0. Con 1,06, el borde está en $1 + w + 0{,}06\,(1 + 2w)$: más a la derecha que nunca.</div></li>
+  </ul>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.3.2 — Tween contra muelle, con interrupciones</h3>
+  <p>La misma transición (un revelado circular) dibujada dos veces con dos $p$ distintos: a la izquierda lo mueve el tween de arriba, a la derecha el muelle. Debajo, la historia de los dos $p$ en los últimos 4 segundos. Al arrancar, una ráfaga de clics automáticos cambia el destino cada 0,35 s, antes de que ninguna transición termine. Pulsa «A ⇄ B» para cambiar tú el destino, o repite la ráfaga, y fíjate en las esquinas de la curva violeta frente a la suavidad de la cian. Prueba también el tween con <code>cubicOut</code>.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.3.2 — Tween y muelle" data-altura="360" data-apilado data-incluir="glkit,m7kit,texturas,l73" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<canvas id="grafica"></canvas>
+<div id="panel">
+  <button id="alternar">A ⇄ B</button>
+  <button id="rafaga">ráfaga de clics</button>
+  <select id="easing"><option>cubicInOut</option><option>cubicOut</option><option>lineal</option></select>
+</div>
+<div class="etiqueta" style="left:8px">tween</div>
+<div class="etiqueta" style="left:calc(50% + 8px)">muelle</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+#c { position: absolute; left: 0; top: 0; width: 100%; height: 64%; display: block; }
+#grafica { position: absolute; left: 0; bottom: 0; width: 100%; height: 36%; display: block; background: #0e1014; }
+#panel { position: absolute; right: 8px; top: 8px; }
+.etiqueta { position: absolute; top: 8px; padding: 2px 8px; border-radius: 5px; background: rgba(14,16,20,0.75); color: #e4e7ee; font: 12px system-ui; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:hover, select:hover { border-color: #8b7bff; }
+</script>
+<script type="text/x-js">
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;     // tamaño del PANEL (el viewport), px del búfer
+uniform vec2 u_origen;         // esquina inferior izquierda del panel, px del búfer
+uniform float u_progreso;
+uniform sampler2D u_desde, u_hacia;
+out vec4 fragColor;
+${L73.GLSL.CUBRIR}
+vec3 desde(vec2 uv) { return texture(u_desde, cubrir(uv, u_resolution, vec2(textureSize(u_desde, 0)))).rgb; }
+vec3 hacia(vec2 uv) { return texture(u_hacia, cubrir(uv, u_resolution, vec2(textureSize(u_hacia, 0)))).rgb; }
+vec3 transicion(vec2 uv, float p) {            // revelado circular desde el centro
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
+  float d = length((uv - 0.5) * a), R = length(0.5 * a), w = 0.02;
+  float r = mix(-w, R + w, p);
+  return mix(desde(uv), hacia(uv), 1.0 - smoothstep(r - w, r + w, d));
+}
+void main() {
+  vec2 uv = (gl_FragCoord.xy - u_origen) / u_resolution;   // gl_FragCoord cuenta desde el búfer, no desde el viewport
+  fragColor = vec4(transicion(uv, u_progreso), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const grafica = document.getElementById('grafica');
+const g2d = grafica.getContext('2d');
+const selector = document.getElementById('easing');
+const DURACION = 0.9;
+const muelle = new M7.Muelle(M7.parametrosMuelle(0.1, 0.6));
+const imagenA = Texturas.crear('paisaje'), imagenB = L73.imagen('noche');
+
+const app = M7.crearApp(canvas, {
+  estado: { objetivo: 0, lin: 0, pTween: 0, pMuelle: 0, rafaga: 4, proxima: 0.6, historia: [] },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, L73.GLSL.VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray(),
+      desde: GLKit.crearTextura(gl, imagenA, { mipmaps: true }), hacia: GLKit.crearTextura(gl, imagenB, { mipmaps: true }) };
+  },
+  actualizar(e, dt, app) {
+    const t = app.reloj.t;
+    if (e.rafaga > 0 && t >= e.proxima) { e.objetivo = 1 - e.objetivo; e.rafaga--; e.proxima = t + 0.35; }
+    // Tween: lin camina hacia el objetivo; el easing le da forma
+    const paso = dt / DURACION;
+    if (e.lin < e.objetivo) e.lin = Math.min(e.objetivo, e.lin + paso);
+    else if (e.lin > e.objetivo) e.lin = Math.max(e.objetivo, e.lin - paso);
+    e.pTween = M7.easings[selector.value](e.lin);
+    // Muelle: persigue el mismo objetivo con inercia
+    muelle.objetivo = e.objetivo;
+    muelle.actualizar(dt);
+    if (muelle.enReposo()) muelle.fijar(muelle.objetivo);
+    e.pMuelle = muelle.x;
+    e.historia.push([t, e.pTween, e.pMuelle]);
+    while (e.historia.length && e.historia[0][0] < t - 4) e.historia.shift();
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu, mitad = Math.floor(app.ancho / 2);
+    gl.useProgram(g.p);
+    L73.texturas(gl, g.u, [['u_desde', g.desde], ['u_hacia', g.hacia]]);
+    gl.bindVertexArray(g.vao);
+    [[0, mitad, e.pTween], [mitad, app.ancho - mitad, e.pMuelle]].forEach(([x0, ancho, p]) => {
+      gl.viewport(x0, 0, ancho, app.alto);
+      GLKit.ponerUniform(gl, g.u.u_resolution, [ancho, app.alto]);
+      GLKit.ponerUniform(gl, g.u.u_origen, [x0, 0]);
+      GLKit.ponerUniform(gl, g.u.u_progreso, p);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    });
+    dibujarGrafica(e, app.reloj.t);
+  },
+});
+
+function dibujarGrafica(e, t) {                     // Canvas 2D: la historia de p en los últimos 4 s
+  const dpr = window.devicePixelRatio || 1;
+  const w = grafica.clientWidth, h = grafica.clientHeight;
+  if (grafica.width !== Math.round(w * dpr)) { grafica.width = Math.round(w * dpr); grafica.height = Math.round(h * dpr); }
+  g2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g2d.clearRect(0, 0, w, h);
+  const y = (p) => h - 12 - (p + 0.15) / 1.3 * (h - 24);
+  g2d.strokeStyle = '#3a4256'; g2d.lineWidth = 1; g2d.setLineDash([4, 4]);
+  [0, 1].forEach((p) => { g2d.beginPath(); g2d.moveTo(28, y(p)); g2d.lineTo(w, y(p)); g2d.stroke(); });
+  g2d.setLineDash([]);
+  g2d.fillStyle = '#8791a5'; g2d.font = '11px ui-monospace, monospace';
+  g2d.fillText('1', 12, y(1) + 4); g2d.fillText('0', 12, y(0) + 4);
+  [[1, '#8b7bff', 'tween'], [2, '#3fd0e8', 'muelle']].forEach(([k, color, nombre], i) => {
+    g2d.strokeStyle = color; g2d.lineWidth = 2; g2d.beginPath();
+    e.historia.forEach((h0, j) => { const x = 28 + (h0[0] - (t - 4)) / 4 * (w - 28); j ? g2d.lineTo(x, y(h0[k])) : g2d.moveTo(x, y(h0[k])); });
+    g2d.stroke();
+    g2d.fillStyle = color; g2d.fillText(nombre, 40 + i * 60, 14);
+  });
+}
+
+document.getElementById('alternar').onclick = () => { app.estado.objetivo = 1 - app.estado.objetivo; };
+document.getElementById('rafaga').onclick = () => { app.estado.rafaga = 4; app.estado.proxima = app.reloj.t; };
+</script>
+  </div>
+  <p>Lo que deberías ver, y por qué:</p>
+  <ul>
+    <li><strong>Las esquinas de la curva violeta.</strong> Con clics cada 0,35 s, el tween apenas pasa del 25 %: su easing arranca despacio y cada clic lo hace volver antes de coger velocidad, mientras el muelle, con más reflejos, llega a 1 y rebota. Y cada vez que el destino cambia, el tween da la vuelta con la velocidad invertida de golpe: en la gráfica, un pico afilado. En la imagen se nota como un «rebote seco» del círculo. Con <code>cubicOut</code> es peor: al invertir desde cerca del final, la vuelta arranca casi parada y llega a toda velocidad (lo explica el bestiario de la sección «Interrumpir sin saltos»).</li>
+    <li><strong>La curva cian no tiene esquinas.</strong> El muelle conserva su velocidad al cambiar de objetivo: la curva se dobla, pero no se parte. Y al final, cuando el objetivo se queda quieto, se pasa un poco de 1 (o de 0) y vuelve: en este revelado, ese exceso cae fuera del lienzo y no se ve.</li>
+    <li><strong>Dos paneles, un programa.</strong> Cada mitad es un <code>gl.viewport</code> distinto con el mismo programa y otro $p$. El detalle fino está en <code>u_origen</code>: <code>gl_FragCoord</code> se cuenta desde la esquina del búfer, no desde la del viewport, así que en el panel derecho el primer píxel tiene $x$ igual a la mitad del ancho más 0,5 (los centros de los píxeles caen en medios). Sin restar el origen, el panel derecho calcularía su <code>uv</code> entre 1 y 2 (el bicho de <a href="../06-glsl/02-pensar-en-paralelo.html#m6a-fragcoord-viewport">6.2</a>).</li>
+    <li><strong>Un único bucle para GPU y DOM.</strong> La gráfica es un canvas 2D que se dibuja en el mismo <code>dibujar</code>, con el mismo estado y el mismo reloj (<a href="01-arquitectura.html">7.1</a>): lo que ves en la curva es exactamente lo que recibió el shader en ese frame.</li>
+  </ul>
+</section>
+
+<h2>El catálogo: fundidos, cortinillas, revelados, disoluciones y desplazamientos</h2>
+<p>Con el arnés fijo, cada transición es una función <code>transicion(uv, p)</code> de unas pocas líneas. Las que siguen cubren casi todo lo que verás en webs y vídeos, y cada una enseña una manera distinta de cumplir el contrato. Todas están juntas en el editor del ejemplo 7.3.3, al final de esta sección: puedes ir probándolas mientras lees.</p>
+
+<h3>Fundido, en sRGB y en luz</h3>
+<p>El fundido es el <code>mix</code> del arnés. La única pregunta interesante es en qué espacio de color se mezcla. Las texturas del curso se suben como <code>RGBA8</code> y <code>texture()</code> devuelve los valores sRGB tal cual, codificados con gamma (<a href="../06-glsl/04-color.html">6.4</a>). Mezclar esos números no es mezclar luz: a mitad de un fundido de blanco a negro, <code>mix</code> da 0,5, que en pantalla emite solo un 21 % de la luz del blanco. Un fundido «físico» (dos proyectores, uno que se apaga mientras el otro se enciende) mezclaría la luz: decodificar, mezclar y volver a codificar.</p>
+<p>¿Cuál elegir? En <a href="../06-glsl/04-color.html">6.4</a> viste que un fundido en sRGB entre dos fotos parece «pasar por una zona oscura», y por eso, en general, el fundido recomendable es el que mezcla luz. Pero conviene saber qué ha decidido ya el resto de la página: medimos en la máquina de pruebas (Chrome 154) un <code>div</code> blanco con <code>opacity: 0.5</code> sobre uno negro y la captura dio el gris <strong>(128, 128, 128)</strong>; con <code>opacity: 0.25</code>, (64, 64, 64). El navegador compone la opacidad en sRGB, igual que el <code>mix</code> ingenuo. El fundido en luz se ve más claro a mitad de camino (el gris del mismo ejemplo sería 188) y, entre una imagen clara y una oscura, notablemente más luminoso: sin el bache oscuro. Si tu transición WebGL tiene que casar con fundidos CSS que se ven a la vez (un texto que se desvanece encima), el fundido en sRGB será coherente con ellos; si no, mezcla en luz. Entre dos imágenes parecidas apenas hay diferencia.</p>
+<p>Una variante clásica es el <strong>fundido a través de un color</strong> (normalmente negro): A se apaga en la primera mitad y B se enciende en la segunda. Son dos tramos de $p$ con la función <code>tramo</code> de <a href="../06-glsl/07-animacion-shaders.html">6.7</a>:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+float tramo(float x, float a, float b) { return clamp((x - a) / (b - a), 0.0, 1.0); }
+vec3 porNegro(vec2 uv, float p) {
+  vec3 c = mix(desde(uv), vec3(0.0), tramo(p, 0.0, 0.5));   // A → negro en la primera mitad
+  return mix(c, hacia(uv), tramo(p, 0.5, 1.0));             // negro → B en la segunda
+}
+</script>
+
+<h3>Cortinilla con borde suave</h3>
+<p>Una cortinilla (<em>wipe</em>) es un borde que barre la pantalla: detrás queda B y delante sigue A. Con borde duro es una comparación; con borde suave, un <code>smoothstep</code> de anchura $2w$ alrededor de la posición del borde $e$. La tentación es poner <code>e = p</code>. Y ahí está la trampa:</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 cortinilla(vec2 uv, float p, float w) {
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
+  vec2 dir = vec2(cos(radians(25.0)), sin(radians(25.0)));
+  float h = 0.5 * dot(abs(dir), a);
+  float x = dot((uv - 0.5) * a, dir) / (2.0 * h) + 0.5;
+  float e = mix(-w, 1.0 + w, p);
+  return mix(desde(uv), hacia(uv), 1.0 - smoothstep(e - w, e + w, x));
+}
+</script>
+<ol>
+  <li data-l="2">El aspecto del lienzo. Sin él, una dirección de 25° se vería con otro ángulo en un lienzo que no sea cuadrado (el bicho del aspecto de <a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a>).</li>
+  <li data-l="3">La dirección en la que avanza el borde, como vector unitario. Con 0° sería una cortinilla de izquierda a derecha.</li>
+  <li data-l="4-5">Proyectamos el píxel sobre la dirección con un producto escalar (<a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>), con el origen en el centro y las distancias en alturas del lienzo. Sobre un rectángulo de $A \times 1$, esa proyección va de $-h$ a $h$ con $h = \tfrac12(A\,|\cos\theta| + |\sin\theta|)$: es la media diagonal medida en esa dirección. Al dividir por $2h$ y sumar 0,5, $x$ vale 0 en la esquina por la que entra el borde y 1 en la esquina por la que sale, sea cual sea el ángulo.</li>
+  <li data-l="6">La línea importante. El <code>smoothstep</code> ocupa desde $e - w$ hasta $e + w$, así que para que el borde esté entero fuera del lienzo al principio necesitamos $e + w \le 0$, y al final, $e - w \ge 1$. Por eso el borde no recorre de 0 a 1: recorre de $-w$ a $1 + w$.</li>
+  <li data-l="7">Detrás del borde ($x$ menor que $e$) el <code>smoothstep</code> vale 0 y se ve B; delante vale 1 y se ve A.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m7-3-transicion-no-limpia" data-titulo="La transición empieza con un velo de la imagen nueva (o termina con un resto de la vieja)">
+  <p><strong>Síntoma:</strong> en el primer frame de una cortinilla, el borde por el que entra ya muestra un degradado de la imagen nueva, y el cambio desde la imagen anterior (sin transición) se nota como un pequeño salto. Al terminar, en el lado opuesto queda una franja con la imagen vieja a medio fundir, que se ve perfectamente con la imagen ya quieta. Lo mismo pasa con disoluciones que dejan puntitos sin revelar.</p>
+  <p><strong>Causa:</strong> la zona de transición tiene anchura y el recorrido no la tiene en cuenta. Con <code>e = p</code> y un borde de anchura $2w$, en $p = 0$ el píxel del borde de entrada vale <code>smoothstep(-w, w, 0.0)</code> = 0,5: la mitad de B desde el primer frame. En $p = 1$, el del lado opuesto conserva la mitad de A para siempre. En una disolución, la causa es la misma con otro disfraz: el umbral no llega a cubrir el valor más alto (o más bajo) del ruido, o $p$ se queda en 0,999 porque el tween o el muelle no aterrizan exactamente en 1.</p>
+  <p><strong>Solución:</strong> haz que el recorrido incluya el borde entero: <code>e = mix(-w, 1.0 + w, p)</code> para una cortinilla, y lo equivalente para radios y umbrales. Comprueba siempre los dos extremos con el valor exacto de los píxeles (en los editores del curso, la barra inferior muestra el color bajo el puntero). Y en JavaScript, termina en el objetivo exacto: <code>Math.min(objetivo, …)</code> en el tween, <code>fijar()</code> en el muelle.</p>
+</div>
+
+<h3>Revelados radiales (y desde el puntero)</h3>
+<p>Un revelado radial es una cortinilla en la que la distancia al borde se mide desde un punto: un círculo que crece. El punto puede ser el centro, una esquina o el sitio donde el usuario hizo clic, que es de lo más agradecido: la transición «brota» de su dedo.</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 radial(vec2 uv, float p, float w, vec2 c) {
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
+  float d = length((uv - c) * a);
+  float R = length(max(c, 1.0 - c) * a);
+  float r = mix(-w, R + w, p);
+  return mix(desde(uv), hacia(uv), 1.0 - smoothstep(r - w, r + w, d));
+}
+</script>
+<ol>
+  <li data-l="3">La distancia del píxel al centro <code>c</code> (en uv, de 0 a 1), con el aspecto corregido para que sea un círculo y no una elipse.</li>
+  <li data-l="4">El radio máximo: la distancia a la esquina <em>más lejana</em>. En cada eje, la esquina más lejana está a <code>max(c, 1 - c)</code>; por ejemplo, con el centro en (0,3; 0,8), a 0,7 en horizontal y a 0,8 en vertical. Con el aspecto aplicado, su longitud es el radio con el que el círculo cubre el lienzo entero.</li>
+  <li data-l="5">El mismo truco de la cortinilla: el radio recorre de $-w$ a $R + w$ para que el borde suave empiece y termine fuera.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m7-3-circulo-esquinas" data-titulo="El revelado circular termina y las esquinas siguen mostrando la imagen vieja">
+  <p><strong>Síntoma:</strong> un revelado circular crece, se detiene, y en las cuatro esquinas (o en las más alejadas del punto del clic) queda la imagen anterior. En un lienzo cuadrado casi no pasa; en uno panorámico, siempre.</p>
+  <p><strong>Causa:</strong> el radio final no alcanza la esquina más lejana. Con <code>r = p</code> (radio 1, en alturas del lienzo) y el centro en medio de un lienzo de 736 × 330 px (el de estos editores), la esquina está a $\sqrt{1{,}115^2 + 0{,}5^2} \approx 1{,}22$ alturas: las esquinas nunca se revelan. Con el centro en el punto del clic, cerca de un borde, el hueco es aún mayor.</p>
+  <p><strong>Solución:</strong> calcula el radio máximo con la esquina más lejana, <code>length(max(c, 1.0 - c) * aspecto)</code>, y suma la anchura del borde: <code>r = mix(-w, R + w, p)</code>. Si el centro cambia con el puntero, el radio máximo también cambia: calcúlalo en el shader, no una vez en JavaScript.</p>
+</div>
+
+<h3>Disolución con umbral de ruido y borde que arde</h3>
+<p>La disolución da a cada píxel un «turno» $n(\mathbf{uv})$ entre 0 y 1, sacado de un ruido (<a href="../06-glsl/06-ruido.html">6.6</a>), y un umbral $u$ que avanza con $p$: el píxel cambia a B cuando el umbral pasa por su turno. Como el ruido es continuo, los píxeles vecinos tienen turnos parecidos y la imagen nueva aparece en manchas que crecen y se unen. Si además pintas de un color vivo la franja de píxeles cuyo turno está <em>a punto</em> de llegar ($u \le n \le u + w$), obtienes el borde que arde:</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 disolucion(vec2 uv, float p, float w) {
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
+  float n = fbm(uv * a * 5.0);
+  n = clamp((n - 0.24) / (0.80 - 0.24), 0.0, 1.0);
+  float s = 0.01;
+  float u = mix(-w, 1.0 + s, p);
+  float b = 1.0 - smoothstep(u - s, u, n);
+  float g = 1.0 - smoothstep(u + w - s, u + w, n);
+  vec3 fuego = mix(vec3(1.0, 0.9, 0.55), vec3(0.95, 0.3, 0.1), clamp((n - u) / max(w, 1e-4), 0.0, 1.0));
+  return mix(mix(desde(uv), fuego, g), hacia(uv), b);
+}
+</script>
+<ol>
+  <li data-l="3">El turno de cada píxel: el fbm de 4 octavas de value noise de 6.6 (en <a href="recursos/l73-kit.js">l73-kit</a> lo tienes listo para interpolar), con unas 5 manchas por altura del lienzo.</li>
+  <li data-l="4">Estiramos el ruido para que ocupe de verdad el intervalo de 0 a 1. Los números 0,24 y 0,80 no son arbitrarios: son el percentil 1 y el 99 de este ruido, medidos (lo explica el bestiario de abajo). El 1 % de los píxeles por debajo queda en 0 y el 1 % por encima, en 1.</li>
+  <li data-l="5-6"><code>s</code> es un suavizado mínimo del corte, para que el borde no salga dentado. El umbral recorre de $-w$ a $1 + s$: en $p = 0$ ni siquiera la franja de fuego toca a los píxeles con $n = 0$, y en $p = 1$ todos los píxeles, incluidos los de $n = 1$, están ya del lado de B. Es la cuenta de la cortinilla con otros márgenes.</li>
+  <li data-l="7">La máscara de B: 1 donde el turno ya pasó ($n &lt; u$).</li>
+  <li data-l="8">La máscara del fuego: 1 donde el turno está a menos de $w$ de llegar (y también donde ya llegó, que después tapa B).</li>
+  <li data-l="9">El color del fuego va del amarillo pálido, junto a lo ya revelado, al rojo en el frente: <code>(n - u) / w</code> es la posición dentro de la franja. El <code>max(w, 1e-4)</code> evita dividir por cero cuando el borde vale 0 (sin él, el píxel con $n = u$ calcularía $0/0$, un NaN que <code>clamp</code> no promete arreglar).</li>
+  <li data-l="10">Primero el fuego sobre A, después B sobre todo. El orden de los <code>mix</code> es el orden de las capas.</li>
+</ol>
+</div>
+
+<p>Con el umbral recorriendo el intervalo de 0 a 1 de forma lineal, lo lógico sería que a mitad de la transición se hubiera revelado la mitad de la imagen. No es así, y la razón está en el ruido. Medimos este fbm en la GPU de la máquina de pruebas (Apple M1, Chrome 154, ANGLE sobre Metal): un lienzo de 1024 × 512 renderizado a un búfer de coma flotante (<code>RGBA32F</code>, para no perder decimales al redondear a 8 bits) y leído con <code>readPixels</code>. Sus valores van de 0,15 a 0,89, con el percentil 1 en 0,24, la mediana en 0,55 y el percentil 99 en 0,80. Sumar octavas acerca el resultado a una campana: casi todos los píxeles tienen un turno cercano a la mitad. Esta es la fracción de la imagen revelada para cada $p$, sin contar el margen del borde:</p>
+<table class="m7-medidas">
+  <thead><tr><th>$p$</th><th class="num">umbral $u = p$ con el ruido tal cual</th><th class="num">umbral con el ruido estirado (percentiles 1–99)</th></tr></thead>
+  <tbody>
+    <tr><td>0,1</td><td class="num">0 %</td><td class="num">2,8 %</td></tr>
+    <tr><td>0,2</td><td class="num">0,3 %</td><td class="num">8,0 %</td></tr>
+    <tr><td>0,3</td><td class="num">3,0 %</td><td class="num">16,6 %</td></tr>
+    <tr><td>0,5</td><td class="num">36,5 %</td><td class="num">41,1 %</td></tr>
+    <tr><td>0,7</td><td class="num">88,8 %</td><td class="num">74,2 %</td></tr>
+    <tr><td>0,8</td><td class="num">99,0 %</td><td class="num">86,4 %</td></tr>
+    <tr><td>0,9</td><td class="num">100 %</td><td class="num">95,3 %</td></tr>
+  </tbody>
+</table>
+
+<div class="callout bestiario" data-id="m7-3-disolucion-atascada" data-titulo="La disolución no hace nada al principio ni al final, y todo ocurre de golpe en el medio">
+  <p><strong>Síntoma:</strong> una disolución con ruido de 1 segundo parece durar la mitad: durante las primeras décimas no aparece nada, de repente la imagen nueva se extiende en muy poco tiempo y al final hay otro rato en el que no pasa nada. Cambiar el easing no lo arregla del todo.</p>
+  <p><strong>Causa:</strong> los valores del ruido no se reparten por igual entre 0 y 1. Un fbm suma varias octavas, y la suma se concentra alrededor de la media. Medido con el fbm de 4 octavas de esta lección: ningún valor por debajo de 0,15 ni por encima de 0,89; con un umbral lineal, en $p = 0{,}2$ se había revelado el 0,3 % de la imagen y en $p = 0{,}8$, el 99 %. El 60 % central del tiempo hace todo el trabajo.</p>
+  <p><strong>Solución:</strong> estira el ruido a su rango real antes de compararlo: <code>n = clamp((n - lo) / (hi - lo), 0.0, 1.0)</code>, con <code>lo</code> y <code>hi</code> medidos (los percentiles 1 y 99 dejan fuera los valores raros). Con 0,24 y 0,80, en $p = 0{,}2$ ya se ve el 8 % y en $p = 0{,}8$ el 86 %. Si lo quieres perfectamente uniforme, la técnica es la ecualización del histograma: medir la curva acumulada del ruido en JavaScript y pasarla como una textura de 256 × 1 que convierte cada valor en su percentil. Y si cambias la escala, las octavas o la función de ruido, vuelve a medir: los percentiles cambian.</p>
+</div>
+
+<h3>Desplazamiento: una imagen que se derrite en la otra</h3>
+<p>Las transiciones más vistosas de las webs de portfolio no mezclan los colores en su sitio: los arrastran. La idea es leer cada imagen en una posición desplazada por un campo de flechas $\mathbf{d}(\mathbf{uv})$ (un ruido, una textura, la luminancia de una de las imágenes): A se va deformando más y más mientras se desvanece, y B llega deformada y se endereza mientras aparece.</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 desplazamiento(vec2 uv, float p, float f) {
+  vec2 d = vec2(ruidoValor(uv * 3.0), ruidoValor(uv * 3.0 + 7.3)) - 0.5;
+  vec3 a = desde(uv + d * f * p);
+  vec3 b = hacia(uv - d * f * (1.0 - p));
+  return mix(a, b, smoothstep(0.0, 1.0, p));
+}
+</script>
+<ol>
+  <li data-l="2">El campo de flechas: dos ruidos independientes (el segundo, desplazado para que no coincida con el primero) centrados en 0, así que cada componente va más o menos de −0,5 a 0,5. Es suave: píxeles vecinos se desplazan casi igual y la imagen se deforma como un líquido, sin romperse.</li>
+  <li data-l="3">A se lee en <code>uv + d · f · p</code>: sin desplazar en $p = 0$ y cada vez más desplazada.</li>
+  <li data-l="4">B se lee en <code>uv − d · f · (1 − p)</code>: muy desplazada (y en sentido contrario) en $p = 0$ y sin desplazar en $p = 1$. El <code>1 − p</code> es lo que cumple el contrato: en el último frame B tiene que estar entera y en su sitio.</li>
+  <li data-l="5">La mezcla, con un <code>smoothstep</code> sobre $p$ para que las dos imágenes deformadas convivan sobre todo en el tramo central. En los extremos, el <code>smoothstep</code> vale exactamente 0 y 1.</li>
+</ol>
+</div>
+<p>Al desplazar, algunos píxeles leen fuera de la imagen. Con <code>REPEAT</code> aparecería el lado contrario de la foto en el borde; por eso el arnés carga las texturas con <code>CLAMP_TO_EDGE</code> (el bicho de <a href="../06-glsl/08-texturas-efectos.html#m6b-borde-desenfoque">6.8</a> en versión transición). Fíjate también en el sentido de las flechas: A y B se desplazan en direcciones opuestas, y eso da la sensación de que una imagen empuja a la otra. Si las desplazas en la misma dirección, parece que las dos se van juntas.</p>
+
+<div class="callout hack" data-titulo="La propia imagen como mapa de desplazamiento">
+  <p>No hace falta un ruido: cualquier número que varíe con suavidad sirve como campo. Una elección con mucho efecto es la luminancia de la imagen de llegada, <code>dot(hacia(uv), vec3(0.2126, 0.7152, 0.0722))</code>, usada como desplazamiento horizontal: las zonas claras de B «tiran» más que las oscuras y, durante la transición, las siluetas de B parecen emerger del interior de A antes de que B sea visible. Es el mismo principio del desplazamiento de 6.8, aplicado entre dos imágenes.</p>
+</div>
+
+<h3>Escalonar: persianas</h3>
+<p>El último modo del catálogo aplica el senior de la sección anterior: el lienzo se divide en 8 persianas verticales, cada una con un retraso $r$ que va de 0 (la primera) a 1 (la última), y cada una hace su propia cortinilla con su progreso local y un easing <code>cubicInOut</code> calculado <em>en el shader</em>. El uniform que llega es el progreso lineal; la forma la pone cada píxel.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.3.3 — El catálogo</h3>
+  <p>Las ocho transiciones en un solo shader. <code>modo</code> elige: 0 fundido en sRGB, 1 fundido en luz, 2 a través de negro, 3 cortinilla, 4 revelado radial (mueve el puntero sobre el lienzo: el centro lo sigue), 5 disolución, 6 desplazamiento y 7 persianas. Arrastra <code>progreso</code> hasta 0 y hasta 1 en cada modo y comprueba el contrato con el color exacto del píxel en la barra inferior; o marca <code>auto</code> para que $p$ vaya y vuelva solo. La franja violeta del borde inferior del lienzo muestra el valor de $p$.</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 7.3.3 — Ocho transiciones" data-altura="360" data-apilado data-texturas="paisaje:clamp,texto:clamp"
+       data-uniforms='{"u_progreso":{"tipo":"float","min":0,"max":1,"valor":0.5,"etiqueta":"progreso"},"u_modo":{"tipo":"int","min":0,"max":7,"valor":5,"etiqueta":"modo"},"u_ancho":{"tipo":"float","min":0,"max":0.3,"valor":0.08,"etiqueta":"borde"},"u_fuerza":{"tipo":"float","min":0,"max":1,"valor":0.35,"etiqueta":"fuerza"},"u_auto":{"tipo":"bool","valor":false,"etiqueta":"auto"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;          // px, origen abajo: centro del revelado radial
+uniform float u_time;
+uniform sampler2D u_tex0, u_tex1;
+uniform float u_progreso;
+uniform int u_modo;
+uniform float u_ancho;         // anchura del borde: cortinilla, radial y disolución
+uniform float u_fuerza;        // fuerza del desplazamiento
+uniform bool u_auto;
+in vec2 v_uv;
+out vec4 fragColor;
+
+vec2 cubrir(vec2 uv, vec2 lienzo, vec2 imagen) {
+  float k = (lienzo.x / lienzo.y) / (imagen.x / imagen.y);
+  vec2 escala = k > 1.0 ? vec2(1.0, 1.0 / k) : vec2(k, 1.0);
+  return (uv - 0.5) * escala + 0.5;
+}
+vec3 desde(vec2 uv) { return texture(u_tex0, cubrir(uv, u_resolution, vec2(textureSize(u_tex0, 0)))).rgb; }
+vec3 hacia(vec2 uv) { return texture(u_tex1, cubrir(uv, u_resolution, vec2(textureSize(u_tex1, 0)))).rgb; }
+
+// «Hash without Sine», (c) 2014 David Hoskins, licencia MIT (6.6)
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float ruidoValor(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
+             mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {                              // 4 octavas, resultado en [0, 1]
+  float s = 0.0, a = 0.5;
+  for (int k = 0; k < 4; k++) {
+    s += a * ruidoValor(p);
+    p = mat2(0.8, 0.6, -0.6, 0.8) * p * 2.0 + vec2(17.3, 5.9);
+    a *= 0.5;
+  }
+  return s / 0.9375;
+}
+vec3 srgbALineal(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+vec3 linealASrgb(vec3 c) { c = max(c, 0.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+float tramo(float x, float a, float b) { return clamp((x - a) / (b - a), 0.0, 1.0); }
+vec2 aspecto() { return vec2(u_resolution.x / u_resolution.y, 1.0); }
+
+// ---------------- las transiciones ----------------
+vec3 fundido(vec2 uv, float p) { return mix(desde(uv), hacia(uv), p); }
+vec3 fundidoLuz(vec2 uv, float p) {
+  return linealASrgb(mix(srgbALineal(desde(uv)), srgbALineal(hacia(uv)), p));
+}
+vec3 porNegro(vec2 uv, float p) {
+  vec3 c = mix(desde(uv), vec3(0.0), tramo(p, 0.0, 0.5));
+  return mix(c, hacia(uv), tramo(p, 0.5, 1.0));
+}
+vec3 cortinilla(vec2 uv, float p, float w) {
+  vec2 dir = vec2(cos(radians(25.0)), sin(radians(25.0)));
+  float h = 0.5 * dot(abs(dir), aspecto());
+  float x = dot((uv - 0.5) * aspecto(), dir) / (2.0 * h) + 0.5;
+  float e = mix(-w, 1.0 + w, p);
+  return mix(desde(uv), hacia(uv), 1.0 - smoothstep(e - w, e + w, x));
+}
+vec3 radial(vec2 uv, float p, float w, vec2 c) {
+  float d = length((uv - c) * aspecto());
+  float R = length(max(c, 1.0 - c) * aspecto());
+  float r = mix(-w, R + w, p);
+  return mix(desde(uv), hacia(uv), 1.0 - smoothstep(r - w, r + w, d));
+}
+vec3 disolucion(vec2 uv, float p, float w) {
+  float n = clamp((fbm(uv * aspecto() * 5.0) - 0.24) / (0.80 - 0.24), 0.0, 1.0);
+  float s = 0.01;
+  float u = mix(-w, 1.0 + s, p);
+  float b = 1.0 - smoothstep(u - s, u, n);
+  float g = 1.0 - smoothstep(u + w - s, u + w, n);
+  vec3 fuego = mix(vec3(1.0, 0.9, 0.55), vec3(0.95, 0.3, 0.1), clamp((n - u) / max(w, 1e-4), 0.0, 1.0));
+  return mix(mix(desde(uv), fuego, g), hacia(uv), b);
+}
+vec3 desplazamiento(vec2 uv, float p, float f) {
+  vec2 d = vec2(ruidoValor(uv * 3.0), ruidoValor(uv * 3.0 + 7.3)) - 0.5;
+  return mix(desde(uv + d * f * p), hacia(uv - d * f * (1.0 - p)), smoothstep(0.0, 1.0, p));
+}
+vec3 persianas(vec2 uv, float p) {
+  const float N = 8.0, S = 0.6;                   // persianas y fracción de escalonado
+  float r = floor(uv.x * N) / (N - 1.0);          // retraso: 0 la primera, 1 la última
+  float q = clamp((p - r * S) / (1.0 - S), 0.0, 1.0);
+  q = q < 0.5 ? 4.0 * q * q * q : 1.0 - pow(-2.0 * q + 2.0, 3.0) / 2.0;   // cubicInOut, por píxel
+  vec3 a = desde(uv), b = hacia(uv);              // leer las dos ANTES de elegir (derivadas: 6.3)
+  return fract(uv.x * N) < q ? b : a;
+}
+
+void main() {
+  float p = u_auto ? clamp(0.5 - 0.6 * cos(u_time * 1.2), 0.0, 1.0) : u_progreso;
+  vec2 c = u_mouse.x > 0.0 ? u_mouse / u_resolution : vec2(0.5);
+  vec3 col;
+  if (u_modo == 0) col = fundido(v_uv, p);
+  else if (u_modo == 1) col = fundidoLuz(v_uv, p);
+  else if (u_modo == 2) col = porNegro(v_uv, p);
+  else if (u_modo == 3) col = cortinilla(v_uv, p, u_ancho);
+  else if (u_modo == 4) col = radial(v_uv, p, u_ancho, c);
+  else if (u_modo == 5) col = disolucion(v_uv, p, u_ancho);
+  else if (u_modo == 6) col = desplazamiento(v_uv, p, u_fuerza);
+  else col = persianas(v_uv, p);
+  if (gl_FragCoord.y < 3.0) col = v_uv.x < p ? vec3(0.55, 0.48, 1.0) : vec3(0.12);
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <p>Detalles que merece la pena mirar con calma:</p>
+  <ul>
+    <li><strong>Modos 0 y 1 a mitad de camino.</strong> Con $p = 0{,}5$, el fundido en luz es claramente más luminoso: el paisaje claro y el rótulo oscuro se mezclan como dos proyectores, no como dos capas de CSS.</li>
+    <li><strong>Modo 5 con <code>borde</code> a 0.</strong> Sin franja de fuego queda una disolución limpia. Con 0,3, el fuego ocupa una franja ancha y el efecto se parece a una quemadura.</li>
+    <li><strong>Modo 6 con <code>fuerza</code> a 1.</strong> Los bordes del lienzo muestran el efecto del <code>clamp</code>: los píxeles que leen fuera repiten el color del borde de la imagen en lugar de traer el lado contrario.</li>
+    <li><strong>Modo 7: leer antes de elegir.</strong> En las persianas, la condición <code>fract(uv.x * N) &lt; q</code> cambia de un píxel a su vecino, y la versión obvia, <code>return fract(uv.x * N) &lt; q ? hacia(uv) : desde(uv);</code>, llama a <code>texture</code> dentro de una rama que solo toman algunos píxeles de cada quad de 2 × 2. <code>texture</code> elige el mipmap con derivadas medidas en el quad, y si un vecino no ejecutó la lectura, esa derivada no está definida: es el bicho de las <a href="../06-glsl/03-formas-sdf.html#m6a-derivadas-rama">derivadas dentro de una rama</a> de 6.3. Lo medimos en la máquina de pruebas con una textura cuyos niveles de mipmap tienen colores distintos, leída sin reducir (todo debería salir del nivel 0): cuando el borde de una persiana parte un quad, la columna de píxeles de ese borde sale del último nivel, el de 1 × 1 texel: el color medio de toda la imagen. Con las imágenes del catálogo a 736 × 360, eso es una línea vertical de un píxel de ancho en cada borde afectado, con diferencias de hasta 228 (sobre 255) en un canal respecto al color correcto, en todos los valores de $p$ que probamos salvo cuando el borde coincidía con el límite entre dos quads. Por eso el catálogo lee las dos imágenes antes de elegir: un poco más de trabajo por píxel y derivadas bien definidas en todo el quad. La cortinilla de borde duro que probaste en el ejemplo 7.3.1 (<code>uv.x &lt; p ? hacia(uv) : desde(uv)</code>) tiene el mismo problema en la columna de su borde.</li>
+    <li><strong>Un solo programa con un <code>if</code> por modo.</strong> Como <code>u_modo</code> es un uniform, todos los píxeles de un mismo dibujo siguen la misma rama: no hay divergencia (<a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>) y la GPU no ejecuta las ramas que nadie toma. Es cómodo para un catálogo. En producción, lo habitual es un programa por transición, cada uno con solo su código.</li>
+  </ul>
+</section>
+
+<div class="callout senior" data-titulo="Compila las transiciones antes de necesitarlas">
+  <p>La primera vez que se usa un programa, el driver puede terminar de compilarlo en ese momento, y el primer frame de la transición llega tarde: justo el frame que más se ve (el tirón del primer dibujo de <a href="../04-gpu/01-cpu-vs-gpu.html#m4-tiron-primer-dibujo">4.1</a>). Crea todos los programas de transición en <code>iniciar</code>, sondea <code>COMPLETION_STATUS_KHR</code> si hay muchos (<a href="01-arquitectura.html">7.1</a>) y, si quieres ir sobre seguro, haz un dibujo de prueba de cada uno fuera de la vista durante la carga. Lo mismo con las texturas: sube la imagen de destino antes de que el usuario pulse, no en el clic. Una transición que empieza tarde se nota mucho más que una que dura un poco menos.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En la transición por desplazamiento, A se lee en <code>uv + d·f·p</code> y B en <code>uv − d·f·(1 − p)</code>. ¿Qué pasaría si B se leyera en <code>uv − d·f·p</code>, igual que A pero con el signo cambiado?</p>
+  <ul>
+    <li>Nada importante: las dos imágenes seguirían moviéndose en sentidos opuestos y el efecto sería el mismo.<div class="explicacion">Se moverían en sentidos opuestos, sí, pero el problema está en los extremos del recorrido, que es donde vive el contrato.</div></li>
+    <li data-correcta>B terminaría deformada: en $p = 1$ seguiría desplazada con toda la fuerza ($\mathbf{d}\,f$), y al acabar la transición la imagen daría un salto hasta su forma real.<div class="explicacion">Correcto. Con <code>(1 − p)</code>, el desplazamiento de B es máximo al principio (cuando aún no se ve) y nulo al final. Con <code>p</code> sería al revés: B aparecería en su sitio y se iría deformando, y en $p = 1$ el contrato se rompería.</div></li>
+    <li>La imagen saldría volteada, porque restar coordenadas invierte la textura.<div class="explicacion">Restar un desplazamiento pequeño mueve el punto de lectura, no invierte nada. Voltear sería leer en <code>1.0 − uv</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Interrumpir sin saltos</h2>
+<p>El usuario no espera a que termines. Pasa el ratón por encima de una imagen y lo retira antes de que el efecto acabe, pulsa «siguiente» tres veces seguidas o se arrepiente a mitad. Cada interrupción es un cambio de objetivo con la transición a medias, y hay tres casos distintos, cada uno con su remedio:</p>
+<table>
+  <thead><tr><th>Caso</th><th>Ejemplo</th><th>Remedio</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Volver atrás</strong></td><td>A → B y, a mitad, otra vez A (hover que entra y sale)</td><td>Un muelle (cambiar el objetivo) o un tween recalculado desde el valor actual</td></tr>
+    <tr><td><strong>Ir a otra parte</strong></td><td>A → B y, a mitad, C (una galería con clics rápidos)</td><td>Congelar lo que se ve en una textura y empezar desde ella</td></tr>
+    <tr><td><strong>Repetir</strong></td><td>A → B y, a mitad, otra vez B</td><td>Nada: si el destino no cambia, la transición en curso sigue</td></tr>
+  </tbody>
+</table>
+
+<h3>Volver atrás: un tween que se recalcula</h3>
+<p>El tween del principio daba la vuelta haciendo retroceder su progreso lineal por la misma curva. La posición no salta, pero la velocidad cambia de signo de golpe, y con un easing asimétrico el resultado es aún peor (bestiario de abajo). La solución de los sistemas de tweens es no desandar la curva: al interrumpir, se empieza un tramo <em>nuevo</em> desde el valor actual hasta el destino, con su propio easing y con una duración proporcional a lo que queda. Es la clase <code>L73.Transicion</code> de <a href="recursos/l73-kit.js">l73-kit</a>:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+ir(hasta) {
+  if (hasta === this.hasta && (this.activa || this.valor === hasta)) return;
+  this.desde = this.valor;
+  this.hasta = hasta;
+  this.dur = this.duracion * Math.abs(hasta - this.valor);
+  this.lin = this.dur > 0 ? 0 : 1;
+  if (this.lin === 1) this.valor = hasta;
+}
+actualizar(dt) {
+  if (this.lin >= 1) return this.valor;
+  this.lin = Math.min(1, this.lin + dt / this.dur);
+  this.valor = this.lin >= 1 ? this.hasta
+             : this.desde + (this.hasta - this.desde) * this.easing(this.lin);
+  return this.valor;
+}
+</script>
+<ol>
+  <li data-l="2">El tercer caso de la tabla: si el destino es el mismo y ya vamos hacia él (o ya hemos llegado), no se reinicia nada. Sin esta línea, un usuario que pulsa dos veces el mismo botón vería la transición frenar y volver a arrancar.</li>
+  <li data-l="3-4">El tramo nuevo parte del valor que se está viendo ahora mismo: la posición es continua por construcción.</li>
+  <li data-l="5">La duración, proporcional a la distancia que falta. <code>duracion</code> es lo que se tarda en recorrer de 0 a 1: si interrumpes al 30 % del camino y vuelves, tardarás el 30 % de <code>duracion</code>. Con una duración fija, volver desde muy cerca del principio sería lentísimo (una transición entera para recorrer un 5 %).</li>
+  <li data-l="6-7">Un tramo de duración 0 (ya estábamos en el destino) termina en el acto.</li>
+  <li data-l="10-14">El tween de siempre, con una garantía: el último frame entrega <code>hasta</code> exacto, no el resultado de la fórmula. <code>lin</code> sí llega a 1 exacto (lo asegura <code>Math.min</code>), pero <code>desde + (hasta − desde) · 1</code> no garantiza devolver <code>hasta</code> en coma flotante: es la trampa de <code>lerp</code> de <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>, donde <code>lerp(100, 0.1, 1)</code> daba 0,09999999999999432.</li>
+</ol>
+</div>
+<p>¿Qué easing para el tramo interrumpido? Con uno <em>in-out</em>, cada tramo nuevo arranca con velocidad cero: la transición se para en seco y vuelve a salir, el «stop and go» de <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>. Con uno <em>out</em> (<code>cubicOut</code>, <code>expoOut</code>), arranca con su velocidad máxima en la nueva dirección: responde al instante, que es lo que se espera cuando el usuario cambia de opinión. Es un salto de velocidad, pero en la dirección correcta. Si necesitas velocidad continua de verdad, la herramienta es el muelle: ningún tween sabe con qué velocidad iba el anterior.</p>
+
+<div class="callout bestiario" data-id="m7-3-vuelta-de-golpe" data-titulo="Al invertir una transición a medias, la vuelta arranca casi parada y llega de golpe">
+  <p><strong>Síntoma:</strong> una transición con <code>cubicOut</code> (o cualquier easing de salida) va perfecta hacia delante. Si la inviertes cerca del final (el hover que se retira), la vuelta tarda en arrancar, como si se hubiera atascado, y después acelera y llega al principio a toda velocidad, con un frenazo seco.</p>
+  <p><strong>Causa:</strong> el código invierte el sentido del progreso lineal y reutiliza la misma curva: <code>lin</code> baja y el valor es <code>cubicOut(lin)</code>. Hacia atrás, esa curva se recorre al revés: donde la ida frenaba (el final), la vuelta arranca despacio, y donde la ida salía disparada (el principio), la vuelta llega disparada. Con 0,9 s de duración, invirtiendo en <code>lin = 0,8</code>, la vuelta arranca a $3 \cdot 0{,}2^2 / 0{,}9 \approx 0{,}13$ unidades por segundo y llega a 0 a $3 / 0{,}9 \approx 3{,}3$: veinticinco veces más rápido de lo que salió. Lo ves en el ejemplo 7.3.2 eligiendo <code>cubicOut</code>.</p>
+  <p><strong>Solución:</strong> al cambiar de destino, empieza un tramo nuevo desde el valor actual con su propio easing y una duración proporcional a lo que falta (<code>L73.Transicion</code>), o usa un muelle. Si mantienes el progreso lineal compartido, usa solo easings simétricos (<em>in-out</em>), que al menos se recorren igual en los dos sentidos.</p>
+</div>
+
+<h3>Ir a otra parte: congelar lo que se ve</h3>
+<p>El caso difícil es la galería: se está disolviendo A en B y el usuario pulsa «siguiente» otra vez. Ahora hay tres imágenes, y el shader solo sabe mezclar dos. Las respuestas habituales fallan cada una a su manera:</p>
+<ul>
+  <li><strong>Esperar</strong> a que termine y encadenar C después: no hay salto, pero el clic parece ignorado durante casi un segundo, y con cuatro clics seguidos la galería se queda varios segundos recorriendo imágenes que el usuario ya no quiere ver.</li>
+  <li><strong>Cambiar la textura de destino</strong> sobre la marcha (<code>hacia = C</code> sin tocar $p$): la parte ya revelada de B se convierte en C de golpe.</li>
+  <li><strong>Empezar de cero desde B</strong> (<code>desde = B</code>, <code>hacia = C</code>, $p = 0$): las zonas que aún mostraban A se convierten en B de golpe.</li>
+</ul>
+<p>La solución de un senior es la única que respeta el contrato: <strong>congelar el frame que se está viendo</strong> en una textura (dibujando la transición en curso en un framebuffer, <a href="../05-webgl/08-framebuffers.html">5.8</a>) y empezar una transición nueva desde esa instantánea hacia C. El primer frame de la transición nueva es, píxel a píxel, el último de la anterior.</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+// en actualizar: el clic pide C con la transición a medias
+e.foto = { id: ++contador, desde: e.desde, hacia: e.hacia, p: trans.valor };
+e.desde = 'foto';
+e.hacia = siguiente;
+trans.fijar(0); trans.ir(1);
+
+// en dibujar, antes de dibujar la pantalla
+if (e.foto && e.foto.id !== g.fotoHecha) {
+  const destino = g.fotos[1 - g.fotoLeida];
+  gl.bindFramebuffer(gl.FRAMEBUFFER, destino.fbo);
+  gl.viewport(0, 0, destino.ancho, destino.alto);
+  pintar(gl, app, e.foto.desde, e.foto.hacia, e.foto.p);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, app.ancho, app.alto);
+  g.fotoLeida = 1 - g.fotoLeida;
+  g.fotoHecha = e.foto.id;
+}
+pintar(gl, app, e.desde, e.hacia, trans.valor);
+</script>
+<ol>
+  <li data-l="2">La receta de la foto, no la foto: qué había en <code>desde</code> y en <code>hacia</code> y cuánto valía $p$ en el frame que se estaba viendo. <code>actualizar</code> no toca GL (<a href="01-arquitectura.html">7.1</a>), así que no puede hacer la instantánea; deja escrito <em>qué</em> hay que congelar. El <code>id</code> distingue una petición nueva de una ya atendida.</li>
+  <li data-l="3-5">La transición nueva: desde la foto hacia la imagen pedida, con el progreso a 0.</li>
+  <li data-l="8">En <code>dibujar</code>, si hay una receta sin atender, se atiende antes de nada. <code>g.fotoHecha</code> vive en el objeto de la GPU: es caché, no estado.</li>
+  <li data-l="9">Dos framebuffers, no uno. Si ya estábamos en una transición que partía de una foto y llega otro clic, la foto nueva se hace dibujando una transición que <em>lee</em> la foto actual. Escribir en la misma textura que se está leyendo es un bucle de realimentación: <code>INVALID_OPERATION</code> y nada dibujado (<a href="../05-webgl/08-framebuffers.html#m5-bucle-realimentacion">5.8</a>). Se escribe en la otra y se alternan, como en el ping-pong de 5.8.</li>
+  <li data-l="10-11">Dibujar en el framebuffer, con su viewport. Los FBOs miden lo mismo que el búfer del canvas: se crean en <code>redimensionar</code>, que es el sitio de lo que depende del tamaño.</li>
+  <li data-l="12">La misma función que dibuja la pantalla, con la receta vieja. Lo que queda en la textura es exactamente lo que se estaba viendo, fuego de la disolución incluido.</li>
+  <li data-l="13-14">De vuelta a la pantalla, con su viewport (el bicho de <a href="../05-webgl/08-framebuffers.html#m5-viewport-fbo">5.8</a>, al revés).</li>
+  <li data-l="15-16">La foto buena ahora es la otra, y la petición queda atendida.</li>
+  <li data-l="18">El frame normal. En el shader, <code>desde(uv)</code> lee la foto directamente con <code>uv</code>, sin <code>cubrir</code>: se hizo con el mismo tamaño y la misma orientación que el lienzo (una textura de FBO tiene la fila 0 abajo, como <code>gl_FragCoord</code>).</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m7-3-salto-al-interrumpir" data-titulo="Al pulsar «siguiente» a mitad de una transición, la imagen salta">
+  <p><strong>Síntoma:</strong> la galería funciona bien si esperas a que termine cada transición. Si pulsas «siguiente» mientras una está en marcha, parte de la imagen cambia de golpe: la zona ya revelada salta a la imagen nueva, o la que aún no se había revelado salta a la intermedia. Con varios clics rápidos, la galería parpadea.</p>
+  <p><strong>Causa:</strong> el shader mezcla dos imágenes y en ese instante hay tres en juego (la de partida, la intermedia y la nueva). Cambiar cualquiera de las dos texturas o reiniciar $p$ sin más rompe la continuidad: el frame siguiente ya no se parece al anterior.</p>
+  <p><strong>Solución:</strong> congela lo que se ve: dibuja la transición actual en un framebuffer del tamaño del lienzo y usa esa textura como imagen de partida de la transición nueva, con $p = 0$. Usa dos framebuffers alternos para poder interrumpir también una transición que ya partía de una foto. Si no puedes permitirte el framebuffer, espera a que termine (y descarta los clics intermedios salvo el último), pero no cambies las texturas a medias.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.3.4 — Una galería que aguanta clics rápidos</h3>
+  <p>Cuatro imágenes con la disolución del catálogo entre ellas. Al arrancar, una ráfaga de cuatro clics automáticos, uno cada 0,45 s (antes de que ninguna disolución termine), pone a prueba el modo elegido. Cambia de modo y repite la ráfaga: con «cambiar la textura» verás los saltos del bestiario; con «esperar al final», una galería que no obedece; con «congelar (FBO)», ni un salto. La línea de abajo muestra la transición en curso y cuántas instantáneas se han hecho.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.3.4 — Galería con instantáneas" data-altura="340" data-apilado data-incluir="glkit,m7kit,texturas,l73" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <button id="ant">◀</button> <button id="sig">▶</button>
+  <button id="rafaga">ráfaga ▶▶▶▶</button>
+  <select id="modo">
+    <option value="congelar">congelar (FBO)</option>
+    <option value="cambiar">cambiar la textura</option>
+    <option value="esperar">esperar al final</option>
+  </select>
+</div>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; }
+#panel { position: absolute; left: 8px; top: 8px; }
+#info { position: absolute; left: 8px; bottom: 6px; color: #fff; font: 12px ui-monospace, monospace; text-shadow: 0 1px 2px #000; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:hover, select:hover { border-color: #8b7bff; }
+</script>
+<script type="text/x-js">
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_progreso;
+uniform sampler2D u_desde, u_hacia;
+uniform bool u_desdeEsFoto;       // A es una instantánea del lienzo: se lee tal cual
+out vec4 fragColor;
+${L73.GLSL.CUBRIR}
+${L73.GLSL.RUIDO}
+vec3 imagen(sampler2D t, vec2 uv) { return texture(t, cubrir(uv, u_resolution, vec2(textureSize(t, 0)))).rgb; }
+vec3 desde(vec2 uv) { return u_desdeEsFoto ? texture(u_desde, uv).rgb : imagen(u_desde, uv); }
+vec3 hacia(vec2 uv) { return imagen(u_hacia, uv); }
+vec3 transicion(vec2 uv, float p) {              // la disolución del catálogo
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
+  float n = clamp((fbm(uv * a * 5.0) - 0.24) / (0.80 - 0.24), 0.0, 1.0);
+  float w = 0.08, s = 0.01, u = mix(-w, 1.0 + s, p);
+  float b = 1.0 - smoothstep(u - s, u, n);
+  float g = 1.0 - smoothstep(u + w - s, u + w, n);
+  vec3 fuego = mix(vec3(1.0, 0.9, 0.55), vec3(0.95, 0.3, 0.1), clamp((n - u) / w, 0.0, 1.0));
+  return mix(mix(desde(uv), fuego, g), hacia(uv), b);
+}
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  fragColor = vec4(transicion(uv, u_progreso), 1.0);
+}`;
+const fuentes = [Texturas.crear('paisaje'), L73.imagen('noche'), L73.imagen('mar'), L73.imagen('bosque')];
+const nombres = ['paisaje', 'noche', 'mar', 'bosque'];
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const modo = document.getElementById('modo');
+const trans = new L73.Transicion({ duracion: 1.1, easing: M7.easings.cubicInOut, valor: 1 });
+let contador = 0;
+
+const app = M7.crearApp(canvas, {
+  estado: { desde: 0, hacia: 0, pedidos: [], cola: null, foto: null, fotos: 0, rafaga: 4, proxima: 0.8 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, L73.GLSL.VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray(), fotos: null, fotoLeida: 0, fotoHecha: -1,
+      texturas: fuentes.map((f) => GLKit.crearTextura(gl, f, { mipmaps: true })) };
+    const e = app.estado;
+    if (e.desde === 'foto') { e.desde = e.hacia; trans.fijar(1); }       // la foto murió con el contexto
+  },
+  redimensionar(gl, app) {                               // las instantáneas miden lo que el búfer
+    const g = app.gpu;
+    if (g.fotos) g.fotos.forEach((f) => GLKit.borrarFBO(gl, f));
+    g.fotos = [0, 1].map(() => GLKit.crearFBO(gl, app.ancho, app.alto));
+    const e = app.estado;
+    if (e.desde === 'foto') { e.desde = e.hacia; trans.fijar(1); }       // simplificación: terminar de golpe
+  },
+  actualizar(e, dt, app) {
+    const t = app.reloj.t;
+    if (e.rafaga > 0 && t >= e.proxima) { e.pedidos.push(1); e.rafaga--; e.proxima = t + 0.45; }
+    for (const paso of e.pedidos) {
+      const base = e.cola !== null ? e.cola : e.hacia;
+      const destino = (base + paso + fuentes.length) % fuentes.length;
+      if (!trans.activa) { e.desde = e.hacia; e.hacia = destino; trans.fijar(0); trans.ir(1); continue; }
+      if (modo.value === 'esperar') { e.cola = destino; continue; }
+      if (modo.value === 'cambiar') { e.hacia = destino; continue; }
+      if (trans.valor === 0) { e.hacia = destino; continue; }   // en p = 0 aún no se ve nada de «hacia»
+      e.foto = { id: ++contador, desde: e.desde, hacia: e.hacia, p: trans.valor };   // congelar
+      e.desde = 'foto'; e.hacia = destino; e.fotos++;
+      trans.fijar(0); trans.ir(1);
+    }
+    e.pedidos.length = 0;
+    trans.actualizar(dt);
+    if (!trans.activa && e.cola !== null) {                // modo «esperar»: la siguiente de la cola
+      e.desde = e.hacia; e.hacia = e.cola; e.cola = null; trans.fijar(0); trans.ir(1);
+    }
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    if (e.foto && e.foto.id !== g.fotoHecha) {             // atender la receta de la foto
+      const destino = g.fotos[1 - g.fotoLeida];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, destino.fbo);
+      gl.viewport(0, 0, destino.ancho, destino.alto);
+      pintar(gl, app, e.foto.desde, e.foto.hacia, e.foto.p);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, app.ancho, app.alto);
+      g.fotoLeida = 1 - g.fotoLeida;
+      g.fotoHecha = e.foto.id;
+    }
+    pintar(gl, app, e.desde, e.hacia, trans.valor);
+    const txt = (i) => (i === 'foto' ? 'foto' : nombres[i]);
+    info.textContent = `${txt(e.desde)} → ${txt(e.hacia)} · p = ${trans.valor.toFixed(2)} · instantáneas: ${e.fotos}` + (e.cola !== null ? ' · en cola: ' + nombres[e.cola] : '');
+  },
+});
+
+function pintar(gl, app, desde, hacia, p) {
+  const g = app.gpu;
+  const texDesde = desde === 'foto' ? g.fotos[g.fotoLeida].textura : g.texturas[desde];
+  gl.useProgram(g.p);
+  L73.texturas(gl, g.u, [['u_desde', texDesde], ['u_hacia', g.texturas[hacia]]]);
+  GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+  GLKit.ponerUniform(gl, g.u.u_progreso, p);
+  GLKit.ponerUniform(gl, g.u.u_desdeEsFoto, desde === 'foto');
+  gl.bindVertexArray(g.vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+document.getElementById('sig').onclick = () => app.estado.pedidos.push(1);
+document.getElementById('ant').onclick = () => app.estado.pedidos.push(-1);
+document.getElementById('rafaga').onclick = () => { app.estado.rafaga = 4; app.estado.proxima = app.reloj.t; };
+</script>
+  </div>
+  <p>Tres cosas del código que conviene no pasar por alto:</p>
+  <ul>
+    <li><strong>Los botones solo encolan pedidos.</strong> Toda la lógica (qué hacer si hay una transición en marcha) vive en <code>actualizar</code> y la instantánea, en <code>dibujar</code>. El modo «esperar» guarda solo el <em>último</em> destino pedido: cuatro clics seguidos llevan a la imagen que está cuatro puestos más allá, recorriendo una sola transición extra, no cuatro. Y en el modo «congelar», si la transición está exactamente en $p = 0$ (dos pedidos en el mismo frame: el segundo encuentra la transición que acaba de crear el primero), basta con cambiar <code>hacia</code>, porque en $p = 0$ todavía no se ve nada de ella. Sin esa línea, la segunda receta pisaría a la primera antes de que <code>dibujar</code> la atendiera y la foto nueva se haría leyendo una instantánea vieja: un salto.</li>
+    <li><strong>El tamaño y la pérdida de contexto.</strong> Los FBOs se rehacen en <code>redimensionar</code> y todo lo demás en <code>iniciar</code>, como pide 7.1. Si el tamaño cambia (o el contexto se pierde) justo mientras la imagen de partida es una foto, la foto se pierde con su FBO; el código lo resuelve terminando la transición de golpe. Una alternativa más fina sería copiar la foto al FBO nuevo con <code>gl.blitFramebuffer</code> (<a href="../05-webgl/08-framebuffers.html">5.8</a>), que admite escalar con filtro lineal.</li>
+    <li><strong>Lo que cuesta.</strong> Una instantánea es un dibujo más a pantalla completa, una sola vez por interrupción, y dos texturas del tamaño del búfer en memoria (con 1440 × 900 y 4 bytes por píxel, unos 10 MB entre las dos). Si la galería vive en una página con muchas cosas, créalas al primer uso y no al arrancar.</li>
+  </ul>
+</section>
+
+<div class="callout senior" data-titulo="Transiciones entre dos escenas vivas">
+  <p>En <a href="01-arquitectura.html">7.1</a> quedó una promesa: para una transición entre dos escenas del gestor, las dos tienen que estar vivas a la vez. Ahora se ve por qué. Si A y B no son imágenes sino escenas animadas (un fondo de partículas que da paso a otro de ondas), en cada frame de la transición se dibuja la escena A en un FBO, la escena B en otro y, por último, la transición a pantalla completa lee las dos texturas con <code>desde()</code> y <code>hacia()</code>, igual que lee la foto de la galería. Son tres pasadas por frame, así que mientras dura la transición el frame cuesta más o menos lo que las dos escenas juntas. Si el presupuesto va justo, dibuja las escenas en FBOs más pequeños que la pantalla mientras dure (a mitad de una disolución nadie aprecia el detalle) o congela A en una foto y deja viva solo B. Al terminar, la escena A deja de dibujarse y el gestor ya puede liberarla.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Una disolución de A hacia B va por la mitad. El usuario pulsa «siguiente» y tu código hace <code>desde = B; hacia = C; p = 0</code>. ¿Qué ve en el frame siguiente?</p>
+  <ul>
+    <li>Nada raro: la disolución sigue desde donde estaba, ahora hacia C.<div class="explicacion">Con $p = 0$ la transición muestra <code>desde</code> entero, y <code>desde</code> ahora es B. No hay nada de A en ese frame.</div></li>
+    <li data-correcta>Un salto: las zonas que todavía mostraban A (y el fuego) pasan de golpe a B, y a partir de ahí B se disuelve en C.<div class="explicacion">Correcto. El frame anterior era medio A y medio B; el nuevo es B entero. Para que el primer frame de la transición nueva sea igual al último de la anterior, <code>desde</code> tiene que ser una foto de lo que se estaba viendo.</div></li>
+    <li>Un salto a C, porque <code>hacia</code> es la última imagen asignada.<div class="explicacion">Con $p = 0$, <code>hacia</code> todavía no aporta nada: el contrato dice que en $p = 0$ se ve <code>desde</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Hover sobre imágenes: un muelle al mando de la distorsión</h2>
+<p>Una familia entera de efectos de las webs de portfolio funciona igual: al entrar el puntero en una imagen, aparece una distorsión (una lupa, unas ondas, una deformación líquida, los canales de color que se separan) que sigue al puntero y se desvanece al salir. Es una transición entre «imagen quieta» e «imagen con efecto», con dos particularidades: se interrumpe constantemente (el puntero entra y sale cuando quiere) y tiene un centro que se mueve. Por eso se construye con tres números, cada uno con su herramienta:</p>
+<ul>
+  <li><strong>Cuánto efecto:</strong> un muelle hacia 1 al entrar y hacia 0 al salir. Es la transición interrumpible por excelencia, y un poco de rebote da una sensación elástica, de gelatina, que un tween no consigue. Llega al shader como <code>u_hover</code>.</li>
+  <li><strong>Dónde:</strong> el puntero suavizado de <a href="02-interaccion.html">7.2</a> (<code>M7.Puntero</code>), convertido a píxeles del búfer en el frame. Llega como <code>u_centro</code>.</li>
+  <li><strong>Cuánta agitación:</strong> la <em>velocidad</em> del muelle, <code>muelle.v</code>. Es grande mientras el efecto crece o se recoge y cero en reposo, así que cualquier cosa que multipliques por ella solo existe mientras hay movimiento. Aquí, la separación de los canales de color. Llega como <code>u_vel</code>.</li>
+</ul>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const puntero = new M7.Puntero(canvas, { semivida: 0.08 });
+const muelle = new M7.Muelle(M7.parametrosMuelle(0.25, 0.9));
+
+canvas.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') muelle.objetivo = 1; });
+canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') muelle.objetivo = 0; });
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'mouse') muelle.objetivo = 1 - muelle.objetivo;
+});
+
+// actualizar(e, dt, app):
+puntero.actualizar(app.reloj.dtReal);
+muelle.actualizar(app.reloj.dtReal);
+if (muelle.enReposo()) muelle.fijar(muelle.objetivo);
+
+// dibujar(gl, e, app):
+GLKit.ponerUniform(gl, u.u_centro, puntero.aGL(canvas));
+GLKit.ponerUniform(gl, u.u_hover, muelle.x);
+GLKit.ponerUniform(gl, u.u_vel, muelle.v);
+GLKit.ponerUniform(gl, u.u_escala, app.ancho / puntero.ancho);
+</script>
+<ol>
+  <li data-l="1">El puntero de 7.2: guarda <code>clientX</code>/<code>clientY</code> en los eventos, convierte en el frame y suaviza con 80 ms de semivida para que la lupa siga al cursor con un pelo de inercia.</li>
+  <li data-l="2">Un muelle con un 25 % de rebote que se asienta en 0,9 s: al entrar, la lupa se pasa de tamaño y vuelve; al salir, se recoge con un pequeño «plop».</li>
+  <li data-l="4-5">Con ratón, entrar y salir son los objetivos. <code>pointerenter</code> y <code>pointerleave</code> no burbujean y solo llegan al entrar o salir del propio elemento, así que no se disparan al pasar por encima de hijos (un canvas no tiene).</li>
+  <li data-l="6-8">En una pantalla táctil no hay hover: el dedo aparece y desaparece. Un toque alterna el efecto, igual que en el ejemplo 6.7.3 de <a href="../06-glsl/07-animacion-shaders.html">6.7</a>. Sin esto, en un móvil el efecto sería un parpadeo: según la especificación de Pointer Events, en un dispositivo sin hover el <code>pointerenter</code> llega justo antes del <code>pointerdown</code> y el <code>pointerleave</code> justo después del <code>pointerup</code>. Lo comprobamos en Chrome emulando un dedo con el protocolo de depuración: un toque sin arrastre produjo, en este orden, <code>pointerover</code>, <code>pointerenter</code>, <code>pointerdown</code>, <code>pointerup</code>, <code>pointerout</code> y <code>pointerleave</code> (entre medias solo llegaron los eventos <code>touch*</code>, y el <code>click</code> al final). Con arrastre sobre un elemento sin <code>touch-action: none</code>, el navegador se queda el gesto para desplazar la página y envía <code>pointercancel</code>: por eso los canvas de estos ejemplos llevan esa regla en su CSS.</li>
+  <li data-l="11-12">Los dos con <code>dtReal</code>: responden a la mano del usuario, que no se pausa con la escena (<a href="02-interaccion.html">7.2</a>).</li>
+  <li data-l="13">Al llegar al reposo, el muelle se clava en su objetivo: con <code>u_hover</code> exactamente a 0, el shader dibuja la imagen sin efecto, píxel a píxel (el contrato, otra vez).</li>
+  <li data-l="16-19">Todo lo que depende del búfer se calcula aquí: el centro en píxeles del búfer con la y hacia arriba, y la escala (píxeles del búfer por píxel CSS) para que el radio de la lupa mida lo mismo en cualquier pantalla.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.3.5 — Una lupa elástica</h3>
+  <p>Pasa el puntero por encima de la imagen, muévelo y sácalo; entra y sal deprisa para ver cómo el muelle se interrumpe sin saltos. Fíjate en los bordes de colores: solo aparecen mientras la lupa crece o se recoge. Sin tocar nada, un puntero fantasma entra y sale al principio para que veas el efecto.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.3.5 — Hover con muelle" data-altura="330" data-apilado data-incluir="glkit,m7kit,l73" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+#info { position: absolute; left: 8px; bottom: 6px; color: #fff; font: 12px ui-monospace, monospace; text-shadow: 0 1px 2px #000; }
+</script>
+<script type="text/x-js">
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_imagen;
+uniform vec2 u_centro;       // px del búfer, origen abajo (puntero suavizado)
+uniform float u_hover;       // posición del muelle: 0 sin efecto, 1 lupa entera (puede pasarse)
+uniform float u_vel;         // velocidad del muelle (1/s): separa los canales mientras se mueve
+uniform float u_escala;      // px del búfer por px CSS
+out vec4 fragColor;
+${L73.GLSL.CUBRIR}
+vec3 imagen(vec2 uv) { return texture(u_imagen, cubrir(uv, u_resolution, vec2(textureSize(u_imagen, 0)))).rgb; }
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 c = u_centro / u_resolution;
+  vec2 d = (gl_FragCoord.xy - u_centro) / (120.0 * u_escala);     // en radios de lupa (120 px CSS)
+  float caida = exp(-dot(d, d) * 1.4);                            // 1 en el centro, casi 0 a dos radios
+  float k = 0.5 * u_hover * caida;                                 // cuánto se acerca el punto de lectura
+  vec2 q = c + (uv - c) * (1.0 - k);                               // tirar hacia el centro = ampliar
+  vec2 radial = length(d) > 1e-4 ? normalize(d) : vec2(0.0);
+  vec2 sep = radial * 0.004 * u_vel * caida / vec2(u_resolution.x / u_resolution.y, 1.0);
+  vec3 col = vec3(imagen(q + sep).r, imagen(q).g, imagen(q - sep).b);
+  col *= 1.0 + 0.12 * u_hover * caida;                             // un poco más de luz bajo la lupa
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const fuente = L73.imagen('noche');
+const puntero = new M7.Puntero(canvas, { semivida: 0.08 });
+const muelle = new M7.Muelle(M7.parametrosMuelle(0.25, 0.9));
+let fantasma = true;                                   // demostración hasta que llegue un puntero de verdad
+
+canvas.addEventListener('pointerenter', (e) => { fantasma = false; if (e.pointerType === 'mouse') muelle.objetivo = 1; });
+canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') muelle.objetivo = 0; });
+canvas.addEventListener('pointerdown', (e) => { fantasma = false; if (e.pointerType !== 'mouse') muelle.objetivo = 1 - muelle.objetivo; });
+
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, L73.GLSL.VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray(), tex: GLKit.crearTextura(gl, fuente, { mipmaps: true }) };
+  },
+  actualizar(e, dt, app) {
+    puntero.actualizar(app.reloj.dtReal);
+    if (fantasma) muelle.objetivo = (app.reloj.t % 3) < 1.6 ? 1 : 0;   // entra y sale solo
+    muelle.actualizar(app.reloj.dtReal);
+    if (muelle.enReposo()) muelle.fijar(muelle.objetivo);
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    const t = app.reloj.t;
+    const centro = fantasma ? [app.ancho * (0.5 + 0.25 * Math.cos(t)), app.alto * (0.4 + 0.15 * Math.sin(t * 1.3))] : puntero.aGL(canvas);   // el fantasma pasea por los edificios
+    gl.useProgram(g.p);
+    L73.texturas(gl, g.u, [['u_imagen', g.tex]]);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, g.u.u_centro, centro);
+    GLKit.ponerUniform(gl, g.u.u_hover, muelle.x);
+    GLKit.ponerUniform(gl, g.u.u_vel, muelle.v);
+    GLKit.ponerUniform(gl, g.u.u_escala, app.ancho / app.anchoCSS);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    info.textContent = `hover = ${muelle.x.toFixed(3)} · velocidad = ${muelle.v.toFixed(2)}/s` + (fantasma ? ' · demostración' : '');
+  },
+});
+</script>
+  </div>
+  <p>La lupa no mueve píxeles: cambia <em>dónde lee</em> cada píxel. <code>q = c + (uv − c)·(1 − k)</code> acerca el punto de lectura al centro en una fracción <code>k</code>, y leer más cerca del centro es ver la imagen ampliada (la regla de «tirar, no empujar» de <a href="../06-glsl/08-texturas-efectos.html">6.8</a>). La caída gaussiana hace que el efecto se desvanezca suavemente a unos dos radios. Los canales rojo y azul se leen desplazados en sentidos opuestos a lo largo del radio, en proporción a <code>u_vel</code>: con el muelle quieto, <code>sep</code> vale 0 y los tres canales se leen en el mismo punto. La escala usa <code>app.anchoCSS</code> (el ancho de la caja que anota el <code>ResizeObserver</code> de m7kit). <code>puntero.ancho</code>, el del bloque anotado, daría lo mismo: <code>M7.Puntero</code> mide la caja en cada <code>actualizar</code>, haya llegado algún evento o no. Usar el de la app deja la escala independiente del puntero: el shader la necesita aunque el centro lo ponga la demostración.</p>
+</section>
+
+<div class="callout senior" data-titulo="Veinte imágenes con hover: un canvas, no veinte">
+  <p>En una rejilla de proyectos, la tentación es un canvas WebGL por tarjeta. Con más de unos 16 contextos vivos, Chrome empieza a destruir los más antiguos (<a href="../05-webgl/01-contexto.html#m5-demasiados-contextos">5.1</a>), y cada contexto sube sus propias texturas y compila sus propios shaders. Las alternativas, de más simple a más ambiciosa: crear el contexto solo para la tarjeta que tiene el puntero encima (y liberarlo con <code>WEBGL_lose_context</code> al salir); un único canvas fijo detrás de la página que dibuja cada imagen en el rectángulo de su tarjeta con <code>gl.viewport</code> y <code>gl.scissor</code>, como el ejemplo 7.2.5, asumiendo el frame de retraso respecto al scroll (<a href="02-interaccion.html#m7-canvas-fijo-retraso">7.2</a>); o, si el efecto es un zoom o un cambio de brillo, CSS puro (<code>transform</code>, <code>filter</code>), que no gasta ni un contexto.</p>
+</div>
+
+<div class="callout hack" data-titulo="Efectos que solo existen en movimiento">
+  <p>Un muelle te da dos números gratis: la posición y la velocidad. La posición dice «cuánto efecto hay»; la velocidad, «cuánto está cambiando». Multiplicar algo por <code>abs(muelle.v)</code> crea efectos que aparecen solo durante la transición y desaparecen solos en reposo: la separación de canales de este ejemplo, un desenfoque de movimiento, un poco de ruido, una estela. No hace falta ningún temporizador ni estado extra, y se interrumpen con la misma suavidad que el muelle.</p>
+</div>
+
+<h2>Transición de página con un overlay</h2>
+<p>Muchas webs de una sola página cambian de «página» con una cortina: una capa que cubre la pantalla, el contenido que cambia debajo mientras está tapado y la capa que se retira mostrando la página nueva. Con WebGL, esa capa puede ser una disolución, una tinta o un líquido. Pero hay una limitación que condiciona todo el diseño: <strong>el shader no puede leer el DOM</strong>. No existe una forma estándar de convertir el contenido de la página en una textura: el navegador no la ofrece porque permitiría leer píxeles que la página no debe ver (iframes de otros orígenes, el color de los enlaces visitados). Hay propuestas experimentales para permitirlo de forma segura, pero en el Chrome de pruebas (versión 154, sin flags) no hay ningún método así: comprobamos, por ejemplo, que no existen <code>drawElement</code> ni <code>drawElementImage</code> en el contexto 2D, ni <code>texElementImage2D</code> en WebGL2. El overlay no transforma la página: la tapa.</p>
+<p>La coreografía tiene cuatro fases, y conviene escribirla como una pequeña máquina de estados, no como una secuencia de tiempos fijos:</p>
+<ol>
+  <li><strong>Cubrir</strong> ($p$ de 0 a 1): la capa entra y termina tapándolo todo. Durante esta fase, el canvas bloquea los clics (<code>pointer-events: auto</code>): el usuario no debe poder pulsar otro enlace de la página vieja.</li>
+  <li><strong>Cubierta</strong> ($p = 1$): se cambia el contenido del DOM. Si la página nueva necesita cargar algo, la capa espera aquí el tiempo que haga falta. Por eso es una fase y no un instante.</li>
+  <li><strong>Descubrir</strong> ($p$ de 1 a 2): la capa sale, preferiblemente siguiendo en la misma dirección en la que entró (parece que pasa de largo), mostrando la página nueva.</li>
+  <li><strong>Quieta</strong>: el canvas no dibuja nada, deja pasar los clics y se oculta con <code>visibility: hidden</code>: así el navegador ni siquiera tiene que componer una capa transparente del tamaño de la ventana.</li>
+</ol>
+<p>En el shader, las dos mitades del recorrido son dos cortinillas: el frente que cubre, en $\operatorname{clamp}(p, 0, 1)$, y el frente que descubre, en $\operatorname{clamp}(p - 1, 0, 1)$. La capa está donde el primero ya pasó y el segundo todavía no:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+float frente(float x, float q, float w) {           // 1 detrás del frente, 0 delante (con el recorrido completo)
+  float e = mix(-w, 1.0 + w, q);
+  return 1.0 - smoothstep(e - w, e + w, x);
+}
+// en main():
+float alfa = frente(x, clamp(p, 0.0, 1.0), w) * (1.0 - frente(x, clamp(p - 1.0, 0.0, 1.0), w));
+fragColor = vec4(color * alfa, alfa);                // ¡premultiplicado!
+</script>
+<p>Dos detalles de esas líneas. El primero, el contrato en tres puntos: en $p = 0$ y en $p = 2$ el alfa es 0 en todo el lienzo, y en $p = 1$ vale 1 en todo el lienzo (con el frente que descubre aún fuera por la izquierda). El segundo, la última línea: el canvas se compone sobre la página con alfa premultiplicado (la opción por defecto, <code>premultipliedAlpha: true</code>), así que el color que sale del shader debe ir ya multiplicado por su alfa. Si devuelves <code>vec4(color, alfa)</code> sin multiplicar, las zonas semitransparentes del borde se ven más claras de lo que deberían, con un halo como de luz sumada (<a href="../05-webgl/07-blending.html#m5-canvas-premultiplicado">5.7</a>).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.3.6 — Cambiar de página con una cortina de tinta</h3>
+  <p>Una web de juguete con tres páginas. Pulsa los enlaces de la cabecera: una capa violeta de borde irregular cubre la página, el contenido cambia debajo y la capa sigue su camino. Marca «carga lenta» para que la página nueva tarde un segundo en estar lista: la capa espera cubierta, con un pulso suave. Intenta pulsar otro enlace a mitad de la transición: no puedes. Y con «menos movimiento», la cortina se convierte en un fundido corto.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.3.6 — Overlay de página" data-altura="360" data-apilado data-incluir="glkit,m7kit,l73" data-fondo="oscuro">
+<script type="text/x-html">
+<header>
+  <nav>
+    <a href="#inicio" data-pagina="inicio">Inicio</a>
+    <a href="#proyectos" data-pagina="proyectos">Proyectos</a>
+    <a href="#contacto" data-pagina="contacto">Contacto</a>
+  </nav>
+  <label><input type="checkbox" id="lenta"> carga lenta</label>
+  <label><input type="checkbox" id="reducir"> menos movimiento</label>
+</header>
+<main id="contenido" tabindex="-1"></main>
+<p id="aviso" aria-live="polite" class="solo-lector"></p>
+<canvas id="overlay" aria-hidden="true"></canvas>
+</script>
+<script type="text/x-css">
+body { margin: 0; font: 14px/1.5 system-ui; color: #e4e7ee; background: #12151c; overflow: hidden; }
+header { display: flex; gap: 18px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #2a3040; font-size: 12px; color: #9aa3b5; }
+nav { display: flex; gap: 14px; margin-right: auto; }
+nav a { color: #e4e7ee; text-decoration: none; font-size: 14px; }
+nav a[aria-current] { color: #b3a8ff; border-bottom: 2px solid #8b7bff; }
+main { padding: 14px 22px; outline: none; }
+main h1 { font: 700 26px system-ui; margin: 6px 0 8px; }
+.bloques { display: flex; gap: 10px; margin-top: 14px; }
+.bloques div { flex: 1; height: 90px; border-radius: 10px; }
+.solo-lector { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#overlay { position: fixed; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; visibility: hidden; }
+.en-transicion #overlay { pointer-events: auto; visibility: visible; }
+</script>
+<script type="text/x-js">
+const PAGINAS = {
+  inicio: { titulo: 'Hola, soy un estudio', texto: 'Hacemos webs con shaders que no se rompen.', colores: ['#8b7bff', '#3fd0e8', '#ff6bb5'] },
+  proyectos: { titulo: 'Proyectos', texto: 'Tres cosas que hemos hecho este año.', colores: ['#f5b84b', '#ff6bb5', '#5dd39e'] },
+  contacto: { titulo: 'Contacto', texto: 'Escríbenos: respondemos en un día.', colores: ['#3fd0e8', '#5dd39e', '#8b7bff'] },
+};
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_p;            // 0 → 1 cubrir · 1 → 2 descubrir
+uniform float u_espera;       // 0..1: pulso mientras espera cubierta
+uniform bool u_reducir;       // fundido en lugar de cortina
+out vec4 fragColor;
+${L73.GLSL.RUIDO}
+float frente(float x, float q, float w, float m) {   // 1 detrás del frente · w: suavizado · m: margen extra
+  float e = mix(-w - m, 1.0 + w + m, q);
+  return 1.0 - smoothstep(e - w, e + w, x);
+}
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
+  float alfa;
+  if (u_reducir) {
+    alfa = 1.0 - abs(u_p - 1.0);                                 // triángulo: 0 → 1 → 0
+  } else {
+    vec2 dir = normalize(vec2(1.0, 0.35));                       // hacia la derecha y un poco hacia arriba
+    float h = 0.5 * dot(abs(dir), a);                            // como la cortinilla del catálogo
+    float x = dot((uv - 0.5) * a, dir) / (2.0 * h) + 0.5;        // 0 → 1 a lo largo de la dirección
+    x += (fbm(uv * a * 3.0) - 0.5) * 0.18;                       // borde irregular: hasta ±0,09
+    float w = 0.006, m = 0.09;                                   // borde casi nítido · margen = amplitud del ruido
+    alfa = frente(x, clamp(u_p, 0.0, 1.0), w, m) * (1.0 - frente(x, clamp(u_p - 1.0, 0.0, 1.0), w, m));
+  }
+  vec3 col = mix(vec3(0.33, 0.25, 0.75), vec3(0.55, 0.3, 0.85), uv.y);
+  col += 0.08 * u_espera * sin(length((uv - 0.5) * a) * 18.0 - u_espera * 40.0);
+  fragColor = vec4(col * alfa, alfa);                            // premultiplicado
+}`;
+const canvas = document.getElementById('overlay');
+const contenido = document.getElementById('contenido');
+const aviso = document.getElementById('aviso');
+const lenta = document.getElementById('lenta');
+const reducir = document.getElementById('reducir');
+const trans = new L73.Transicion({ duracion: 0.6, easing: M7.easings.cubicInOut });
+let paginaEnDOM = null;                                // lo que hay escrito en el DOM (caché, no estado)
+
+const app = M7.crearApp(canvas, {
+  contexto: { alpha: true, premultipliedAlpha: true },
+  estado: { fase: 'quieta', pagina: 'inicio', pedida: null, listaEn: 0, esperaDesde: 0, p: 0 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, L73.GLSL.VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    const t = app.reloj.t;
+    trans.duracion = reducir.checked ? 0.2 : 0.6;
+    if (e.fase === 'quieta' && e.pedida) {
+      if (e.pedida === e.pagina) e.pedida = null;                     // ya estamos ahí
+      else { e.fase = 'cubriendo'; trans.fijar(0); trans.ir(1); }
+    }
+    if (e.fase !== 'quieta') trans.actualizar(dt);
+    if (e.fase === 'cubriendo' && !trans.activa) {
+      e.fase = 'cubierta'; e.pagina = e.pedida; e.pedida = null;       // el DOM cambia en dibujar
+      e.esperaDesde = t; e.listaEn = t + (lenta.checked ? 1.0 : 0.05);
+    }
+    if (e.fase === 'cubierta' && t >= e.listaEn) { e.fase = 'descubriendo'; trans.ir(2); }
+    if (e.fase === 'descubriendo' && !trans.activa) { e.fase = 'quieta'; trans.fijar(0); }
+    e.p = trans.valor;
+  },
+  dibujar(gl, e, app) {
+    // 1. El DOM: la clase que bloquea los clics y, si toca, la página nueva
+    document.body.classList.toggle('en-transicion', e.fase !== 'quieta');
+    if (paginaEnDOM !== e.pagina) mostrarPagina(e.pagina, paginaEnDOM !== null);
+    // 2. La GPU: si está quieta, no hay nada que dibujar (el canvas está oculto)
+    if (e.fase === 'quieta') return;
+    const g = app.gpu;
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, g.u.u_p, e.p);
+    GLKit.ponerUniform(gl, g.u.u_espera, e.fase === 'cubierta' ? Math.min(1, (app.reloj.t - e.esperaDesde) * 2) : 0);
+    GLKit.ponerUniform(gl, g.u.u_reducir, reducir.checked);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+function mostrarPagina(nombre, mover) {
+  const pg = PAGINAS[nombre];
+  contenido.innerHTML = `<h1>${pg.titulo}</h1><p>${pg.texto}</p><div class="bloques">${pg.colores.map((c) => `<div style="background:${c}"></div>`).join('')}</div>`;
+  document.querySelectorAll('nav a').forEach((a) => a.toggleAttribute('aria-current', a.dataset.pagina === nombre));
+  if (mover) { contenido.focus(); aviso.textContent = 'Página: ' + pg.titulo; }   // foco y aviso, no en la carga inicial
+  paginaEnDOM = nombre;
+}
+document.querySelector('nav').addEventListener('click', (ev) => {
+  const a = ev.target.closest('a');
+  if (!a) return;
+  ev.preventDefault();                                  // la navegación la hacemos nosotros
+  if (app.estado.fase === 'quieta') app.estado.pedida = a.dataset.pagina;   // el evento solo anota
+});
+setTimeout(() => { if (app.estado.fase === 'quieta') app.estado.pedida = 'proyectos'; }, 900);   // demostración
+</script>
+  </div>
+  <p>Lo que hace que este overlay sea de producción y no una demo:</p>
+  <ul>
+    <li><strong>Fases como estado.</strong> <code>actualizar</code> avanza la máquina: «quieta» con un destino pendiente pasa a «cubriendo», al terminar el tween pasa a «cubierta», cuando la página está lista pasa a «descubriendo» y al terminar vuelve a «quieta». La fase «cubierta» dura lo que tarde la carga (un milisegundo o diez segundos), sin que el shader ni el tween sepan nada de ello. El mismo <code>L73.Transicion</code> sirve para las dos mitades: <code>ir(1)</code> y después <code>ir(2)</code>.</li>
+    <li><strong>El DOM cambia en <code>dibujar</code>, detrás de la capa.</strong> El estado dice qué página toca (<code>e.pagina</code>) y <code>dibujar</code> compara con lo que hay escrito en el DOM (<code>paginaEnDOM</code>, una caché como los objetos de GL). El cambio se escribe en el mismo frame en que la capa tapa todo, y los dos entran juntos en pantalla (<a href="01-arquitectura.html">7.1</a>).</li>
+    <li><strong>Accesibilidad.</strong> El canvas lleva <code>aria-hidden</code> (es decoración, <a href="02-interaccion.html">7.2</a>); al cambiar de página, el foco va al contenido nuevo (<code>tabindex="-1"</code> lo hace enfocable sin meterlo en el recorrido del tabulador) y una región <code>aria-live</code> anuncia el título: un lector de pantalla no ve la cortina, pero sí se entera del cambio. Con «menos movimiento» (en una web real, <code>prefers-reduced-motion</code>), la cortina que barre la pantalla se sustituye por un fundido corto: 0,2 s para cubrir y otros 0,2 s para descubrir.</li>
+    <li><strong>El borde irregular respeta el contrato.</strong> El ruido desplaza la posición de cada píxel hasta ±0,09, así que el recorrido del frente se alarga en esa cantidad por cada lado (el parámetro <code>m</code> de <code>frente</code>, aparte del suavizado <code>w</code>): sin ese margen, en $p = 1$ quedarían huecos sin cubrir donde el ruido empuja hacia atrás, y la página cambiaría a la vista. Separar los dos números permite un borde nítido (<code>w</code> pequeño) con un margen grande.</li>
+  </ul>
+  <p>Le falta una cosa, que verás en la última sección de la lección: en la fase «quieta» el canvas no dibuja, pero el bucle sigue pidiendo 60 frames por segundo que no hacen nada. Con <code>bajoDemanda: true</code>, el clic del menú llamaría a <code>app.pedirFrame()</code> y <code>actualizar</code> lo pediría mientras la fase no sea «quieta».</p>
+</section>
+
+<div class="callout senior" data-titulo="¿Y la View Transitions API?">
+  <p>Para transiciones entre estados del DOM, Chrome ofrece una API nativa: <code>document.startViewTransition(() =&gt; cambiarDOM())</code> hace una captura de la página, aplica tu cambio y anima entre la captura y el estado nuevo con animaciones CSS que tú personalizas (en el Chrome de pruebas, <code>typeof document.startViewTransition</code> es <code>'function'</code>). Es la opción correcta para fundidos, deslizamientos y morfismos de elementos, y no necesita ni un contexto WebGL: el fundido por defecto es una animación de <code>opacity</code>, que puede ejecutar el compositor (según la especificación, el morfismo de un elemento que cambia de tamaño anima además <code>width</code> y <code>height</code>, que el compositor no puede animar). Lo que no te da es acceso a los píxeles de esas capturas desde un shader: si quieres una disolución con ruido o una tinta, vuelves al overlay de este ejemplo. Y se pueden combinar: el overlay WebGL para la cortina, la API para los elementos que cambian de sitio debajo.</p>
+</div>
+
+<h2>Encadenar uniforms: una línea de tiempo</h2>
+<p>Una entrada cuidada rara vez es un solo número. Piensa en la portada de una web: la cortina se abre, la imagen se asienta desde un zoom ligero, recupera el color, un destello la cruza y el título entra con un pequeño rebote. Son cinco valores, cada uno con su comienzo, su duración y su easing, solapados entre sí. En <a href="../06-glsl/07-animacion-shaders.html">6.7</a> escribiste una línea de tiempo <em>dentro</em> del shader con la función <code>tramo</code>. Aquí la queremos en JavaScript, por cuatro razones:</p>
+<ul>
+  <li><strong>La dispara un evento</strong> (la carga, un clic, llegar a una sección), no el reloj desde cero.</li>
+  <li><strong>Se recorre en los dos sentidos:</strong> la salida suele ser la entrada al revés, y un usuario impaciente puede darle la vuelta a mitad.</li>
+  <li><strong>Se puede saltar</strong> a cualquier instante: para depurar (congelar en 1,35 s y mirar), para enlazarla con una barra de desplazamiento o con el scroll.</li>
+  <li><strong>Gobierna a la vez uniforms de varios programas y el DOM</strong> (el título es texto de verdad), desde un único cabezal y, por tanto, con la pausa y la cámara lenta del reloj de 7.1.</li>
+</ul>
+<p>La estructura es una lista de <strong>pistas</strong>: cada una anima una propiedad desde un valor hasta otro, empezando en un instante, durante un tiempo, con un easing. Y un <strong>cabezal</strong>: el instante de la línea que se está mostrando. La clave del diseño es que el valor de cada propiedad se calcula a partir del cabezal <em>sin estado</em>: no depende de los frames anteriores. Da igual cómo hayas llegado al segundo 1,35 (reproduciendo, retrocediendo o saltando): el resultado es el mismo. Esa propiedad es la que permite invertir y saltar sin errores acumulados.</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+a(nombre, o) {
+  const previa = this.pistas[this.pistas.length - 1];
+  const fin = this.duracion;
+  let inicio;
+  if (typeof o.en === 'number') inicio = o.en;
+  else if (o.en === '<') inicio = previa ? previa.inicio : 0;
+  else if (typeof o.en === 'string' && /^[+-]=/.test(o.en))
+    inicio = fin + (o.en[0] === '+' ? 1 : -1) * parseFloat(o.en.slice(2));
+  else inicio = fin;
+  const p = { nombre, inicio: Math.max(0, inicio), dur: o.dur ?? 0.5,
+              desde: o.desde ?? 0, hasta: o.hasta ?? 1, easing: o.easing ?? ((x) => x) };
+  this.pistas.push(p);
+  this.duracion = Math.max(this.duracion, p.inicio + p.dur);
+  return this;
+}
+valor(nombre, t) {
+  let elegida = null, primera = null;
+  for (const p of this.pistas) {
+    if (p.nombre !== nombre) continue;
+    if (!primera || p.inicio < primera.inicio) primera = p;
+    if (p.inicio <= t && (!elegida || p.inicio >= elegida.inicio)) elegida = p;
+  }
+  if (!primera) return undefined;
+  if (!elegida) return primera.desde;
+  const q = Math.min(1, Math.max(0, (t - elegida.inicio) / elegida.dur));
+  return elegida.desde + (elegida.hasta - elegida.desde) * elegida.easing(q);
+}
+</script>
+<ol>
+  <li data-l="2-3">La pista anterior y el final de la línea hasta ahora (<code>duracion</code>: el final de la pista que acaba más tarde). Por defecto, cada pista se coloca al final: encadenar es lo más habitual.</li>
+  <li data-l="5-9">El parámetro <code>en</code> la coloca de otras formas: un número es un instante absoluto; <code>'&lt;'</code>, a la vez que la pista anterior; <code>'+=0.2'</code>, 0,2 s después del final de la línea (un hueco); <code>'-=0.3'</code>, 0,3 s antes del final (solapada). Es el significado que tienen en el «position parameter» de GSAP, la librería de líneas de tiempo más usada en la web, que admite además otras formas (<code>'&gt;'</code>, etiquetas con nombre…); lo que aprendas aquí te sirve allí.</li>
+  <li data-l="10-11">La pista, con valores por defecto: de 0 a 1 en medio segundo, lineal. En el archivo del kit está escrito sin <code>??</code>, con comprobaciones de <code>undefined</code> equivalentes.</li>
+  <li data-l="13-14">La duración total es el final de la pista que acaba más tarde (no necesariamente la última añadida). <code>return this</code> permite encadenar llamadas: <code>linea.a(…).a(…).a(…)</code>.</li>
+  <li data-l="18-22">Para una propiedad con varias pistas (entra, se queda, sale), manda la que empezó más recientemente antes del instante <code>t</code>. Si dos empiezan a la vez, gana la añadida después (<code>&gt;=</code>).</li>
+  <li data-l="23-24">Si ninguna pista anima esa propiedad, <code>undefined</code>: así se distingue «no existe» de «vale 0». Y antes de que empiece ninguna pista de esa propiedad, vale el <code>desde</code> de la primera: el estado inicial de la escena está definido desde el instante 0 aunque su animación empiece en el segundo 2.</li>
+  <li data-l="25-26">El tramo de 6.7: progreso lineal recortado a $[0, 1]$, easing y <code>lerp</code>. Pasado el final de la pista, <code>q</code> se queda en 1 y el valor en <code>hasta</code>. Una pista con <code>dur: 0</code> (un corte instantáneo) dividiría por cero y, justo en su inicio, calcularía $0/0$: el archivo del kit la trata como terminada (<code>q = 1</code>) antes de dividir.</li>
+</ol>
+</div>
+<p>El cabezal avanza en <code>actualizar</code> con el <code>dt</code> del reloj multiplicado por una velocidad: 1 para reproducir, −1 para invertir, 0 para quedarse quieto (y cualquier valor intermedio para la cámara lenta). Se recorta entre 0 y la duración total, y con eso la línea está completa: <code>linea.valores()</code> devuelve un objeto con el valor de cada propiedad en el cabezal, listo para repartir entre uniforms y estilos del DOM.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.3.7 — Una portada con guion y cabezal</h3>
+  <p>Cinco pistas: <code>cortina</code>, <code>zoom</code>, <code>color</code>, <code>brillo</code> (en el shader) y <code>titulo</code> (en el DOM). Debajo, el guion con una barra por pista y la línea blanca del cabezal. Reproduce, invierte a mitad, arrastra el cabezal a mano o actívalo a cámara lenta. La portada se reproduce sola una vez al arrancar.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.3.7 — Línea de tiempo" data-altura="360" data-apilado data-incluir="glkit,m7kit,texturas,l73" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="titulo"><b>Atardecer</b><span>una portada con cinco pistas</span></div>
+<div id="guion"></div>
+<div id="panel">
+  <button id="play">▶ reproducir</button>
+  <button id="rev">◀ invertir</button>
+  <input type="range" id="cabezal" min="0" max="1000" value="0">
+  <label><input type="checkbox" id="lento"> × 0,25</label>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; font: 12px system-ui; color: #e4e7ee; }
+#c { position: absolute; left: 0; top: 0; width: 100%; height: 66%; display: block; }
+#titulo { position: absolute; left: 0; right: 0; top: 24%; text-align: center; pointer-events: none; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+#titulo b { display: block; font: 800 38px system-ui; letter-spacing: 0.02em; }
+#titulo span { font-size: 13px; opacity: 0.85; }
+#guion { position: absolute; left: 8px; right: 8px; top: calc(66% + 6px); height: 92px; }
+.pista { position: absolute; height: 14px; border-radius: 4px; font: 10px/14px ui-monospace, monospace; color: #0e1014; padding-left: 4px; overflow: hidden; white-space: nowrap; }
+#aguja { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #fff; }
+#panel { position: absolute; left: 8px; right: 8px; bottom: 6px; display: flex; gap: 8px; align-items: center; }
+#panel input[type=range] { flex: 1; }
+button { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:hover { border-color: #8b7bff; }
+</script>
+<script type="text/x-js">
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_imagen;
+uniform float u_cortina;     // 0 cerrada → 1 abierta
+uniform float u_zoom;        // escala de la imagen
+uniform float u_color;       // 0 blanco y negro → 1 color
+uniform float u_brillo;      // posición del destello, de izquierda a derecha
+out vec4 fragColor;
+${L73.GLSL.CUBRIR}
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 uvi = (uv - 0.5) / u_zoom + 0.5;                            // zoom alrededor del centro
+  vec3 col = texture(u_imagen, cubrir(uvi, u_resolution, vec2(textureSize(u_imagen, 0)))).rgb;
+  col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, u_color);
+  float x = uv.x + (uv.y - 0.5) * 0.3;                             // banda diagonal
+  float e = mix(-0.3, 1.3, u_brillo);
+  col += vec3(1.0, 0.95, 0.85) * 0.45 * exp(-pow((x - e) / 0.035, 2.0));
+  float w = 0.01, h = mix(-w, 1.0 + w, u_cortina);                  // dos hojas desde el centro
+  float tapado = smoothstep(h - w, h + w, abs(uv.x - 0.5) * 2.0);
+  fragColor = vec4(mix(col, vec3(0.03, 0.03, 0.05), tapado), 1.0);
+}`;
+const linea = new L73.Linea()
+  .a('cortina', { dur: 0.9, easing: M7.easings.cubicInOut })
+  .a('zoom', { desde: 1.15, hasta: 1, dur: 1.6, easing: M7.easings.expoOut, en: '<' })
+  .a('color', { dur: 0.8, en: '-=0.3' })
+  .a('brillo', { dur: 0.7, en: '-=0.2', easing: M7.easings.cubicInOut })
+  .a('titulo', { dur: 0.6, en: '-=0.4', easing: M7.easings.backOut });
+
+// El guion en el DOM: una barra por pista (se construye una vez)
+const COLORES = { cortina: '#8b7bff', zoom: '#3fd0e8', color: '#5dd39e', brillo: '#f5b84b', titulo: '#ff6bb5' };
+const guion = document.getElementById('guion');
+linea.pistas.forEach((p, i) => {
+  const d = document.createElement('div');
+  d.className = 'pista'; d.textContent = p.nombre;
+  Object.assign(d.style, { left: p.inicio / linea.duracion * 100 + '%', width: p.dur / linea.duracion * 100 + '%', top: i * 17 + 'px', background: COLORES[p.nombre] });
+  guion.appendChild(d);
+});
+const aguja = document.createElement('div'); aguja.id = 'aguja'; guion.appendChild(aguja);
+
+const canvas = document.getElementById('c');
+const titulo = document.getElementById('titulo');
+const deslizador = document.getElementById('cabezal');
+const fuente = Texturas.crear('paisaje');
+linea.velocidad = 1;                                   // se reproduce sola al arrancar
+
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, L73.GLSL.VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray(), tex: GLKit.crearTextura(gl, fuente, { mipmaps: true }) };
+  },
+  actualizar(e, dt, app) {
+    linea.actualizar(dt * (document.getElementById('lento').checked ? 0.25 : 1));
+  },
+  dibujar(gl, e, app) {
+    const v = linea.valores();                         // un objeto: { cortina, zoom, color, brillo, titulo }
+    const g = app.gpu;
+    gl.useProgram(g.p);
+    L73.texturas(gl, g.u, [['u_imagen', g.tex]]);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, g.u.u_cortina, v.cortina);
+    GLKit.ponerUniform(gl, g.u.u_zoom, v.zoom);
+    GLKit.ponerUniform(gl, g.u.u_color, v.color);
+    GLKit.ponerUniform(gl, g.u.u_brillo, v.brillo);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    // El DOM, con el mismo cabezal y en el mismo frame
+    titulo.style.opacity = Math.min(1, v.titulo);
+    titulo.style.transform = `translateY(${(1 - v.titulo) * 24}px)`;
+    aguja.style.left = linea.cabezal / linea.duracion * 100 + '%';
+    if (linea.velocidad !== 0) deslizador.value = Math.round(linea.cabezal / linea.duracion * 1000);
+  },
+});
+document.getElementById('play').onclick = () => { if (linea.cabezal >= linea.duracion) linea.cabezal = 0; linea.velocidad = 1; };
+document.getElementById('rev').onclick = () => { linea.velocidad = -1; };
+deslizador.oninput = () => { linea.velocidad = 0; linea.cabezal = deslizador.value / 1000 * linea.duracion; };
+</script>
+  </div>
+  <p>Mira la construcción de la línea: cinco llamadas encadenadas describen todo el guion, y los tiempos se derivan unos de otros. <code>zoom</code> empieza con la cortina (<code>'&lt;'</code>) y dura 1,6 s; <code>color</code> empieza 0,3 s antes del final de la línea, que en ese momento es el final del zoom; <code>brillo</code>, 0,2 s antes de que acabe el color; <code>titulo</code>, 0,4 s antes de que acabe el brillo. Si mañana el zoom debe durar 2 s, cambias un número y todo lo que viene detrás se recoloca. Fíjate también en el título: <code>backOut</code> se pasa de 1 (hasta 1,1), y ese exceso lleva el <code>translateY</code> a unos píxeles negativos: un pequeño rebote hacia arriba. La opacidad se recorta con <code>Math.min</code>, porque en CSS un valor mayor que 1 no aporta nada. Al invertir, el título baja y se desvanece primero, la cortina se cierra al final: la salida es la entrada al revés, sin escribir una línea más.</p>
+</section>
+
+<div class="callout porque">
+  <p>Porque un sistema de tweens encadenados con <code>alTerminar</code> (como el de 2.4) sabe ir hacia delante, pero no sabe dar marcha atrás ni saltar: su estado es «qué tween está activo y desde cuándo», y la historia se pierde a medida que avanza. Una línea de tiempo evaluada desde el cabezal no tiene historia que perder. Es la diferencia entre un vídeo que solo se puede reproducir y uno que se puede rebobinar.</p>
+</div>
+
+<h2>Rendimiento: dibujar solo mientras algo se mueve</h2>
+<p>Una galería pasa el 99 % del tiempo quieta: el usuario mira la foto. Un overlay de página está oculto casi siempre. Una portada termina su entrada en tres segundos y después no cambia. Y sin embargo, el bucle de 7.1 dibuja 60 veces por segundo la misma imagen, recalculando cada píxel. Medimos cuánto cuesta esa costumbre, con una disolución estática a 1440 × 900 en la máquina de pruebas (MacBook Air M1, Chrome 154 en modo headless, ANGLE sobre Metal), sumando el tiempo de CPU de cada proceso de Chrome (con el protocolo de depuración, <code>SystemInfo.getProcessInfo</code>) durante 6 s:</p>
+<table class="m7-medidas">
+  <thead><tr><th>Bucle</th><th class="num">Frames en 6 s</th><th class="num">CPU del proceso de la página</th><th class="num">CPU del proceso de la GPU</th></tr></thead>
+  <tbody>
+    <tr><td>Continuo (la imagen no cambia)</td><td class="num">360</td><td class="num">16 ms por segundo</td><td class="num">30 ms por segundo</td></tr>
+    <tr><td>Bajo demanda, en reposo</td><td class="num">0</td><td class="num">0 ms por segundo</td><td class="num">0,1 ms por segundo</td></tr>
+  </tbody>
+</table>
+<p>Unos 46 ms de CPU por segundo (casi un 5 % de un núcleo) más el trabajo de la propia GPU, que con un temporizador de GPU (<a href="../05-webgl/10-depuracion.html">5.10</a>) medimos, en la misma máquina, entre 0,07 y 1,3 ms por frame para las transiciones del catálogo a esa resolución (con mucha dispersión: la GPU cambia de frecuencia según la carga). En un portátil potente es poco; en un móvil, con la batería y la temperatura de por medio, y multiplicado por cada pestaña que el usuario deja abierta con tu web, no lo es. La regla de un senior: <strong>si nada se mueve, no se dibuja</strong>.</p>
+
+<p><code>M7.crearApp</code> lo trae preparado con la opción <code>bajoDemanda: true</code> (<a href="01-arquitectura.html">7.1</a>). En ese modo, al terminar cada frame el bucle solo pide el siguiente si alguien llamó a <code>app.pedirFrame()</code> durante este; si no, se duerme. Tres detalles de su implementación que comprobamos:</p>
+<ul>
+  <li><strong>Mientras duerme, el canvas sigue mostrando el último frame.</strong> El búfer ya presentado se queda en pantalla hasta que vuelvas a dibujar: medimos el píxel de un canvas dormido y seguía siendo el último color dibujado.</li>
+  <li><strong>Al despertar no hay salto de tiempo.</strong> <code>pedirFrame</code> sobre una app dormida reinicia la referencia del reloj, así que el primer <code>dt</code> vale 0. Medido: tras 1 s dormida, los tres primeros frames tuvieron <code>dt</code> = 0; 0,0167 y 0,0167 s.</li>
+  <li><strong>Los cambios de tamaño despiertan la app</strong> (su <code>ResizeObserver</code> llama a <code>pedirFrame</code>): redimensionar borra el búfer, y hay que volver a dibujarlo.</li>
+</ul>
+<p>El resto es responsabilidad tuya: decidir quién llama a <code>pedirFrame</code>. La lista es corta:</p>
+<ol>
+  <li><strong>Lo que se está animando</strong>, en <code>actualizar</code>: <code>if (trans.activa || !muelle.enReposo() || linea.activa) app.pedirFrame();</code>. Mientras algo se mueve, se sigue dibujando; cuando todo llega a su destino, se deja de pedir.</li>
+  <li><strong>Los eventos que cambian el estado</strong>: un clic que arranca una transición, un <code>pointermove</code> si el efecto sigue al puntero, un <code>pointerenter</code> que mueve el objetivo de un muelle.</li>
+  <li><strong>Lo que llega tarde</strong>: una imagen que termina de decodificarse, una fuente que se carga, datos de la red.</li>
+</ol>
+<p>Y hay algo que no encaja: cualquier cosa que dependa de <code>u_time</code> de forma continua. Si la escena tiene unas ondas lentas de fondo, o no duerme nunca (y entonces el modo bajo demanda no aporta nada mientras se vea) o se congela al dormir. Muchas veces la segunda opción es la buena: una imagen quieta y digna cuando no hay interacción, con el movimiento reservado para las transiciones.</p>
+
+<div class="callout bestiario" data-id="m7-3-bajo-demanda-insomne" data-titulo="El bucle bajo demanda no se duerme nunca">
+  <p><strong>Síntoma:</strong> has activado el modo bajo demanda y todo parece ir bien, pero el contador de frames sigue subiendo con la escena quieta, el ventilador no se calma y el panel de rendimiento muestra frames continuos.</p>
+  <p><strong>Causa:</strong> algo llama a <code>pedirFrame</code> en cada frame. La más traicionera es la comparación exacta: <code>if (suave !== objetivo) app.pedirFrame()</code>. Un suavizado exponencial o un muelle tardan muchísimo en valer exactamente su objetivo en coma flotante, o no lo valen nunca. Lo comprobamos en Chrome, a 60 Hz: <code>M7.suavizar</code> hacia 1 (semivida 0,06 s) se había quedado atascado tras 100 000 frames en 0,9999999999999998 (la diferencia con 1, $2{,}2 \cdot 10^{-16}$, se multiplica por el factor del suavizado, 0,82, y al sumarla a 1 el resultado se redondea otra vez al mismo número); el muelle por defecto de <code>M7.Muelle</code>, casi crítico, en 0,999999999999999. Un muelle con rebote sí acaba clavando el 1 (el de la lupa, a los 7,6 s), mucho después de parecer quieto. Y hacia 0 ninguno llega en la práctica: el de la lupa vale $-1{,}2 \cdot 10^{-8}$ a los 4 s y $2 \cdot 10^{-20}$ a los 10 s, y sigue encogiendo durante minutos. Otras causas: un shader que usa <code>u_time</code> y alguien que pide frames «para que se mueva», un <code>pointermove</code> que pide frames aunque el efecto no dependa del puntero, o un muelle que nunca queda en reposo porque su objetivo se recalcula cada frame con un valor que tiembla.</p>
+  <p><strong>Solución:</strong> compara siempre con una tolerancia (<code>muelle.enReposo()</code>, <code>Math.abs(a - b) &gt; 1e-3</code>) y, al entrar en ella, clava el valor en el objetivo (<code>fijar</code>) para que el último frame sea exacto. Para depurar, cuenta cuántas veces se llama a <code>pedirFrame</code> y desde dónde (un <code>console.count()</code> dentro de cada llamada lo delata en segundos).</p>
+</div>
+
+<div class="callout bestiario" data-id="m7-3-salto-al-despertar" data-titulo="Cada transición empieza con un salto (en un bucle que se duerme)">
+  <p><strong>Síntoma:</strong> en una app que deja de dibujar cuando está quieta, todas las transiciones empiezan con un pequeño salto: el primer frame ya muestra la transición bastante avanzada. Si esperas poco entre una y otra, el salto es menor; si esperas mucho, se queda en un tamaño fijo.</p>
+  <p><strong>Causa:</strong> el bucle calcula <code>dt</code> como la diferencia con el <em>último frame dibujado</em>, que fue hace segundos. El tope de <code>dt</code> (0,1 s en el reloj de 7.1) evita el desastre, pero no el salto: el primer frame avanza 0,1 s de golpe. Con el muelle por defecto de m7kit, simulamos ese primer paso: la posición pasa de 0 a 0,39 en un solo frame, cuando a 60 Hz debería haber avanzado hasta 0,026.</p>
+  <p><strong>Solución:</strong> al despertar, olvida la referencia del frame anterior para que el primer <code>dt</code> sea 0 (<code>reloj.reiniciarReferencia()</code>). <code>M7.crearApp</code> lo hace dentro de <code>pedirFrame</code>; si escribes tu propio bucle bajo demanda, es la línea que no puede faltar.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.3.8 — Dos tarjetas, dos bucles</h3>
+  <p>La lupa del ejemplo 7.3.5, dos veces: la tarjeta de la izquierda con el bucle continuo y la de la derecha bajo demanda. Cada una cuenta los frames que ha dibujado en el último segundo. Pasa el puntero por encima de cada una, muévelo y sácalo: con las dos quietas, la de la izquierda sigue dibujando 60 veces por segundo (o lo que dé tu pantalla) y la de la derecha, ninguna.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.3.8 — Continuo frente a bajo demanda" data-altura="300" data-apilado data-incluir="glkit,m7kit,l73" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="tarjeta"><canvas id="c1"></canvas><div class="cifra" id="i1"></div></div>
+<div class="tarjeta"><canvas id="c2"></canvas><div class="cifra" id="i2"></div></div>
+</script>
+<script type="text/x-css">
+body { margin: 0; height: 100%; display: flex; gap: 12px; padding: 12px; box-sizing: border-box; overflow: hidden; }
+.tarjeta { position: relative; flex: 1; border-radius: 12px; overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+.cifra { position: absolute; left: 8px; bottom: 6px; color: #fff; font: 12px ui-monospace, monospace; text-shadow: 0 1px 2px #000; }
+</script>
+<script type="text/x-js">
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_imagen;
+uniform vec2 u_centro;
+uniform float u_hover, u_vel, u_escala;
+out vec4 fragColor;
+${L73.GLSL.CUBRIR}
+vec3 imagen(vec2 uv) { return texture(u_imagen, cubrir(uv, u_resolution, vec2(textureSize(u_imagen, 0)))).rgb; }
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution, c = u_centro / u_resolution;
+  vec2 d = (gl_FragCoord.xy - u_centro) / (90.0 * u_escala);
+  float caida = exp(-dot(d, d) * 1.4), k = 0.4 * u_hover * caida;
+  vec2 q = c + (uv - c) * (1.0 - k);
+  vec2 sep = (length(d) > 1e-4 ? normalize(d) : vec2(0.0)) * 0.004 * u_vel * caida / vec2(u_resolution.x / u_resolution.y, 1.0);
+  fragColor = vec4(vec3(imagen(q + sep).r, imagen(q).g, imagen(q - sep).b) * (1.0 + 0.12 * u_hover * caida), 1.0);
+}`;
+
+function tarjeta(canvas, info, bajoDemanda, fuente) {
+  const puntero = new M7.Puntero(canvas, { semivida: 0.08 });
+  const muelle = new M7.Muelle(M7.parametrosMuelle(0.25, 0.9));
+  const marcas = [];                                   // instantes (reloj de la página) de los frames dibujados
+  let app = null;
+  const despertar = () => { if (app) app.pedirFrame(); };
+  canvas.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') { muelle.objetivo = 1; despertar(); } });
+  canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { muelle.objetivo = 0; despertar(); } });
+  canvas.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse') { muelle.objetivo = 1 - muelle.objetivo; despertar(); } });
+  canvas.addEventListener('pointermove', despertar);   // la lupa sigue al puntero: hay que redibujar
+  app = M7.crearApp(canvas, {
+    bajoDemanda,
+    iniciar(gl, app) {
+      const p = GLKit.crearPrograma(gl, L73.GLSL.VS, FS);
+      app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray(), tex: GLKit.crearTextura(gl, fuente, { mipmaps: true }) };
+    },
+    actualizar(e, dt, app) {
+      const dtr = app.reloj.dtReal;
+      puntero.actualizar(dtr);
+      muelle.actualizar(dtr);
+      if (muelle.enReposo()) muelle.fijar(muelle.objetivo);
+      const persigue = puntero.visto && Math.abs(puntero.sx - puntero.x) + Math.abs(puntero.sy - puntero.y) > 0.05;   // px CSS
+      if (!muelle.enReposo() || persigue) app.pedirFrame();            // ¿queda algo por mover?
+    },
+    dibujar(gl, e, app) {
+      const g = app.gpu;
+      gl.useProgram(g.p);
+      L73.texturas(gl, g.u, [['u_imagen', g.tex]]);
+      GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+      GLKit.ponerUniform(gl, g.u.u_centro, puntero.visto ? puntero.aGL(canvas) : [app.ancho / 2, app.alto / 2]);
+      GLKit.ponerUniform(gl, g.u.u_hover, muelle.x);
+      GLKit.ponerUniform(gl, g.u.u_vel, muelle.v);
+      GLKit.ponerUniform(gl, g.u.u_escala, app.ancho / app.anchoCSS);
+      gl.bindVertexArray(g.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      marcas.push(performance.now());
+    },
+  });
+  // Un temporizador aparte SOLO para el contador (no dibuja nada): así se ve el 0 aunque la app duerma
+  setInterval(() => {
+    const ahora = performance.now();
+    while (marcas.length && marcas[0] < ahora - 1000) marcas.shift();
+    info.textContent = (bajoDemanda ? 'bajo demanda' : 'continuo') + ` · ${marcas.length} frames en el último segundo · total ${app.frame}`;
+  }, 250);
+}
+tarjeta(document.getElementById('c1'), document.getElementById('i1'), false, L73.imagen('bosque'));
+tarjeta(document.getElementById('c2'), document.getElementById('i2'), true, L73.imagen('bosque'));
+</script>
+  </div>
+  <p>Todo el modo bajo demanda cabe en tres sitios del código. Los eventos llaman a <code>despertar()</code>: entrar, salir, tocar y mover el puntero (la lupa lo sigue, así que cada movimiento es un cambio visible). <code>actualizar</code> pide otro frame mientras quede algo en movimiento: el muelle fuera de reposo o el puntero suavizado todavía persiguiendo al real (con una tolerancia de 0,05 px CSS, nunca con <code>!==</code>, y solo si ya ha llegado algún evento: antes del primero, <code>M7.Puntero</code> calcula <code>x</code> e <code>y</code> con <code>clientX</code> y <code>clientY</code> a 0, sus valores iniciales, así que valen menos la posición de la caja en la ventana, mientras que <code>sx</code> y <code>sy</code> se quedan en 0 sin suavizar: la distancia no se anula nunca y la app no se dormía; nos pasó preparando este ejemplo). Y al llegar al reposo, <code>fijar</code> deja el muelle exacto, el último frame dibuja la imagen sin efecto y la app se duerme. El contador usa un <code>setInterval</code> que solo escribe texto: si lo pusieras en <code>dibujar</code>, se dormiría con la app y nunca mostraría el 0.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Tu galería bajo demanda tiene, además de las transiciones, un fondo con unas ondas lentas que dependen de <code>u_time</code>. ¿Qué ocurre cuando termina una transición y nadie toca nada?</p>
+  <ul>
+    <li>Las ondas siguen moviéndose, porque <code>u_time</code> lo actualiza el reloj en cada frame.<div class="explicacion">El reloj solo avanza cuando hay frames. En reposo nadie pide frames, así que no hay reloj que avance ni shader que se ejecute.</div></li>
+    <li data-correcta>La app se duerme y las ondas se congelan en el último frame; al volver a dibujar, siguen desde donde estaban.<div class="explicacion">Correcto. Mientras duerme, el canvas muestra el último frame y el reloj no cuenta ese tiempo (al despertar, el primer <code>dt</code> es 0). Si quieres que las ondas se muevan siempre, tendrás que pedir frames continuamente mientras se vean, y entonces el modo bajo demanda no ahorra nada; lo habitual es aceptar un fondo quieto en reposo.</div></li>
+    <li>Las ondas dan un salto al despertar, porque <code>u_time</code> recupera de golpe el tiempo que estuvo dormida.<div class="explicacion">Eso pasaría con un <code>u_time</code> sacado de <code>performance.now()</code> o del argumento de rAF. Con el reloj de la app, el tiempo dormido no cuenta: no hay salto.</div></li>
+  </ul>
+</div>
+
+<div class="callout senior" data-titulo="¿Hace falta un shader?">
+  <p>Antes de montar un contexto WebGL para una transición, pregúntate si la haría CSS. Un fundido entre dos imágenes es <code>opacity</code>; una cortinilla es <code>clip-path: inset(…)</code> animado; un revelado circular es <code>clip-path: circle(…)</code>. En Chrome, las animaciones de <code>opacity</code> y <code>transform</code> (y, en versiones recientes, también las de <code>clip-path</code>) las ejecuta el compositor en su propio hilo (<a href="../02-animacion/01-pipeline-render.html">2.1</a>), sin JavaScript por frame y sin tirones aunque el hilo principal esté ocupado, y sin consumir un contexto WebGL del límite de la página. El shader se gana su sitio cuando el efecto depende de cada píxel de una forma que CSS no puede expresar: ruido, desplazamientos, bordes que arden, mezclas en luz lineal. Ahí no tiene rival.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 7.3.1 — Una cortinilla en cualquier dirección, limpia en los extremos</h3>
+  <p>La cortinilla de partida solo va de izquierda a derecha y no cumple el contrato. Haz que avance en la dirección de <code>angulo</code> (en grados: 0 de izquierda a derecha, 90 de abajo arriba), que el ángulo se vea igual en un lienzo no cuadrado y que en $p = 0$ se vea exactamente A y en $p = 1$ exactamente B, con cualquier ángulo y cualquier <code>borde</code>. La casilla <code>comprobar</code> pinta de magenta los píxeles que incumplen el contrato en alguno de los dos extremos: al terminar no debe quedar ni uno.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 7.3.1" data-altura="320" data-apilado data-texturas="paisaje:clamp,texto:clamp"
+       data-uniforms='{"u_progreso":{"tipo":"float","min":0,"max":1,"valor":0.4,"etiqueta":"progreso"},"u_angulo":{"tipo":"float","min":0,"max":360,"valor":30,"etiqueta":"angulo"},"u_ancho":{"tipo":"float","min":0,"max":0.3,"valor":0.1,"etiqueta":"borde"},"u_comprobar":{"tipo":"bool","valor":true,"etiqueta":"comprobar"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0, u_tex1;
+uniform float u_progreso;
+uniform float u_angulo;        // grados: dirección en la que avanza el borde
+uniform float u_ancho;         // semianchura del borde suave (w)
+uniform bool u_comprobar;
+in vec2 v_uv;
+out vec4 fragColor;
+
+vec2 cubrir(vec2 uv, vec2 lienzo, vec2 imagen) {
+  float k = (lienzo.x / lienzo.y) / (imagen.x / imagen.y);
+  vec2 escala = k > 1.0 ? vec2(1.0, 1.0 / k) : vec2(k, 1.0);
+  return (uv - 0.5) * escala + 0.5;
+}
+vec3 desde(vec2 uv) { return texture(u_tex0, cubrir(uv, u_resolution, vec2(textureSize(u_tex0, 0)))).rgb; }
+vec3 hacia(vec2 uv) { return texture(u_tex1, cubrir(uv, u_resolution, vec2(textureSize(u_tex1, 0)))).rgb; }
+
+vec3 transicion(vec2 uv, float p) {
+  float w = u_ancho;
+  float x = uv.x;                                   // ✗ siempre horizontal
+  float e = p;                                      // ✗ el borde recorre de 0 a 1
+  return mix(desde(uv), hacia(uv), 1.0 - smoothstep(e - w, e + w, x));
+}
+
+void main() {
+  vec3 col = transicion(v_uv, u_progreso);
+  if (u_comprobar) {
+    // Magenta donde el contrato falla en p = 0 o en p = 1 (más de 1/255 de diferencia)
+    float fallo = max(length(transicion(v_uv, 0.0) - desde(v_uv)), length(transicion(v_uv, 1.0) - hacia(v_uv)));
+    if (fallo > 1.0 / 255.0) col = vec3(1.0, 0.0, 1.0);
+  }
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0, u_tex1;
+uniform float u_progreso;
+uniform float u_angulo;        // grados: dirección en la que avanza el borde
+uniform float u_ancho;         // semianchura del borde suave (w)
+uniform bool u_comprobar;
+in vec2 v_uv;
+out vec4 fragColor;
+
+vec2 cubrir(vec2 uv, vec2 lienzo, vec2 imagen) {
+  float k = (lienzo.x / lienzo.y) / (imagen.x / imagen.y);
+  vec2 escala = k > 1.0 ? vec2(1.0, 1.0 / k) : vec2(k, 1.0);
+  return (uv - 0.5) * escala + 0.5;
+}
+vec3 desde(vec2 uv) { return texture(u_tex0, cubrir(uv, u_resolution, vec2(textureSize(u_tex0, 0)))).rgb; }
+vec3 hacia(vec2 uv) { return texture(u_tex1, cubrir(uv, u_resolution, vec2(textureSize(u_tex1, 0)))).rgb; }
+
+vec3 transicion(vec2 uv, float p) {
+  float w = u_ancho;
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);          // aspecto: alturas del lienzo
+  vec2 dir = vec2(cos(radians(u_angulo)), sin(radians(u_angulo)));
+  float h = 0.5 * dot(abs(dir), a);                              // la proyección va de −h a h
+  float x = dot((uv - 0.5) * a, dir) / (2.0 * h) + 0.5;          // 0 en la esquina de entrada, 1 en la de salida
+  float e = mix(-w, 1.0 + w, p);                                 // el borde entra y sale entero
+  return mix(desde(uv), hacia(uv), 1.0 - smoothstep(e - w, e + w, x));
+}
+
+void main() {
+  vec3 col = transicion(v_uv, u_progreso);
+  if (u_comprobar) {
+    float fallo = max(length(transicion(v_uv, 0.0) - desde(v_uv)), length(transicion(v_uv, 1.0) - hacia(v_uv)));
+    if (fallo > 1.0 / 255.0) col = vec3(1.0, 0.0, 1.0);
+  }
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La dirección es el vector $(\cos\theta, \sin\theta)$ con el ángulo en radianes (<code>radians()</code>). Proyecta sobre ella la posición del píxel respecto al centro, con las distancias en alturas del lienzo: <code>dot((uv - 0.5) * aspecto, dir)</code>. ¿Entre qué valores se mueve esa proyección en un rectángulo de $A \times 1$?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Las esquinas del rectángulo dan los extremos: $\pm\tfrac12(A\,|\cos\theta| + |\sin\theta|)$. Normaliza a $[0, 1]$ con ese valor. Y para el contrato: ¿dónde tiene que estar el borde en $p = 0$ para que el <code>smoothstep</code>, que ocupa de $e - w$ a $e + w$, no toque ningún píxel?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Hay dos problemas independientes. El de la dirección se resuelve proyectando: el producto escalar con el vector unitario de la dirección mide cuánto ha avanzado el píxel en esa dirección. Multiplicar por el aspecto antes de proyectar hace que las distancias horizontales y verticales se midan en la misma unidad, y por eso un ángulo de 30° se ve de 30° en un lienzo panorámico. Para que el recorrido sea de 0 a 1 en cualquier ángulo, se divide por la longitud total de la proyección, $2h$, con $h = \tfrac12(A\,|\cos\theta| + |\sin\theta|)$ (la proyección de la media diagonal que más sobresale en esa dirección).</p>
+    <p>El del contrato es el del bestiario de la lección: el borde suave ocupa $2w$, así que tiene que empezar en $-w$ y terminar en $1 + w$. Con <code>e = p</code>, el magenta aparece en dos franjas: en la esquina de entrada (en $p = 0$ ya se mezcla B) y en la de salida (en $p = 1$ queda A). Fíjate en que la comprobación funciona evaluando la propia función <code>transicion</code> con $p = 0$ y $p = 1$ en cada píxel, a la vez que dibuja el $p$ del deslizador: es una prueba automática dentro del shader, y puedes copiarla a cualquier transición que escribas.</p>
+    <p>Un detalle de senior con <code>borde</code> a 0: la línea se convierte en <code>smoothstep(e, e, x)</code>, y la especificación de GLSL ES 3.00 dice que el resultado está indefinido si el primer borde no es menor que el segundo. En la máquina de pruebas se comporta como un escalón (0 si $x \le e$ y 1 si $x > e$; lo medimos con $e$ en un uniform para que el compilador no pudiera precalcularlo), así que la comprobación no pinta nada. Pero otra GPU puede calcular $(x - e)/0$ por dentro y devolver un NaN en el píxel que caiga justo en el borde. Si quieres un borde nítido que no dependa de eso, usa <code>float w = max(u_ancho, 1e-4);</code>: una décima de milésima del recorrido no se ve.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.3.2 — Disolución con borde de fuego</h3>
+  <p>La disolución de partida es un corte duro con el ruido tal cual: se atasca al principio y al final y no tiene borde. Mejórala en cuatro pasos: (1) estira el ruido con los percentiles medidos en la lección (0,24 y 0,80); (2) suaviza el corte con una anchura <code>s = 0.01</code>; (3) añade una franja de fuego de anchura <code>borde</code> delante de lo revelado, amarilla junto a B y roja en el frente; (4) cumple el contrato con cualquier <code>borde</code> (la casilla <code>comprobar</code> te avisa en magenta).</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 7.3.2" data-altura="320" data-apilado data-texturas="paisaje:clamp,texto:clamp"
+       data-uniforms='{"u_progreso":{"tipo":"float","min":0,"max":1,"valor":0.5,"etiqueta":"progreso"},"u_ancho":{"tipo":"float","min":0,"max":0.3,"valor":0.08,"etiqueta":"borde"},"u_comprobar":{"tipo":"bool","valor":true,"etiqueta":"comprobar"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0, u_tex1;
+uniform float u_progreso;
+uniform float u_ancho;         // anchura de la franja de fuego (w)
+uniform bool u_comprobar;
+in vec2 v_uv;
+out vec4 fragColor;
+
+vec2 cubrir(vec2 uv, vec2 lienzo, vec2 imagen) {
+  float k = (lienzo.x / lienzo.y) / (imagen.x / imagen.y);
+  vec2 escala = k > 1.0 ? vec2(1.0, 1.0 / k) : vec2(k, 1.0);
+  return (uv - 0.5) * escala + 0.5;
+}
+vec3 desde(vec2 uv) { return texture(u_tex0, cubrir(uv, u_resolution, vec2(textureSize(u_tex0, 0)))).rgb; }
+vec3 hacia(vec2 uv) { return texture(u_tex1, cubrir(uv, u_resolution, vec2(textureSize(u_tex1, 0)))).rgb; }
+
+// «Hash without Sine», (c) 2014 David Hoskins, licencia MIT (6.6)
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float ruidoValor(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
+             mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+  float s = 0.0, a = 0.5;
+  for (int k = 0; k < 4; k++) {
+    s += a * ruidoValor(p);
+    p = mat2(0.8, 0.6, -0.6, 0.8) * p * 2.0 + vec2(17.3, 5.9);
+    a *= 0.5;
+  }
+  return s / 0.9375;
+}
+
+vec3 transicion(vec2 uv, float p) {
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
+  float n = fbm(uv * a * 5.0);                      // ✗ sin estirar: casi todo entre 0,24 y 0,80
+  return n < p ? hacia(uv) : desde(uv);             // ✗ corte duro, sin fuego
+}
+
+void main() {
+  vec3 col = transicion(v_uv, u_progreso);
+  if (u_comprobar) {
+    float fallo = max(length(transicion(v_uv, 0.0) - desde(v_uv)), length(transicion(v_uv, 1.0) - hacia(v_uv)));
+    if (fallo > 1.0 / 255.0) col = vec3(1.0, 0.0, 1.0);
+  }
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0, u_tex1;
+uniform float u_progreso;
+uniform float u_ancho;         // anchura de la franja de fuego (w)
+uniform bool u_comprobar;
+in vec2 v_uv;
+out vec4 fragColor;
+
+vec2 cubrir(vec2 uv, vec2 lienzo, vec2 imagen) {
+  float k = (lienzo.x / lienzo.y) / (imagen.x / imagen.y);
+  vec2 escala = k > 1.0 ? vec2(1.0, 1.0 / k) : vec2(k, 1.0);
+  return (uv - 0.5) * escala + 0.5;
+}
+vec3 desde(vec2 uv) { return texture(u_tex0, cubrir(uv, u_resolution, vec2(textureSize(u_tex0, 0)))).rgb; }
+vec3 hacia(vec2 uv) { return texture(u_tex1, cubrir(uv, u_resolution, vec2(textureSize(u_tex1, 0)))).rgb; }
+
+// «Hash without Sine», (c) 2014 David Hoskins, licencia MIT (6.6)
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float ruidoValor(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
+             mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+  float s = 0.0, a = 0.5;
+  for (int k = 0; k < 4; k++) {
+    s += a * ruidoValor(p);
+    p = mat2(0.8, 0.6, -0.6, 0.8) * p * 2.0 + vec2(17.3, 5.9);
+    a *= 0.5;
+  }
+  return s / 0.9375;
+}
+
+vec3 transicion(vec2 uv, float p) {
+  vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
+  float n = clamp((fbm(uv * a * 5.0) - 0.24) / (0.80 - 0.24), 0.0, 1.0);   // (1) rango real → [0, 1]
+  float w = u_ancho, s = 0.01;
+  float u = mix(-w, 1.0 + s, p);                    // (4) el umbral empieza y acaba con margen
+  float b = 1.0 - smoothstep(u - s, u, n);          // (2) máscara de B, con el corte suavizado
+  float g = 1.0 - smoothstep(u + w - s, u + w, n);  // (3) franja de fuego (y lo ya revelado)
+  vec3 fuego = mix(vec3(1.0, 0.9, 0.55), vec3(0.95, 0.3, 0.1), clamp((n - u) / max(w, 1e-4), 0.0, 1.0));
+  return mix(mix(desde(uv), fuego, g), hacia(uv), b);
+}
+
+void main() {
+  vec3 col = transicion(v_uv, u_progreso);
+  if (u_comprobar) {
+    float fallo = max(length(transicion(v_uv, 0.0) - desde(v_uv)), length(transicion(v_uv, 1.0) - hacia(v_uv)));
+    if (fallo > 1.0 / 255.0) col = vec3(1.0, 0.0, 1.0);
+  }
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Estirar es la interpolación inversa de 2.4: <code>(n - 0.24) / (0.80 - 0.24)</code>, recortada con <code>clamp</code>. Después, dos máscaras con <code>smoothstep</code>: una para «ya es B» ($n$ por debajo del umbral $u$) y otra para «está ardiendo» ($n$ por debajo de $u + w$).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Mezcla en orden de capas: primero el fuego sobre A, después B encima de todo. Para el contrato, busca qué valores de $u$ hacen que en $p = 0$ ni la franja de fuego alcance a los píxeles con $n = 0$, y que en $p = 1$ todos los píxeles con $n \le 1$ estén ya en B. Recuerda que el <code>smoothstep</code> del corte ocupa desde $u - s$ hasta $u$.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El ruido estirado ocupa de verdad el intervalo de 0 a 1 (con un 1 % de píxeles clavados en cada extremo), así que el umbral reparte el trabajo por todo el recorrido en lugar de concentrarlo en el tramo central. La máscara <code>b</code> vale 1 donde el turno del píxel ya pasó y <code>g</code> vale 1 donde falta menos de $w$ para que llegue; como B se pinta encima al final, el fuego solo queda visible en la franja $u \le n \le u + w$. El color del fuego usa la posición relativa dentro de la franja, <code>(n − u)/w</code>: amarillo pálido junto a lo revelado, rojo en el frente. El <code>max(w, 1e-4)</code> evita dividir por cero con el borde a 0.</p>
+    <p>Para el contrato, el umbral recorre de $-w$ a $1 + s$. En $p = 0$, la franja de fuego va de $-w$ a 0, y como la máscara es <code>1 − smoothstep(-s, 0, n)</code>, incluso los píxeles con $n = 0$ quedan fuera (el <code>smoothstep</code> vale 1 en su extremo derecho). En $p = 1$, el corte va de 1 a $1 + s$ y todos los píxeles ($n \le 1$) están del lado de B. Si pruebas con <code>u = mix(0.0, 1.0, p)</code>, la comprobación pinta de magenta dos grupos de píxeles. En $p = 0$, todos los que tienen $n$ por debajo de $w$: la franja de fuego ya está dentro de la imagen y arden desde el primer frame (con el borde a 0,08, medimos que son un 2 % de la imagen, que incluye el 1 % que el <code>clamp</code> dejó en 0). Y en $p = 1$, los de $n$ entre 0,99 y 1 (entre ellos el 1 % clavado en 1), que todavía no han cambiado del todo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.3.3 — Una transición interrumpible</h3>
+  <p>Esta <code>Transicion</code> vuelve a empezar desde su valor inicial y con la duración completa cada vez que le pides un destino. Reescribe <code>ir(hasta)</code> (y lo que necesites) para que pasen todas las pruebas: el valor no salta al interrumpir, la duración es proporcional a lo que falta, termina en el destino exacto y pedir el destino que ya lleva (o en el que ya está) no reinicia nada.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.3.3" data-altura="300" data-sin-resultado data-consola-altura="200">
+<script type="text/x-js">
+class Transicion {
+  constructor({ duracion = 0.8, easing = (p) => p, valor = 0 } = {}) {
+    this.duracion = duracion;    // s para recorrer de 0 a 1
+    this.easing = easing;
+    this.valor = valor;
+    this.desde = valor;
+    this.hasta = valor;
+    this.lin = 1;                // progreso lineal del tramo (1 = terminado)
+    this.dur = 0;                // duración del tramo, s
+  }
+  get activa() { return this.lin < 1; }
+  ir(hasta) {
+    // ✗ Así no: siempre desde el valor inicial y con la duración completa
+    this.hasta = hasta;
+    this.lin = 0;
+    this.dur = this.duracion;
+  }
+  actualizar(dt) {
+    if (this.lin >= 1) return this.valor;
+    this.lin = Math.min(1, this.lin + dt / this.dur);
+    this.valor = this.desde + (this.hasta - this.desde) * this.easing(this.lin);
+    return this.valor;
+  }
+}
+
+// ---------- pruebas (no las toques) ----------
+function prueba(nombre, ok) { console.log((ok ? '✓ ' : '✗ ') + nombre); }
+const cubicInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const frames = (tr, max = 600) => { let n = 0; while (tr.activa && n < max) { tr.actualizar(1 / 60); n++; } return n; };
+
+const t1 = new Transicion({ duracion: 1, easing: cubicInOut });
+t1.ir(1); const n1 = frames(t1);
+prueba('de 0 a 1 en 1 s (± 1 frame) y termina en 1 exacto', Math.abs(n1 - 60) <= 1 && t1.valor === 1);
+
+const t2 = new Transicion({ duracion: 1, easing: cubicInOut });
+t2.ir(1); for (let i = 0; i < 30; i++) t2.actualizar(1 / 60);
+const antes = t2.valor;
+t2.ir(0); t2.actualizar(0);
+prueba('al interrumpir a mitad, el valor no salta', Math.abs(t2.valor - antes) < 1e-9);
+const n2 = frames(t2);
+prueba('volver desde la mitad tarda la mitad: 0,5 s (± 1 frame)', Math.abs(n2 - 30) <= 1);
+prueba('y termina en 0 exacto', t2.valor === 0);
+
+const t3 = new Transicion({ duracion: 1 });
+t3.ir(1); for (let i = 0; i < 18; i++) t3.actualizar(1 / 60);
+t3.ir(1);
+prueba('pedir el mismo destino a mitad no reinicia: faltan 0,7 s (± 1 frame)', Math.abs(frames(t3) - 42) <= 1);
+
+const t4 = new Transicion({ valor: 0 });
+t4.ir(0);
+prueba('ir al valor en el que ya está no crea ningún tramo', !t4.activa && t4.valor === 0);
+</script>
+<script type="text/x-js" data-solucion>
+class Transicion {
+  constructor({ duracion = 0.8, easing = (p) => p, valor = 0 } = {}) {
+    this.duracion = duracion;    // s para recorrer de 0 a 1
+    this.easing = easing;
+    this.valor = valor;
+    this.desde = valor;
+    this.hasta = valor;
+    this.lin = 1;                // progreso lineal del tramo (1 = terminado)
+    this.dur = 0;                // duración del tramo, s
+  }
+  get activa() { return this.lin < 1; }
+  ir(hasta) {
+    if (hasta === this.hasta && (this.activa || this.valor === hasta)) return;   // mismo destino: nada
+    this.desde = this.valor;                                  // el tramo nuevo parte de lo que se ve
+    this.hasta = hasta;
+    this.dur = this.duracion * Math.abs(hasta - this.valor);  // proporcional a lo que falta
+    this.lin = this.dur > 0 ? 0 : 1;
+    if (this.lin === 1) this.valor = hasta;
+  }
+  actualizar(dt) {
+    if (this.lin >= 1) return this.valor;
+    this.lin = Math.min(1, this.lin + dt / this.dur);
+    this.valor = this.lin >= 1 ? this.hasta                    // el último frame, exacto
+               : this.desde + (this.hasta - this.desde) * this.easing(this.lin);
+    return this.valor;
+  }
+}
+
+// ---------- pruebas (no las toques) ----------
+function prueba(nombre, ok) { console.log((ok ? '✓ ' : '✗ ') + nombre); }
+const cubicInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const frames = (tr, max = 600) => { let n = 0; while (tr.activa && n < max) { tr.actualizar(1 / 60); n++; } return n; };
+
+const t1 = new Transicion({ duracion: 1, easing: cubicInOut });
+t1.ir(1); const n1 = frames(t1);
+prueba('de 0 a 1 en 1 s (± 1 frame) y termina en 1 exacto', Math.abs(n1 - 60) <= 1 && t1.valor === 1);
+
+const t2 = new Transicion({ duracion: 1, easing: cubicInOut });
+t2.ir(1); for (let i = 0; i < 30; i++) t2.actualizar(1 / 60);
+const antes = t2.valor;
+t2.ir(0); t2.actualizar(0);
+prueba('al interrumpir a mitad, el valor no salta', Math.abs(t2.valor - antes) < 1e-9);
+const n2 = frames(t2);
+prueba('volver desde la mitad tarda la mitad: 0,5 s (± 1 frame)', Math.abs(n2 - 30) <= 1);
+prueba('y termina en 0 exacto', t2.valor === 0);
+
+const t3 = new Transicion({ duracion: 1 });
+t3.ir(1); for (let i = 0; i < 18; i++) t3.actualizar(1 / 60);
+t3.ir(1);
+prueba('pedir el mismo destino a mitad no reinicia: faltan 0,7 s (± 1 frame)', Math.abs(frames(t3) - 42) <= 1);
+
+const t4 = new Transicion({ valor: 0 });
+t4.ir(0);
+prueba('ir al valor en el que ya está no crea ningún tramo', !t4.activa && t4.valor === 0);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El tramo nuevo tiene que empezar en lo que se está viendo ahora mismo, <code>this.valor</code>, no en el <code>desde</code> del tramo anterior. Y su duración, en lugar de <code>this.duracion</code>, depende de cuánto falta: <code>Math.abs(hasta − valor)</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Dos casos especiales: si el destino es el mismo que ya llevas (y vas hacia él, o ya has llegado), no toques nada; si la distancia es 0, el tramo termina en el acto. Y en <code>actualizar</code>, cuando <code>lin</code> llega a 1, entrega <code>hasta</code> tal cual en lugar del resultado de la fórmula.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El original rompe tres cosas. Como <code>desde</code> nunca cambia, al interrumpir el valor salta de golpe al principio de la curva (la prueba 2 lo detecta). Como la duración es siempre la completa, volver desde el 50 % tarda lo mismo que un recorrido entero, a la mitad de velocidad. Y como pedir el mismo destino pone <code>lin = 0</code>, un doble clic hace que la transición frene y vuelva a empezar. La solución parte del valor actual, escala la duración con la distancia y descarta los destinos repetidos; es la <code>L73.Transicion</code> de la lección.</p>
+    <p>Dos detalles numéricos que explican las tolerancias de las pruebas. Sumar <code>1/60</code> sesenta veces en coma flotante da 1,0000000000000013, pero sumar 30 veces <code>(1/60)/0.5</code> da 0,9999999999999999: a veces hace falta un frame más para que <code>lin</code> llegue a 1, y por eso las pruebas admiten ± 1 frame. Fíjate en que ese frame de más no deja nunca <code>lin</code> en 0,9999999999999999: la transición sigue activa mientras <code>lin &lt; 1</code>, y <code>Math.min(1, …)</code> hace que el último frame tenga <code>lin</code> igual a 1 exacto. Entregar <code>hasta</code> tal cual en ese frame protege de otra cosa: <code>desde + (hasta − desde) · easing(1)</code> no garantiza devolver <code>hasta</code>. En coma flotante, <code>desde + (hasta − desde)</code> puede no dar <code>hasta</code> (la trampa de <code>lerp</code> de 2.4), y un easing mal cerrado lo empeora: <code>expoOut</code> escrito como <code>1 − 2^(−10p)</code>, sin el caso especial que tiene m7kit, vale 0,9990234375 en $p = 1$: el valor final no sería el destino, y cualquier comparación exacta posterior («¿he llegado?», «¿puedo dormir el bucle?») fallaría.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.3.4 — Evaluar una línea de tiempo</h3>
+  <p>La línea de tiempo ya sabe colocar pistas (<code>a()</code>, con las reglas de la lección). Falta lo importante: <code>valor(nombre, t)</code>. La versión de partida usa siempre la última pista de cada propiedad, haya empezado o no, y no recorta el progreso. Escríbela para que pasen todas las pruebas, sin guardar nada entre llamadas.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.3.4" data-altura="300" data-sin-resultado data-consola-altura="220">
+<script type="text/x-js">
+class Linea {
+  constructor() { this.pistas = []; this.duracion = 0; }
+  a(nombre, o) {                                         // ya está hecha: no hace falta tocarla
+    const previa = this.pistas[this.pistas.length - 1];
+    let inicio = this.duracion;                          // por defecto, al final de la línea
+    if (typeof o.en === 'number') inicio = o.en;
+    else if (o.en === '<') inicio = previa ? previa.inicio : 0;
+    else if (typeof o.en === 'string') inicio = this.duracion + (o.en[0] === '+' ? 1 : -1) * parseFloat(o.en.slice(2));
+    const p = { nombre, inicio: Math.max(0, inicio), dur: o.dur ?? 0.5, desde: o.desde ?? 0, hasta: o.hasta ?? 1, easing: o.easing ?? ((x) => x) };
+    this.pistas.push(p);
+    this.duracion = Math.max(this.duracion, p.inicio + p.dur);
+    return this;
+  }
+  valor(nombre, t) {
+    // ✗ Así no: la última pista de ese nombre, haya empezado o no, y sin recortar
+    const p = this.pistas.filter((q) => q.nombre === nombre).pop();
+    if (!p) return undefined;
+    const q = (t - p.inicio) / p.dur;
+    return p.desde + (p.hasta - p.desde) * p.easing(q);
+  }
+}
+
+// ---------- pruebas (no las toques) ----------
+function prueba(nombre, ok) { console.log((ok ? '✓ ' : '✗ ') + nombre); }
+const l = new Linea()
+  .a('x', { desde: 0, hasta: 10, dur: 1 })                 // x: 0 → 10 entre 0 y 1 s
+  .a('y', { desde: 5, hasta: 0, dur: 0.5, en: '<' })       // y: 5 → 0 entre 0 y 0,5 s
+  .a('x', { desde: 10, hasta: 20, dur: 1, en: '+=0.5' });  // x: 10 → 20 entre 1,5 y 2,5 s
+const cerca = (a, b) => Math.abs(a - b) < 1e-9;
+prueba('la línea dura 2,5 s', cerca(l.duracion, 2.5));
+prueba('antes de empezar, x vale el «desde» de su primera pista (0)', cerca(l.valor('x', -1), 0));
+prueba('x en 0,5 s = 5', cerca(l.valor('x', 0.5), 5));
+prueba('entre pistas (1,2 s), x se queda en 10', cerca(l.valor('x', 1.2), 10));
+prueba('x en 2 s = 15 (segunda pista)', cerca(l.valor('x', 2), 15));
+prueba('pasado el final, x = 20', cerca(l.valor('x', 9), 20));
+prueba('y en 0,25 s = 2,5 y en 3 s = 0', cerca(l.valor('y', 0.25), 2.5) && cerca(l.valor('y', 3), 0));
+prueba('una propiedad sin pistas da undefined', l.valor('z', 1) === undefined);
+const ida = l.valor('x', 2), vuelta = l.valor('x', 0.5);
+prueba('sin estado: saltar hacia atrás da lo mismo que antes', cerca(ida, 15) && cerca(vuelta, 5));
+</script>
+<script type="text/x-js" data-solucion>
+class Linea {
+  constructor() { this.pistas = []; this.duracion = 0; }
+  a(nombre, o) {                                         // ya está hecha: no hace falta tocarla
+    const previa = this.pistas[this.pistas.length - 1];
+    let inicio = this.duracion;                          // por defecto, al final de la línea
+    if (typeof o.en === 'number') inicio = o.en;
+    else if (o.en === '<') inicio = previa ? previa.inicio : 0;
+    else if (typeof o.en === 'string') inicio = this.duracion + (o.en[0] === '+' ? 1 : -1) * parseFloat(o.en.slice(2));
+    const p = { nombre, inicio: Math.max(0, inicio), dur: o.dur ?? 0.5, desde: o.desde ?? 0, hasta: o.hasta ?? 1, easing: o.easing ?? ((x) => x) };
+    this.pistas.push(p);
+    this.duracion = Math.max(this.duracion, p.inicio + p.dur);
+    return this;
+  }
+  valor(nombre, t) {
+    let elegida = null, primera = null;
+    for (const p of this.pistas) {
+      if (p.nombre !== nombre) continue;
+      if (!primera || p.inicio < primera.inicio) primera = p;                        // la que empieza antes
+      if (p.inicio <= t && (!elegida || p.inicio >= elegida.inicio)) elegida = p;    // la última que ya empezó
+    }
+    if (!primera) return undefined;                      // nadie anima esa propiedad
+    if (!elegida) return primera.desde;                  // aún no ha empezado ninguna
+    const q = Math.min(1, Math.max(0, (t - elegida.inicio) / elegida.dur));           // tramo recortado
+    return elegida.desde + (elegida.hasta - elegida.desde) * elegida.easing(q);
+  }
+}
+
+// ---------- pruebas (no las toques) ----------
+function prueba(nombre, ok) { console.log((ok ? '✓ ' : '✗ ') + nombre); }
+const l = new Linea()
+  .a('x', { desde: 0, hasta: 10, dur: 1 })                 // x: 0 → 10 entre 0 y 1 s
+  .a('y', { desde: 5, hasta: 0, dur: 0.5, en: '<' })       // y: 5 → 0 entre 0 y 0,5 s
+  .a('x', { desde: 10, hasta: 20, dur: 1, en: '+=0.5' });  // x: 10 → 20 entre 1,5 y 2,5 s
+const cerca = (a, b) => Math.abs(a - b) < 1e-9;
+prueba('la línea dura 2,5 s', cerca(l.duracion, 2.5));
+prueba('antes de empezar, x vale el «desde» de su primera pista (0)', cerca(l.valor('x', -1), 0));
+prueba('x en 0,5 s = 5', cerca(l.valor('x', 0.5), 5));
+prueba('entre pistas (1,2 s), x se queda en 10', cerca(l.valor('x', 1.2), 10));
+prueba('x en 2 s = 15 (segunda pista)', cerca(l.valor('x', 2), 15));
+prueba('pasado el final, x = 20', cerca(l.valor('x', 9), 20));
+prueba('y en 0,25 s = 2,5 y en 3 s = 0', cerca(l.valor('y', 0.25), 2.5) && cerca(l.valor('y', 3), 0));
+prueba('una propiedad sin pistas da undefined', l.valor('z', 1) === undefined);
+const ida = l.valor('x', 2), vuelta = l.valor('x', 0.5);
+prueba('sin estado: saltar hacia atrás da lo mismo que antes', cerca(ida, 15) && cerca(vuelta, 5));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Recorre las pistas de esa propiedad y quédate con la que empezó más tarde <em>de entre las que ya han empezado</em> en el instante <code>t</code> (<code>inicio &lt;= t</code>). ¿Y si no ha empezado ninguna?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Antes de la primera pista, el valor es el <code>desde</code> de la que empieza antes. Una vez elegida la pista, su progreso es <code>(t − inicio) / dur</code>, recortado entre 0 y 1: así, pasado su final, se queda en <code>hasta</code> hasta que empiece la siguiente.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La regla «manda la última que empezó» resuelve los tres tramos de una propiedad animada varias veces: durante una pista, esa pista; entre dos, la anterior recortada en su final (por eso <code>x</code> se queda en 10 entre 1 y 1,5 s); después de todas, la última en su final. Antes de la primera no hay ninguna elegida, y el valor es el <code>desde</code> de la primera, que describe el estado inicial de la escena. Fíjate en cómo se colocó la tercera pista: <code>'+=0.5'</code> significa medio segundo después del <em>final de la línea</em> (1 s, el final de la primera <code>x</code>), no del final de la pista anterior (<code>y</code>, que acaba en 0,5 s).</p>
+    <p>La versión de partida falla en casi todo: en 0,5 s usa la segunda pista de <code>x</code>, que aún no ha empezado, y sin recortar da un progreso negativo (−1, y un valor de 0 por casualidad del <code>lerp</code>); pasado el final, sigue extrapolando. Lo importante de la solución es lo que <em>no</em> tiene: ni un campo que recuerde el frame anterior. El resultado depende solo de <code>t</code>, y por eso la última prueba (saltar de 2 s a 0,5 s) da lo mismo que ir directamente. Es la propiedad que permite invertir, rebobinar y arrastrar el cabezal.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 7.3.5 — Que la GPU descanse</h3>
+  <p>La lupa del ejemplo 7.3.5 dibuja 60 veces por segundo aunque nadie la toque. Conviértela en una app bajo demanda: en reposo, 0 frames por segundo; al entrar el puntero, la lupa se anima con normalidad; al salir, se recoge y la app vuelve a dormirse con el muelle exactamente en 0. La prueba automática del final (no la toques) simula un puntero que entra y sale y escribe el resultado en la consola. Ojo: hay más de un problema escondido.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.3.5" data-altura="300" data-apilado data-incluir="glkit,m7kit,l73" data-fondo="oscuro" data-consola-altura="150">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+</script>
+<script type="text/x-js">
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_imagen;
+uniform vec2 u_centro;
+uniform float u_hover, u_escala;
+out vec4 fragColor;
+${L73.GLSL.CUBRIR}
+vec3 imagen(vec2 uv) { return texture(u_imagen, cubrir(uv, u_resolution, vec2(textureSize(u_imagen, 0)))).rgb; }
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution, c = u_centro / u_resolution;
+  vec2 d = (gl_FragCoord.xy - u_centro) / (110.0 * u_escala);
+  float k = 0.4 * u_hover * exp(-dot(d, d) * 1.4);
+  fragColor = vec4(imagen(c + (uv - c) * (1.0 - k)), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const fuente = L73.imagen('mar');
+const puntero = new M7.Puntero(canvas, { semivida: 0.08 });
+const muelle = new M7.Muelle(M7.parametrosMuelle(0.25, 0.9));
+
+canvas.addEventListener('pointerenter', () => { muelle.objetivo = 1; });
+canvas.addEventListener('pointerleave', () => { muelle.objetivo = 0; });
+
+const app = M7.crearApp(canvas, {
+  bajoDemanda: false,
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, L73.GLSL.VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray(), tex: GLKit.crearTextura(gl, fuente, { mipmaps: true }) };
+  },
+  actualizar(e, dt, app) {
+    puntero.actualizar(app.reloj.dtReal);
+    muelle.actualizar(app.reloj.dtReal);
+    if (muelle.x !== muelle.objetivo) app.pedirFrame();     // «mientras no haya llegado, seguir»
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    gl.useProgram(g.p);
+    L73.texturas(gl, g.u, [['u_imagen', g.tex]]);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, g.u.u_centro, puntero.visto ? puntero.aGL(canvas) : [app.ancho / 2, app.alto / 2]);
+    GLKit.ponerUniform(gl, g.u.u_hover, muelle.x);
+    GLKit.ponerUniform(gl, g.u.u_escala, app.ancho / app.anchoCSS);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+// ---------- prueba automática (no la toques) ----------
+function simularPuntero(tipo) {
+  const r = canvas.getBoundingClientRect();
+  canvas.dispatchEvent(new PointerEvent(tipo, { pointerType: 'mouse', clientX: r.left + r.width * 0.5, clientY: r.top + r.height * 0.5 }));
+}
+(async () => {
+  const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+  await espera(1500);
+  let f = app.frame; await espera(1000);
+  const reposo = app.frame - f;
+  console.log((reposo === 0 ? '✓' : '✗') + ` en reposo: ${reposo} frames en 1 s (deben ser 0)`);
+  simularPuntero('pointermove'); simularPuntero('pointerenter');
+  f = app.frame; await espera(500);
+  const entrando = app.frame - f;
+  console.log((entrando > 10 ? '✓' : '✗') + ` al entrar el puntero se anima: ${entrando} frames en 0,5 s`);
+  simularPuntero('pointerleave');
+  await espera(3000);
+  f = app.frame; await espera(1000);
+  const despues = app.frame - f;
+  console.log((despues === 0 ? '✓' : '✗') + ` al salir, vuelve a dormirse: ${despues} frames en 1 s`);
+  console.log((muelle.x === 0 ? '✓' : '✗') + ` y el muelle termina en 0 exacto: ${muelle.x}`);
+})();
+</script>
+<script type="text/x-js" data-solucion>
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_imagen;
+uniform vec2 u_centro;
+uniform float u_hover, u_escala;
+out vec4 fragColor;
+${L73.GLSL.CUBRIR}
+vec3 imagen(vec2 uv) { return texture(u_imagen, cubrir(uv, u_resolution, vec2(textureSize(u_imagen, 0)))).rgb; }
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution, c = u_centro / u_resolution;
+  vec2 d = (gl_FragCoord.xy - u_centro) / (110.0 * u_escala);
+  float k = 0.4 * u_hover * exp(-dot(d, d) * 1.4);
+  fragColor = vec4(imagen(c + (uv - c) * (1.0 - k)), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const fuente = L73.imagen('mar');
+const puntero = new M7.Puntero(canvas, { semivida: 0.08 });
+const muelle = new M7.Muelle(M7.parametrosMuelle(0.25, 0.9));
+let app = null;
+
+// 2. Los eventos que cambian el estado despiertan la app
+canvas.addEventListener('pointerenter', () => { muelle.objetivo = 1; app.pedirFrame(); });
+canvas.addEventListener('pointerleave', () => { muelle.objetivo = 0; app.pedirFrame(); });
+canvas.addEventListener('pointermove', () => app.pedirFrame());     // la lupa sigue al puntero
+
+app = M7.crearApp(canvas, {
+  bajoDemanda: true,                                                // 1. el modo
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, L73.GLSL.VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray(), tex: GLKit.crearTextura(gl, fuente, { mipmaps: true }) };
+  },
+  actualizar(e, dt, app) {
+    puntero.actualizar(app.reloj.dtReal);
+    muelle.actualizar(app.reloj.dtReal);
+    // 3. Tolerancia, no igualdad exacta; y al llegar, clavar el valor
+    if (muelle.enReposo()) muelle.fijar(muelle.objetivo);
+    const persigue = puntero.visto && Math.abs(puntero.sx - puntero.x) + Math.abs(puntero.sy - puntero.y) > 0.05;
+    if (!muelle.enReposo() || persigue) app.pedirFrame();
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    gl.useProgram(g.p);
+    L73.texturas(gl, g.u, [['u_imagen', g.tex]]);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, g.u.u_centro, puntero.visto ? puntero.aGL(canvas) : [app.ancho / 2, app.alto / 2]);
+    GLKit.ponerUniform(gl, g.u.u_hover, muelle.x);
+    GLKit.ponerUniform(gl, g.u.u_escala, app.ancho / app.anchoCSS);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+// ---------- prueba automática (no la toques) ----------
+function simularPuntero(tipo) {
+  const r = canvas.getBoundingClientRect();
+  canvas.dispatchEvent(new PointerEvent(tipo, { pointerType: 'mouse', clientX: r.left + r.width * 0.5, clientY: r.top + r.height * 0.5 }));
+}
+(async () => {
+  const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+  await espera(1500);
+  let f = app.frame; await espera(1000);
+  const reposo = app.frame - f;
+  console.log((reposo === 0 ? '✓' : '✗') + ` en reposo: ${reposo} frames en 1 s (deben ser 0)`);
+  simularPuntero('pointermove'); simularPuntero('pointerenter');
+  f = app.frame; await espera(500);
+  const entrando = app.frame - f;
+  console.log((entrando > 10 ? '✓' : '✗') + ` al entrar el puntero se anima: ${entrando} frames en 0,5 s`);
+  simularPuntero('pointerleave');
+  await espera(3000);
+  f = app.frame; await espera(1000);
+  const despues = app.frame - f;
+  console.log((despues === 0 ? '✓' : '✗') + ` al salir, vuelve a dormirse: ${despues} frames en 1 s`);
+  console.log((muelle.x === 0 ? '✓' : '✗') + ` y el muelle termina en 0 exacto: ${muelle.x}`);
+})();
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Empieza por lo obvio, <code>bajoDemanda: true</code>, y ejecuta. La primera prueba pasará y la segunda no: ¿quién despierta a una app dormida cuando el puntero entra? En modo bajo demanda, un evento que cambia el estado tiene que llamar a <code>app.pedirFrame()</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Cuando la segunda prueba pase, fallará la tercera: la app no vuelve a dormirse. Mira la condición de <code>actualizar</code> y el bestiario del insomnio. ¿Llega un muelle alguna vez a valer exactamente su objetivo? Usa <code>enReposo()</code> y <code>fijar()</code>. Y no olvides el puntero suavizado: mientras persigue a la posición real, también hay algo que mover.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Hay tres problemas encadenados, y cada uno se destapa al arreglar el anterior. Primero, el modo: con <code>bajoDemanda: false</code> el bucle es continuo y la condición de <code>actualizar</code> no importa. Segundo, los eventos: con el modo activado, la app se duerme tras el primer frame y el <code>pointerenter</code> cambia el objetivo del muelle sin que nadie lo dibuje; hasta que algo despierta la app (un cambio de tamaño, por ejemplo) no pasa nada. Los tres eventos que cambian lo que se ve (entrar, salir y mover) deben llamar a <code>pedirFrame</code>.</p>
+    <p>Tercero, el insomnio: <code>muelle.x !== muelle.objetivo</code> es verdadero para siempre en la práctica, porque hacia 0 el muelle no llega nunca a 0 exacto en un tiempo razonable: medido en Chrome con este mismo muelle, a los 4 s de salir todavía vale $-1{,}2 \cdot 10^{-8}$, y sigue encogiendo durante minutos (el bestiario del insomnio tiene las cifras). La solución compara con la tolerancia de <code>enReposo()</code> y, al cumplirla, clava el muelle con <code>fijar</code>: el último frame dibuja exactamente la imagen sin lupa y la última prueba ve un 0 exacto. El puntero suavizado necesita lo mismo: mientras <code>sx, sy</code> persiguen a <code>x, y</code> hay que seguir dibujando, con una tolerancia en píxeles CSS y solo si ya ha llegado algún evento (<code>puntero.visto</code>): antes del primero, <code>x</code> e <code>y</code> se calculan con <code>clientX = clientY = 0</code> (valen menos la posición de la caja), no coinciden con <code>sx, sy</code> (que siguen en 0) y la primera prueba fallaría. El orden de <code>let app = null</code> y los eventos no es casual: los manejadores usan <code>app</code>, que existe cuando se ejecutan (tras la creación), aunque se registren antes.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Una transición es $T(\mathbf{uv}, p)$ con un contrato: en $p = 0$ exactamente A, en $p = 1$ exactamente B. JavaScript decide cuánto vale $p$ (historia, eventos, física); el shader decide cómo se ve en cada píxel. El arnés <code>desde(uv)</code> / <code>hacia(uv)</code> / <code>transicion(uv, p)</code> es el de gl-transitions.</li>
+    <li>Mueve $p$ con el <code>dt</code> del reloj de la app (pausa y cámara lenta gratis). Tween: progreso lineal + easing, terminando en el valor exacto. Muelle: cambia el objetivo para interrumpir, conserva la velocidad; al llegar al reposo, <code>fijar</code>. Si el muelle se pasa de 1, el shader decide: <code>clamp</code> en las mezclas de color (medido: $p = 1{,}15$ quema los canales hasta 0 y 255), exceso aprovechable en lo geométrico.</li>
+    <li>Easing en JavaScript si toda la imagen sigue la misma curva; en el shader, con el progreso lineal y $p_\text{local} = \operatorname{clamp}((p - r\,s)/(1 - s), 0, 1)$, si cada píxel tiene su retraso.</li>
+    <li>Catálogo: fundido (mejor en luz, sin el bache oscuro; en sRGB solo para casar con CSS, que compone la opacidad en sRGB: medido 128 a mitad), cortinilla y revelado radial con el recorrido ampliado por el borde (<code>mix(-w, 1.0 + w, p)</code>, radio hasta la esquina más lejana), disolución con el ruido estirado a sus percentiles (medido: sin estirar, 0,3 % revelado en $p = 0{,}2$ y 99 % en $p = 0{,}8$) y desplazamiento con <code>uv + d·f·p</code> para A y <code>uv − d·f·(1 − p)</code> para B, con texturas en <code>CLAMP_TO_EDGE</code>.</li>
+    <li>Interrupciones: volver atrás con un muelle o con un tween recalculado desde el valor actual y duración proporcional; ir a otra parte congelando lo que se ve en un FBO (dos, alternos) y empezando desde la foto; el mismo destino, sin reiniciar nada.</li>
+    <li>Hover: muelle para la cantidad, puntero suavizado para el centro, velocidad del muelle para lo que solo debe verse en movimiento; en pantallas táctiles, un toque alterna. Overlay de página: cubrir, cambiar el DOM tapado, descubrir; fases como estado, clics bloqueados, foco y aviso accesibles, salida premultiplicada. El shader no puede leer el DOM.</li>
+    <li>Línea de tiempo en JavaScript: pistas con posición (<code>'&lt;'</code>, <code>'+=x'</code>, <code>'-=x'</code>), evaluación sin estado desde el cabezal, que se reproduce, se invierte y se arrastra, y gobierna uniforms y DOM a la vez.</li>
+    <li>Bajo demanda: pide frames solo mientras algo se mueve y en los eventos que cambian el estado. Medido: de 360 frames y unos 46 ms de CPU por segundo con la imagen quieta a 0. Compara con tolerancias (una comparación exacta no se cumple nunca) y reinicia la referencia del reloj al despertar.</li>
+  </ul>
+</div>
+
+<p>Hasta aquí, todo lo que se ha movido han sido píxeles dentro de un rectángulo. En <a href="04-vertex-animacion.html">7.4</a> pasamos a mover la geometría: mallas cuyos vértices se deforman en el vertex shader con el tiempo, con el puntero y con estos mismos uniforms de progreso.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://gl-transitions.com/">gl-transitions</a>: la colección abierta de transiciones en GLSL, con su convención (<code>getFromColor</code>, <code>getToColor</code>, <code>progress</code>, <code>ratio</code>) y un editor en línea. Cada transición indica su licencia.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/View_Transition_API">MDN: View Transition API</a>, las transiciones nativas entre estados del DOM.</li>
+  <li><a href="https://gsap.com/docs/v3/GSAP/Timeline/">GSAP: Timeline</a>, la documentación de las líneas de tiempo de GSAP, con su «position parameter».</li>
+  <li><a href="https://threejs.org/manual/#en/rendering-on-demand">Three.js manual: Rendering on Demand</a>, el mismo bucle bajo demanda contado desde Three.js (la librería que presentamos en <a href="07-siguientes-pasos.html">7.7</a>).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m7kit.js"></script>
+<script src="recursos/l73-kit.js"></script>
+</body>
+</html>

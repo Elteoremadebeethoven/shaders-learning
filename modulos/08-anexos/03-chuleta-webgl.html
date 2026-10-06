@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A.3 · Chuleta de la API WebGL2 — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/anexos.css">
+</head>
+<body data-leccion="08-anexos/chuleta-webgl">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Anexos · Referencia</p>
+  <h1>Chuleta de la API WebGL2</h1>
+  <p class="resumen">Todas las llamadas de WebGL2, agrupadas por tema: qué hacen, qué estado leen y escriben (y quién lo guarda: el contexto, el VAO, el programa, la textura, el framebuffer…), qué errores generan y en qué lección se explican. Al final, la tabla de quién guarda cada pieza de estado y el orden mínimo de llamadas para las tres tareas básicas, ejecutable.</p>
+  <div class="meta"><span class="chip">Referencia</span><span class="chip">WebGL 2.0 · OpenGL ES 3.0</span><span class="chip">Errores medidos en Chrome 154 · Apple M1</span></div>
+  <div class="objetivos">
+    <h4>Cómo usar esta página</h4>
+    <ul>
+      <li>Busca la llamada con <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>F</kbd> o con el filtro. La columna <strong>Estado</strong> dice qué lee y qué escribe, y una etiqueta de color dice dónde vive ese estado.</li>
+      <li>Los errores de la cuarta columna se provocaron uno a uno en Chrome y se leyeron con <code>getError()</code>; entre comillas, el aviso que escribe la consola de las DevTools.</li>
+      <li>Si algo no se dibuja, empieza por <a href="#quien-guarda-que-estado">¿Quién guarda qué estado?</a> y por <a href="#recetas-el-orden-minimo-de-llamadas">las recetas</a>.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El modelo: contexto, objetos y puntos de enlace</h2>
+<p>WebGL2 es una máquina de estados (<a href="../04-gpu/01-cpu-vs-gpu.html#opengl-y-webgl-una-maquina-de-estados">4.1</a>). El objeto <code>gl</code> guarda un montón de estado global y unos cuantos «punteros» (puntos de enlace) a objetos que guardan su propio estado. Casi ninguna llamada recibe el objeto sobre el que actúa: actúa sobre el que esté enlazado en ese momento. Este dibujo es el mapa de toda la página:</p>
+<svg class="diagrama" viewBox="0 0 880 470" width="880" role="img" aria-label="Estado global del contexto y objetos a los que apuntan sus puntos de enlace">
+  <defs>
+    <marker id="ax-flecha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="10" y="10" width="330" height="450" rx="12"/>
+  <text x="175" y="34" text-anchor="middle" style="font-weight:700;font-size:14px">Contexto: estado global</text>
+  <rect class="tenue" x="24" y="46" width="302" height="66" rx="8"/>
+  <text x="36" y="64" class="texto-tenue" style="font-size:11px">PUNTOS DE ENLACE DE BUFFERS</text>
+  <text x="36" y="84" style="font-family:var(--mono);font-size:12px">ARRAY_BUFFER</text>
+  <text x="36" y="102" class="texto-tenue" style="font-family:var(--mono);font-size:11px">UNIFORM_BUFFER[i] · COPY_* · PIXEL_*</text>
+  <rect class="tenue" x="24" y="122" width="302" height="128" rx="8"/>
+  <text x="36" y="140" class="texto-tenue" style="font-size:11px">SELECCIONES</text>
+  <text x="36" y="160" style="font-family:var(--mono);font-size:12px">CURRENT_PROGRAM</text>
+  <text x="36" y="180" style="font-family:var(--mono);font-size:12px">VERTEX_ARRAY_BINDING</text>
+  <text x="36" y="200" style="font-family:var(--mono);font-size:12px">DRAW_ / READ_FRAMEBUFFER</text>
+  <text x="36" y="220" class="texto-tenue" style="font-family:var(--mono);font-size:11px">RENDERBUFFER · TRANSFORM_FEEDBACK</text>
+  <text x="36" y="240" style="font-family:var(--mono);font-size:12px">ACTIVE_TEXTURE = n</text>
+  <rect class="tenue" x="24" y="260" width="302" height="78" rx="8"/>
+  <text x="36" y="278" class="texto-tenue" style="font-size:11px">UNIDADES DE TEXTURA 0…31 (una copia por unidad)</text>
+  <text x="36" y="298" style="font-family:var(--mono);font-size:12px">unidad n: TEXTURE_2D · CUBE_MAP</text>
+  <text x="36" y="316" style="font-family:var(--mono);font-size:12px">· 3D · 2D_ARRAY · SAMPLER</text>
+  <rect class="tenue" x="24" y="348" width="302" height="100" rx="8"/>
+  <text x="36" y="366" class="texto-tenue" style="font-size:11px">ESTADO FIJO</text>
+  <text x="36" y="386" style="font-size:12px">viewport · scissor · blend · depth · stencil</text>
+  <text x="36" y="404" style="font-size:12px">cull · colorMask · depthMask · clear*</text>
+  <text x="36" y="422" style="font-size:12px">pixelStorei (UNPACK_* / PACK_*)</text>
+  <text x="36" y="440" style="font-size:12px">vertexAttrib4f: valores constantes</text>
+
+  <rect class="caja" x="420" y="40" width="330" height="62" rx="10"/>
+  <text x="436" y="62" style="font-weight:700">Buffer</text>
+  <text x="436" y="82" style="font-size:12px">bytes · tamaño · uso</text>
+  <text x="436" y="97" class="texto-tenue" style="font-size:11px">índices u otros datos, fijado en el primer bind</text>
+  <rect class="caja" x="420" y="122" width="330" height="62" rx="10"/>
+  <text x="436" y="144" style="font-weight:700">Programa</text>
+  <text x="436" y="164" style="font-size:12px">código enlazado · valores de los uniforms</text>
+  <text x="436" y="179" class="texto-tenue" style="font-size:11px">sampler = n.º de unidad · bloque → binding</text>
+  <rect class="caja" x="420" y="194" width="330" height="78" rx="10"/>
+  <text x="436" y="216" style="font-weight:700">VAO</text>
+  <text x="436" y="236" style="font-size:12px">por atributo (0…15): activo, buffer capturado,</text>
+  <text x="436" y="252" style="font-size:12px">size, type, normalized, stride, offset, divisor</text>
+  <text x="436" y="267" class="texto-tenue" style="font-size:11px">+ ELEMENT_ARRAY_BUFFER</text>
+  <rect class="caja" x="420" y="282" width="330" height="62" rx="10"/>
+  <text x="436" y="304" style="font-weight:700">Framebuffer</text>
+  <text x="436" y="324" style="font-size:12px">COLOR_ATTACHMENT0…7 · DEPTH · STENCIL</text>
+  <text x="436" y="339" class="texto-tenue" style="font-size:11px">drawBuffers · readBuffer (no el viewport)</text>
+  <rect class="caja" x="420" y="354" width="330" height="78" rx="10"/>
+  <text x="436" y="376" style="font-weight:700">Textura</text>
+  <text x="436" y="396" style="font-size:12px">imágenes de cada nivel · formato interno</text>
+  <text x="436" y="412" style="font-size:12px">filtros · wrap · LOD · compare</text>
+  <text x="436" y="427" class="texto-tenue" style="font-size:11px">(un sampler enlazado los sustituye)</text>
+
+  <path d="M330 80 L416 72" stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ax-flecha)"/>
+  <path d="M330 156 L416 153" stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ax-flecha)"/>
+  <path d="M330 176 L416 226" stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ax-flecha)"/>
+  <path d="M330 196 L416 306" stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ax-flecha)"/>
+  <path d="M330 300 L416 384" stroke="currentColor" stroke-width="1.6" fill="none" marker-end="url(#ax-flecha)"/>
+  <path class="acento" d="M752 226 C 780 214, 780 86, 754 74" stroke-width="1.6" marker-end="url(#ax-flecha)"/>
+  <text x="786" y="146" class="texto-tenue" style="font-size:11.5px">cada atributo</text>
+  <text x="786" y="161" class="texto-tenue" style="font-size:11.5px">→ su buffer</text>
+  <path class="acento" d="M752 318 C 780 328, 780 372, 754 384" stroke-width="1.6" marker-end="url(#ax-flecha)"/>
+  <text x="786" y="356" class="texto-tenue" style="font-size:11.5px">adjunto</text>
+</svg>
+<p>Las reglas que se deducen, y que explican casi todos los bugs de estado:</p>
+<ul>
+  <li><strong>Enlazar para editar.</strong> <code>bufferData</code> escribe en el buffer que haya en el destino que le pasas; <code>texParameteri</code>, en la textura de la <em>unidad activa</em>; <code>uniform*</code>, en el <em>programa en uso</em>; <code>framebufferTexture2D</code>, en el framebuffer enlazado; <code>vertexAttribPointer</code>, en el <em>VAO enlazado</em>, y además fotografía el <code>ARRAY_BUFFER</code> de ese instante.</li>
+  <li><strong>Crear no es enlazar.</strong> <code>create*()</code> solo devuelve un nombre vacío. En WebGL, el primer enlace fija el tipo para siempre: un buffer es «de índices» o «de datos»; una textura es 2D, cubemap, 3D o array.</li>
+  <li><strong>Borrar no es instantáneo.</strong> <code>delete*()</code> desenlaza el objeto de los puntos del contexto (y del VAO o framebuffer enlazados), pero si otro objeto lo sigue usando (un VAO no enlazado, un programa en uso) sigue vivo hasta que deja de usarse. <code>is*()</code> devuelve <code>false</code> desde el momento del borrado (medido).</li>
+  <li><strong>Los errores no lanzan.</strong> La llamada no hace nada y activa una bandera pegajosa que lee <code>getError()</code> (<a href="../05-webgl/01-contexto.html#geterror-errores-que-se-quedan-pegados">5.1</a>). Solo hay excepciones para errores de JavaScript (argumentos que faltan: <code>TypeError</code>) y de seguridad (imágenes de otro origen: <code>SecurityError</code>).</li>
+</ul>
+<p>Leyenda de la columna <strong>Estado</strong>:</p>
+<div class="ax-leyenda">
+  <span><span class="ax-st g">global</span> contexto</span>
+  <span><span class="ax-st uni">unidad</span> unidad de textura</span>
+  <span><span class="ax-st vao">VAO</span> VAO enlazado</span>
+  <span><span class="ax-st prog">programa</span> programa en uso o indicado</span>
+  <span><span class="ax-st buf">buffer</span> objeto buffer</span>
+  <span><span class="ax-st tex">textura</span> objeto textura</span>
+  <span><span class="ax-st smp">sampler</span> objeto sampler</span>
+  <span><span class="ax-st fbo">framebuffer</span> framebuffer o renderbuffer</span>
+  <span><span class="ax-st otro">otro</span> shader, query, sync, transform feedback</span>
+</div>
+<table class="ax-ref ax-estrecha">
+  <thead><tr><th>Error</th><th>Valor</th><th>Significa</th></tr></thead>
+  <tbody>
+    <tr><td><code>NO_ERROR</code></td><td>0</td><td>No hay banderas activas.</td></tr>
+    <tr><td><code>INVALID_ENUM</code></td><td>0x0500</td><td>Un enum que esa función no admite.</td></tr>
+    <tr><td><code>INVALID_VALUE</code></td><td>0x0501</td><td>Un número fuera de rango (negativo, demasiado grande, índice inexistente).</td></tr>
+    <tr><td><code>INVALID_OPERATION</code></td><td>0x0502</td><td>La llamada no tiene sentido con el estado actual. El más frecuente y el más ambiguo.</td></tr>
+    <tr><td><code>INVALID_FRAMEBUFFER_OPERATION</code></td><td>0x0506</td><td>Dibujar, borrar o leer con un framebuffer incompleto.</td></tr>
+    <tr><td><code>OUT_OF_MEMORY</code></td><td>0x0505</td><td>Sin memoria; el estado queda indefinido.</td></tr>
+    <tr><td><code>CONTEXT_LOST_WEBGL</code></td><td>0x9242</td><td>El contexto se ha perdido (se devuelve una sola vez).</td></tr>
+  </tbody>
+</table>
+
+<div class="ax-filtro">
+  <label for="filtro-webgl">Filtrar las tablas</label>
+  <input id="filtro-webgl" type="search" placeholder="p. ej. bindBuffer, VAO, INVALID_OPERATION, viewport…" autocomplete="off">
+  <span class="ax-cuenta"></span>
+</div>
+
+<h2>Contexto y canvas</h2>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">canvas.getContext('webgl2', atributos)</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#getcontext-webgl2-atributos-lo-que-pides-y-lo-que-te-dan">5.1</a></td><td>Crea el contexto y su búfer de dibujo. Atributos: <code>alpha</code>, <code>antialias</code>, <code>depth</code> (<code>true</code>), <code>stencil</code> (<code>false</code>), <code>premultipliedAlpha</code>, <code>preserveDrawingBuffer</code> (<code>false</code>), <code>powerPreference</code>, <code>failIfMajorPerformanceCaveat</code>, <code>desynchronized</code>.</td><td><p><strong>Escribe</strong> todo el estado inicial (<a href="#quien-guarda-que-estado">tabla final</a>); <span class="ax-st g">global</span> <code>VIEWPORT</code> y <code>SCISSOR_BOX</code> = tamaño del canvas en ese momento.</p></td><td>Devuelve <code>null</code> sin WebGL2, si el canvas ya tiene otro tipo de contexto o con <code>failIfMajorPerformanceCaveat</code> y render por software. Una segunda llamada devuelve el mismo objeto e <strong>ignora</strong> los atributos nuevos.</td></tr>
+    <tr><td><code class="ax-firma">gl.getContextAttributes()</code></td><td>Lo que te dieron de verdad (los atributos son peticiones).</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> atributos del búfer.</p></td><td><code>null</code> con el contexto perdido.</td></tr>
+    <tr><td><code class="ax-firma">gl.drawingBufferWidth</code>, <code class="ax-firma">gl.drawingBufferHeight</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#drawingbufferwidth-el-tamano-que-de-verdad-tienes">5.1</a></td><td>Tamaño real del búfer de dibujo, que puede ser menor que <code>canvas.width</code> × <code>height</code> (hay un tope de área).</td><td><p><strong>Lee</strong> el búfer de dibujo.</p></td><td>Úsalo en <code>viewport</code> y en las proyecciones. Vale 0 con el contexto perdido.</td></tr>
+    <tr><td><code class="ax-firma">canvas.width = w; canvas.height = h;</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#cambiar-el-tamano-cuesta-y-borra">5.1</a></td><td>Reserva un búfer nuevo (lo borra).</td><td><p><strong>No</strong> cambia <span class="ax-st g">global</span> <code>VIEWPORT</code> ni <code>SCISSOR_BOX</code> (medido: siguen en 300×150).</p></td><td>Llama a <code>gl.viewport</code> tú. Asigna solo si el tamaño cambió.</td></tr>
+    <tr><td><code class="ax-firma">gl.isContextLost()</code><br>eventos <code>webglcontextlost</code> / <code>webglcontextrestored</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#la-perdida-de-contexto">5.1</a></td><td>Consulta y aviso de la pérdida del contexto. <code>WEBGL_lose_context</code> la simula (<code>loseContext()</code>, <code>restoreContext()</code>).</td><td><p>Al restaurar, <strong>todo</strong> el estado vuelve a los valores iniciales y los objetos viejos quedan muertos.</p></td><td>Sin <code>e.preventDefault()</code> en <code>webglcontextlost</code> no hay restauración. Con el contexto perdido, las llamadas no hacen nada y <code>getError</code> devuelve <code>CONTEXT_LOST_WEBGL</code> una vez.</td></tr>
+    <tr><td><code class="ax-firma">gl.getSupportedExtensions()</code><br><code class="ax-firma">gl.getExtension(nombre)</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#extensiones-getsupportedextensions-y-getextension">5.1</a></td><td>Lista las extensiones y activa una (devuelve su objeto con constantes y funciones, siempre el mismo).</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> «extensión activa»: cambia formatos renderizables y filtrables y lo que acepta el compilador GLSL.</p></td><td>Si no existe devuelve <code>null</code>, sin error (medido). Tenerla en la lista no basta: hay que pedirla.</td></tr>
+    <tr><td><code class="ax-firma">gl.drawingBufferColorSpace</code>, <code class="ax-firma">gl.unpackColorSpace</code></td><td>Espacio de color del búfer de dibujo y al que se convierten las imágenes al subirlas.</td><td><p><span class="ax-st g">global</span> (M1: <code>'srgb'</code> los dos).</p></td><td>Menos habituales; el curso no los usa.</td></tr>
+    <tr><td><code class="ax-firma">gl.drawingBufferStorage(formato, w, h)</code>, <code class="ax-firma">gl.drawingBufferFormat</code></td><td>Cambia de una vez el formato y el tamaño del búfer de dibujo: <code>RGBA8</code>, <code>SRGB8_ALPHA8</code> o, con <code>EXT_color_buffer_float</code> activa, <code>RGBA16F</code> (el propio canvas guarda valores fuera de [0, 1]).</td><td><p><strong>Escribe</strong> el búfer de dibujo (lo borra). <code>drawingBufferFormat</code> empieza en <code>RGBA8</code> (<code>RGB8</code> con <code>alpha: false</code>).</p></td><td>Medido: <code>canvas.width</code> y <code>height</code> no cambian, solo <code>drawingBufferWidth</code>/<code>Height</code>; si después asignas <code>canvas.width</code>, el formato se conserva. <code>RGBA16F</code> sin la extensión: <code>INVALID_ENUM</code>; con <code>alpha: false</code>: <code>INVALID_OPERATION</code>. Según MDN solo existe en Chrome (desde la 122): comprueba <code>'drawingBufferStorage' in gl</code>.</td></tr>
+  </tbody>
+</table>
+
+<h2>Shaders y programas</h2>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">createShader(tipo)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#paso-2-compilar-cada-shader">5.2</a></td><td>Crea un shader vacío: <code>VERTEX_SHADER</code> o <code>FRAGMENT_SHADER</code> (no se puede cambiar).</td><td><p><strong>Crea</strong> <span class="ax-st otro">shader</span>.</p></td><td>Tipo inválido: <code>INVALID_ENUM</code> y <code>null</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">shaderSource(sh, fuente)</code></td><td>Guarda el texto GLSL (sustituye el anterior); no compila.</td><td><p><strong>Escribe</strong> <span class="ax-st otro">shader</span> fuente.</p></td><td><code>#version 300 es</code> tiene que quedar en la primera línea del texto: cuidado con las plantillas que empiezan por un salto de línea.</td></tr>
+    <tr><td><code class="ax-firma">compileShader(sh)</code></td><td>Ordena compilar (en Chrome, en otro hilo: vuelve enseguida).</td><td><p><strong>Escribe</strong> <span class="ax-st otro">shader</span> <code>COMPILE_STATUS</code> y log.</p></td><td>Un shader con errores <strong>no</strong> activa <code>getError</code> (medido: <code>NO_ERROR</code> y <code>COMPILE_STATUS</code> = <code>false</code>). Chrome guarda los programas compilados en una caché (memoria y disco, entre pestañas y visitas): si vuelve a recibir exactamente el mismo texto, reutiliza el binario guardado… y un shader con <code>isnan</code> pierde entonces su efecto sobre el fast math (<a href="../06-glsl/06-ruido.html#m6b-hash-fastmath">6.6</a>).</td></tr>
+    <tr><td><code class="ax-firma">getShaderParameter(sh, pname)</code><br><code class="ax-firma">getShaderInfoLog(sh)</code><br><code class="ax-firma">getShaderSource(sh)</code></td><td><code>COMPILE_STATUS</code>, <code>SHADER_TYPE</code>, <code>DELETE_STATUS</code>; el informe del compilador (<code>ERROR: 0:línea: …</code>); el texto guardado.</td><td><p><strong>Lee</strong> <span class="ax-st otro">shader</span>.</p></td><td>Preguntar el estado obliga a esperar a que termine la compilación: en apps con muchos shaders, compila todo y pregunta al final (<a href="../05-webgl/02-primer-triangulo.html#paso-3-enlazar-los-shaders-en-un-programa">5.2</a>).</td></tr>
+    <tr><td><code class="ax-firma">deleteShader(sh)</code></td><td>Borra el shader.</td><td><p>Si está adjunto, solo se <strong>marca</strong> (<code>DELETE_STATUS</code> = <code>true</code>) y se borra al separarlo.</p></td><td>Tras enlazar, el programa ya no necesita los shaders: <code>detachShader</code> + <code>deleteShader</code>.</td></tr>
+    <tr><td><code class="ax-firma">createProgram()</code><br><code class="ax-firma">attachShader(p, sh)</code><br><code class="ax-firma">detachShader(p, sh)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#paso-3-enlazar-los-shaders-en-un-programa">5.2</a></td><td>Crea un programa y le adjunta o separa shaders (uno de cada tipo).</td><td><p><strong>Escribe</strong> <span class="ax-st prog">programa</span> shaders adjuntos.</p></td><td>Un segundo shader del mismo tipo, o el mismo dos veces: <code>INVALID_OPERATION</code> «shader attachment already has shader». Separar uno no adjunto: <code>INVALID_OPERATION</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">bindAttribLocation(p, índice, nombre)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#locations-layout-getattriblocation-y-bindattriblocation">5.2</a></td><td>Pide una ranura para un atributo… en el <strong>próximo</strong> <code>linkProgram</code>.</td><td><p><strong>Escribe</strong> <span class="ax-st prog">programa</span> (efecto al enlazar).</p></td><td><code>layout(location)</code> en el shader le gana. Prefijo <code>gl_</code>: <code>INVALID_OPERATION</code> «reserved prefix»; índice ≥ 16: <code>INVALID_VALUE</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">transformFeedbackVaryings(p, nombres, modo)</code></td><td>Qué salidas del vertex shader capturar (<code>INTERLEAVED_ATTRIBS</code> o <code>SEPARATE_ATTRIBS</code>).</td><td><p><strong>Escribe</strong> <span class="ax-st prog">programa</span> (efecto al enlazar).</p></td><td>Antes de <code>linkProgram</code>. Ver <a href="#transform-feedback">Transform feedback</a>.</td></tr>
+    <tr><td><code class="ax-firma">linkProgram(p)</code></td><td>Enlaza: comprueba que los varyings casan, asigna las ranuras libres y genera el ejecutable.</td><td><p><strong>Escribe</strong> <span class="ax-st prog">programa</span> <code>LINK_STATUS</code>, log; <strong>todos los uniforms a 0</strong>, bloques al binding 0 e invalida las locations anteriores (medido).</p></td><td>Un enlace fallido no activa <code>getError</code>. <span class="ax-tag ax-web">WebGL</span> si el programa en uso falla al volver a enlazarse, dibujar da <code>INVALID_OPERATION</code> «Program not linked» (medido).</td></tr>
+    <tr><td><code class="ax-firma">getProgramParameter(p, pname)</code><br><code class="ax-firma">getProgramInfoLog(p)</code></td><td><code>LINK_STATUS</code>, <code>DELETE_STATUS</code>, <code>VALIDATE_STATUS</code>, <code>ATTACHED_SHADERS</code>, <code>ACTIVE_ATTRIBUTES</code>, <code>ACTIVE_UNIFORMS</code>, <code>ACTIVE_UNIFORM_BLOCKS</code>, <code>TRANSFORM_FEEDBACK_*</code>; los mensajes del enlazador.</td><td><p><strong>Lee</strong> <span class="ax-st prog">programa</span>.</p></td><td><code>pname</code> inválido: <code>INVALID_ENUM</code> y <code>null</code> (medido). Con <code>KHR_parallel_shader_compile</code>, <code>COMPLETION_STATUS_KHR</code> se consulta sin bloquear.</td></tr>
+    <tr><td><code class="ax-firma">useProgram(p | null)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#paso-6-dibujar">5.2</a></td><td>Elige el programa de los dibujos siguientes (y el destinatario de <code>uniform*</code>).</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>CURRENT_PROGRAM</code>.</p></td><td>Programa sin enlazar: <code>INVALID_OPERATION</code> «program not valid» (medido). Un programa borrado mientras está en uso sigue funcionando hasta que eliges otro (medido: <code>DELETE_STATUS</code> = <code>true</code>).</td></tr>
+    <tr><td><code class="ax-firma">validateProgram(p)</code></td><td>¿Podría dibujar con el estado actual?</td><td><p><strong>Lee</strong> el estado actual; <strong>escribe</strong> <span class="ax-st prog">programa</span> <code>VALIDATE_STATUS</code>.</p></td><td>Poco útil en WebGL: cada dibujo ya valida y da el error concreto.</td></tr>
+    <tr><td><code class="ax-firma">deleteProgram(p)</code>, <code class="ax-firma">getAttachedShaders(p)</code>, <code class="ax-firma">isProgram(x)</code>, <code class="ax-firma">isShader(x)</code></td><td>Borrar y consultar.</td><td>—</td><td><code>isProgram</code> pasa a <code>false</code> cuando el programa deja de estar en uso (medido).</td></tr>
+    <tr><td><code class="ax-firma">getAttribLocation(p, nombre)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#locations-layout-getattriblocation-y-bindattriblocation">5.2</a></td><td>La ranura de un atributo, o −1 si no existe o el compilador lo eliminó por no usarse.</td><td><p><strong>Lee</strong> <span class="ax-st prog">programa</span> enlazado.</p></td><td>Programa sin enlazar: <code>INVALID_OPERATION</code> y −1 (medido). No pases el −1 a otras llamadas: <code>INVALID_VALUE</code>.</td></tr>
+    <tr><td><code class="ax-firma">getActiveAttrib(p, i)</code>, <code class="ax-firma">getActiveUniform(p, i)</code><br><a class="ax-lec" href="../04-gpu/05-uniforms-varyings.html#3-las-ubicaciones-y-los-uniforms-que-desaparecen">4.5</a></td><td>Recorre los atributos y uniforms <em>activos</em>: <code>{ name, size, type }</code>. Un array aparece como <code>"u_arr[0]"</code> con <code>size</code> = N.</td><td><p><strong>Lee</strong> <span class="ax-st prog">programa</span>.</p></td><td>Lo que no aparece, el compilador lo eliminó. <span class="ax-tag ax-web">WebGL</span> en un programa que no enlazó: <code>INVALID_OPERATION</code>.</td></tr>
+    <tr><td><code class="ax-firma">getFragDataLocation(p, nombre)</code></td><td>La ranura (<code>layout(location)</code>) de un <code>out</code> del fragment shader, o −1.</td><td><p><strong>Lee</strong> <span class="ax-st prog">programa</span>.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">getShaderPrecisionFormat(tipoShader, precisión)</code><br><a class="ax-lec" href="../03-matematicas/07-precision.html#highp-mediump-y-lowp">3.7</a></td><td><code>{ rangeMin, rangeMax, precision }</code> de <code>LOW/MEDIUM/HIGH_FLOAT</code> e <code>…_INT</code>.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> (implementación).</p></td><td><span class="ax-tag ax-m1">M1</span> todos los float: 127, 127, 23; todos los int: 31, 30, 0. Tipo inválido: <code>INVALID_ENUM</code> y <code>null</code> (medido).</td></tr>
+  </tbody>
+</table>
+
+<h2>Buffers</h2>
+<p>Memoria de la GPU sin tipo (<a href="../04-gpu/04-vbo-vao.html#el-vbo-bytes-en-la-memoria-de-la-gpu">4.4</a>). Las funciones de datos no reciben el buffer: reciben un <strong>destino</strong> y actúan sobre lo que haya enlazado en él. Destinos: <code>ARRAY_BUFFER</code> (vértices), <code>ELEMENT_ARRAY_BUFFER</code> (índices), <code>UNIFORM_BUFFER</code>, <code>COPY_READ_BUFFER</code>, <code>COPY_WRITE_BUFFER</code>, <code>PIXEL_PACK_BUFFER</code>, <code>PIXEL_UNPACK_BUFFER</code> y <code>TRANSFORM_FEEDBACK_BUFFER</code>.</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">createBuffer()</code></td><td>Un nombre de buffer, todavía sin memoria.</td><td><p><strong>Crea</strong> <span class="ax-st buf">buffer</span>.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">bindBuffer(destino, b | null)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#paso-4-los-datos-en-un-buffer">5.2</a></td><td>Coloca el buffer en un punto de enlace. El primer enlace fija su tipo WebGL: «índices» (<code>ELEMENT_ARRAY_BUFFER</code>) u «otros datos» (el resto salvo <code>COPY_*</code>).</td><td><p><strong>Escribe</strong> el punto de enlace: <code>ELEMENT_ARRAY_BUFFER</code> es del <span class="ax-st vao">VAO</span> enlazado; todos los demás son <span class="ax-st g">global</span>.</p></td><td>Destino inválido: <code>INVALID_ENUM</code>. Buffer borrado: <code>INVALID_OPERATION</code> «attempt to use a deleted object». Un buffer de índices en otro destino, o al revés: <code>INVALID_OPERATION</code> «element array buffers can not be bound to a different target» (medido).</td></tr>
+    <tr><td><code class="ax-firma">bufferData(destino, datos | bytes, uso [, srcOffset, length])</code><br><a class="ax-lec" href="../04-gpu/04-vbo-vao.html#el-vbo-bytes-en-la-memoria-de-la-gpu">4.4</a></td><td>Reserva memoria nueva (del tamaño de <code>datos</code>, o <code>bytes</code> a ceros) y copia. Uso: <code>STATIC_</code>, <code>DYNAMIC_</code>, <code>STREAM_</code> × <code>DRAW</code>, <code>READ</code>, <code>COPY</code> (una pista, <a href="../04-gpu/04-vbo-vao.html#los-hints-static-dynamic-stream">4.4</a>).</td><td><p><strong>Lee</strong> el buffer enlazado en <code>destino</code>. <strong>Escribe</strong> <span class="ax-st buf">buffer</span> datos, <code>BUFFER_SIZE</code>, <code>BUFFER_USAGE</code>.</p></td><td>Sin buffer: <code>INVALID_OPERATION</code> «no buffer»; tamaño negativo: <code>INVALID_VALUE</code>; uso inválido: <code>INVALID_ENUM</code> (medido). Con un <code>Array</code> normal crea un buffer de 0 bytes <strong>sin error</strong> (medido). <code>srcOffset</code> y <code>length</code> cuentan elementos del TypedArray, no bytes. Copia: cambiar el array después no afecta al buffer.</td></tr>
+    <tr><td><code class="ax-firma">bufferSubData(destino, offsetBytes, datos [, srcOffset, length])</code><br><a class="ax-lec" href="../05-webgl/03-buffers-atributos.html#geometria-que-cambia-buffersubdata">5.3</a></td><td>Sobrescribe un trozo sin reservar memoria.</td><td><p><strong>Escribe</strong> <span class="ax-st buf">buffer</span> datos.</p></td><td>Salirse del tamaño: <code>INVALID_VALUE</code> «buffer overflow»; <code>offset</code> negativo: <code>INVALID_VALUE</code> (medido). Un buffer no crece solo.</td></tr>
+    <tr><td><code class="ax-firma">getBufferSubData(destino, offsetBytes, destinoJS [, dstOffset, length])</code></td><td>Lee el contenido de vuelta a un TypedArray. (En WebGL no existe <code>mapBufferRange</code>.)</td><td><p><strong>Lee</strong> <span class="ax-st buf">buffer</span>.</p></td><td>Síncrona: espera a que la GPU termine lo que escribe en ese buffer. Para leer sin bloquear: <code>PIXEL_PACK_BUFFER</code> + <code>fenceSync</code> (<a href="../05-webgl/08-framebuffers.html#readpixels-y-picking">5.8</a>).</td></tr>
+    <tr><td><code class="ax-firma">copyBufferSubData(destLeer, destEscribir, offLeer, offEscribir, bytes)</code></td><td>Copia entre dos buffers dentro de la GPU (típicamente <code>COPY_READ_BUFFER</code> → <code>COPY_WRITE_BUFFER</code>).</td><td><p><strong>Lee</strong> y <strong>escribe</strong> <span class="ax-st buf">buffer</span>.</p></td><td><span class="ax-tag ax-web">WebGL</span> entre un buffer de índices y uno de datos: <code>INVALID_OPERATION</code>.</td></tr>
+    <tr><td><code class="ax-firma">getBufferParameter(destino, BUFFER_SIZE | BUFFER_USAGE)</code></td><td>Tamaño en bytes y pista de uso.</td><td><p><strong>Lee</strong> <span class="ax-st buf">buffer</span>.</p></td><td>Valores iniciales: 0 y <code>STATIC_DRAW</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">bindBufferBase(destino, índice, b)</code><br><code class="ax-firma">bindBufferRange(destino, índice, b, offset, bytes)</code></td><td>Enlaza a un punto <strong>indexado</strong> de <code>UNIFORM_BUFFER</code> (bloques de uniforms) o <code>TRANSFORM_FEEDBACK_BUFFER</code>.</td><td><p><strong>Escribe</strong> <code>UNIFORM_BUFFER[índice]</code> <span class="ax-st g">global</span> o <code>TRANSFORM_FEEDBACK_BUFFER[índice]</code> <span class="ax-st otro">transform feedback</span>, y <strong>también</strong> el punto genérico del mismo destino (medido).</p></td><td><code>offset</code> múltiplo de <code>UNIFORM_BUFFER_OFFSET_ALIGNMENT</code> (M1: 16).</td></tr>
+    <tr><td><code class="ax-firma">deleteBuffer(b)</code>, <code class="ax-firma">isBuffer(x)</code></td><td>Borra y consulta.</td><td><p>Se desenlaza de los puntos del contexto y del VAO enlazado; un VAO no enlazado que lo use lo mantiene vivo (medido: su atributo sigue apuntándolo).</p></td><td><code>isBuffer</code> es <code>false</code> desde el borrado.</td></tr>
+  </tbody>
+</table>
+
+<h2>VAO y atributos</h2>
+<p>El VAO guarda la receta para leer los vértices (<a href="../04-gpu/04-vbo-vao.html#el-vao-que-guarda-exactamente-y-que-no">4.4</a>): por cada una de las 16 ranuras, si está activa, de qué buffer lee, en qué formato y con qué divisor; y qué buffer de índices usar. <strong>No</strong> guarda el enlace <code>ARRAY_BUFFER</code> ni los valores constantes de <code>vertexAttrib4f</code>.</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">createVertexArray()</code>, <code class="ax-firma">deleteVertexArray(v)</code>, <code class="ax-firma">isVertexArray(x)</code></td><td>Crear, borrar y consultar VAOs (del núcleo en WebGL2; en WebGL1, extensión <code>OES_vertex_array_object</code>).</td><td><p><strong>Crea</strong> <span class="ax-st vao">VAO</span>, con las 16 ranuras inactivas.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">bindVertexArray(v | null)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#paso-5-el-vao-y-vertexattribpointer">5.2</a></td><td>Hace actual un VAO: lo que sigue se graba en él y los dibujos leen de él. <code>null</code> es el VAO por defecto (existe en WebGL2).</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>VERTEX_ARRAY_BINDING</code>; con él cambian <code>ELEMENT_ARRAY_BUFFER_BINDING</code> y todo lo que devuelve <code>getVertexAttrib</code>.</p></td><td>VAO borrado: <code>INVALID_OPERATION</code> «attempt to use a deleted object» (medido). Desenlázalo al terminar de configurarlo: un <code>bindBuffer(ELEMENT_ARRAY_BUFFER, …)</code> posterior lo modificaría.</td></tr>
+    <tr><td><code class="ax-firma">enableVertexAttribArray(i)</code><br><code class="ax-firma">disableVertexAttribArray(i)</code></td><td>La ranura <code>i</code> lee de un buffer, o recibe el valor constante.</td><td><p><strong>Escribe</strong> <span class="ax-st vao">VAO</span> <code>VERTEX_ATTRIB_ARRAY_ENABLED[i]</code>.</p></td><td><code>i</code> ≥ 16 o −1 (un <code>getAttribLocation</code> fallido): <code>INVALID_VALUE</code> «index out of range» (medido). Sin activar, todos los vértices reciben la constante (0, 0, 0, 1): nada visible y ningún error.</td></tr>
+    <tr><td><code class="ax-firma">vertexAttribPointer(i, size, type, normalized, stride, offset)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#paso-5-el-vao-y-vertexattribpointer">5.2</a></td><td>Describe cómo leer la ranura <code>i</code> (el shader recibe floats). <code>type</code>: <code>BYTE</code>, <code>UNSIGNED_BYTE</code>, <code>SHORT</code>, <code>UNSIGNED_SHORT</code>, <code>INT</code>, <code>UNSIGNED_INT</code>, <code>FLOAT</code>, <code>HALF_FLOAT</code>, <code>INT_2_10_10_10_REV</code>, <code>UNSIGNED_INT_2_10_10_10_REV</code>. <code>stride</code> y <code>offset</code> en bytes; <code>stride</code> 0 = empaquetado.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> <code>ARRAY_BUFFER</code>: lo fotografía. <strong>Escribe</strong> <span class="ax-st vao">VAO</span> buffer, size, type, normalized, stride, offset de la ranura <code>i</code> (y la marca como no entera).</p></td><td><code>size</code> fuera de 1…4: <code>INVALID_VALUE</code>; <code>stride</code> &gt; 255: <code>INVALID_VALUE</code> (<span class="ax-tag ax-web">WebGL</span>); <code>stride</code> u <code>offset</code> que no son múltiplos del tamaño del tipo: <code>INVALID_OPERATION</code> (<span class="ax-tag ax-web">WebGL</span>); <code>offset</code> negativo: <code>INVALID_VALUE</code>; tipo inválido: <code>INVALID_ENUM</code>; sin <code>ARRAY_BUFFER</code> y <code>offset</code> ≠ 0: <code>INVALID_OPERATION</code> (todo medido). Enlazar otro buffer <em>después</em> no cambia de dónde lee el atributo.</td></tr>
+    <tr><td><code class="ax-firma">vertexAttribIPointer(i, size, type, stride, offset)</code><br><a class="ax-lec" href="../04-gpu/04-vbo-vao.html#atributos-enteros-de-verdad-vertexattribipointer">4.4</a></td><td>Igual, pero entrega enteros sin convertir (para <code>in int</code>, <code>ivec</code>, <code>uint</code>, <code>uvec</code>).</td><td><p>Como la anterior; marca la ranura como entera en el <span class="ax-st vao">VAO</span>.</p></td><td>Solo tipos enteros (<code>FLOAT</code>: <code>INVALID_ENUM</code>, medido). Si el tipo base y el signo no casan con el shader, el <strong>dibujo</strong> falla: <code>INVALID_OPERATION</code> «Vertex shader input type does not match the type of the bound vertex attribute».</td></tr>
+    <tr><td><code class="ax-firma">vertexAttribDivisor(i, divisor)</code><br><a class="ax-lec" href="../05-webgl/09-instancing.html#el-divisor-a-fondo">5.9</a></td><td>0: la ranura avanza por vértice; N: avanza una vez cada N instancias.</td><td><p><strong>Escribe</strong> <span class="ax-st vao">VAO</span> <code>VERTEX_ATTRIB_ARRAY_DIVISOR[i]</code>.</p></td><td><code>i</code> fuera de rango: <code>INVALID_VALUE</code> (medido). Con divisor ≠ 0, <code>drawArrays</code>/<code>drawElements</code> normales no avanzan esa ranura (WebGL2).</td></tr>
+    <tr><td><code class="ax-firma">vertexAttrib1f…4f(i, …)</code>, <code class="ax-firma">vertexAttrib1fv…4fv</code><br><code class="ax-firma">vertexAttribI4i</code>, <code class="ax-firma">vertexAttribI4ui</code>, <code class="ax-firma">…iv</code>, <code class="ax-firma">…uiv</code><br><a class="ax-lec" href="../04-gpu/05-uniforms-varyings.html#atributos-repaso-y-el-truco-del-valor-constante">4.5</a></td><td>Valor constante que recibe la ranura <code>i</code> cuando está <strong>inactiva</strong>. Por defecto, (0, 0, 0, 1).</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>CURRENT_VERTEX_ATTRIB[i]</code>: <strong>no</strong> es del VAO (cambiar de VAO no lo cambia, medido).</p></td><td><code>i</code> ≥ 16: <code>INVALID_VALUE</code> (medido). <span class="ax-tag ax-web">WebGL</span> la variante debe casar con el tipo del shader: <code>vertexAttrib4f</code> sobre un <code>in ivec4</code> hace fallar el dibujo (medido); <code>vertexAttribI4i</code>, no.</td></tr>
+    <tr><td><code class="ax-firma">getVertexAttrib(i, pname)</code><br><code class="ax-firma">getVertexAttribOffset(i, VERTEX_ATTRIB_ARRAY_POINTER)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#la-pantalla-negra-una-lista-sistematica">5.2</a></td><td><code>VERTEX_ATTRIB_ARRAY_ENABLED</code>, <code>…_SIZE</code>, <code>…_STRIDE</code>, <code>…_TYPE</code>, <code>…_NORMALIZED</code>, <code>…_INTEGER</code>, <code>…_DIVISOR</code>, <code>…_BUFFER_BINDING</code>; <code>CURRENT_VERTEX_ATTRIB</code>; el offset.</td><td><p><strong>Lee</strong> <span class="ax-st vao">VAO</span> enlazado (y <span class="ax-st g">global</span> para <code>CURRENT_VERTEX_ATTRIB</code>).</p></td><td>Estado inicial de una ranura: inactiva, sin buffer, size 4, <code>FLOAT</code>, stride 0, offset 0, divisor 0 (medido). La mejor herramienta contra la pantalla negra.</td></tr>
+  </tbody>
+</table>
+
+<h2>Uniforms y bloques de uniforms</h2>
+<p>Los valores de los uniforms son estado <strong>del programa</strong>: cada programa tiene su almacén, valen 0 al enlazar y persisten entre dibujos (<a href="../05-webgl/04-uniforms-animacion.html#los-uniforms-son-estado-del-programa">5.4</a>). Las funciones <code>uniform*</code> no reciben el programa: escriben en el que esté en uso.</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">getUniformLocation(p, nombre)</code><br><a class="ax-lec" href="../04-gpu/05-uniforms-varyings.html#3-las-ubicaciones-y-los-uniforms-que-desaparecen">4.5</a></td><td>Un «ticket» (<code>WebGLUniformLocation</code>) para un uniform de ese programa, o <code>null</code> si no existe o el compilador lo eliminó. Nombres: <code>"u_arr"</code> o <code>"u_arr[0]"</code>, <code>"u_arr[2]"</code>, <code>"u_luz.color"</code>.</td><td><p><strong>Lee</strong> <span class="ax-st prog">programa</span> enlazado.</p></td><td>Un struct entero no tiene location (<code>null</code>): miembro a miembro. Programa sin enlazar: <code>INVALID_OPERATION</code> y <code>null</code> (medido). Tras un nuevo <code>linkProgram</code> las locations viejas mueren: <code>INVALID_OPERATION</code> «location has been invalidated» (medido). Pídelas una vez y guárdalas.</td></tr>
+    <tr><td><code class="ax-firma">uniform1f…4f(loc, …)</code>, <code class="ax-firma">uniform1i…4i</code>, <code class="ax-firma">uniform1ui…4ui</code><br><code class="ax-firma">uniform1fv…4fv(loc, datos [, srcOffset, srcLength])</code> (e <code>iv</code>, <code>uiv</code>)<br><a class="ax-lec" href="../05-webgl/04-uniforms-animacion.html#la-familia-uniform">5.4</a></td><td>Da valor a un uniform: número de componentes + tipo (<code>f</code>, <code>i</code>, <code>ui</code>) + <code>v</code> si llegan en array. <code>bool</code> admite <code>1i</code>, <code>1ui</code> o <code>1f</code>; los samplers, solo <code>1i</code> con el número de unidad.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> <code>CURRENT_PROGRAM</code>. <strong>Escribe</strong> <span class="ax-st prog">programa</span> el valor.</p></td><td><code>loc</code> = <code>null</code>: no hace nada, <strong>sin error</strong> (medido). Sin programa en uso, o location de otro programa: <code>INVALID_OPERATION</code> «location is not from the associated program». Función que no casa con el tipo (<code>uniform1f</code> sobre un <code>vec4</code> o un <code>int</code>): <code>INVALID_OPERATION</code> «Uniform size does not match uniform method». Longitud que no es múltiplo (3 valores para un <code>vec4</code>): <code>INVALID_VALUE</code> «invalid size»; varios elementos para un uniform que no es array: <code>INVALID_OPERATION</code>; sobrantes en un array: se ignoran. Sampler con <code>gl.TEXTURE1</code> o 100: <code>INVALID_VALUE</code>. Argumentos que faltan: <code>TypeError</code> (todo medido).</td></tr>
+    <tr><td><code class="ax-firma">uniformMatrix2fv / 3fv / 4fv(loc, transpose, datos [, srcOffset, srcLength])</code><br><code class="ax-firma">uniformMatrix2x3fv … 4x3fv</code><br><a class="ax-lec" href="../05-webgl/04-uniforms-animacion.html#uniformmatrix4fv-y-el-parametro-transpose">5.4</a></td><td>Matrices, por columnas. <code>transpose = true</code> traspone al subir (solo WebGL2).</td><td>Igual que <code>uniform*</code>.</td><td>Tamaño incorrecto (12 floats para una <code>mat4</code>): <code>INVALID_VALUE</code> (medido). En WebGL1, <code>transpose = true</code> daba <code>INVALID_VALUE</code>.</td></tr>
+    <tr><td><code class="ax-firma">getUniform(p, loc)</code></td><td>El valor actual de un uniform.</td><td><p><strong>Lee</strong> <span class="ax-st prog">programa</span>.</p></td><td>Ideal para comprobar qué recibió de verdad el shader (<code>Float32Array</code> para vectores y matrices).</td></tr>
+    <tr><td><code class="ax-firma">getUniformBlockIndex(p, nombre)</code><br><code class="ax-firma">uniformBlockBinding(p, índiceBloque, punto)</code></td><td>Conecta un bloque <code>uniform Bloque { … }</code> con un punto de enlace indexado de <code>UNIFORM_BUFFER</code>.</td><td><p><strong>Escribe</strong> <span class="ax-st prog">programa</span> <code>UNIFORM_BLOCK_BINDING</code> (0 al enlazar; vuelve a 0 al reenlazar, medido). El buffer se pone con <code>bindBufferBase(UNIFORM_BUFFER, punto, b)</code>, que es <span class="ax-st g">global</span>.</p></td><td>Varios programas pueden leer el mismo buffer: ese es el sentido de los UBO. <span class="ax-tag ax-web">WebGL</span> dibujar con un bloque activo sin buffer, o con uno demasiado pequeño: <code>INVALID_OPERATION</code>. Solo layout <code>std140</code>.</td></tr>
+    <tr><td><code class="ax-firma">getActiveUniformBlockParameter(p, i, pname)</code>, <code class="ax-firma">getActiveUniformBlockName(p, i)</code><br><code class="ax-firma">getUniformIndices(p, nombres)</code>, <code class="ax-firma">getActiveUniforms(p, índices, pname)</code></td><td>Tamaño de un bloque (<code>UNIFORM_BLOCK_DATA_SIZE</code>), y offset (<code>UNIFORM_OFFSET</code>), stride de arrays y matrices de cada miembro: lo que necesitas para rellenar el buffer.</td><td><p><strong>Lee</strong> <span class="ax-st prog">programa</span>.</p></td><td>Índice de bloque fuera de rango: <code>INVALID_VALUE</code>.</td></tr>
+  </tbody>
+</table>
+
+<h2>Dibujo y borrado</h2>
+<p>Un dibujo no recibe casi nada como argumento: <strong>lee todo el estado vigente</strong> en ese instante (programa, VAO, uniforms del programa, texturas de las unidades, framebuffer, viewport y todo el estado fijo) y lo congela para ese dibujo, aunque la GPU lo ejecute más tarde.</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">drawArrays(modo, first, count)</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#paso-6-dibujar">5.2</a></td><td>Procesa <code>count</code> vértices desde el <code>first</code>. Modos (<a href="../05-webgl/03-buffers-atributos.html#los-siete-modos-de-primitiva">5.3</a>): <code>POINTS</code>, <code>LINES</code>, <code>LINE_STRIP</code>, <code>LINE_LOOP</code>, <code>TRIANGLES</code>, <code>TRIANGLE_STRIP</code>, <code>TRIANGLE_FAN</code>.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> programa, VAO, <code>CURRENT_VERTEX_ATTRIB</code>, framebuffer de dibujo, viewport, depthRange y estado fijo; <span class="ax-st vao">VAO</span> atributos; <span class="ax-st prog">programa</span> uniforms; <span class="ax-st uni">unidad</span> texturas y samplers. <strong>Escribe</strong> <span class="ax-st fbo">framebuffer</span> color, profundidad, stencil.</p></td><td>Modo inválido: <code>INVALID_ENUM</code>; <code>count</code> o <code>first</code> negativos: <code>INVALID_VALUE</code>; sin programa: <code>INVALID_OPERATION</code> «no valid shader program in use»; una ranura activa sin buffer (en Chrome, aunque el programa no la use): <code>INVALID_OPERATION</code> «no buffer is bound to enabled attribute»; leer más allá de un buffer: <code>INVALID_OPERATION</code> «Vertex buffer is not big enough for the draw call»; framebuffer incompleto: <code>INVALID_FRAMEBUFFER_OPERATION</code>; muestrear una textura adjunta al destino: <code>INVALID_OPERATION</code> «Feedback loop formed between Framebuffer and active Texture»; tipos que no casan (atributo, sampler, salida): <code>INVALID_OPERATION</code> (todo medido). <code>count</code> 0, o menos vértices de los que pide el modo: no dibuja nada, sin error.</td></tr>
+    <tr><td><code class="ax-firma">drawElements(modo, count, tipo, offsetBytes)</code><br><a class="ax-lec" href="../05-webgl/03-buffers-atributos.html#indices-reutilizar-vertices-con-drawelements">5.3</a></td><td>Como <code>drawArrays</code>, pero lee <code>count</code> índices (<code>UNSIGNED_BYTE</code>, <code>UNSIGNED_SHORT</code> o <code>UNSIGNED_INT</code>) del buffer de índices, desde el byte <code>offset</code>.</td><td><p>Lo mismo, y además <span class="ax-st vao">VAO</span> <code>ELEMENT_ARRAY_BUFFER</code>.</p></td><td>Sin buffer de índices: <code>INVALID_OPERATION</code> (el EBO se enlazó con otro VAO, o se desenlazó con este VAO enlazado); tipo inválido: <code>INVALID_ENUM</code>; <code>offset</code> que no es múltiplo del tamaño del índice: <code>INVALID_OPERATION</code>; negativo: <code>INVALID_VALUE</code>; un índice que apunta fuera de algún buffer de atributos: <code>INVALID_OPERATION</code>; leer más allá del EBO: <code>INVALID_OPERATION</code> «Insufficient buffer size» (medido). <span class="ax-tag ax-web">WebGL</span> el reinicio de primitivas está siempre activo: 255, 65 535 y 4 294 967 295 cortan la primitiva.</td></tr>
+    <tr><td><code class="ax-firma">drawRangeElements(modo, start, end, count, tipo, offset)</code></td><td><code>drawElements</code> prometiendo que todos los índices están en [start, end].</td><td>Como <code>drawElements</code>.</td><td><code>end &lt; start</code>: <code>INVALID_VALUE</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">drawBuffers([destinos])</code><br><a class="ax-lec" href="../05-webgl/08-framebuffers.html#mas-de-un-destino-y-el-blit">5.8</a></td><td>A qué búfer de color va cada salida del fragment shader (<code>layout(location = i)</code>).</td><td><p><strong>Escribe</strong> <span class="ax-st fbo">framebuffer</span> <code>DRAW_BUFFERi</code> del framebuffer de dibujo enlazado (cada framebuffer recuerda los suyos, medido).</p></td><td>En un framebuffer, la posición i solo admite <code>COLOR_ATTACHMENTi</code> o <code>NONE</code> (otro orden: <code>INVALID_OPERATION</code>); en el canvas, <code>[BACK]</code> o <code>[NONE]</code> (medido). Sin llamarla, solo se escribe el adjunto 0: <code>DRAW_BUFFER1</code> empieza en <code>NONE</code>.</td></tr>
+    <tr><td><code class="ax-firma">clearColor(r, g, b, a)</code>, <code class="ax-firma">clearDepth(d)</code>, <code class="ax-firma">clearStencil(s)</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#clearcolor-y-clear-sin-misterios">5.1</a></td><td>Guardan los valores con los que borrará <code>clear</code>. No dibujan nada.</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>COLOR_CLEAR_VALUE</code> (0, 0, 0, 0), <code>DEPTH_CLEAR_VALUE</code> (1), <code>STENCIL_CLEAR_VALUE</code> (0).</p></td><td>El color se guarda sin recortar (<code>[2, −1, 0.5, 1]</code> tal cual) y se recorta al escribirse en un búfer de 8 bits; la profundidad sí se recorta al guardarla (5 → 1) (medido). Los canales van de 0 a 1: <code>clearColor(139, …)</code> sale blanco.</td></tr>
+    <tr><td><code class="ax-firma">clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT | STENCIL_BUFFER_BIT)</code></td><td>Rellena los búferes indicados del framebuffer de dibujo.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> valores de borrado, <code>SCISSOR_TEST</code> y <code>SCISSOR_BOX</code>, <code>colorMask</code>, <code>depthMask</code>, <code>stencilMask</code>; <span class="ax-st fbo">framebuffer</span> drawBuffers. <strong>No</strong> lee el viewport (medido). <strong>Escribe</strong> los búferes.</p></td><td>Bits inválidos: <code>INVALID_VALUE</code> «invalid mask»; framebuffer incompleto: <code>INVALID_FRAMEBUFFER_OPERATION</code> (medido). Con <code>depthMask(false)</code> no borra la profundidad; con el scissor activo solo borra su rectángulo.</td></tr>
+    <tr><td><code class="ax-firma">clearBufferfv / iv / uiv(búfer, i, valores)</code><br><code class="ax-firma">clearBufferfi(DEPTH_STENCIL, 0, d, s)</code></td><td>Borra un búfer concreto (el color i de un MRT, la profundidad…) con un valor del tipo del búfer.</td><td>Como <code>clear</code>, para un solo búfer.</td><td>El tipo del valor debe casar con el formato: <code>clearBufferiv</code> sobre un color normalizado da <code>INVALID_OPERATION</code> «No defined conversion between clear value and attachment format» (medido).</td></tr>
+    <tr><td><code class="ax-firma">flush()</code>, <code class="ax-firma">finish()</code><br><a class="ax-lec" href="../04-gpu/01-cpu-vs-gpu.html#el-driver-y-el-command-buffer-tus-llamadas-no-se-ejecutan-cuando">4.1</a></td><td>Envía las órdenes pendientes a la GPU; según la especificación, <code>finish</code> además espera a que terminen.</td><td>—</td><td>El navegador ya envía solo al final de cada tarea. En Chrome, <code>finish</code> <strong>no espera</strong>: se comporta como <code>flush</code> (<span class="ax-tag ax-m1">M1</span> tras un dibujo que tarda unos 68 ms en la GPU, <code>finish</code> volvió en 0–0,1 ms y el <code>readPixels</code> siguiente esperó los 68 ms). Para esperar a la GPU, un <code>readPixels</code> de un píxel (bloquea); para no bloquear, <code>fenceSync</code>. No midas con <code>finish</code> (<a href="../05-webgl/10-depuracion.html#m5-finish-no-espera">5.10</a>).</td></tr>
+  </tbody>
+</table>
+
+<h2>Instancing</h2>
+<p>Una llamada dibuja N copias de la misma malla; los datos por copia llegan por atributos con divisor o se calculan con <code>gl_InstanceID</code> (<a href="../05-webgl/09-instancing.html#instancing-llamada-por-llamada">5.9</a>).</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">drawArraysInstanced(modo, first, count, instancias)</code><br><code class="ax-firma">drawElementsInstanced(modo, count, tipo, offset, instancias)</code><br><a class="ax-lec" href="../05-webgl/09-instancing.html#instancing-llamada-por-llamada">5.9</a></td><td>Dibuja <code>instancias</code> copias; en cada una, <code>gl_InstanceID</code> vale 0, 1, 2…</td><td>Como <code>drawArrays</code>/<code>drawElements</code>; las ranuras con divisor N leen el elemento <code>floor(instancia / N)</code>.</td><td><code>instancias</code> negativo: <code>INVALID_VALUE</code> (medido). La comprobación de rangos también cubre los atributos por instancia: si el buffer tiene menos elementos que instancias, <code>INVALID_OPERATION</code>.</td></tr>
+    <tr><td><code class="ax-firma">vertexAttribDivisor(i, 1)</code></td><td>La ranura <code>i</code> pasa a ser «por instancia».</td><td><span class="ax-st vao">VAO</span> (ver arriba).</td><td>Una <code>mat4</code> por instancia ocupa 4 ranuras consecutivas: 4 punteros y 4 divisores.</td></tr>
+  </tbody>
+</table>
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="receta: un desplazamiento por instancia (el vertex shader suma a_desplaz a la posición)">
+gl.bindVertexArray(vao);                                   // el VAO de la malla
+const bufInst = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufInst);
+gl.bufferData(gl.ARRAY_BUFFER, desplazamientos, gl.DYNAMIC_DRAW); // Float32Array: 2 floats por instancia
+gl.enableVertexAttribArray(1);                             // layout(location = 1) in vec2 a_desplaz;
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);       // el VAO fotografía bufInst
+gl.vertexAttribDivisor(1, 1);                              // avanza una vez por instancia, no por vértice
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, desplazamientos.length / 2);
+</script>
+
+<h2>Texturas</h2>
+<p>El detalle en <a href="../05-webgl/05-texturas.html">5.5</a>. Dos niveles de indirección: el sampler del shader guarda un <strong>número de unidad</strong> (estado del programa); la unidad guarda qué textura hay en cada destino (estado del contexto, una copia por unidad); y la textura guarda sus imágenes y sus parámetros. <code>texImage2D</code>, <code>texParameteri</code> o <code>generateMipmap</code> actúan sobre la textura enlazada en la <strong>unidad activa</strong>.</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">createTexture()</code>, <code class="ax-firma">deleteTexture(t)</code>, <code class="ax-firma">isTexture(x)</code></td><td>Crear, borrar y consultar.</td><td><p>Al borrarla se desenlaza de <strong>todas</strong> las unidades (medido) y se separa del framebuffer enlazado si estaba adjunta (medido: queda incompleto).</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">activeTexture(gl.TEXTURE0 + n)</code><br><a class="ax-lec" href="../05-webgl/05-texturas.html#unidades-de-textura-el-sampler-es-un-numero">5.5</a></td><td>Elige la unidad sobre la que actuarán <code>bindTexture</code> y compañía.</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>ACTIVE_TEXTURE</code> (<code>TEXTURE0</code>).</p></td><td>Es un enum: <code>activeTexture(1)</code> o una unidad ≥ 32: <code>INVALID_ENUM</code> «texture unit out of range» (medido). Otro código puede haber dejado activa otra unidad: fíjala tú antes de enlazar.</td></tr>
+    <tr><td><code class="ax-firma">bindTexture(destino, t | null)</code></td><td>Coloca la textura en un destino (<code>TEXTURE_2D</code>, <code>TEXTURE_CUBE_MAP</code>, <code>TEXTURE_3D</code>, <code>TEXTURE_2D_ARRAY</code>) de la unidad activa. El primer enlace fija su tipo.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> <code>ACTIVE_TEXTURE</code>. <strong>Escribe</strong> <span class="ax-st uni">unidad</span> <code>TEXTURE_BINDING_destino</code>.</p></td><td>Enlazar en otro destino una textura que ya tiene tipo: <code>INVALID_OPERATION</code> «textures can not be used with multiple targets» (medido).</td></tr>
+    <tr><td><code class="ax-firma">texImage2D(destino, nivel, formatoInterno, ancho, alto, 0, formato, tipo, datos | null | offsetPBO)</code><br><code class="ax-firma">texImage2D(destino, nivel, formatoInterno, formato, tipo, fuenteDOM)</code><br><a class="ax-lec" href="../05-webgl/05-texturas.html#teximage2d-fuentes-formatos-y-tipos">5.5</a></td><td>Reserva y rellena un nivel. <code>null</code> reserva sin datos (a ceros). Fuentes DOM: canvas, <code>ImageBitmap</code>, <code>ImageData</code>, <code>&lt;img&gt;</code>, <code>&lt;video&gt;</code>. En cubemaps, <code>destino</code> es una cara (<code>TEXTURE_CUBE_MAP_POSITIVE_X</code>…).</td><td><p><strong>Lee</strong> <span class="ax-st uni">unidad</span> la textura del destino; <span class="ax-st g">global</span> <code>UNPACK_*</code> de <code>pixelStorei</code> y <code>PIXEL_UNPACK_BUFFER</code>. <strong>Escribe</strong> <span class="ax-st tex">textura</span> la imagen de ese nivel (tamaño y formato).</p></td><td>Combinación inválida (<code>RGBA8</code> + <code>FLOAT</code>, <code>RGBA32F</code> + <code>UNSIGNED_BYTE</code>, <code>RGBA</code> sin tamaño + <code>FLOAT</code>): <code>INVALID_OPERATION</code>; nivel negativo, borde ≠ 0 o tamaño &gt; <code>MAX_TEXTURE_SIZE</code>: <code>INVALID_VALUE</code>; datos cortos (también por <code>UNPACK_ALIGNMENT</code>): <code>INVALID_OPERATION</code> «ArrayBufferView not big enough for request»; TypedArray de otro tipo: <code>INVALID_OPERATION</code>; sin textura: <code>INVALID_OPERATION</code>; textura inmutable: <code>INVALID_OPERATION</code> «Texture is immutable» (todo medido). Imagen de otro origen (o cualquier archivo con <code>file://</code>): <code>SecurityError</code>, una excepción.</td></tr>
+    <tr><td><code class="ax-firma">texSubImage2D(destino, nivel, x, y, ancho, alto, formato, tipo, datos)</code> (y con fuente DOM)</td><td>Reescribe una región de un nivel sin reservar memoria (vídeo, datos que cambian).</td><td><p>Como <code>texImage2D</code>.</p></td><td>Región fuera de la textura: <code>INVALID_VALUE</code> «Offset overflows texture dimensions» (medido).</td></tr>
+    <tr><td><code class="ax-firma">texStorage2D(destino, niveles, formatoInterno, ancho, alto)</code><br><code class="ax-firma">texStorage3D(…)</code></td><td>Reserva todos los niveles de una vez con un formato con tamaño y deja la textura <strong>inmutable</strong>; luego se rellena con <code>texSubImage2D</code>.</td><td><p><strong>Escribe</strong> <span class="ax-st tex">textura</span> <code>TEXTURE_IMMUTABLE_FORMAT</code> = <code>true</code>, <code>TEXTURE_IMMUTABLE_LEVELS</code>.</p></td><td>Formato sin tamaño (<code>RGBA</code>): <code>INVALID_ENUM</code>; más niveles de los que caben: <code>INVALID_OPERATION</code>; <code>texImage2D</code> después: <code>INVALID_OPERATION</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">texImage3D</code>, <code class="ax-firma">texSubImage3D</code></td><td>Texturas 3D y arrays 2D (con profundidad o capas).</td><td>Como las 2D.</td><td>El shader usa <code>sampler3D</code>/<code>sampler2DArray</code>, que necesitan declaración de precisión.</td></tr>
+    <tr><td><code class="ax-firma">copyTexImage2D(destino, nivel, formatoInterno, x, y, w, h, 0)</code><br><code class="ax-firma">copyTexSubImage2D(…)</code>, <code class="ax-firma">copyTexSubImage3D(…)</code></td><td>Copia un rectángulo del framebuffer de lectura a la textura.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> <code>READ_FRAMEBUFFER</code> y su <code>READ_BUFFER</code>. <strong>Escribe</strong> <span class="ax-st tex">textura</span>.</p></td><td>En WebGL2, un formato interno con tamaño tiene que coincidir exactamente con el del origen. Lo que cae fuera del framebuffer queda a ceros.</td></tr>
+    <tr><td><code class="ax-firma">compressedTexImage2D / SubImage2D / 3D(…)</code></td><td>Sube datos ya comprimidos (formatos de <code>WEBGL_compressed_texture_*</code>).</td><td>Como <code>texImage2D</code>.</td><td>Sin extensión, no hay formatos. <span class="ax-tag ax-web">WebGL</span> no admite <code>null</code>.</td></tr>
+    <tr><td><code class="ax-firma">generateMipmap(destino)</code><br><a class="ax-lec" href="../05-webgl/05-texturas.html#filtrado-nearest-linear-y-mipmaps">5.5</a></td><td>Calcula los niveles 1…n a partir del nivel base.</td><td><p><strong>Escribe</strong> <span class="ax-st tex">textura</span> los niveles.</p></td><td>Sin textura: <code>INVALID_OPERATION</code>; textura sin datos (0×0): <code>INVALID_OPERATION</code>; formato que no es a la vez filtrable y renderizable (<code>RGBA32F</code> sin extensiones): <code>INVALID_OPERATION</code> «Texture format does not support mipmap generation» (medido). Tamaños que no son potencia de dos: permitidos en WebGL2 (medido con 3×5).</td></tr>
+    <tr><td><code class="ax-firma">texParameteri / texParameterf(destino, pname, valor)</code><br><a class="ax-lec" href="../05-webgl/05-texturas.html#la-textura-negra-completitud">5.5</a></td><td>Parámetros de muestreo de la textura: <code>TEXTURE_MIN_FILTER</code>, <code>MAG_FILTER</code>, <code>WRAP_S</code>/<code>T</code>/<code>R</code>, <code>BASE_LEVEL</code>, <code>MAX_LEVEL</code>, <code>MIN_LOD</code>, <code>MAX_LOD</code>, <code>COMPARE_MODE</code>, <code>COMPARE_FUNC</code> (y <code>TEXTURE_MAX_ANISOTROPY_EXT</code> con la extensión).</td><td><p><strong>Lee</strong> <span class="ax-st uni">unidad</span> la textura del destino en la unidad activa. <strong>Escribe</strong> <span class="ax-st tex">textura</span>. Iniciales: <code>NEAREST_MIPMAP_LINEAR</code>, <code>LINEAR</code>, <code>REPEAT</code>, 0, 1000, −1000, 1000, <code>NONE</code>, <code>LEQUAL</code> (medido).</p></td><td>El <code>MIN_FILTER</code> inicial pide mipmaps: sin <code>generateMipmap</code> ni cambiar el filtro, la textura es incompleta y se lee (0, 0, 0, 1), sin error. <code>pname</code> inválido (incluido <code>TEXTURE_SWIZZLE_*</code>, que WebGL eliminó): <code>INVALID_ENUM</code>; valor inválido (<code>MAG_FILTER</code> con mipmaps): <code>INVALID_ENUM</code>; sin textura: <code>INVALID_OPERATION</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">getTexParameter(destino, pname)</code></td><td>Lee un parámetro.</td><td><p><strong>Lee</strong> <span class="ax-st tex">textura</span>.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">pixelStorei(pname, valor)</code><br><a class="ax-lec" href="../05-webgl/05-texturas.html#el-estado-de-desempaquetado-pixelstorei">5.5</a></td><td>Cómo interpretar los datos al subirlos (<code>UNPACK_*</code>) y al leerlos con <code>readPixels</code> (<code>PACK_*</code>).</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span>: <code>UNPACK_FLIP_Y_WEBGL</code> (<code>false</code>), <code>UNPACK_PREMULTIPLY_ALPHA_WEBGL</code> (<code>false</code>), <code>UNPACK_COLORSPACE_CONVERSION_WEBGL</code> (<code>BROWSER_DEFAULT_WEBGL</code>), <code>UNPACK_ALIGNMENT</code> y <code>PACK_ALIGNMENT</code> (4), <code>UNPACK_ROW_LENGTH</code>, <code>UNPACK_IMAGE_HEIGHT</code>, <code>UNPACK_SKIP_PIXELS</code>/<code>ROWS</code>/<code>IMAGES</code>, <code>PACK_ROW_LENGTH</code>, <code>PACK_SKIP_PIXELS</code>/<code>ROWS</code> (0).</p></td><td>Es global: restáuralo tras la subida. FLIP_Y y PREMULTIPLY también se aplican a TypedArrays (medido) y se ignoran con <code>ImageBitmap</code> (<a href="../05-webgl/05-texturas.html#unpack-flip-y-webgl-arriba-y-abajo">5.5</a>). Alineación distinta de 1, 2, 4 u 8: <code>INVALID_VALUE</code>; <code>pname</code> inválido: <code>INVALID_ENUM</code> (medido).</td></tr>
+    <tr class="ax-sep"><td colspan="4">Samplers (WebGL2): parámetros de muestreo separados de la textura</td></tr>
+    <tr><td><code class="ax-firma">createSampler()</code>, <code class="ax-firma">deleteSampler(s)</code>, <code class="ax-firma">isSampler(x)</code></td><td>Un objeto con parámetros de filtrado, wrap, LOD y comparación.</td><td><p><strong>Crea</strong> <span class="ax-st smp">sampler</span> (mismos valores iniciales que una textura).</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">bindSampler(unidad, s | null)</code><br><a class="ax-lec" href="../05-webgl/05-texturas.html#unidades-de-textura-el-sampler-es-un-numero">5.5</a></td><td>Mientras está enlazado a una unidad, sus parámetros <strong>sustituyen</strong> a los de la textura que haya en ella.</td><td><p><strong>Escribe</strong> <span class="ax-st uni">unidad</span> <code>SAMPLER_BINDING</code>.</p></td><td>Recibe el número de unidad (0, 1…), no <code>gl.TEXTURE0</code>. Medido: una textura con <code>NEAREST</code> se leyó con <code>LINEAR</code> al enlazar un sampler con <code>LINEAR</code>.</td></tr>
+    <tr><td><code class="ax-firma">samplerParameteri / f(s, pname, valor)</code>, <code class="ax-firma">getSamplerParameter(s, pname)</code></td><td>Los mismos parámetros que <code>texParameteri</code>, salvo <code>BASE_LEVEL</code> y <code>MAX_LEVEL</code>, que solo tiene la textura.</td><td><p><strong>Escribe</strong> / <strong>lee</strong> <span class="ax-st smp">sampler</span> (no necesita estar enlazado).</p></td><td>Útil para leer la misma textura con dos filtros distintos en el mismo shader.</td></tr>
+  </tbody>
+</table>
+
+<h2>Framebuffers, renderbuffers y lectura de píxeles</h2>
+<p>Un framebuffer es una lista de adjuntos: no guarda píxeles, los guardan las texturas o renderbuffers que le conectas (<a href="../05-webgl/08-framebuffers.html#anatomia-de-un-framebuffer">5.8</a>). WebGL2 tiene dos puntos de enlace separados: el de dibujo (<code>DRAW_FRAMEBUFFER</code>: dibujos, <code>clear</code>, destino de <code>blitFramebuffer</code>) y el de lectura (<code>READ_FRAMEBUFFER</code>: <code>readPixels</code>, <code>copyTex*</code>, origen del blit). <code>FRAMEBUFFER</code> enlaza los dos a la vez.</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">createFramebuffer()</code>, <code class="ax-firma">deleteFramebuffer(f)</code>, <code class="ax-firma">isFramebuffer(x)</code></td><td>Crear, borrar y consultar.</td><td><p><strong>Crea</strong> <span class="ax-st fbo">framebuffer</span> sin adjuntos (<code>DRAW_BUFFER0</code> = <code>COLOR_ATTACHMENT0</code>, <code>READ_BUFFER</code> = <code>COLOR_ATTACHMENT0</code>).</p></td><td>Borrar el framebuffer enlazado devuelve el enlace al canvas (medido).</td></tr>
+    <tr><td><code class="ax-firma">bindFramebuffer(destino, f | null)</code><br><a class="ax-lec" href="../05-webgl/08-framebuffers.html#renderizar-a-una-textura-y-usarla-despues">5.8</a></td><td>Redirige dibujos, <code>clear</code> y lecturas a <code>f</code>; <code>null</code> es el canvas.</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>DRAW_FRAMEBUFFER_BINDING</code> y/o <code>READ_FRAMEBUFFER_BINDING</code>. <strong>No</strong> cambia el viewport ni el scissor (medido).</p></td><td>Pon siempre el <code>viewport</code> justo después: el bicho del dibujo recortado o desplazado (<a href="../05-webgl/08-framebuffers.html#renderizar-a-una-textura-y-usarla-despues">5.8</a>). Destino inválido: <code>INVALID_ENUM</code>.</td></tr>
+    <tr><td><code class="ax-firma">framebufferTexture2D(destino, adjunto, destinoTex, t, nivel)</code><br><a class="ax-lec" href="../05-webgl/08-framebuffers.html#crear-un-framebuffer-llamada-por-llamada">5.8</a></td><td>Conecta el nivel <code>nivel</code> de una textura (o una cara de cubemap) a un adjunto: <code>COLOR_ATTACHMENT0…7</code>, <code>DEPTH_ATTACHMENT</code>, <code>STENCIL_ATTACHMENT</code>, <code>DEPTH_STENCIL_ATTACHMENT</code> (en WebGL2, los dos a la vez).</td><td><p><strong>Escribe</strong> <span class="ax-st fbo">framebuffer</span> el adjunto del framebuffer enlazado en <code>destino</code>.</p></td><td>Con el canvas enlazado: <code>INVALID_OPERATION</code> «no framebuffer bound»; adjunto inválido: <code>INVALID_ENUM</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">framebufferTextureLayer(destino, adjunto, t, nivel, capa)</code></td><td>Conecta una capa de un array 2D o una rodaja de una textura 3D.</td><td><p>Como la anterior.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">framebufferRenderbuffer(destino, adjunto, RENDERBUFFER, rb)</code></td><td>Conecta un renderbuffer (profundidad, stencil, MSAA).</td><td><p><strong>Escribe</strong> <span class="ax-st fbo">framebuffer</span> el adjunto.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">checkFramebufferStatus(destino)</code></td><td>¿Es utilizable? <code>FRAMEBUFFER_COMPLETE</code> (0x8CD5) o el motivo: <code>INCOMPLETE_ATTACHMENT</code> (0x8CD6), <code>INCOMPLETE_MISSING_ATTACHMENT</code> (0x8CD7), <code>INCOMPLETE_DIMENSIONS</code> (0x8CD9), <code>INCOMPLETE_MULTISAMPLE</code> (0x8D56), <code>FRAMEBUFFER_UNSUPPORTED</code> (0x8CDD).</td><td><p><strong>Lee</strong> <span class="ax-st fbo">framebuffer</span> y sus adjuntos.</p></td><td>Medido: <code>RGBA16F</code> sin <code>EXT_color_buffer_float</code> → 0x8CD6; adjuntos de tamaños distintos → 0x8CD9 (<span class="ax-tag ax-web">WebGL</span>; OpenGL ES 3.0 sí lo permite); sin adjuntos → 0x8CD7. Destino inválido: <code>INVALID_ENUM</code> y 0.</td></tr>
+    <tr><td><code class="ax-firma">createRenderbuffer()</code>, <code class="ax-firma">bindRenderbuffer(RENDERBUFFER, rb)</code>, <code class="ax-firma">deleteRenderbuffer(rb)</code>, <code class="ax-firma">isRenderbuffer(x)</code></td><td>Memoria destino de dibujo que no se puede muestrear.</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>RENDERBUFFER_BINDING</code>.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">renderbufferStorage(RENDERBUFFER, formato, w, h)</code><br><code class="ax-firma">renderbufferStorageMultisample(RENDERBUFFER, muestras, formato, w, h)</code></td><td>Reserva la memoria del renderbuffer enlazado: <code>DEPTH_COMPONENT16</code>/<code>24</code>/<code>32F</code>, <code>DEPTH24_STENCIL8</code>, <code>DEPTH32F_STENCIL8</code>, <code>STENCIL_INDEX8</code>, <code>RGBA8</code>… (con MSAA, la versión multisample).</td><td><p><strong>Escribe</strong> <span class="ax-st fbo">renderbuffer</span> tamaño, formato (inicial <code>RGBA4</code>), muestras.</p></td><td>Sin renderbuffer enlazado: <code>INVALID_OPERATION</code>; formato sin tamaño (<code>RGB</code>): <code>INVALID_ENUM</code>; tamaño &gt; <code>MAX_RENDERBUFFER_SIZE</code>: <code>INVALID_VALUE</code>; más muestras de las admitidas (16): <code>INVALID_OPERATION</code> (medido). <code>getInternalformatParameter(RENDERBUFFER, formato, SAMPLES)</code> dice cuántas admite.</td></tr>
+    <tr><td><code class="ax-firma">readBuffer(origen)</code></td><td>De qué adjunto de color leen <code>readPixels</code>, <code>copyTex*</code> y <code>blitFramebuffer</code>.</td><td><p><strong>Escribe</strong> <span class="ax-st fbo">framebuffer</span> <code>READ_BUFFER</code> del framebuffer de lectura (cada uno el suyo, medido).</p></td><td>En el canvas solo <code>BACK</code> o <code>NONE</code>: <code>COLOR_ATTACHMENT0</code> da <code>INVALID_OPERATION</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">blitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, máscara, filtro)</code><br><a class="ax-lec" href="../05-webgl/08-framebuffers.html#mas-de-un-destino-y-el-blit">5.8</a></td><td>Copia (y escala, y resuelve el MSAA) un rectángulo del framebuffer de lectura al de dibujo, sin shaders.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> <code>READ_FRAMEBUFFER</code> (su <code>READ_BUFFER</code>) y el scissor. <strong>Escribe</strong> el <code>DRAW_FRAMEBUFFER</code> (sus drawBuffers).</p></td><td>Le afecta el scissor (medido: solo copió el rectángulo del scissor). <code>LINEAR</code> con profundidad o stencil: <code>INVALID_OPERATION</code> (medido). Con MSAA, origen y destino del mismo tamaño y sin escalar.</td></tr>
+    <tr><td><code class="ax-firma">readPixels(x, y, w, h, formato, tipo, destinoJS [, dstOffset])</code><br><code class="ax-firma">readPixels(…, offsetBytes)</code> con <code>PIXEL_PACK_BUFFER</code><br><a class="ax-lec" href="../05-webgl/08-framebuffers.html#readpixels-y-picking">5.8</a></td><td>Copia píxeles del framebuffer de lectura a un TypedArray (o a un buffer de la GPU). Coordenadas en píxeles del búfer, origen abajo a la izquierda.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> <code>READ_FRAMEBUFFER</code> y su <code>READ_BUFFER</code>, <code>PACK_*</code>, <code>PIXEL_PACK_BUFFER</code>.</p></td><td>Síncrona: espera a que la GPU termine todo lo pendiente. Combinaciones válidas: <code>RGBA</code>/<code>UNSIGNED_BYTE</code> en búferes normalizados, <code>RGBA</code>/<code>FLOAT</code> en float, <code>RGBA_INTEGER</code> en enteros, y la de <code>IMPLEMENTATION_COLOR_READ_FORMAT</code>/<code>TYPE</code>. <code>RGB</code>/<code>UNSIGNED_BYTE</code> o <code>FLOAT</code> en un <code>RGBA8</code>: <code>INVALID_OPERATION</code>; destino pequeño o de otro tipo: <code>INVALID_OPERATION</code>; framebuffer incompleto: <code>INVALID_FRAMEBUFFER_OPERATION</code> (medido). Del canvas, solo en la misma tarea en que dibujaste (<a href="../05-webgl/01-contexto.html#el-modelo-de-presentacion-como-llega-tu-dibujo-a-la-pantalla">5.1</a>); de un framebuffer con MSAA, nunca (resuélvelo antes con un blit).</td></tr>
+    <tr><td><code class="ax-firma">invalidateFramebuffer(destino, adjuntos)</code><br><code class="ax-firma">invalidateSubFramebuffer(…, x, y, w, h)</code></td><td>«Ya no necesito este contenido»: en GPU por teselas ahorra escribirlo en memoria.</td><td><p><strong>Escribe</strong> los adjuntos: quedan iguales o borrados a sus valores por defecto.</p></td><td><span class="ax-tag ax-web">WebGL</span> puede no hacer nada.</td></tr>
+    <tr><td><code class="ax-firma">getFramebufferAttachmentParameter(destino, adjunto, pname)</code><br><code class="ax-firma">getRenderbufferParameter(RENDERBUFFER, pname)</code></td><td>Qué hay conectado en un adjunto (objeto, nivel, capa, tipo de componente, bits); tamaño y formato de un renderbuffer.</td><td><p><strong>Lee</strong> <span class="ax-st fbo">framebuffer</span> / <span class="ax-st fbo">renderbuffer</span>.</p></td><td>Un adjunto vacío devuelve <code>null</code> como objeto, sin error (WebGL2).</td></tr>
+  </tbody>
+</table>
+
+<h2>Estado fijo: viewport, scissor, profundidad, mezcla, culling y máscaras</h2>
+<p>Todo esto es estado <strong>global</strong> del contexto: no pertenece al programa, ni al VAO, ni al framebuffer. Lo que actives para un dibujo sigue activo en el siguiente (<a href="../04-gpu/02-pipeline-grafico.html#11-operaciones-por-fragmento">4.2</a>).</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado (valor inicial)</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">viewport(x, y, w, h)</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#gl-viewport-donde-cae-el-clip-space">5.1</a></td><td>Dónde se estira el clip space (−1…1) en el búfer, en píxeles, origen abajo a la izquierda.</td><td><p><span class="ax-st g">global</span> <code>VIEWPORT</code> (el tamaño del búfer al crear el contexto).</p></td><td>No sigue al canvas ni a <code>bindFramebuffer</code> (medido). Ancho o alto negativos: <code>INVALID_VALUE</code>; mayores que <code>MAX_VIEWPORT_DIMS</code> se recortan sin error (medido). No afecta a <code>clear</code>.</td></tr>
+    <tr><td><code class="ax-firma">scissor(x, y, w, h)</code> + <code class="ax-firma">enable(SCISSOR_TEST)</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#clearcolor-y-clear-sin-misterios">5.1</a></td><td>Descarta todo lo que cae fuera del rectángulo: dibujos, <code>clear</code> y blits.</td><td><p><span class="ax-st g">global</span> <code>SCISSOR_BOX</code> (tamaño del búfer al crear el contexto), <code>SCISSOR_TEST</code> (<code>false</code>).</p></td><td>Negativos: <code>INVALID_VALUE</code> (medido). Desactívalo al terminar: también limita el siguiente <code>clear</code>.</td></tr>
+    <tr><td><code class="ax-firma">enable(cap)</code>, <code class="ax-firma">disable(cap)</code>, <code class="ax-firma">isEnabled(cap)</code></td><td>Activa etapas fijas: <code>BLEND</code>, <code>CULL_FACE</code>, <code>DEPTH_TEST</code>, <code>DITHER</code>, <code>POLYGON_OFFSET_FILL</code>, <code>RASTERIZER_DISCARD</code>, <code>SAMPLE_ALPHA_TO_COVERAGE</code>, <code>SAMPLE_COVERAGE</code>, <code>SCISSOR_TEST</code>, <code>STENCIL_TEST</code>.</td><td><p><span class="ax-st g">global</span>. Todas empiezan desactivadas salvo <code>DITHER</code> (medido).</p></td><td>Capacidad inválida: <code>INVALID_ENUM</code> «invalid capability»; también <code>PRIMITIVE_RESTART_FIXED_INDEX</code>, que en WebGL2 está siempre activa y no se puede tocar (medido). Activar <code>DEPTH_TEST</code> sin búfer de profundidad no da error: no hace nada.</td></tr>
+    <tr><td><code class="ax-firma">depthFunc(f)</code>, <code class="ax-firma">depthMask(b)</code>, <code class="ax-firma">depthRange(near, far)</code><br><a class="ax-lec" href="../05-webgl/06-3d-cubo.html#el-bufer-de-profundidad">5.6</a></td><td>Comparación (<code>NEVER</code>, <code>LESS</code>, <code>EQUAL</code>, <code>LEQUAL</code>, <code>GREATER</code>, <code>NOTEQUAL</code>, <code>GEQUAL</code>, <code>ALWAYS</code>), escritura y rango de la profundidad.</td><td><p><span class="ax-st g">global</span> <code>DEPTH_FUNC</code> (<code>LESS</code>), <code>DEPTH_WRITEMASK</code> (<code>true</code>), <code>DEPTH_RANGE</code> ([0, 1]).</p></td><td><code>depthMask(false)</code> también impide que <code>clear</code> borre la profundidad (<a href="../05-webgl/07-blending.html#el-orden-importa">5.7</a>). <code>depthRange</code> se recorta a [0, 1] (medido); near &gt; far: <code>INVALID_OPERATION</code> (<span class="ax-tag ax-web">WebGL</span>, medido).</td></tr>
+    <tr><td><code class="ax-firma">blendFunc(src, dst)</code>, <code class="ax-firma">blendFuncSeparate(srcRGB, dstRGB, srcA, dstA)</code><br><a class="ax-lec" href="../05-webgl/07-blending.html#la-ecuacion-de-mezcla">5.7</a></td><td>Factores de la mezcla: <code>ZERO</code>, <code>ONE</code>, <code>SRC_COLOR</code>, <code>ONE_MINUS_SRC_COLOR</code>, <code>DST_COLOR</code>, <code>…_DST_COLOR</code>, <code>SRC_ALPHA</code>, <code>…_SRC_ALPHA</code>, <code>DST_ALPHA</code>, <code>…_DST_ALPHA</code>, <code>CONSTANT_COLOR</code>, <code>…_CONSTANT_COLOR</code>, <code>CONSTANT_ALPHA</code>, <code>…_CONSTANT_ALPHA</code>, <code>SRC_ALPHA_SATURATE</code>.</td><td><p><span class="ax-st g">global</span> <code>BLEND_SRC_RGB</code>/<code>ALPHA</code> (<code>ONE</code>), <code>BLEND_DST_RGB</code>/<code>ALPHA</code> (<code>ZERO</code>).</p></td><td>Sin <code>enable(BLEND)</code> no se usan. Factor inválido: <code>INVALID_ENUM</code>; <code>CONSTANT_COLOR</code> junto a <code>CONSTANT_ALPHA</code>: <code>INVALID_OPERATION</code> «incompatible src and dst» (<span class="ax-tag ax-web">WebGL</span>, medido). El alfa también se mezcla: el canvas puede quedar translúcido (<a href="../05-webgl/07-blending.html#el-canal-alfa-tambien-se-mezcla">5.7</a>).</td></tr>
+    <tr><td><code class="ax-firma">blendEquation(op)</code>, <code class="ax-firma">blendEquationSeparate(opRGB, opA)</code>, <code class="ax-firma">blendColor(r, g, b, a)</code></td><td>Operación: <code>FUNC_ADD</code>, <code>FUNC_SUBTRACT</code>, <code>FUNC_REVERSE_SUBTRACT</code>, <code>MIN</code>, <code>MAX</code> (estas dos ignoran los factores); color constante.</td><td><p><span class="ax-st g">global</span> <code>BLEND_EQUATION_RGB</code>/<code>ALPHA</code> (<code>FUNC_ADD</code>), <code>BLEND_COLOR</code> (0, 0, 0, 0).</p></td><td><span class="ax-tag ax-m1">M1</span> <code>blendColor</code> se guarda sin recortar (<code>[2, −1, 0.5, 1]</code>); WebGL permite que otras plataformas lo recorten.</td></tr>
+    <tr><td><code class="ax-firma">cullFace(modo)</code>, <code class="ax-firma">frontFace(modo)</code><br><a class="ax-lec" href="../05-webgl/06-3d-cubo.html#face-culling-y-winding">5.6</a></td><td>Qué caras descartar con <code>CULL_FACE</code> (<code>FRONT</code>, <code>BACK</code>, <code>FRONT_AND_BACK</code>) y cuál es la delantera (<code>CCW</code>, <code>CW</code>).</td><td><p><span class="ax-st g">global</span> <code>CULL_FACE_MODE</code> (<code>BACK</code>), <code>FRONT_FACE</code> (<code>CCW</code>).</p></td><td>Valor inválido: <code>INVALID_ENUM</code> (medido). Una escala negativa invierte el sentido de giro de todos los triángulos.</td></tr>
+    <tr><td><code class="ax-firma">colorMask(r, g, b, a)</code></td><td>Qué canales de color se escriben.</td><td><p><span class="ax-st g">global</span> <code>COLOR_WRITEMASK</code> (todo <code>true</code>).</p></td><td>También afecta a <code>clear</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">lineWidth(w)</code><br><a class="ax-lec" href="../05-webgl/03-buffers-atributos.html#lineas-siempre-de-un-pixel">5.3</a></td><td>Grosor de las líneas.</td><td><p><span class="ax-st g">global</span> <code>LINE_WIDTH</code> (1).</p></td><td>Se guarda (<code>getParameter</code> devuelve 5), pero <code>ALIASED_LINE_WIDTH_RANGE</code> es [1, 1]: no hace nada. 0 o NaN: <code>INVALID_VALUE</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">polygonOffset(factor, unidades)</code> + <code class="ax-firma">enable(POLYGON_OFFSET_FILL)</code></td><td>Desplaza la profundidad de los triángulos para evitar el z-fighting (calcomanías, líneas sobre caras).</td><td><p><span class="ax-st g">global</span> <code>POLYGON_OFFSET_FACTOR</code>/<code>UNITS</code> (0, 0).</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">stencilFunc(f, ref, máscara)</code>, <code class="ax-firma">stencilOp(fallo, fallaZ, pasa)</code>, <code class="ax-firma">stencilMask(m)</code> y sus <code class="ax-firma">…Separate(cara, …)</code></td><td>Test y operaciones del búfer de stencil (máscaras, portales, contornos).</td><td><p><span class="ax-st g">global</span> <code>STENCIL_FUNC</code> (<code>ALWAYS</code>), <code>STENCIL_REF</code> (0), máscaras (todo unos), operaciones (<code>KEEP</code>).</p></td><td>Hace falta un búfer de stencil: el contexto lo crea solo con <code>stencil: true</code> (por defecto, <code>STENCIL_BITS</code> = 0, medido). <span class="ax-tag ax-web">WebGL</span> ref y máscaras de las caras delantera y trasera deben coincidir o el dibujo da <code>INVALID_OPERATION</code>.</td></tr>
+    <tr><td><code class="ax-firma">sampleCoverage(valor, invertir)</code> + <code>SAMPLE_COVERAGE</code> / <code>SAMPLE_ALPHA_TO_COVERAGE</code><br><a class="ax-lec" href="../05-webgl/07-blending.html#discard-frente-a-alfa">5.7</a></td><td>Con MSAA: qué fracción de las muestras cubre cada fragmento (alpha to coverage: según su alfa).</td><td><p><span class="ax-st g">global</span> <code>SAMPLE_COVERAGE_VALUE</code> (1), <code>SAMPLE_COVERAGE_INVERT</code> (<code>false</code>).</p></td><td>Sin MSAA no hace nada.</td></tr>
+    <tr><td><code class="ax-firma">hint(GENERATE_MIPMAP_HINT | FRAGMENT_SHADER_DERIVATIVE_HINT, modo)</code></td><td>Preferencia calidad/velocidad: <code>FASTEST</code>, <code>NICEST</code>, <code>DONT_CARE</code>.</td><td><p><span class="ax-st g">global</span> (<code>DONT_CARE</code>).</p></td><td>Modo inválido: <code>INVALID_ENUM</code> (medido). Es una pista: puede ignorarse.</td></tr>
+  </tbody>
+</table>
+
+<h2>Consultas, errores y sincronización</h2>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">getError()</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#geterror-errores-que-se-quedan-pegados">5.1</a></td><td>Devuelve una bandera de error activa y la apaga; <code>NO_ERROR</code> si no hay ninguna.</td><td><p><strong>Lee y apaga</strong> <span class="ax-st g">global</span> las banderas.</p></td><td>Banderas pegajosas, no una cola: el mismo error diez veces se ve una. Para limpiar, repite hasta <code>NO_ERROR</code>. Síncrona: cuesta un viaje al proceso de la GPU (M1: unos 37 µs); no la dejes en el bucle de producción.</td></tr>
+    <tr><td><code class="ax-firma">getParameter(pname)</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#getparameter-y-los-limites-de-tu-gpu">5.1</a></td><td>Cualquier estado global o límite: <code>VIEWPORT</code>, <code>CURRENT_PROGRAM</code>, <code>ARRAY_BUFFER_BINDING</code>, <code>MAX_TEXTURE_SIZE</code>… Los límites están en <a href="02-chuleta-glsl.html#limites-minimos-garantizados">A.2</a>.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span>.</p></td><td>Devuelve una copia nueva en cada llamada (medido). <code>pname</code> inválido: <code>INVALID_ENUM</code> y <code>null</code> (medido). Barata para el estado que el navegador tiene en caché.</td></tr>
+    <tr><td><code class="ax-firma">getIndexedParameter(destino, índice)</code></td><td>Puntos indexados: <code>UNIFORM_BUFFER_BINDING</code>/<code>START</code>/<code>SIZE</code>, <code>TRANSFORM_FEEDBACK_BUFFER_BINDING</code>/<code>START</code>/<code>SIZE</code>.</td><td><p><strong>Lee</strong> <span class="ax-st g">global</span> / <span class="ax-st otro">transform feedback</span>.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">getInternalformatParameter(RENDERBUFFER, formato, SAMPLES)</code></td><td>Qué números de muestras admite un formato.</td><td><p><strong>Lee</strong> la implementación.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">createQuery()</code>, <code class="ax-firma">beginQuery(destino, q)</code>, <code class="ax-firma">endQuery(destino)</code><br><code class="ax-firma">getQueryParameter(q, QUERY_RESULT_AVAILABLE | QUERY_RESULT)</code>, <code class="ax-firma">getQuery(destino, CURRENT_QUERY)</code>, <code class="ax-firma">deleteQuery</code>, <code class="ax-firma">isQuery</code><br><a class="ax-lec" href="../05-webgl/10-depuracion.html#medir-la-gpu-ext-disjoint-timer-query-webgl2">5.10</a></td><td>Preguntas asíncronas a la GPU: <code>ANY_SAMPLES_PASSED</code> y <code>…_CONSERVATIVE</code> (¿se dibujó algo?, oclusión), <code>TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN</code>, <code>TIME_ELAPSED_EXT</code> (con <code>EXT_disjoint_timer_query_webgl2</code>).</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>CURRENT_QUERY</code>; el resultado queda en <span class="ax-st otro">query</span>.</p></td><td><span class="ax-tag ax-web">WebGL</span> el resultado nunca está disponible en el mismo frame en que se pidió (medido: <code>false</code> incluso tras <code>finish</code>): consúltalo en frames siguientes. Dos <code>beginQuery</code> seguidos sobre el mismo destino: <code>INVALID_OPERATION</code> (medido).</td></tr>
+    <tr><td><code class="ax-firma">fenceSync(SYNC_GPU_COMMANDS_COMPLETE, 0)</code><br><code class="ax-firma">getSyncParameter(s, SYNC_STATUS)</code>, <code class="ax-firma">clientWaitSync(s, flags, ns)</code>, <code class="ax-firma">waitSync</code>, <code class="ax-firma">deleteSync</code>, <code class="ax-firma">isSync</code><br><a class="ax-lec" href="../05-webgl/08-framebuffers.html#readpixels-y-picking">5.8</a></td><td>Una valla en la cola de órdenes: se señaliza cuando la GPU la alcanza. Para leer resultados sin bloquear.</td><td><p><strong>Crea</strong> <span class="ax-st otro">sync</span>; <code>SYNC_STATUS</code>: <code>SIGNALED</code> o <code>UNSIGNALED</code>.</p></td><td><span class="ax-tag ax-web">WebGL</span> nunca se señaliza en el mismo frame (medido: <code>UNSIGNALED</code> tras <code>finish</code>). <code>clientWaitSync</code> con un tiempo mayor que <code>MAX_CLIENT_WAIT_TIMEOUT_WEBGL</code> (0 en el M1): <code>INVALID_OPERATION</code> y <code>WAIT_FAILED</code>; con 0, <code>TIMEOUT_EXPIRED</code> (medido).</td></tr>
+  </tbody>
+</table>
+
+<h2>Transform feedback</h2>
+<p>Captura las salidas del vertex shader en buffers, para usarlas como datos en el siguiente dibujo (partículas en la GPU, <a href="../07-integracion/05-particulas-gpu.html">7.5</a>; GLKit lo admite con la opción <code>varyingsTF</code> de <code>crearPrograma</code>).</p>
+<table class="ax-ref ax-api ancho">
+  <thead><tr><th>Llamada</th><th>Qué hace</th><th>Estado</th><th>Errores y trampas</th></tr></thead>
+  <tbody>
+    <tr><td><code class="ax-firma">transformFeedbackVaryings(p, ['v_pos', …], INTERLEAVED_ATTRIBS | SEPARATE_ATTRIBS)</code></td><td>Qué <code>out</code> capturar y cómo repartirlos (todo en un buffer, o uno por buffer).</td><td><p><span class="ax-st prog">programa</span>, efectivo tras <code>linkProgram</code>.</p></td><td>Una salida capturada que el shader no escribe vale 0 (<span class="ax-tag ax-web">WebGL</span>).</td></tr>
+    <tr><td><code class="ax-firma">createTransformFeedback()</code>, <code class="ax-firma">bindTransformFeedback(TRANSFORM_FEEDBACK, tf)</code>, <code class="ax-firma">deleteTransformFeedback</code>, <code class="ax-firma">isTransformFeedback</code></td><td>Objeto que recuerda en qué buffers se escribe.</td><td><p><strong>Escribe</strong> <span class="ax-st g">global</span> <code>TRANSFORM_FEEDBACK_BINDING</code>.</p></td><td>—</td></tr>
+    <tr><td><code class="ax-firma">bindBufferBase(TRANSFORM_FEEDBACK_BUFFER, i, b)</code></td><td>El buffer donde se escribe la salida i.</td><td><p><strong>Escribe</strong> <span class="ax-st otro">transform feedback</span> el punto indexado i del objeto enlazado (medido: otro objeto TF tiene los suyos) y <span class="ax-st g">global</span> el genérico (en WebGL2 es del contexto).</p></td><td><span class="ax-tag ax-web">WebGL</span> un buffer enlazado a la vez al transform feedback y a otro punto (por ejemplo, como atributo del mismo dibujo) no se puede usar: <code>INVALID_OPERATION</code>. Por eso se alterna entre dos buffers (ping-pong).</td></tr>
+    <tr><td><code class="ax-firma">beginTransformFeedback(POINTS | LINES | TRIANGLES)</code>, <code class="ax-firma">endTransformFeedback()</code>, <code class="ax-firma">pause…</code>, <code class="ax-firma">resume…</code></td><td>Entre <code>begin</code> y <code>end</code>, los dibujos escriben sus salidas en los buffers.</td><td><p><span class="ax-st otro">transform feedback</span> activo / pausado.</p></td><td>Con <code>enable(RASTERIZER_DISCARD)</code> no se rasteriza nada: solo se calcula y se captura.</td></tr>
+    <tr><td><code class="ax-firma">getTransformFeedbackVarying(p, i)</code></td><td>Nombre, tipo y tamaño de la salida capturada i.</td><td><p><strong>Lee</strong> <span class="ax-st prog">programa</span>.</p></td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h2>Extensiones útiles</h2>
+<p>Se activan con <code>gl.getExtension(nombre)</code>, que devuelve <code>null</code> si no existe (<a href="../05-webgl/01-contexto.html#extensiones-getsupportedextensions-y-getextension">5.1</a>). Muchas extensiones famosas de WebGL1 ya son del núcleo en WebGL2 y no aparecen: <code>OES_vertex_array_object</code>, <code>ANGLE_instanced_arrays</code>, <code>WEBGL_draw_buffers</code>, <code>OES_element_index_uint</code>, <code>OES_texture_float</code>, <code>OES_standard_derivatives</code>, <code>EXT_frag_depth</code>, <code>EXT_shader_texture_lod</code>. Todas las de la tabla estaban disponibles en el Chrome de pruebas (M1); otras GPU y otros navegadores ofrecen otras: compruébalo siempre con el <code>null</code>.</p>
+<table class="ax-ref ax-ext ancho">
+  <thead><tr><th>Extensión</th><th>Para qué</th><th>Cómo se usa</th></tr></thead>
+  <tbody>
+    <tr><td><code>WEBGL_lose_context</code><br><a class="ax-lec" href="../05-webgl/01-contexto.html#la-perdida-de-contexto">5.1</a></td><td>Simular la pérdida del contexto y liberar contextos a propósito.</td><td><code>ext.loseContext()</code>, <code>ext.restoreContext()</code></td></tr>
+    <tr><td><code>WEBGL_debug_renderer_info</code></td><td>El nombre real de la GPU.</td><td><code>getParameter(ext.UNMASKED_RENDERER_WEBGL)</code></td></tr>
+    <tr><td><code>WEBGL_debug_shaders</code><br><a class="ax-lec" href="../06-glsl/01-lenguaje.html#angle-el-shader-que-se-ejecuta-de-verdad">6.1</a></td><td>Ver el shader que genera ANGLE tras traducir el tuyo.</td><td><code>ext.getTranslatedShaderSource(sh)</code></td></tr>
+    <tr><td><code>EXT_color_buffer_float</code><br><a class="ax-lec" href="../05-webgl/08-framebuffers.html#destinos-float">5.8</a></td><td>Renderizar a texturas float (<code>R16F</code>…<code>RGBA32F</code>, <code>R11F_G11F_B10F</code>).</td><td>Solo pedirla: cambia qué formatos son renderizables.</td></tr>
+    <tr><td><code>EXT_color_buffer_half_float</code></td><td>Renderizar a formatos float de 16 bits.</td><td>Solo pedirla.</td></tr>
+    <tr><td><code>OES_texture_float_linear</code><br><a class="ax-lec" href="../05-webgl/05-texturas.html#la-textura-negra-completitud">5.5</a></td><td>Filtrar con <code>LINEAR</code> texturas de 32 bits float (sin ella, incompletas: negras).</td><td>Solo pedirla.</td></tr>
+    <tr><td><code>EXT_float_blend</code></td><td>Mezclar (blending) en destinos de 32 bits float.</td><td>Solo pedirla (se activa sola con <code>EXT_color_buffer_float</code> donde existe).</td></tr>
+    <tr><td><code>EXT_texture_filter_anisotropic</code><br><a class="ax-lec" href="../05-webgl/05-texturas.html#filtrado-nearest-linear-y-mipmaps">5.5</a></td><td>Filtrado anisótropo: texturas nítidas vistas de canto. <span class="ax-tag ax-m1">M1</span> hasta 16×.</td><td><code>texParameterf(TEXTURE_2D, ext.TEXTURE_MAX_ANISOTROPY_EXT, n)</code>; máximo en <code>MAX_TEXTURE_MAX_ANISOTROPY_EXT</code></td></tr>
+    <tr><td><code>EXT_disjoint_timer_query_webgl2</code></td><td>Medir cuánto tarda la GPU en una parte del frame. En el M1 estaba, pero sus medianas eran erráticas (solo el mínimo coincidía con otros métodos: <a href="../06-glsl/06-ruido.html#medir-coste-shader">6.6</a>); en muchos navegadores no está, o sus tiempos tienen la precisión reducida a propósito. Contrástala siempre con otra medida.</td><td><code>beginQuery(ext.TIME_ELAPSED_EXT, q)</code>… y comprobar <code>GPU_DISJOINT_EXT</code></td></tr>
+    <tr><td><code>KHR_parallel_shader_compile</code><br><a class="ax-lec" href="../05-webgl/02-primer-triangulo.html#paso-3-enlazar-los-shaders-en-un-programa">5.2</a></td><td>Saber si un programa terminó de compilarse sin bloquear.</td><td><code>getProgramParameter(p, ext.COMPLETION_STATUS_KHR)</code></td></tr>
+    <tr><td><code>WEBGL_provoking_vertex</code><br><a class="ax-lec" href="../04-gpu/05-uniforms-varyings.html#calificadores-smooth-flat-y-noperspective">4.5</a></td><td>Que <code>flat</code> tome el primer vértice en lugar del último.</td><td><code>ext.provokingVertexWEBGL(ext.FIRST_VERTEX_CONVENTION_WEBGL)</code></td></tr>
+    <tr><td><code>NV_shader_noperspective_interpolation</code></td><td>El calificador <code>noperspective</code> en GLSL.</td><td><code>getExtension</code> + <code>#extension GL_NV_shader_noperspective_interpolation : require</code></td></tr>
+    <tr><td><code>OES_draw_buffers_indexed</code></td><td>Blending y <code>colorMask</code> distintos por cada búfer de color de un MRT.</td><td><code>ext.enableiOES(BLEND, i)</code>, <code>ext.blendFunciOES(i, …)</code>…</td></tr>
+    <tr><td><code>WEBGL_multi_draw</code></td><td>Varios dibujos en una sola llamada.</td><td><code>ext.multiDrawArraysWEBGL(…)</code>, <code>multiDrawElementsInstancedWEBGL</code>…</td></tr>
+    <tr><td><code>WEBGL_polygon_mode</code></td><td>Dibujar los triángulos en alambre (útil para depurar).</td><td><code>ext.polygonModeWEBGL(FRONT_AND_BACK, ext.LINE_WEBGL)</code></td></tr>
+    <tr><td><code>WEBGL_compressed_texture_s3tc</code>, <code>…_etc</code>, <code>…_astc</code>, <code>EXT_texture_compression_bptc</code>, <code>…_rgtc</code></td><td>Texturas comprimidas (menos memoria y ancho de banda). WebGL2 exige al menos la familia ETC o la S3TC/RGTC.</td><td><code>compressedTexImage2D</code> con los formatos de la extensión</td></tr>
+    <tr><td><code>EXT_clip_control</code>, <code>EXT_depth_clamp</code>, <code>EXT_polygon_offset_clamp</code>, <code>WEBGL_clip_cull_distance</code>, <code>EXT_texture_norm16</code>, <code>EXT_render_snorm</code>, <code>OES_sample_variables</code>, <code>WEBGL_blend_func_extended</code>…</td><td>Funciones avanzadas (control del clip space, planos de recorte, formatos normalizados de 16 bits…).</td><td>Según cada especificación (<a href="https://registry.khronos.org/webgl/extensions/">registro de extensiones</a>).</td></tr>
+  </tbody>
+</table>
+
+<h2>¿Quién guarda qué estado?</h2>
+<p>La tabla que resuelve la mitad de los bugs de WebGL. Cada fila es un «dueño» de estado: lo que guarda (con su valor inicial, medido en Chrome), con qué se cambia y con qué se consulta. Lo que <strong>no</strong> está en una fila no pertenece a ese dueño, por mucho que parezca lógico: el viewport no es del framebuffer, el <code>ARRAY_BUFFER</code> no es del VAO, los uniforms no son del contexto.</p>
+<table class="ax-ref ax-quien ancho">
+  <thead><tr><th>Dueño</th><th>Qué guarda (valor inicial)</th><th>Se cambia con</th><th>Se consulta con</th></tr></thead>
+  <tbody>
+    <tr><td><span class="ax-st g">contexto</span><br>(global)</td><td><p><strong>Selecciones:</strong> <code>CURRENT_PROGRAM</code>, <code>VERTEX_ARRAY_BINDING</code>, <code>DRAW_FRAMEBUFFER_BINDING</code>, <code>READ_FRAMEBUFFER_BINDING</code>, <code>RENDERBUFFER_BINDING</code>, <code>TRANSFORM_FEEDBACK_BINDING</code>, <code>ACTIVE_TEXTURE</code> (<code>TEXTURE0</code>), <code>CURRENT_QUERY</code> (todos <code>null</code>).</p><p><strong>Buffers:</strong> <code>ARRAY_BUFFER</code>, <code>COPY_READ/WRITE_BUFFER</code>, <code>PIXEL_PACK/UNPACK_BUFFER</code>, <code>UNIFORM_BUFFER</code> (genérico y los indexados 0…N), <code>TRANSFORM_FEEDBACK_BUFFER</code> genérico.</p><p><strong>Atributos inactivos:</strong> <code>CURRENT_VERTEX_ATTRIB[0…15]</code> (0, 0, 0, 1).</p><p><strong>Estado fijo:</strong> <code>VIEWPORT</code> y <code>SCISSOR_BOX</code> (el tamaño del búfer al crear el contexto), <code>DEPTH_RANGE</code> [0, 1], los enable (todos <code>false</code> salvo <code>DITHER</code>), blend (<code>ONE</code>, <code>ZERO</code>, <code>FUNC_ADD</code>, color 0), depth (<code>LESS</code>, escritura <code>true</code>), stencil (<code>ALWAYS</code>, <code>KEEP</code>, máscaras a unos), cull (<code>BACK</code>, <code>CCW</code>), <code>COLOR_WRITEMASK</code> (todo <code>true</code>), valores de borrado (0, 0, 0, 0 · 1 · 0), <code>LINE_WIDTH</code> 1, polygon offset (0, 0), sample coverage (1, <code>false</code>), hints (<code>DONT_CARE</code>).</p><p><strong>Desempaquetado:</strong> <code>UNPACK_ALIGNMENT</code> y <code>PACK_ALIGNMENT</code> 4, <code>UNPACK_FLIP_Y_WEBGL</code> y <code>UNPACK_PREMULTIPLY_ALPHA_WEBGL</code> <code>false</code>, <code>UNPACK_COLORSPACE_CONVERSION_WEBGL</code> <code>BROWSER_DEFAULT_WEBGL</code>, los <code>ROW_LENGTH</code>/<code>SKIP_*</code> a 0.</p><p><strong>Y además:</strong> las banderas de error, las extensiones activadas y los atributos de <code>getContext</code>.</p></td><td><code>useProgram</code>, <code>bindVertexArray</code>, <code>bindFramebuffer</code>, <code>bindRenderbuffer</code>, <code>bindTransformFeedback</code>, <code>activeTexture</code>, <code>bindBuffer</code> (salvo índices), <code>bindBufferBase/Range</code>, <code>vertexAttrib*</code>, <code>viewport</code>, <code>scissor</code>, <code>depthRange</code>, <code>enable</code>/<code>disable</code>, <code>blend*</code>, <code>depth*</code>, <code>stencil*</code>, <code>cullFace</code>, <code>frontFace</code>, <code>colorMask</code>, <code>clear*</code>, <code>lineWidth</code>, <code>polygonOffset</code>, <code>sampleCoverage</code>, <code>hint</code>, <code>pixelStorei</code>.</td><td><code>getParameter</code>, <code>getIndexedParameter</code>, <code>isEnabled</code>, <code>getVertexAttrib(i, CURRENT_VERTEX_ATTRIB)</code>, <code>getError</code>.</td></tr>
+    <tr><td><span class="ax-st uni">unidad de textura</span><br>(32 en el M1)</td><td><code>TEXTURE_BINDING_2D</code>, <code>…_CUBE_MAP</code>, <code>…_3D</code>, <code>…_2D_ARRAY</code> y <code>SAMPLER_BINDING</code> de cada unidad (todos <code>null</code>). Es parte del contexto, pero hay una copia por unidad: cambiar de unidad activa no cambia lo que hay en las demás.</td><td><code>bindTexture</code> (en la unidad activa), <code>bindSampler(unidad, s)</code>.</td><td><code>getParameter(TEXTURE_BINDING_2D)</code> y <code>SAMPLER_BINDING</code> (de la unidad activa).</td></tr>
+    <tr><td><span class="ax-st vao">VAO</span></td><td>Por cada ranura 0…15: activa (<code>false</code>), buffer capturado (<code>null</code>), size (4), type (<code>FLOAT</code>), normalized (<code>false</code>), entero (<code>false</code>), stride (0), offset (0), divisor (0). Y <code>ELEMENT_ARRAY_BUFFER_BINDING</code> (<code>null</code>). <strong>No:</strong> <code>ARRAY_BUFFER</code>, los valores constantes, el programa.</td><td>Con el VAO enlazado: <code>enable/disableVertexAttribArray</code>, <code>vertexAttribPointer</code>, <code>vertexAttribIPointer</code>, <code>vertexAttribDivisor</code>, <code>bindBuffer(ELEMENT_ARRAY_BUFFER, …)</code>.</td><td><code>getVertexAttrib</code>, <code>getVertexAttribOffset</code>, <code>getParameter(ELEMENT_ARRAY_BUFFER_BINDING)</code>.</td></tr>
+    <tr><td><span class="ax-st prog">programa</span></td><td>El ejecutable enlazado; las ranuras de atributos y salidas; el <strong>valor de cada uniform</strong> (0 al enlazar), samplers incluidos (número de unidad); el <code>UNIFORM_BLOCK_BINDING</code> de cada bloque (0); las salidas de transform feedback y su modo; <code>LINK_STATUS</code>, <code>VALIDATE_STATUS</code>, log; shaders adjuntos. Un nuevo <code>linkProgram</code> lo reinicia todo e invalida las locations.</td><td><code>attachShader</code>, <code>bindAttribLocation</code>, <code>transformFeedbackVaryings</code>, <code>linkProgram</code>; con el programa <strong>en uso</strong>: <code>uniform*</code>, <code>uniformMatrix*</code>; <code>uniformBlockBinding(p, …)</code>.</td><td><code>getProgramParameter</code>, <code>getUniform</code>, <code>getActiveUniform</code>, <code>getActiveAttrib</code>, <code>getAttribLocation</code>, <code>getUniformLocation</code>, <code>getActiveUniformBlockParameter</code>.</td></tr>
+    <tr><td><span class="ax-st otro">shader</span></td><td>Tipo, fuente, <code>COMPILE_STATUS</code>, log, <code>DELETE_STATUS</code>.</td><td><code>shaderSource</code>, <code>compileShader</code>, <code>deleteShader</code>.</td><td><code>getShaderParameter</code>, <code>getShaderInfoLog</code>, <code>getShaderSource</code>.</td></tr>
+    <tr><td><span class="ax-st buf">buffer</span></td><td>Los bytes, <code>BUFFER_SIZE</code> (0), <code>BUFFER_USAGE</code> (<code>STATIC_DRAW</code>) y, en WebGL, su tipo: índices u otros datos (fijado en el primer enlace).</td><td>Enlazado en un destino: <code>bufferData</code>, <code>bufferSubData</code>, <code>copyBufferSubData</code>; también lo escriben <code>readPixels</code> a un <code>PIXEL_PACK_BUFFER</code> y el transform feedback.</td><td><code>getBufferParameter</code>, <code>getBufferSubData</code>.</td></tr>
+    <tr><td><span class="ax-st tex">textura</span></td><td>Las imágenes de cada nivel (tamaño y formato interno), <code>TEXTURE_MIN_FILTER</code> (<code>NEAREST_MIPMAP_LINEAR</code>), <code>MAG_FILTER</code> (<code>LINEAR</code>), <code>WRAP_S/T/R</code> (<code>REPEAT</code>), <code>BASE_LEVEL</code> (0), <code>MAX_LEVEL</code> (1000), <code>MIN_LOD</code> (−1000), <code>MAX_LOD</code> (1000), <code>COMPARE_MODE</code> (<code>NONE</code>), <code>COMPARE_FUNC</code> (<code>LEQUAL</code>), <code>IMMUTABLE_FORMAT/LEVELS</code> (<code>false</code>, 0), anisotropía (con la extensión). Y su tipo (2D, cubemap, 3D, array), fijado en el primer enlace. <strong>No:</strong> el <code>FLIP_Y</code> ni la alineación, que son del contexto.</td><td>Enlazada en la unidad activa: <code>texImage*</code>, <code>texSubImage*</code>, <code>texStorage*</code>, <code>copyTex*</code>, <code>compressedTex*</code>, <code>generateMipmap</code>, <code>texParameter*</code>; también la escribe un dibujo si está adjunta al framebuffer de dibujo.</td><td><code>getTexParameter</code>; el contenido, adjuntándola a un framebuffer y leyendo con <code>readPixels</code>.</td></tr>
+    <tr><td><span class="ax-st smp">sampler</span></td><td>Los mismos parámetros de muestreo que una textura (sin <code>BASE_LEVEL</code> ni <code>MAX_LEVEL</code>). Donde está enlazado, sustituye a los de la textura.</td><td><code>samplerParameteri/f</code> (sin enlazarlo).</td><td><code>getSamplerParameter</code>.</td></tr>
+    <tr><td><span class="ax-st fbo">framebuffer</span></td><td>Los adjuntos (qué textura, nivel, capa o renderbuffer en <code>COLOR_ATTACHMENT0…7</code>, <code>DEPTH</code>, <code>STENCIL</code>), <code>DRAW_BUFFERi</code> (<code>COLOR_ATTACHMENT0</code>, <code>NONE</code>…) y <code>READ_BUFFER</code> (<code>COLOR_ATTACHMENT0</code>). <strong>No:</strong> viewport, scissor, color de borrado, blending.</td><td>Enlazado: <code>framebufferTexture2D</code>, <code>framebufferTextureLayer</code>, <code>framebufferRenderbuffer</code>, <code>drawBuffers</code>, <code>readBuffer</code>.</td><td><code>checkFramebufferStatus</code>, <code>getFramebufferAttachmentParameter</code>, <code>getParameter(DRAW_BUFFERi / READ_BUFFER)</code>.</td></tr>
+    <tr><td><span class="ax-st fbo">canvas</span><br>(framebuffer por defecto)</td><td>Color (<code>RGBA8</code>; <code>RGB8</code> con <code>alpha: false</code>), profundidad, stencil y MSAA según los atributos de <code>getContext</code>; <code>DRAW_BUFFER0</code> y <code>READ_BUFFER</code> = <code>BACK</code>. Se borra tras cada presentación salvo con <code>preserveDrawingBuffer: true</code>.</td><td><code>canvas.width/height</code> (lo reserva de nuevo, a ceros), <code>drawingBufferStorage</code> (formato y tamaño; solo Chrome), <code>drawBuffers([BACK | NONE])</code>, <code>readBuffer</code>.</td><td><code>drawingBufferWidth/Height</code>, <code>drawingBufferFormat</code>, <code>getContextAttributes</code>, <code>getParameter(*_BITS, SAMPLES)</code>.</td></tr>
+    <tr><td><span class="ax-st fbo">renderbuffer</span></td><td>La memoria, tamaño (0 × 0), formato interno (<code>RGBA4</code>), muestras (0).</td><td>Enlazado: <code>renderbufferStorage</code>, <code>renderbufferStorageMultisample</code>.</td><td><code>getRenderbufferParameter</code>.</td></tr>
+    <tr><td><span class="ax-st otro">transform feedback</span></td><td>Los puntos indexados de <code>TRANSFORM_FEEDBACK_BUFFER</code> (con offset y tamaño); activo y pausado.</td><td>Enlazado: <code>bindBufferBase/Range(TRANSFORM_FEEDBACK_BUFFER, …)</code>, <code>begin</code>/<code>end</code>/<code>pause</code>/<code>resumeTransformFeedback</code>.</td><td><code>getIndexedParameter</code>, <code>getParameter(TRANSFORM_FEEDBACK_ACTIVE / PAUSED)</code>.</td></tr>
+    <tr><td><span class="ax-st otro">query</span> · <span class="ax-st otro">sync</span></td><td>El resultado y si está disponible · <code>SYNC_STATUS</code>.</td><td><code>beginQuery</code>/<code>endQuery</code> · la GPU al alcanzar la valla.</td><td><code>getQueryParameter</code> · <code>getSyncParameter</code>, <code>clientWaitSync</code>.</td></tr>
+  </tbody>
+</table>
+<p>Y los fallos típicos que salen de confundir los dueños, con su caja del bestiario:</p>
+<table class="ax-ref ancho">
+  <thead><tr><th>Síntoma</th><th>Estado culpable</th><th>Arreglo</th></tr></thead>
+  <tbody>
+    <tr><td>Una malla se dibuja con los índices de otra, o «Must have element array buffer bound»</td><td><code>ELEMENT_ARRAY_BUFFER</code> es del VAO que estaba enlazado al enlazar (o desenlazar) el EBO.</td><td>VAO → buffers → atributos → EBO → desenlazar el VAO (<a href="../04-gpu/04-vbo-vao.html#m4-ebo-vao-equivocado">4.4</a>).</td></tr>
+    <tr><td>Cambio el buffer y la malla no se actualiza</td><td>El atributo fotografió el buffer en <code>vertexAttribPointer</code>.</td><td>Actualiza el buffer viejo, o repite <code>vertexAttribPointer</code> con el VAO enlazado (<a href="../04-gpu/04-vbo-vao.html#m4-vao-buffer-antiguo">4.4</a>).</td></tr>
+    <tr><td>Nada visible, sin errores</td><td>Ranura inactiva en el VAO enlazado, VAO equivocado, <code>w = 0</code>, <code>count</code> pequeño…</td><td>La lista sistemática y el inspector de estado (<a href="../05-webgl/02-primer-triangulo.html#m5-pantalla-negra-sin-error">5.2</a>).</td></tr>
+    <tr><td>Asigno un uniform y no cambia nada</td><td>Location <code>null</code>, o el uniform es de otro programa (cada programa tiene el suyo).</td><td>Comprueba las locations; <code>useProgram</code> antes de <code>uniform*</code> (<a href="../04-gpu/05-uniforms-varyings.html#m4-uniform-silencioso">4.5</a>, <a href="../05-webgl/04-uniforms-animacion.html#m5-uniform-otro-programa">5.4</a>).</td></tr>
+    <tr><td>La textura sale negra</td><td>Textura incompleta (el filtro inicial pide mipmaps) o el sampler lee una unidad vacía.</td><td><code>TEXTURE_MIN_FILTER</code> a <code>LINEAR</code> o <code>generateMipmap</code>; trío <code>activeTexture</code> + <code>bindTexture</code> + <code>uniform1i</code> (<a href="../05-webgl/05-texturas.html#m5-textura-negra">5.5</a>, <a href="../05-webgl/05-texturas.html#m5-sampler-unidad">5.5</a>).</td></tr>
+    <tr><td><code>texParameteri</code> «no hace nada» o cambia otra textura</td><td>Actúa sobre la textura de la unidad <strong>activa</strong>, que otro código pudo dejar en otra unidad.</td><td><code>activeTexture</code> + <code>bindTexture</code> justo antes.</td></tr>
+    <tr><td>Lo dibujado en un framebuffer sale recortado o desplazado</td><td><code>bindFramebuffer</code> no cambia el viewport.</td><td><code>viewport</code> justo después de cada <code>bindFramebuffer</code> (<a href="../05-webgl/08-framebuffers.html#m5-viewport-fbo">5.8</a>).</td></tr>
+    <tr><td>Tras redimensionar, la escena ocupa una esquina</td><td>El viewport no sigue al tamaño del canvas.</td><td><code>viewport(0, 0, drawingBufferWidth, drawingBufferHeight)</code> cada frame (<a href="../05-webgl/01-contexto.html#m5-viewport-olvidado">5.1</a>).</td></tr>
+    <tr><td>Manchas o huecos al moverse; el <code>clear</code> no borra la profundidad</td><td><code>depthMask(false)</code> que se quedó puesto, o scissor activo, o no se borra la profundidad en cada pasada.</td><td><code>depthMask(true)</code> antes del <code>clear</code>; <code>clear(COLOR | DEPTH)</code> en cada pasada (<a href="../05-webgl/06-3d-cubo.html#m5-profundidad-sin-borrar">5.6</a>).</td></tr>
+    <tr><td>Imágenes que salen boca abajo o premultiplicadas sin pedirlo</td><td><code>pixelStorei</code> es global: otro código dejó <code>FLIP_Y</code> o <code>PREMULTIPLY</code> activados.</td><td>Fíjalos antes de subir y restáuralos después (<a href="../05-webgl/05-texturas.html#m5-textura-volteada">5.5</a>).</td></tr>
+    <tr><td>Tras dibujar lo transparente, todo lo demás sale mezclado</td><td><code>BLEND</code>, <code>blendFunc</code> y <code>depthMask</code> son globales.</td><td>Desactívalos o restáuralos al terminar esa pasada (<a href="../05-webgl/07-blending.html#m5-transparencia-orden">5.7</a>).</td></tr>
+    <tr><td>Al volver de otra pestaña, el canvas queda en blanco</td><td>Contexto perdido: al restaurarse, todo el estado vuelve a los valores iniciales y los objetos viejos están muertos.</td><td><code>preventDefault()</code> en <code>webglcontextlost</code> y recrear recursos y estado en <code>webglcontextrestored</code> (<a href="../05-webgl/01-contexto.html#m5-contexto-perdido">5.1</a>).</td></tr>
+  </tbody>
+</table>
+
+<h2>Recetas: el orden mínimo de llamadas</h2>
+<p>Las tres tareas básicas, sin nada que sobre, con el estado que toca cada línea anotado en su comentario. Son ejecutables: cambia algo, rómpelo y mira <code>getError</code> en la consola. El orden importa donde una llamada lee lo que dejó otra (<a href="../05-webgl/02-primer-triangulo.html#el-orden-de-las-llamadas">5.2</a>): <code>shaderSource</code> antes de <code>compileShader</code>, <code>bindVertexArray</code> antes de describir atributos, <code>bindBuffer</code> antes de <code>vertexAttribPointer</code>, <code>bindTexture</code> antes de <code>texImage2D</code> y <code>texParameteri</code>, <code>useProgram</code> antes de <code>uniform*</code>, <code>bindFramebuffer</code> junto a <code>viewport</code>.</p>
+
+<h3>1. Dibujar un triángulo</h3>
+<div class="js-playground" data-titulo="Receta 1: el triángulo mínimo" data-altura="360" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');                 // estado inicial: VIEWPORT = tamaño del canvas AHORA
+canvas.width = canvas.clientWidth * devicePixelRatio;   // búfer = tamaño en pantalla × DPR
+canvas.height = canvas.clientHeight * devicePixelRatio; // (esto NO actualiza el viewport)
+
+const fuenteVS = `#version 300 es
+layout(location = 0) in vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+const fuenteFS = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() { fragColor = vec4(1.0, 0.55, 0.2, 1.0); }`;
+
+// 1. Programa (una vez)
+function compilar(tipo, fuente) {
+  const sh = gl.createShader(tipo);                     // [shader] vacío, de tipo fijo
+  gl.shaderSource(sh, fuente);                          // [shader] guarda el texto
+  gl.compileShader(sh);                                 // [shader] COMPILE_STATUS y log (no toca getError)
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+  return sh;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compilar(gl.VERTEX_SHADER, fuenteVS));    // [programa] shaders adjuntos
+gl.attachShader(prog, compilar(gl.FRAGMENT_SHADER, fuenteFS));
+gl.linkProgram(prog);                                   // [programa] LINK_STATUS; uniforms a 0
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+
+// 2. Datos y VAO (una vez)
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);                                // [global] VERTEX_ARRAY_BINDING: lo que sigue se graba en vao
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);                    // [global] ARRAY_BUFFER = buf (no es del VAO)
+gl.bufferData(gl.ARRAY_BUFFER,                          // [buffer] reserva 24 bytes y copia
+  new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);                          // [VAO] ranura 0 activa
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);    // [VAO] formato + fotografía de ARRAY_BUFFER
+gl.bindVertexArray(null);                               // cierra la grabación
+
+// 3. Cada frame
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);  // [global] VIEWPORT
+gl.clearColor(0.08, 0.09, 0.12, 1);                     // [global] COLOR_CLEAR_VALUE
+gl.clear(gl.COLOR_BUFFER_BIT);                          // escribe el búfer de color (respeta scissor y colorMask)
+gl.useProgram(prog);                                    // [global] CURRENT_PROGRAM
+gl.bindVertexArray(vao);                                // [global] VERTEX_ARRAY_BINDING
+gl.drawArrays(gl.TRIANGLES, 0, 3);                      // lee todo lo anterior: 3 vértices, 1 triángulo
+console.log('getError:', gl.getError(), '(0 = ninguna llamada falló)');
+</script>
+</div>
+
+<h3>2. Usar una textura</h3>
+<p>El programa se compila con <code>GLKit.crearPrograma</code>, que es exactamente la parte 1 de la receta anterior empaquetada (<a href="../05-webgl/02-primer-triangulo.html#glkit-la-libreria-que-acabamos-de-escribir">5.2</a>). Lo nuevo son las llamadas de la textura y del sampler.</p>
+<div class="js-playground" data-titulo="Receta 2: una textura sobre un rectángulo" data-altura="380" data-apilado data-fondo="oscuro" data-incluir="glkit">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = canvas.clientWidth * devicePixelRatio;
+canvas.height = canvas.clientHeight * devicePixelRatio;
+
+const prog = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec2 a_uv;
+out vec2 v_uv;
+void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;       // un número de unidad, no una textura
+in vec2 v_uv;
+out vec4 fragColor;
+void main() { fragColor = texture(u_tex, v_uv); }`);
+
+// Rectángulo: x, y, u, v por vértice (dos triángulos, 16 bytes por vértice)
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);                                // [global] grabar en vao
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());      // [global] ARRAY_BUFFER
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  -0.6, -0.6, 0, 0,   0.6, -0.6, 1, 0,   0.6, 0.6, 1, 1,
+  -0.6, -0.6, 0, 0,   0.6,  0.6, 1, 1,  -0.6, 0.6, 0, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);  // [VAO] posición
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);  // [VAO] uv
+gl.bindVertexArray(null);
+
+// La textura: un damero de 4×4 texels RGBA generado en JavaScript
+const datos = new Uint8Array(4 * 4 * 4);
+for (let i = 0; i < 16; i++) {
+  const claro = ((i % 4) + Math.floor(i / 4)) % 2;
+  datos.set(claro ? [240, 200, 90, 255] : [40, 60, 120, 255], i * 4);
+}
+const tex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0);                          // [global] ACTIVE_TEXTURE (explícito: no te fíes del estado)
+gl.bindTexture(gl.TEXTURE_2D, tex);                     // [unidad 0] TEXTURE_BINDING_2D = tex; tex queda como 2D
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 4, 4, 0,      // [textura] nivel 0: 4×4 texels
+  gl.RGBA, gl.UNSIGNED_BYTE, datos);                    //   (lee los UNPACK_* globales de pixelStorei)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); // [textura] ¡sin esto sería negra!
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); // [textura] texels nítidos al ampliar
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+// El sampler: basta una vez, porque persiste en el programa
+gl.useProgram(prog);                                    // [global] CURRENT_PROGRAM
+gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);  // [programa] u_tex = unidad 0 (el número, no gl.TEXTURE0)
+
+// Cada frame
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(prog);
+gl.activeTexture(gl.TEXTURE0);                          // [global] unidad 0…
+gl.bindTexture(gl.TEXTURE_2D, tex);                     // [unidad 0] …con la textura que leerá el shader
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 6);
+console.log('getError:', gl.getError());
+</script>
+</div>
+
+<h3>3. Renderizar a una textura</h3>
+<p>Dos pasadas: la primera dibuja un triángulo de colores en una textura de 32 × 32 texels; la segunda la muestra en todo el canvas, ampliada con <code>NEAREST</code> para que se vean los texels. Los dos programas generan sus vértices con <code>gl_VertexID</code>, así que basta un VAO vacío (<a href="../05-webgl/08-framebuffers.html#crear-un-framebuffer-llamada-por-llamada">5.8</a>).</p>
+<div class="js-playground" data-titulo="Receta 3: render a textura en dos pasadas" data-altura="400" data-apilado data-fondo="oscuro" data-incluir="glkit">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = canvas.clientWidth * devicePixelRatio;
+canvas.height = canvas.clientHeight * devicePixelRatio;
+
+const progEscena = GLKit.crearPrograma(gl, `#version 300 es
+out vec3 v_color;
+void main() {
+  vec2 p[3] = vec2[3](vec2(-0.8, -0.7), vec2(0.8, -0.7), vec2(0.0, 0.8));
+  v_color = vec3(gl_VertexID == 0, gl_VertexID == 1, gl_VertexID == 2);  // rojo, verde, azul
+  gl_Position = vec4(p[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 fragColor;
+void main() { fragColor = vec4(v_color, 1.0); }`);
+
+const progMostrar = GLKit.crearPrograma(gl, `#version 300 es
+out vec2 v_uv;
+void main() {                                           // triángulo de pantalla completa
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  v_uv = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 fragColor;
+void main() { fragColor = texture(u_tex, v_uv); }`);
+const vacio = gl.createVertexArray();                   // ningún atributo: todo sale de gl_VertexID
+
+// Destino: textura de N×N (pequeña a propósito) conectada a un framebuffer
+const N = 32;
+const destino = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, destino);                 // [unidad 0] (la activa)
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, N, N, 0,      // [textura] reservar SIN datos (null)
+  gl.RGBA, gl.UNSIGNED_BYTE, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);  // [textura] sin mipmaps: completa
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+const fbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);                // [global] DRAW_ y READ_FRAMEBUFFER = fbo
+gl.framebufferTexture2D(gl.FRAMEBUFFER,                 // [framebuffer] COLOR_ATTACHMENT0 = nivel 0 de destino
+  gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, destino, 0);
+const estado = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+if (estado !== gl.FRAMEBUFFER_COMPLETE) throw new Error('FBO incompleto: 0x' + estado.toString(16));
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);               // volver al canvas
+
+// Pasada 1: dibujar DENTRO de la textura
+gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);                // [global] destino = la textura
+gl.viewport(0, 0, N, N);                                // [global] ¡siempre junto a bindFramebuffer!
+gl.clearColor(0.1, 0.1, 0.15, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);                          // borra la textura, no el canvas
+gl.useProgram(progEscena);
+gl.bindVertexArray(vacio);
+gl.drawArrays(gl.TRIANGLES, 0, 3);                      // escribe en destino (progEscena no la lee: no hay bucle)
+
+// Pasada 2: usar la textura en el canvas
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);               // [global] destino = canvas
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(progMostrar);
+gl.uniform1i(gl.getUniformLocation(progMostrar, 'u_tex'), 0);   // [programa] leer la unidad 0
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, destino);                 // [unidad 0] lo que acabamos de dibujar
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError:', gl.getError());
+</script>
+</div>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Casi todas las llamadas actúan sobre lo que está <strong>enlazado</strong>, no sobre un argumento: buffers en su destino, texturas en la unidad activa, uniforms en el programa en uso, atributos en el VAO enlazado, adjuntos en el framebuffer enlazado.</li>
+    <li>Del <strong>VAO</strong>: ranuras, formatos, divisores, buffer capturado y <code>ELEMENT_ARRAY_BUFFER</code>. Del <strong>contexto</strong>: <code>ARRAY_BUFFER</code>, valores constantes, viewport, scissor, blend, depth, cull, máscaras, <code>pixelStorei</code>. Del <strong>programa</strong>: los valores de los uniforms. De la <strong>textura</strong>: imágenes y parámetros de muestreo. Del <strong>framebuffer</strong>: adjuntos, drawBuffers y readBuffer.</li>
+    <li><code>bindFramebuffer</code> no toca el viewport; <code>clear</code> no usa el viewport pero sí el scissor y las máscaras.</li>
+    <li>Los errores no lanzan: activan banderas pegajosas. Muchos fallos no dan ningún error (ranura inactiva, textura incompleta, location <code>null</code>, <code>count</code> pequeño): inspecciona el estado con <code>getParameter</code>, <code>getVertexAttrib</code> y <code>getUniform</code>.</li>
+    <li>WebGL añade comprobaciones que OpenGL ES no hace (rangos de índices, bucles de realimentación, tipos que no casan, tamaños de framebuffer) y fija valores que allí son indefinidos (ceros al reservar, <code>texelFetch</code> fuera de rango).</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://registry.khronos.org/webgl/specs/latest/2.0/">Especificación de WebGL 2.0</a>: la interfaz completa y, en «Differences Between WebGL and OpenGL ES 3.0», las reglas propias de la web (tipos de buffer, rangos, realimentación…).</li>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf">Especificación de OpenGL ES 3.0</a>: el capítulo 6.2 tiene las tablas de estado con los valores iniciales de todo lo que aparece aquí.</li>
+  <li><a href="https://registry.khronos.org/OpenGL-Refpages/es3.0/">Páginas de referencia de OpenGL ES 3.0</a>: cada función con sus errores; WebGL2 hereda su semántica.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext">MDN: WebGL2RenderingContext</a>: cada método con ejemplos y compatibilidad entre navegadores.</li>
+  <li><a href="https://www.khronos.org/files/webgl20-reference-guide.pdf">Tarjeta de referencia rápida de WebGL 2.0</a> (PDF).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/anexos.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"></head><body><main class="leccion"><h1>x</h1></main>
+<script src="file:///Users/alex/Projects/shaders/assets/vendor/vendor.bundle.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/manifest.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/curso.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/texturas.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/glkit.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/playground-glsl.js"></script>
+<script>
+window.prueba = function () {
+  const GLC = Curso.glCompartido, gl = GLC.obtener();
+  const VS = "#version 300 es\nin vec2 a_pos;\nvoid main(){ gl_Position = vec4(a_pos,0.0,1.0); }\n";
+  const FS = "#version 300 es\nprecision highp float;\nuniform float u_z;\nout vec4 o;\nvoid main(){\n float id = floor(gl_FragCoord.y)*64.0 + floor(gl_FragCoord.x);\n float x = -(id + 1000.0) * 7.0;\n if (isnan(u_z)) x += 1.0;\n o = vec4(mod(x, 7.0) > 3.5 ? 1.0 : 0.0, 0.0, 0.0, 1.0);\n}\n";
+  const contar = (prog) => {
+    gl.viewport(0,0,64,64); gl.useProgram(prog); gl.uniform1f(gl.getUniformLocation(prog,"u_z"), 0.0);
+    gl.bindVertexArray(GLC.vao); gl.drawArrays(gl.TRIANGLES,0,3);
+    const b = new Uint8Array(64*64*4); gl.readPixels(0,0,64,64,gl.RGBA,gl.UNSIGNED_BYTE,b);
+    let n=0; for (let i=0;i<b.length;i+=4) if (b[i]>128) n++; return n;
+  };
+  const crudo = () => { // sin el comentario único: compilación directa
+    const sh=(t,s)=>{const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);return x;};
+    const p=gl.createProgram(); gl.attachShader(p,sh(gl.VERTEX_SHADER,VS)); gl.attachShader(p,sh(gl.FRAGMENT_SHADER,FS)); gl.bindAttribLocation(p,0,"a_pos"); gl.linkProgram(p); return p;
+  };
+  const r = {};
+  r.GLC1 = contar(GLC.compilar(VS, FS, 0).programa);
+  r.GLC2 = contar(GLC.compilar(VS, FS, 0).programa);
+  r.crudo1 = contar(crudo());
+  r.crudo2 = contar(crudo());
+  r.GLC3 = contar(GLC.compilar(VS, FS, 0).programa);
+  return r;
+};
+</script></body></html>

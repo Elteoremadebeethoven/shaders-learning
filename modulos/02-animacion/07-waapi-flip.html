@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.7 · Web Animations API y la técnica FLIP — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m2.css">
+</head>
+<body data-leccion="02-animacion/waapi-flip">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 2 · Animación con CSS y JavaScript</p>
+  <h1>Web Animations API y la técnica FLIP</h1>
+  <p class="resumen">La Web Animations API es el motor de las animaciones CSS expuesto a JavaScript: animaciones que corren en el compositor y que puedes pausar, rebobinar, acelerar o esperar con una promesa. Con ella, la técnica FLIP convierte cualquier cambio de layout (reordenar, expandir, mover) en una animación barata de <code>transform</code>.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 2.1, 2.2, 2.3</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Crearás animaciones con <code>element.animate(keyframes, opciones)</code> conociendo cada opción y en qué se diferencia de CSS.</li>
+      <li>Controlarás el objeto <code>Animation</code>: <code>play</code>, <code>pause</code>, <code>reverse</code>, <code>finish</code>, <code>cancel</code>, <code>currentTime</code> para rebobinar, <code>playbackRate</code> y las promesas <code>ready</code> y <code>finished</code>.</li>
+      <li>Evitarás las trampas de <code>fill: 'forwards'</code> con <code>commitStyles</code> y <code>cancel</code>, y entenderás el borrado automático de animaciones.</li>
+      <li>Combinarás animaciones con <code>composite</code> y sabrás cómo se relaciona todo con las animaciones CSS.</li>
+      <li>Animarás cambios de layout con FLIP y conocerás la View Transitions API.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Lo mejor de CSS con el control de JavaScript</h2>
+<p>Hasta ahora tenías dos caminos, cada uno con su precio. Las animaciones CSS (<a href="02-css-transiciones.html">2.2</a>) son declarativas y corren en el compositor (<a href="01-pipeline-render.html">2.1</a>), pero controlarlas es incómodo: para reiniciar una hay que forzar un recálculo de estilo, para saber cuándo termina hay que filtrar eventos, y rebobinarla o cambiar su velocidad es casi imposible. Las animaciones con <code>requestAnimationFrame</code> (<a href="03-raf.html">2.3</a>) te dan control total, pero cada frame lo calcula tu JavaScript en el hilo principal.</p>
+<p>La <strong>Web Animations API</strong> (WAAPI) une las dos cosas. Es el modelo que la especificación usa para <em>definir</em> las animaciones CSS, expuesto como objetos de JavaScript: creas una animación con una llamada, el navegador la ejecuta exactamente igual que una <code>@keyframes</code> (en el compositor si la propiedad lo permite) y tú conservas un objeto con el que controlarla. Lo comprobamos igual que en 2.1: grabando los frames durante un bloqueo de 1,5 s del hilo principal, una caja animada con <code>element.animate()</code> sobre <code>transform</code> avanzó 75 px cada 250 ms, justo a su velocidad, mientras otra animada con <code>element.animate()</code> sobre <code>left</code> se quedó clavada.</p>
+
+<h2><code>element.animate(keyframes, opciones)</code></h2>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const animacion = caja.animate(
+  [
+    { transform: 'translateX(0)', opacity: 1 },
+    { transform: 'translateX(200px)', opacity: 0.5, offset: 0.7 },
+    { transform: 'translateX(300px)', opacity: 1 },
+  ],
+  {
+    duration: 800,
+    easing: 'ease-out',
+    delay: 0,
+    iterations: 2,
+    direction: 'alternate',
+    fill: 'none',
+    composite: 'replace',
+  }
+);
+</script>
+<ol>
+  <li data-l="1">Devuelve un objeto <code>Animation</code> y la animación <strong>empieza sola</strong>, sin llamar a <code>play()</code>.</li>
+  <li data-l="2-6">Los fotogramas clave, como un array de objetos. Las propiedades se escriben en <em>camelCase</em> (<code>backgroundColor</code>, no <code>background-color</code>) y los valores son cadenas CSS. Sin <code>offset</code>, los fotogramas se reparten uniformemente.</li>
+  <li data-l="4"><code>offset</code> es la posición del fotograma entre 0 y 1: el 0,7 equivale al <code>70%</code> de <code>@keyframes</code>. Por eso la propiedad CSS <code>offset</code> se escribe <code>cssOffset</code>. También puedes poner <code>easing</code> dentro de un fotograma (para el tramo que empieza en él, como en CSS) y <code>composite</code>.</li>
+  <li data-l="8">La duración en <strong>milisegundos</strong>, un número (en CSS era una cadena con unidades: <code>0.8s</code>). Si pasas un número en lugar del objeto de opciones, <code>caja.animate(kf, 800)</code>, es la duración.</li>
+  <li data-l="9">Ojo: el easing <strong>por defecto es <code>'linear'</code></strong>, no <code>ease</code> como en CSS. Lo comprobamos con <code>animation.effect.getTiming().easing</code>. Si portas una animación de CSS a WAAPI y «se ve más mecánica», es esto.</li>
+  <li data-l="10-12">Como sus equivalentes <code>animation-*</code>: retardo en ms (también existe <code>endDelay</code>, una espera al final), iteraciones (<code>Infinity</code> para siempre) y dirección.</li>
+  <li data-l="13">Por defecto <code>'auto'</code>, que para animaciones equivale a <code>'none'</code>: al terminar, el elemento vuelve a su estilo. Lo verás en su propia sección, porque <code>'forwards'</code> tiene trampa.</li>
+  <li data-l="14">Cómo se combina con el valor subyacente y con otras animaciones (lo vemos más abajo).</li>
+</ol>
+</div>
+<p><strong>Una diferencia más fina con CSS:</strong> el <code>easing</code> de las <em>opciones</em> se aplica al progreso de <em>toda</em> la iteración, mientras que en CSS <code>animation-timing-function</code> se aplica a cada tramo entre fotogramas clave. Con dos fotogramas (el caso de una transición) da igual; con más de dos, no. Lo medimos con cuatro fotogramas de <code>scale</code> (1 → 1,25 al 30 % → 0,95 al 60 % → 1, en 450 ms) y <code>ease-out</code>: en CSS el máximo (1,25) llega a los 135 ms, y en WAAPI con <code>easing: 'ease-out'</code> en las opciones, el elemento ya valía 1,105 a los 135 ms porque el máximo se alcanzó hacia los 80 ms, mucho antes. Para reproducir CSS hay que poner el easing <em>en cada fotograma</em> (<code>{ transform: 'scale(1.25)', offset: 0.3, easing: 'ease-out' }</code>): así el resultado coincidió con CSS a los 9 instantes que muestreamos.</p>
+<p>Hay una segunda forma de escribir los fotogramas, un objeto con arrays por propiedad: <code>caja.animate({ transform: ['none', 'rotate(1turn)'], opacity: [0, 1] }, 600)</code>. Y un atajo útil: con <strong>un solo fotograma</strong>, el otro extremo es el valor actual del elemento. Lo comprobamos con una caja en <code>translateX(20px)</code> y <code>caja.animate({ transform: 'translateX(120px)' }, 1000)</code>: a la mitad estaba en 70 px. Perfecto para «anima desde donde esté hasta aquí».</p>
+
+<h2>El objeto <code>Animation</code></h2>
+<p>El objeto que devuelve <code>animate()</code> es un mando a distancia completo:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Miembro</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>play()</code> / <code>pause()</code></td><td>Reanuda o congela donde esté. Si ya había terminado, <code>play()</code> vuelve a empezar.</td></tr>
+    <tr><td><code>reverse()</code></td><td>Invierte el sentido (niega <code>playbackRate</code>) y la pone en marcha.</td></tr>
+    <tr><td><code>finish()</code></td><td>Salta al final (al principio, si va hacia atrás; medido: <code>currentTime</code> 0) y dispara <code>finished</code>.</td></tr>
+    <tr><td><code>cancel()</code></td><td>Elimina sus efectos: el elemento vuelve a su estilo. Rechaza la promesa <code>finished</code>.</td></tr>
+    <tr><td><code>currentTime</code></td><td>Posición en ms, de lectura y <strong>escritura</strong>: asignarla rebobina o avanza (<em>scrubbing</em>).</td></tr>
+    <tr><td><code>playbackRate</code> / <code>updatePlaybackRate(v)</code></td><td>Velocidad (2 = doble, −1 = hacia atrás). La segunda forma la cambia sin saltos cuando la animación está en el compositor.</td></tr>
+    <tr><td><code>playState</code>, <code>pending</code></td><td><code>'idle'</code>, <code>'running'</code>, <code>'paused'</code> o <code>'finished'</code>; <code>pending</code> indica que un cambio aún no se ha aplicado.</td></tr>
+    <tr><td><code>ready</code>, <code>finished</code></td><td>Promesas: la primera se cumple cuando la animación arranca de verdad; la segunda, al terminar.</td></tr>
+    <tr><td><code>effect</code></td><td>El efecto (fotogramas y tiempos): <code>getTiming()</code>, <code>updateTiming()</code>, <code>getComputedTiming()</code> (progreso, iteración actual…).</td></tr>
+  </tbody>
+</table>
+
+<div class="js-playground" data-titulo="Mando a distancia de una animación" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="pista"><div class="caja" id="caja"></div></div>
+<div class="botones">
+  <button data-accion="play">play</button><button data-accion="pause">pause</button>
+  <button data-accion="reverse">reverse</button><button data-accion="finish">finish</button><button data-accion="cancel">cancel</button>
+</div>
+<label>currentTime <input id="tiempo" type="range" min="0" max="2000" step="1" value="0"></label>
+<label>playbackRate <input id="velocidad" type="range" min="-2" max="3" step="0.25" value="1"></label>
+<pre id="estado"></pre>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 12px system-ui, sans-serif; color: #b4bccb; }
+.pista { position: relative; height: 60px; border-bottom: 1px dashed #3a4256; margin-bottom: 8px; }
+.caja { position: absolute; top: 10px; left: 0; width: 40px; height: 40px; border-radius: 8px; background: #8b7bff; }
+.botones { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+button { padding: 4px 10px; font: inherit; cursor: pointer; }
+label { display: block; margin: 4px 0; }
+input[type=range] { width: 60%; vertical-align: middle; }
+#estado { margin: 6px 0 0; font: 12px ui-monospace, monospace; color: #e4e7ee; }
+</script>
+<script type="text/x-js">
+const caja = document.getElementById('caja');
+const recorrido = innerWidth - 70;
+const anim = caja.animate(
+  [{ transform: 'translateX(0) rotate(0)' }, { transform: `translateX(${recorrido}px) rotate(1turn)` }],
+  { duration: 2000, easing: 'ease-in-out', iterations: Infinity, direction: 'alternate' }
+);
+anim.finished.then(() => console.log('finished: se cumplió'))
+             .catch((e) => console.log('finished: rechazada con', e.name));
+
+document.querySelectorAll('[data-accion]').forEach((b) => {
+  b.onclick = () => anim[b.dataset.accion]();          // anim.play(), anim.pause()...
+});
+const tiempo = document.getElementById('tiempo');
+tiempo.oninput = () => { anim.pause(); anim.currentTime = +tiempo.value; };   // scrubbing
+const velocidad = document.getElementById('velocidad');
+velocidad.oninput = () => anim.updatePlaybackRate(+velocidad.value);
+
+const estado = document.getElementById('estado');
+function mostrar() {
+  const ct = anim.effect.getComputedTiming();
+  estado.textContent =
+    `playState: ${anim.playState}${anim.pending ? ' (pending)' : ''}\n` +
+    `currentTime: ${anim.currentTime === null ? 'null' : anim.currentTime.toFixed(0) + ' ms'}\n` +
+    `playbackRate: ${anim.playbackRate}\n` +
+    `iteración: ${ct.currentIteration} · progreso: ${ct.progress === null ? 'null' : ct.progress.toFixed(3)}`;
+  requestAnimationFrame(mostrar);
+}
+mostrar();
+</script>
+</div>
+<p>Prueba el deslizador de <code>currentTime</code>: pausas la animación y la colocas en cualquier instante, que es lo que hacías con el retardo negativo en CSS (<a href="02-css-transiciones.html">2.2</a>), pero sin trucos. Con <code>iterations: Infinity</code>, pulsar <code>finish</code> lanza un error (<code>InvalidStateError</code>: no se puede ir al final de algo infinito) que verás en la consola del playground. Y tras <code>cancel</code>, <code>currentTime</code> y <code>progreso</code> pasan a <code>null</code>.</p>
+
+<div class="callout senior" data-titulo="pending, ready y el cambio que aún no ha ocurrido">
+  <p>Las animaciones no empiezan en el instante de <code>animate()</code>: se sincronizan con el siguiente frame (y, si van al compositor, con él). Mientras tanto, <code>pending</code> es <code>true</code> y <code>startTime</code> es <code>null</code>; lo comprobamos, y tras <code>await animacion.ready</code>, <code>startTime</code> ya tenía valor. Lo mismo pasa con los cambios de velocidad: <code>reverse()</code> y <code>updatePlaybackRate()</code> establecen una velocidad <em>pendiente</em>. Lo medimos: justo después de <code>reverse()</code> con velocidad 2, <code>playbackRate</code> seguía valiendo 2, y tras esperar a <code>ready</code> valía −2; con <code>updatePlaybackRate(3)</code>, el valor inmediato era 1 y en los 100 ms siguientes la animación avanzó 316 ms. Si lees <code>playbackRate</code> justo después de cambiarlo, espera a <code>ready</code>.</p>
+</div>
+
+<h3>Las promesas y el <code>AbortError</code></h3>
+<p><code>await animacion.finished</code> es la forma más limpia de encadenar: se cumple una sola vez, al final, sin filtrar eventos por propiedad (<a href="02-css-transiciones.html">2.2</a>). Pero si alguien cancela la animación (tu código, otra animación, un cambio de estado), la promesa se <strong>rechaza</strong> con un <code>AbortError</code>. Lo comprobamos, y si nadie captura ese rechazo, la consola muestra <code>Uncaught (in promise) AbortError: The user aborted a request.</code>, un mensaje que no parece tener nada que ver con animaciones.</p>
+
+<div class="callout bestiario" data-id="m2-abort-error" data-titulo="«Uncaught (in promise) AbortError: The user aborted a request» sin haber hecho ninguna petición">
+  <p><strong>Síntoma:</strong> la consola muestra un <code>AbortError</code> con el mensaje «The user aborted a request», aunque tu código no hace ninguna petición de red. A veces, además, una secuencia de animaciones encadenadas con <code>await</code> se detiene a medias.</p>
+  <p><strong>Causa:</strong> estabas esperando <code>animacion.finished</code> y la animación se canceló (con <code>cancel()</code>, al reemplazarla por otra o al desaparecer el elemento). La promesa <code>finished</code> se rechaza con un <code>AbortError</code> y, sin <code>try</code>/<code>catch</code> o <code>.catch()</code>, el rechazo queda sin manejar y la función asíncrona se interrumpe en ese <code>await</code>.</p>
+  <p><strong>Solución:</strong> captura el rechazo cuando la cancelación sea un caso normal: <code>await anim.finished.catch(() =&gt; {})</code>, o <code>try { await anim.finished } catch (e) { if (e.name !== 'AbortError') throw e }</code>. Y decide qué debe pasar con el resto de la secuencia si se cancela.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Portas a <code>element.animate()</code> esta regla CSS: <code>animation: entrar 400ms</code>, y copias los fotogramas tal cual con <code>{ duration: 400 }</code>. El movimiento se ve distinto. ¿Por qué?</p>
+  <ul>
+    <li>Porque <code>duration</code> está en segundos y 400 s es muchísimo.<div class="explicacion">En WAAPI la duración está en milisegundos: 400 son 0,4 s, como en tu CSS.</div></li>
+    <li>Porque WAAPI no se ejecuta en el compositor.<div class="explicacion">Sí se ejecuta en el compositor con <code>transform</code> y <code>opacity</code>: lo comprobamos bloqueando el hilo principal.</div></li>
+    <li data-correcta>Porque el easing por defecto de WAAPI es <code>linear</code> y el de CSS es <code>ease</code>.<div class="explicacion">Correcto. Añade <code>easing: 'ease'</code> para reproducir la animación CSS (con dos fotogramas es idéntico; con más, pon el easing en cada fotograma, como vimos arriba). Es una diferencia de valores por defecto, no de motor: el resto funciona igual.</div></li>
+  </ul>
+</div>
+
+<h2><code>fill: 'forwards'</code> y sus trampas</h2>
+<p>Cuando quieres que el elemento se quede en el estado final, lo primero que se te ocurre es <code>fill: 'forwards'</code>. Funciona, pero tiene dos consecuencias poco evidentes:</p>
+<ol>
+  <li><strong>La animación sigue viva y manda.</strong> Una animación rellenando está por encima de los estilos normales en la cascada, incluido el atributo <code>style</code>. Lo comprobamos: tras una animación a <code>translateX(100px)</code> con <code>fill: 'forwards'</code>, asignar <code>caja.style.transform = 'translateX(10px)'</code> no cambió nada; el valor calculado seguía siendo 100 px. El elemento parece «pegado».</li>
+  <li><strong>Consume memoria y trabajo.</strong> Cada animación con relleno es un objeto vivo con sus fotogramas, que el navegador tiene que tener en cuenta al calcular estilos. Si creas una en cada clic, se acumulan.</li>
+</ol>
+<p>Para el segundo problema, los navegadores tienen una defensa automática: cuando una animación terminada que rellena queda completamente tapada por otras animaciones posteriores del mismo elemento y las mismas propiedades, se <strong>elimina</strong> sola. Lo comprobamos creando cinco animaciones de <code>opacity</code> con <code>fill: 'forwards'</code> sobre el mismo elemento: al terminar, las cuatro primeras tenían <code>replaceState === 'removed'</code> (y dispararon el evento <code>remove</code>) y solo quedaba la última en <code>getAnimations()</code>. Si de verdad necesitas conservar una, <code>animacion.persist()</code> la marca como <code>'persisted'</code>.</p>
+<p>La receta limpia para «quedarse en el estado final» es <strong>escribir el estado final en el estilo y quitar la animación</strong>:</p>
+<script type="text/plain" class="codigo" data-lang="js" data-lineas>
+  const anim = caja.animate({ transform: 'translateX(100px)' }, { duration: 400, fill: 'forwards' });
+  await anim.finished;
+  anim.commitStyles();   // escribe el valor actual de la animación en caja.style
+  anim.cancel();         // y la elimina: el estilo inline ya mantiene el aspecto
+</script>
+<p><code>commitStyles()</code> copia al atributo <code>style</code> los valores que la animación está aplicando en ese momento (medido: tras <code>commitStyles()</code> y <code>cancel()</code>, <code>caja.style.transform</code> valía <code>'translateX(100px)'</code>). El <code>fill: 'forwards'</code> sigue haciendo falta: sin él, al terminar la animación deja de aplicar su valor y no habría nada que copiar. Un detalle más: <code>commitStyles()</code> necesita que el elemento esté renderizado; con <code>display: none</code> lanzó <code>InvalidStateError: Target element is not rendered</code>.</p>
+
+<div class="callout senior" data-titulo="dónde están las animaciones en la cascada">
+  <p>La cascada de CSS no solo ordena por especificidad: primero ordena por <em>origen</em>. Las declaraciones que producen las animaciones (CSS o WAAPI) forman su propio origen, que va <strong>por encima</strong> de todas las declaraciones normales del autor (hojas de estilo y atributo <code>style</code>) pero <strong>por debajo</strong> de las declaraciones <code>!important</code>. Lo comprobamos animando <code>transform</code> a 100 px en tres elementos: el que tenía <code>transform</code> inline normal mostró los 100 px de la animación; el que tenía <code>!important</code> en la hoja de estilos se quedó en sus 5 px, y el que tenía <code>!important</code> en el atributo <code>style</code>, en sus 7 px. Por eso un <code>!important</code> olvidado en un CSS puede hacer que una animación «no haga nada» sin ningún error.</p>
+</div>
+
+<div class="callout bestiario" data-id="m2-fill-forwards-pegado" data-titulo="Tras animar con fill: forwards, el elemento ignora los cambios de estilo">
+  <p><strong>Síntoma:</strong> después de una animación de la Web Animations API, asignas <code>el.style.transform</code> (o añades una clase que cambia la propiedad) y el elemento no se mueve. Si inspeccionas el estilo, el valor inline es el nuevo, pero el valor calculado sigue siendo el final de la animación.</p>
+  <p><strong>Causa:</strong> una animación con <code>fill: 'forwards'</code> (o <code>'both'</code>) sigue aplicando su valor final para siempre, y las animaciones van por encima de los estilos normales en la cascada, incluido el atributo <code>style</code>.</p>
+  <p><strong>Solución:</strong> al terminar, <code>anim.commitStyles()</code> y <code>anim.cancel()</code>: el valor final pasa al atributo <code>style</code> y la animación desaparece. O cancela las animaciones anteriores (<code>el.getAnimations().forEach(a =&gt; a.cancel())</code>) antes de aplicar el estilo nuevo.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Una animación con <code>fill: 'forwards'</code> terminó en <code>opacity: 0</code>. Después ejecutas <code>el.style.opacity = '1'</code>. ¿Qué se ve?</p>
+  <ul>
+    <li data-correcta>Sigue invisible: la animación rellenando manda sobre el estilo inline.<div class="explicacion">Correcto. Usa <code>commitStyles()</code> + <code>cancel()</code> al terminar, o cancela la animación antes de cambiar el estilo.</div></li>
+    <li>El elemento vuelve a verse, porque el estilo inline gana a todo.<div class="explicacion">El atributo <code>style</code> gana a las hojas de estilo normales, pero no a una animación: las animaciones van por encima en la cascada.</div></li>
+    <li>Parpadea: primero se ve y en el frame siguiente la animación lo oculta.<div class="explicacion">No hay parpadeo: el valor calculado combina la cascada completa en cada cálculo de estilo, y la animación siempre gana.</div></li>
+  </ul>
+</div>
+
+<h2><code>composite</code>: sumar animaciones</h2>
+<p>Por defecto (<code>'replace'</code>), el valor de una animación sustituye al valor subyacente del elemento. Con <code>'add'</code> y <code>'accumulate'</code> se combina con él (y con las animaciones que tenga debajo). Lo medimos sobre un elemento con <code>transform: translateX(20px)</code> animando <code>translateX(0) → translateX(100px)</code>, a mitad de animación:</p>
+<ul>
+  <li><code>'replace'</code>: 50 px (el <code>translateX(20px)</code> del elemento se ignora).</li>
+  <li><code>'add'</code>: 70 px (20 del elemento + 50 de la animación).</li>
+</ul>
+<p>La diferencia entre <code>'add'</code> y <code>'accumulate'</code> se ve con funciones que no se suman, como <code>scale</code>: sobre un elemento con <code>scale(2)</code>, animar <code>scale(1.5)</code> dio <code>scale(3)</code> con <code>'add'</code> (encadena las funciones: primero una escala, luego otra, se multiplican) y <code>scale(2.5)</code> con <code>'accumulate'</code> (combina los argumentos: 2 + 1,5 − 1). Con rotaciones, los dos dieron lo mismo (45° + 90° = 135°).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.7.1 — Un «¡no!» que se suma a cualquier posición</h3>
+  <p>Un campo de formulario debe sacudirse cuando el valor es incorrecto, pero además se mueve con una animación de entrada (o el usuario lo arrastra). Si la sacudida usara <code>'replace'</code>, anularía la posición durante su duración y el elemento saltaría. Con <code>'add'</code>, la sacudida se suma a lo que haya debajo:</p>
+<div class="js-playground" data-titulo="Sacudida aditiva con composite: 'add'" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="mal">Valor incorrecto</button> <label><input type="checkbox" id="sumar" checked> composite: 'add'</label>
+<div class="campo" id="campo">correo@ejemplo</div>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font: 13px system-ui, sans-serif; color: #b4bccb; }
+button { padding: 6px 12px; font: inherit; cursor: pointer; }
+.campo { margin-top: 30px; width: 180px; padding: 10px; border-radius: 8px; background: #1f2430; color: #e4e7ee; border: 2px solid #3a4256; }
+</script>
+<script type="text/x-js">
+const campo = document.getElementById('campo');
+const sumar = document.getElementById('sumar');
+const recorrido = innerWidth - 240;
+
+// Animación "de fondo": el campo va y viene sin parar
+campo.animate([{ transform: 'translateX(0)' }, { transform: `translateX(${recorrido}px)` }],
+              { duration: 3000, easing: 'ease-in-out', iterations: Infinity, direction: 'alternate' });
+
+document.getElementById('mal').onclick = () => {
+  campo.animate(
+    [{ transform: 'translateX(0)' }, { transform: 'translateX(-10px)' }, { transform: 'translateX(10px)' },
+     { transform: 'translateX(-6px)' }, { transform: 'translateX(6px)' }, { transform: 'translateX(0)' }],
+    { duration: 400, easing: 'ease-out', composite: sumar.checked ? 'add' : 'replace' }
+  );
+  campo.animate([{ borderColor: '#ff6b7a' }, { borderColor: '#3a4256' }], 800);
+};
+</script>
+</div>
+  <p><strong>Paso 1: dos animaciones sobre la misma propiedad.</strong> La animación de fondo mueve el campo de lado a lado. La sacudida es una segunda animación de <code>transform</code> sobre el mismo elemento, creada después: en la pila de efectos del elemento queda encima.</p>
+  <p><strong>Paso 2: con <code>'replace'</code>.</strong> Desmarca la casilla y pulsa el botón: durante 400 ms, la sacudida sustituye el valor de la animación de fondo y el campo salta al borde izquierdo (su <code>translateX</code> pasa a ser el de la sacudida, unos pocos píxeles) y al terminar vuelve de golpe a donde estaba.</p>
+  <p><strong>Paso 3: con <code>'add'</code>.</strong> La sacudida se suma al valor que produce la animación de fondo en ese instante: el campo tiembla sin perder su posición. Es la forma de combinar animaciones independientes sin que cada una tenga que conocer a las demás.</p>
+  <p><strong>Paso 4: el borde.</strong> La segunda animación del clic anima <code>borderColor</code> (en <em>camelCase</em>) con dos fotogramas: rojo y el gris original. No necesita <code>fill</code>: al terminar vuelve al estilo del elemento, que es justo ese gris.</p>
+</section>
+
+<h2>La relación con las animaciones CSS</h2>
+<p>No son dos sistemas: es uno solo. Todas las animaciones y transiciones CSS en curso existen como objetos de la WAAPI (<code>CSSAnimation</code> y <code>CSSTransition</code>, lo comprobamos en <a href="02-css-transiciones.html">2.2</a>), comparten el mismo reloj, <code>document.timeline</code> (una animación creada con <code>animate()</code> tenía <code>timeline === document.timeline</code>), y siguen las mismas reglas de compositor. Eso permite cosas muy prácticas:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  document.getAnimations();                       // TODAS las animaciones de la página (CSS y WAAPI)
+  el.getAnimations();                             // las del elemento
+  el.getAnimations({ subtree: true });            // las del elemento y sus descendientes
+  document.getAnimations().forEach((a) => a.pause());   // congelar la página entera
+</script>
+<p>Medido: un contenedor cuyo hijo tenía una animación devolvió 0 con <code>getAnimations()</code> y 1 con <code>getAnimations({ subtree: true })</code>.</p>
+<div class="callout hack">
+  <p>Congelar todas las animaciones de la página con una línea es un truco excelente para capturas de pantalla y pruebas automáticas (las herramientas de pruebas visuales automáticas hacen algo parecido antes de sacar la captura), para depurar un frame concreto o para un botón de «detener animaciones» accesible. Y como <code>currentTime</code> es escribible, puedes llevar todas las animaciones a un instante exacto: <code>document.getAnimations().forEach((a) =&gt; { a.pause(); a.currentTime = 500; })</code>.</p>
+</div>
+<p>La WAAPI también sirve para animaciones ligadas al scroll: en lugar de <code>document.timeline</code>, una animación puede usar una <code>ScrollTimeline</code> (el progreso lo marca el scroll de un contenedor) o una <code>ViewTimeline</code> (el progreso lo marca la visibilidad de un elemento). Existen en nuestro Chrome; es un tema en sí mismo que no cubriremos, pero ya sabes de dónde sale.</p>
+
+<h2>FLIP: animar cambios de layout</h2>
+<p>Reordenar una lista, filtrar una rejilla, expandir una tarjeta: son cambios de <strong>layout</strong>. Animarlos directamente (animando <code>top</code>, <code>left</code>, <code>width</code>…) provoca layout en cada frame (<a href="01-pipeline-render.html">2.1</a>), y a menudo ni siquiera es posible (¿cómo animas un cambio de posición en un flex o un grid?). La técnica <strong>FLIP</strong> (popularizada por Paul Lewis) le da la vuelta al problema: aplica el cambio de layout <em>de golpe</em>, una sola vez, y luego anima con <code>transform</code> la ilusión de que el elemento viaja desde donde estaba.</p>
+<svg class="diagrama" viewBox="0 0 760 170" width="760" role="img" aria-label="Las cuatro fases de FLIP">
+  <defs><marker id="m27-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <g>
+    <rect class="caja" x="10" y="20" width="170" height="120" rx="10"/><text x="95" y="42" text-anchor="middle" style="font-weight:700">F · First</text>
+    <rect x="30" y="60" width="44" height="44" rx="6" class="acento-relleno"/><text x="95" y="128" text-anchor="middle" class="texto-tenue" style="font-size:11px">medir dónde está</text>
+    <rect class="caja" x="200" y="20" width="170" height="120" rx="10"/><text x="285" y="42" text-anchor="middle" style="font-weight:700">L · Last</text>
+    <rect x="300" y="72" width="44" height="44" rx="6" class="acento-relleno"/><text x="285" y="128" text-anchor="middle" class="texto-tenue" style="font-size:11px">cambiar el DOM y medir</text>
+    <rect class="caja" x="390" y="20" width="170" height="120" rx="10"/><text x="475" y="42" text-anchor="middle" style="font-weight:700">I · Invert</text>
+    <rect x="410" y="60" width="44" height="44" rx="6" class="acento-relleno"/><rect x="490" y="72" width="44" height="44" rx="6" fill="none" stroke="currentColor" stroke-dasharray="4 3"/>
+    <text x="475" y="128" text-anchor="middle" class="texto-tenue" style="font-size:11px">transform que lo devuelve</text>
+    <rect class="caja" x="580" y="20" width="170" height="120" rx="10"/><text x="665" y="42" text-anchor="middle" style="font-weight:700">P · Play</text>
+    <rect x="680" y="72" width="44" height="44" rx="6" class="acento-relleno"/><rect x="600" y="60" width="44" height="44" rx="6" fill="none" stroke="currentColor" stroke-dasharray="4 3"/>
+    <path d="M646 84 L676 92" stroke="currentColor" stroke-width="1.5" marker-end="url(#m27-fl)"/>
+    <text x="665" y="128" text-anchor="middle" class="texto-tenue" style="font-size:11px">animar transform → none</text>
+  </g>
+</svg>
+<ol>
+  <li><strong>First</strong>: mide la posición y el tamaño de cada elemento con <code>getBoundingClientRect()</code>.</li>
+  <li><strong>Last</strong>: aplica el cambio (reordena, cambia una clase…) y vuelve a medir. El layout nuevo se calcula aquí, <em>una vez</em>.</li>
+  <li><strong>Invert</strong>: calcula la diferencia y aplica una transformación que devuelva cada elemento visualmente a su posición antigua: <code>translate(xAntes − xAhora, yAntes − yAhora)</code>, y una escala si cambió el tamaño.</li>
+  <li><strong>Play</strong>: anima esa transformación hasta <code>none</code>. El elemento viaja a su nueva posición real, y la animación es solo de <code>transform</code>: compositor, sin layout por frame.</li>
+</ol>
+<p>El truco funciona porque <strong>todo ocurre en la misma tarea</strong>: entre el cambio del DOM (Last) y la animación invertida (Invert + Play), el navegador no llega a pintar ningún frame (el renderizado solo ocurre cuando termina la tarea, <a href="../01-web/05-event-loop.html">1.5</a>). El usuario nunca ve el estado final sin la transformación, así que no hay parpadeo.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function flip(elementos, cambiar, opciones = { duration: 450, easing: 'cubic-bezier(0.2, 0, 0, 1)' }) {
+  const antes = new Map(elementos.map((el) => [el, el.getBoundingClientRect()]));
+  elementos.forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
+  cambiar();
+  for (const el of elementos) {
+    const a = antes.get(el), d = el.getBoundingClientRect();
+    const dx = a.left - d.left, dy = a.top - d.top;
+    const sx = a.width / d.width, sy = a.height / d.height;
+    if (dx === 0 && dy === 0 && sx === 1 && sy === 1) continue;
+    el.animate(
+      [{ transformOrigin: '0 0', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+       { transformOrigin: '0 0', transform: 'none' }],
+      opciones
+    );
+  }
+}
+</script>
+<ol>
+  <li data-l="1">Recibe los elementos a animar y una función que aplica el cambio de layout. El easing es una curva de salida rápida y frenado largo, muy común en interfaces.</li>
+  <li data-l="2"><strong>First</strong>. <code>getBoundingClientRect()</code> incluye las transformaciones actuales: si había una animación FLIP a medias, medimos dónde se <em>ve</em> el elemento ahora, y la nueva animación saldrá de ahí, sin saltos.</li>
+  <li data-l="3">Cancelamos las animaciones en curso para que no contaminen la medida de Last.</li>
+  <li data-l="4"><strong>Last</strong>: el cambio real del DOM.</li>
+  <li data-l="6">La nueva medida. La primera lectura tras el cambio fuerza <em>un</em> layout síncrono; las siguientes ya lo encuentran calculado. Leer y escribir intercalado aquí sería layout thrashing (<a href="01-pipeline-render.html">2.1</a>): por eso todas las medidas «antes» se tomaron juntas y las escrituras (las animaciones) no tocan el layout.</li>
+  <li data-l="7-8"><strong>Invert</strong>: desplazamiento y escala que devuelven el elemento a su rectángulo anterior.</li>
+  <li data-l="9">Si no se movió, no creamos una animación inútil.</li>
+  <li data-l="10-14"><strong>Play</strong>: de la transformación invertida a <code>none</code>. <code>transformOrigin: '0 0'</code> hace que la escala parta de la esquina superior izquierda, que es la que alineamos con <code>translate</code>; con el origen centrado por defecto, la cuenta de <code>dx</code> y <code>dy</code> no cuadraría al cambiar el tamaño. Sin <code>fill</code>: al terminar, la animación desaparece y queda el layout real.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.7.2 — Una lista que se reordena</h3>
+<div class="js-playground" data-titulo="Reordenar con FLIP" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="barra"><button id="barajar">Barajar</button> <button id="ordenar">Ordenar</button>
+  <label><input type="checkbox" id="usarFlip" checked> animar con FLIP</label></div>
+<ul id="lista"></ul>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 13px system-ui, sans-serif; color: #b4bccb; }
+.barra { margin-bottom: 10px; }
+button { padding: 5px 12px; font: inherit; cursor: pointer; }
+#lista { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; }
+#lista li { padding: 14px 8px; border-radius: 8px; text-align: center; color: #0e1014; font-weight: 700; }
+</script>
+<script type="text/x-js">
+function flip(elementos, cambiar, opciones = { duration: 450, easing: 'cubic-bezier(0.2, 0, 0, 1)' }) {
+  const antes = new Map(elementos.map((el) => [el, el.getBoundingClientRect()]));
+  elementos.forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
+  cambiar();
+  for (const el of elementos) {
+    const a = antes.get(el), d = el.getBoundingClientRect();
+    const dx = a.left - d.left, dy = a.top - d.top;
+    const sx = a.width / d.width, sy = a.height / d.height;
+    if (dx === 0 && dy === 0 && sx === 1 && sy === 1) continue;
+    el.animate(
+      [{ transformOrigin: '0 0', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+       { transformOrigin: '0 0', transform: 'none' }],
+      opciones
+    );
+  }
+}
+
+const lista = document.getElementById('lista');
+for (let i = 1; i <= 12; i++) {
+  const li = document.createElement('li');
+  li.textContent = i;
+  li.dataset.n = i;
+  li.style.background = `hsl(${250 + i * 9}, 80%, 72%)`;
+  lista.appendChild(li);
+}
+const items = () => [...lista.children];
+
+function reordenar(comparar) {
+  const cambio = () => items().sort(comparar).forEach((li) => lista.appendChild(li));   // appendChild MUEVE el nodo
+  if (document.getElementById('usarFlip').checked) flip(items(), cambio); else cambio();
+}
+document.getElementById('barajar').onclick = () => reordenar(() => Math.random() - 0.5);
+document.getElementById('ordenar').onclick = () => reordenar((a, b) => a.dataset.n - b.dataset.n);
+setTimeout(() => document.getElementById('barajar').click(), 600);   // una vez al empezar
+</script>
+</div>
+  <p><strong>Paso 1: el cambio de layout es trivial.</strong> <code>reordenar</code> ordena los <code>&lt;li&gt;</code> y los vuelve a añadir en ese orden: <code>appendChild</code> de un nodo que ya está en el documento lo <em>mueve</em>, no lo copia. El grid recoloca los elementos solo. Sin FLIP, el cambio es instantáneo.</p>
+  <p><strong>Paso 2: FLIP envuelve el cambio.</strong> Le pasamos todos los elementos y el cambio como función: <code>flip</code> mide antes, cambia, mide después y anima la diferencia. El resto del código no sabe nada de animaciones: puedes aplicar FLIP a cualquier cambio de DOM que ya tengas.</p>
+  <p><strong>Paso 3: pulsa «Barajar» varias veces seguidas.</strong> Las animaciones se interrumpen sin saltos: la medida First se toma con la transformación de la animación en curso, así que cada nueva animación sale de donde el elemento se ve en ese instante. La velocidad, eso sí, cambia bruscamente al redirigir (el problema de los tweens de <a href="04-interpolacion-easing.html">2.4</a>).</p>
+  <p><strong>Paso 4: el coste.</strong> Un layout al aplicar el cambio (inevitable) y, durante la animación, solo composición. Con <code>transform</code> y la WAAPI, la animación sigue fluida aunque el hilo principal esté ocupado justo después del cambio (algo habitual: tras reordenar suele venir más trabajo).</p>
+</section>
+
+<div class="callout cuidado">
+  <p>FLIP con escala deforma el contenido: al animar una tarjeta de 100 a 300 px de ancho con <code>scale</code>, su texto también se estira durante la animación. Hay tres salidas: desvanecer el contenido mientras dura la animación (la más sencilla), aplicar a los hijos la escala inversa (difícil de hacer exacta, porque la inversa de una escala interpolada no es una escala interpolada), o animar el tamaño de un fondo o un recorte (<code>clip-path: inset()</code>, que en Chrome reciente también va al compositor, según medimos en 2.1) mientras el contenido se traslada sin escalar.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.7.3 — Una tarjeta que se expande</h3>
+  <p>Al pulsar una tarjeta, ocupa todo el ancho y crece en altura; las demás se recolocan. Es el caso en que FLIP necesita escala, y en el que aparece la deformación del contenido. Prueba con y sin la casilla:</p>
+<div class="js-playground" data-titulo="Expandir una tarjeta con FLIP" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<label class="opcion"><input type="checkbox" id="ocultar" checked> ocultar el texto mientras dura la animación</label>
+<div class="rejilla">
+  <div class="tarjeta"><div class="texto"><b>Uno</b><br>Pulsa para expandir</div></div>
+  <div class="tarjeta"><div class="texto"><b>Dos</b><br>Pulsa para expandir</div></div>
+  <div class="tarjeta"><div class="texto"><b>Tres</b><br>Pulsa para expandir</div></div>
+</div>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 13px system-ui, sans-serif; color: #b4bccb; }
+.opcion { display: block; margin-bottom: 10px; }
+.rejilla { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.tarjeta { height: 70px; padding: 10px; border-radius: 10px; background: #1f2430; color: #e4e7ee; cursor: pointer; overflow: hidden; }
+.tarjeta.abierta { grid-column: 1 / -1; height: 170px; background: #2b2f55; }
+</script>
+<script type="text/x-js">
+function flip(elementos, cambiar, opciones = { duration: 450, easing: 'cubic-bezier(0.2, 0, 0, 1)' }) {
+  const antes = new Map(elementos.map((el) => [el, el.getBoundingClientRect()]));
+  elementos.forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
+  cambiar();
+  for (const el of elementos) {
+    const a = antes.get(el), d = el.getBoundingClientRect();
+    const dx = a.left - d.left, dy = a.top - d.top;
+    const sx = a.width / d.width, sy = a.height / d.height;
+    if (dx === 0 && dy === 0 && sx === 1 && sy === 1) continue;
+    el.animate(
+      [{ transformOrigin: '0 0', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+       { transformOrigin: '0 0', transform: 'none' }],
+      opciones
+    );
+  }
+}
+
+const tarjetas = [...document.querySelectorAll('.tarjeta')];
+const ocultar = document.getElementById('ocultar');
+tarjetas.forEach((t) => t.addEventListener('click', () => {
+  flip(tarjetas, () => {
+    const abrir = !t.classList.contains('abierta');
+    tarjetas.forEach((x) => x.classList.remove('abierta'));
+    if (abrir) t.classList.add('abierta');
+  });
+  if (ocultar.checked) {
+    // mientras la caja se escala, el texto no se ve: aparece al final, ya a su tamaño real
+    tarjetas.forEach((x) => x.querySelector('.texto').animate(
+      [{ opacity: 0 }, { opacity: 0, offset: 0.6 }, { opacity: 1 }], { duration: 450 }));
+  }
+}));
+setTimeout(() => tarjetas[1].click(), 700);   // una vez al empezar
+</script>
+</div>
+  <p><strong>Paso 1: la escala es inevitable.</strong> La tarjeta pasa de un tercio del ancho y 70 px de alto a todo el ancho y 170 px. Su rectángulo Last es mucho mayor que el First, así que la transformación invertida incluye <code>scale(sx, sy)</code> con valores menores que 1: al empezar, la tarjeta grande se ve encogida hasta el tamaño de la pequeña, y crece hasta <code>none</code>.</p>
+  <p><strong>Paso 2: la deformación.</strong> Desmarca la casilla y pulsa: el texto se estira y se aplasta durante la animación, porque la escala se aplica a toda la caja, contenido incluido, y además con factores distintos en x y en y. Es el precio de animar el tamaño con <code>transform</code> en vez de con <code>width</code>/<code>height</code>.</p>
+  <p><strong>Paso 3: la salida sencilla.</strong> Con la casilla marcada, el texto de las tarjetas se anima de opacidad 0 a 1 en la misma duración, pero manteniéndose invisible hasta el 60 % (un fotograma con <code>offset: 0.6</code> y opacidad 0). El ojo ve cómo la caja crece y el contenido aparece ya a su tamaño final. Todo sigue siendo <code>transform</code> y <code>opacity</code>: compositor.</p>
+  <p><strong>Paso 4: lo que no animamos.</strong> El color de fondo cambia de golpe al abrir. Si lo quisieras animado, una transición CSS de <code>background-color</code> en <code>.tarjeta</code> funcionaría sin tocar el JavaScript (y en Chrome reciente, según medimos en 2.1, también iría al compositor).</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">En FLIP, ¿por qué es importante hacer Last, Invert y Play en la misma tarea (sin esperar a otro frame)?</p>
+  <ul>
+    <li>Para que el navegador pueda enviar la animación al compositor.<div class="explicacion">La animación iría al compositor igualmente. El motivo es lo que vería el usuario entre medias.</div></li>
+    <li data-correcta>Para que el navegador no pinte ningún frame con el layout nuevo y sin la transformación invertida.<div class="explicacion">Correcto: el renderizado solo ocurre al terminar la tarea. Si esperaras un frame entre el cambio del DOM y la animación, el usuario vería el elemento en su posición final un instante y luego «volver» atrás para animarse: un parpadeo.</div></li>
+    <li>Para evitar el layout thrashing.<div class="explicacion">Evitar el thrashing depende de agrupar las lecturas y las escrituras, no de la tarea. Pero el parpadeo sí depende de no dejar que se pinte un frame intermedio.</div></li>
+  </ul>
+</div>
+
+<h2>View Transitions, en una mención</h2>
+<p>La <strong>View Transitions API</strong> es, en cierto modo, FLIP automático hecho por el navegador. <code>document.startViewTransition(cambiar)</code> hace una captura del estado actual, ejecuta tu función que cambia el DOM, captura el estado nuevo y anima entre las dos capturas (por defecto, un fundido cruzado). Si das el mismo <code>view-transition-name</code> a un elemento en los dos estados, el navegador lo anima de una posición y un tamaño a otros, como tu función <code>flip</code>. Las animaciones son pseudoelementos (<code>::view-transition-old(nombre)</code>, <code>::view-transition-new(nombre)</code>) que puedes personalizar con CSS. Existe en nuestro Chrome y funcionó incluso dentro de un <code>iframe</code> con <code>sandbox</code>:</p>
+<div class="js-playground" data-titulo="startViewTransition" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="cambiar">Cambiar disposición</button>
+<div class="contenedor" id="c"><div class="tarjeta" id="t">Tarjeta</div><p>Texto que acompaña a la tarjeta.</p></div>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 13px system-ui, sans-serif; color: #b4bccb; }
+button { padding: 5px 12px; font: inherit; cursor: pointer; margin-bottom: 10px; }
+.contenedor { display: flex; gap: 12px; align-items: flex-start; }
+.contenedor.grande { flex-direction: column; }
+.tarjeta { view-transition-name: tarjeta; width: 100px; height: 70px; border-radius: 10px; background: #8b7bff;
+  display: grid; place-items: center; color: #0e1014; font-weight: 700; }
+.grande .tarjeta { width: 100%; height: 150px; }
+::view-transition-group(tarjeta) { animation-duration: 0.5s; animation-timing-function: cubic-bezier(0.2, 0, 0, 1); }
+</script>
+<script type="text/x-js">
+const c = document.getElementById('c');
+document.getElementById('cambiar').onclick = () => {
+  const cambio = () => c.classList.toggle('grande');
+  if (document.startViewTransition) document.startViewTransition(cambio);
+  else cambio();                                   // navegadores sin la API: cambio instantáneo
+};
+</script>
+</div>
+<p>¿Cuándo usar cada cosa? View Transitions es perfecto para cambios de «estado de página» (navegar entre vistas, abrir un detalle) y no necesita medir nada, pero bloquea la interacción con la página durante la transición (lo comprobamos: un clic en mitad de una transición no llegó al botón que había debajo; al terminar, sí) y trabaja con capturas (imágenes), no con los elementos vivos. FLIP con WAAPI te da control fino sobre cada elemento, se puede interrumpir y los elementos siguen siendo interactivos. Saber cómo funciona FLIP por dentro es lo que te permite depurar las dos.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 2.7.1 — Un latido que se repite al pulsar</h3>
+  <p>El botón usa una clase CSS para hacer un «latido», y al pulsarlo varias veces seguidas no se repite (el bestiario <a href="02-css-transiciones.html#m2-animacion-no-reinicia">«La animación CSS no se repite»</a> de 2.2). Reescríbelo con <code>element.animate()</code>: escala 1 → 1,25 → 0,95 → 1 en 450 ms con <code>ease-out</code>, que se reinicie en cada clic, y que la consola diga «latido terminado» al acabar cada uno (y no se queje si se interrumpe).</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.7.1" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button class="corazon" id="c">♥</button>
+</script>
+<script type="text/x-css">
+body { display: grid; place-items: center; height: 100%; }
+.corazon { font-size: 48px; width: 96px; height: 96px; border-radius: 50%; border: 0; cursor: pointer;
+  background: #ff6bb5; color: #0e1014; }
+.latiendo { animation: latido 450ms ease-out; }
+@keyframes latido { 30% { transform: scale(1.25); } 60% { transform: scale(0.95); } }
+</script>
+<script type="text/x-js">
+const c = document.getElementById('c');
+c.onclick = () => {
+  c.classList.remove('latiendo');
+  c.classList.add('latiendo');        // no reinicia la animación si ya estaba puesta
+};
+</script>
+<script type="text/x-js" data-solucion>
+const c = document.getElementById('c');
+let latido = null;
+c.onclick = async () => {
+  if (latido) latido.cancel();                    // interrumpimos el anterior (su finished se rechaza)
+  latido = c.animate(
+    [{ transform: 'scale(1)', easing: 'ease-out' },
+     { transform: 'scale(1.25)', offset: 0.3, easing: 'ease-out' },
+     { transform: 'scale(0.95)', offset: 0.6, easing: 'ease-out' },
+     { transform: 'scale(1)' }],
+    { duration: 450 }
+  );
+  try {
+    await latido.finished;
+    console.log('latido terminado');
+  } catch (e) {
+    if (e.name !== 'AbortError') throw e;         // cancelado por un clic nuevo: es normal
+  }
+};
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Cada llamada a <code>animate()</code> crea una animación nueva que empieza desde el principio: no hay nada que «reiniciar». Guarda la anterior para cancelarla.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Los porcentajes de <code>@keyframes</code> son los <code>offset</code> de los fotogramas (0,3 y 0,6), y el <code>ease-out</code> de CSS, que actúa en cada tramo, se traduce a un <code>easing</code> dentro de cada fotograma. Y si cancelas un latido en curso, su <code>finished</code> se rechaza: captura el <code>AbortError</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con la WAAPI, reiniciar es crear otra animación: no dependes de que el navegador recalcule el estilo entre quitar y poner una clase. Cancelar la anterior evita que dos latidos se mezclen (con <code>composite: 'replace'</code>, ganaría el último, pero la anterior seguiría consumiendo hasta terminar). El <code>try</code>/<code>catch</code> distingue el final natural (se imprime el mensaje) de la interrupción por un clic nuevo (<code>AbortError</code>, silencioso); cualquier otro error se relanza. Fíjate en que el <code>easing: 'ease-out'</code> va <em>dentro de cada fotograma</em> y no en las opciones: en WAAPI, el de las opciones se aplicaría a toda la animación de golpe y el latido saldría distinto al de CSS (el máximo llegaría antes de los 135 ms). Puesto en cada fotograma, actúa en cada tramo, igual que <code>animation-timing-function</code>: la escala sube frenando, baja frenando y vuelve frenando.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.7.2 — Una línea de tiempo que puedes rebobinar</h3>
+  <p>La animación de la bola tiene varios fotogramas. Haz que el deslizador la controle: al moverlo, la animación se pausa y se coloca en ese punto; el botón «▶ desde aquí» la reanuda desde la posición del deslizador, y el deslizador debe seguir a la animación mientras avanza.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.7.2" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="escena"><div class="bola" id="bola"></div></div>
+<input id="linea" type="range" min="0" max="1" step="0.001" value="0">
+<button id="play">▶ desde aquí</button>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font: 13px system-ui, sans-serif; }
+.escena { position: relative; height: 170px; border: 1px dashed #3a4256; border-radius: 8px; margin-bottom: 8px; }
+.bola { position: absolute; left: 0; top: 0; width: 28px; height: 28px; border-radius: 50%; background: #3fd0e8; }
+#linea { width: 70%; vertical-align: middle; }
+button { padding: 5px 12px; font: inherit; }
+</script>
+<script type="text/x-js">
+const bola = document.getElementById('bola');
+const linea = document.getElementById('linea');
+const ancho = innerWidth - 70;
+const DURACION = 3000;
+const anim = bola.animate([
+  { transform: 'translate(10px, 130px)' },
+  { transform: `translate(${ancho * 0.3}px, 10px) scale(1.4)`, background: '#ffcb6b' },
+  { transform: `translate(${ancho * 0.6}px, 130px) rotate(180deg)` },
+  { transform: `translate(${ancho}px, 60px)`, background: '#ff6bb5' },
+], { duration: DURACION, easing: 'ease-in-out', fill: 'both' });
+
+// ← 1. al mover el deslizador: pausar y colocar (currentTime)
+// ← 2. botón: reanudar
+// ← 3. el deslizador sigue a la animación (un bucle de rAF que lea currentTime)
+</script>
+<script type="text/x-js" data-solucion>
+const bola = document.getElementById('bola');
+const linea = document.getElementById('linea');
+const ancho = innerWidth - 70;
+const DURACION = 3000;
+const anim = bola.animate([
+  { transform: 'translate(10px, 130px)' },
+  { transform: `translate(${ancho * 0.3}px, 10px) scale(1.4)`, background: '#ffcb6b' },
+  { transform: `translate(${ancho * 0.6}px, 130px) rotate(180deg)` },
+  { transform: `translate(${ancho}px, 60px)`, background: '#ff6bb5' },
+], { duration: DURACION, easing: 'ease-in-out', fill: 'both' });
+
+let arrastrando = false;
+linea.addEventListener('input', () => {
+  arrastrando = true;
+  anim.pause();
+  anim.currentTime = +linea.value * DURACION;     // scrubbing
+});
+linea.addEventListener('change', () => { arrastrando = false; });
+
+document.getElementById('play').onclick = () => {
+  if (anim.playState === 'finished' || +linea.value >= 1) anim.currentTime = 0;   // si estaba al final, desde el principio
+  anim.play();
+};
+
+function seguir() {
+  if (!arrastrando && anim.currentTime !== null) linea.value = anim.currentTime / DURACION;
+  requestAnimationFrame(seguir);
+}
+seguir();
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El deslizador va de 0 a 1: el tiempo es <code>valor × DURACION</code>. Pausa antes de asignar <code>currentTime</code> para que no siga avanzando.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>play()</code> reanuda desde el <code>currentTime</code> actual. Para que el deslizador siga a la animación, léelo en un bucle de rAF (y no lo pises mientras el usuario lo arrastra).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>currentTime</code> es la pieza clave: escribirlo coloca la animación en ese instante (con todos sus fotogramas, easing incluido) y leerlo en cada frame permite sincronizar el deslizador. <code>fill: 'both'</code> hace que, al llegar al final o al colocarla en 0, el elemento siga mostrando el primer o el último fotograma. La bandera <code>arrastrando</code> evita una pelea: sin ella, el bucle de rAF reescribiría el valor del deslizador mientras el usuario lo mueve. Esto es exactamente lo que hacía en CSS el truco del retardo negativo de <a href="02-css-transiciones.html">2.2</a>, pero sin trucos y con la posibilidad de reanudar.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.7.3 — Quedarse al final sin quedarse pegado</h3>
+  <p>El primer botón mueve la caja a la derecha con <code>fill: 'forwards'</code>. El segundo intenta devolverla con <code>style.transform</code>… y no puede. Arréglalo sin quitar <code>fill: 'forwards'</code> de la animación, de forma que tras mover la caja no quede ninguna animación viva (la consola imprime cuántas quedan).</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.7.3" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="ir">Mover a la derecha</button> <button id="volver">Volver con style.transform</button>
+<div class="caja" id="caja"></div>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font: 13px system-ui, sans-serif; }
+button { padding: 5px 12px; font: inherit; }
+.caja { margin-top: 30px; width: 50px; height: 50px; border-radius: 8px; background: #3ecf8e; transition: transform .3s; }
+</script>
+<script type="text/x-js">
+const caja = document.getElementById('caja');
+document.getElementById('ir').onclick = async () => {
+  const anim = caja.animate({ transform: 'translateX(200px)' }, { duration: 500, easing: 'ease-out', fill: 'forwards' });
+  await anim.finished;
+  console.log('animaciones vivas en la caja:', caja.getAnimations().length);
+};
+document.getElementById('volver').onclick = () => {
+  caja.style.transform = 'translateX(0)';
+  // esperamos a que termine la posible transición CSS (0,3 s) antes de mirar el valor calculado
+  setTimeout(() => console.log('style.transform =', caja.style.transform, '· transform calculado =', getComputedStyle(caja).transform), 400);
+};
+</script>
+<script type="text/x-js" data-solucion>
+const caja = document.getElementById('caja');
+document.getElementById('ir').onclick = async () => {
+  const anim = caja.animate({ transform: 'translateX(200px)' }, { duration: 500, easing: 'ease-out', fill: 'forwards' });
+  try { await anim.finished; } catch (e) { return; }   // si la cancelan antes de terminar, no hacemos nada
+  anim.commitStyles();    // el valor final pasa al atributo style
+  anim.cancel();          // y la animación desaparece
+  console.log('animaciones vivas en la caja:', caja.getAnimations().length, '· style.transform =', caja.style.transform);
+};
+document.getElementById('volver').onclick = () => {
+  caja.style.transform = 'translateX(0)';
+  // esperamos a que termine la posible transición CSS (0,3 s) antes de mirar el valor calculado
+  setTimeout(() => console.log('style.transform =', caja.style.transform, '· transform calculado =', getComputedStyle(caja).transform), 400);
+};
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Al terminar, copia el valor de la animación al estilo inline y elimina la animación. Hay un método para cada cosa.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>commitStyles()</code> escribe en <code>caja.style.transform</code> el valor que la animación está aplicando (<code>translateX(200px)</code>) y <code>cancel()</code> la elimina: la consola dice 0 animaciones vivas y el estilo inline mantiene la caja en su sitio. Ahora el segundo botón funciona, y como la caja tiene <code>transition: transform .3s</code>, además vuelve animada: la transición CSS arranca porque el valor calculado cambia de 200 px a 0 (<a href="02-css-transiciones.html">2.2</a>). Con la versión original, el valor calculado seguía siendo el de la animación rellenando y el cambio de estilo no tenía ningún efecto visible. El <code>fill: 'forwards'</code> sigue siendo necesario: entre el final de la animación y el <code>commitStyles()</code> (que ocurre en una microtarea posterior) el elemento debe seguir mostrando el valor final, y además es ese relleno el que <code>commitStyles()</code> copia.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 2.7.4 — Quitar tarjetas con FLIP</h3>
+  <p>Al hacer clic en una tarjeta, se elimina de la rejilla y las demás saltan a su nuevo sitio. Haz que la tarjeta eliminada se desvanezca (0,2 s) y, al terminar, las demás se deslicen a su posición con FLIP.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.7.4" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="reponer">Reponer tarjetas</button>
+<div class="rejilla" id="rejilla"></div>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 13px system-ui, sans-serif; }
+button { padding: 5px 12px; font: inherit; margin-bottom: 10px; }
+.rejilla { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; }
+.tarjeta { height: 60px; border-radius: 8px; display: grid; place-items: center; font-weight: 700; color: #0e1014; cursor: pointer; }
+</script>
+<script type="text/x-js">
+const rejilla = document.getElementById('rejilla');
+function reponer() {
+  rejilla.innerHTML = '';
+  for (let i = 1; i <= 15; i++) {
+    const t = document.createElement('div');
+    t.className = 'tarjeta';
+    t.textContent = i;
+    t.style.background = `hsl(${180 + i * 8}, 70%, 65%)`;
+    rejilla.appendChild(t);
+  }
+}
+reponer();
+document.getElementById('reponer').onclick = reponer;
+
+rejilla.addEventListener('click', (e) => {
+  const t = e.target.closest('.tarjeta');
+  if (!t) return;
+  t.remove();                       // ← desvanecer primero y luego FLIP de las demás
+});
+</script>
+<script type="text/x-js" data-solucion>
+function flip(elementos, cambiar, opciones = { duration: 400, easing: 'cubic-bezier(0.2, 0, 0, 1)' }) {
+  const antes = new Map(elementos.map((el) => [el, el.getBoundingClientRect()]));
+  elementos.forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
+  cambiar();
+  for (const el of elementos) {
+    const a = antes.get(el), d = el.getBoundingClientRect();
+    const dx = a.left - d.left, dy = a.top - d.top;
+    if (dx === 0 && dy === 0) continue;
+    el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], opciones);
+  }
+}
+
+const rejilla = document.getElementById('rejilla');
+function reponer() {
+  rejilla.innerHTML = '';
+  for (let i = 1; i <= 15; i++) {
+    const t = document.createElement('div');
+    t.className = 'tarjeta';
+    t.textContent = i;
+    t.style.background = `hsl(${180 + i * 8}, 70%, 65%)`;
+    rejilla.appendChild(t);
+  }
+}
+reponer();
+document.getElementById('reponer').onclick = reponer;
+
+rejilla.addEventListener('click', async (e) => {
+  const t = e.target.closest('.tarjeta');
+  if (!t || t.dataset.saliendo) return;
+  t.dataset.saliendo = '1';                                   // evita dobles clics
+  const salida = t.animate([{ opacity: 1, transform: 'scale(1)' }, { opacity: 0, transform: 'scale(0.8)' }],
+                           { duration: 200, easing: 'ease-in', fill: 'forwards' });
+  try { await salida.finished; } catch (err) { return; }
+  // el FLIP no debe tocar a las tarjetas que también se están desvaneciendo: flip() cancela las animaciones de
+  // sus elementos, y cancelar el desvanecimiento de otra tarjeta la haría reaparecer y quedarse atascada
+  const resto = [...rejilla.children].filter((x) => x !== t && !x.dataset.saliendo);
+  flip(resto, () => t.remove());                              // Last = el layout sin la tarjeta
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Primero, una animación de salida de la tarjeta (opacidad a 0) con <code>fill: 'forwards'</code> para que no reaparezca al terminar; espera su <code>finished</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Luego llama a <code>flip</code> con las tarjetas restantes y con <code>() =&gt; t.remove()</code> como cambio. Copia la función <code>flip</code> de la lección (aquí no necesitas la escala).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Dos fases encadenadas con <code>await</code>: la salida de la tarjeta (con <code>fill: 'forwards'</code>, porque entre el final de la animación y el <code>remove()</code> no debe volver a verse) y el FLIP de las demás, cuyo cambio de layout es precisamente quitar la tarjeta. Las medidas First se toman con la tarjeta todavía en la rejilla (invisible pero ocupando su hueco); las Last, ya sin ella. En este caso no hace falta escala porque las tarjetas no cambian de tamaño. La marca <code>data-saliendo</code> evita que un doble clic lance dos salidas de la misma tarjeta, y sirve para otra cosa importante: excluir del FLIP a las tarjetas que también se están desvaneciendo. Lo comprobamos: sin ese filtro, al pulsar una segunda tarjeta mientras la primera aún se desvanece, el <code>flip</code> de la primera <em>cancelaba</em> el desvanecimiento de la segunda (<code>flip</code> cancela todas las animaciones de los elementos que recibe), la segunda reaparecía con su <code>finished</code> rechazado y, al tener ya la marca, no se podía volver a pulsar. Una mejora de senior: si quitas varias tarjetas muy seguidas, el FLIP de una interrumpe el de la anterior; como <code>flip</code> mide con las transformaciones en curso y cancela las anteriores, el movimiento enlaza sin saltos.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><code>element.animate(keyframes, opciones)</code> crea una animación que empieza sola y corre en el mismo motor que CSS (compositor para <code>transform</code>/<code>opacity</code>). Duración en ms; easing por defecto <code>linear</code>; un solo fotograma anima desde el valor actual.</li>
+    <li>El objeto <code>Animation</code>: <code>play</code>, <code>pause</code>, <code>reverse</code>, <code>finish</code>, <code>cancel</code>, <code>currentTime</code> (rebobinar), <code>playbackRate</code>/<code>updatePlaybackRate</code>; promesas <code>ready</code> y <code>finished</code> (esta se rechaza con <code>AbortError</code> si se cancela).</li>
+    <li><code>fill: 'forwards'</code> deja la animación viva y por encima del estilo inline. Al terminar: <code>commitStyles()</code> + <code>cancel()</code>. Las animaciones rellenando tapadas por otras se eliminan solas (<code>persist()</code> lo evita).</li>
+    <li><code>composite: 'add'</code>/<code>'accumulate'</code> combinan animaciones; <code>getAnimations()</code> ve también las CSS.</li>
+    <li>FLIP: medir, cambiar el DOM, invertir con <code>transform</code> y animar a <code>none</code>, todo en la misma tarea. Un layout en total y animación solo de compositor.</li>
+    <li>View Transitions hace un FLIP con capturas de forma automática: ideal para cambios de vista.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Animations_API/Using_the_Web_Animations_API">Using the Web Animations API</a> (MDN).</li>
+  <li><a href="https://aerotwist.com/blog/flip-your-animations/">FLIP Your Animations</a> (Paul Lewis): el artículo que dio nombre a la técnica.</li>
+  <li><a href="https://developer.chrome.com/docs/web-platform/view-transitions">Smooth transitions with the View Transition API</a> (Chrome for Developers).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m2.js"></script>
+</body>
+</html>

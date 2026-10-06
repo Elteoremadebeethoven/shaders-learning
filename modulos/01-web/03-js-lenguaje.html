@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.3 · JavaScript I: el lenguaje — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m1.css">
+</head>
+<body data-leccion="01-web/js-lenguaje">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 1 · Fundamentos web mínimos</p>
+  <h1>JavaScript I: el lenguaje</h1>
+  <p class="resumen">JavaScript es la mitad CPU del curso: el bucle de animación, la física, el estado y los datos que mandarás a la GPU. Aquí repasamos el lenguaje justo, pero con lupa: cómo son de verdad sus números, por qué <code>%</code> no es el módulo de GLSL, qué es una referencia, qué captura una closure y por qué <code>this</code> desaparece en el peor momento.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 1.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Conocerás los tipos de JavaScript y las rarezas de <code>typeof</code>, y sabrás elegir entre <code>const</code>, <code>let</code> y <code>var</code> (y qué es la zona muerta temporal).</li>
+      <li>Entenderás que todo número es un double IEEE-754: por qué <code>0.1 + 0.2 !== 0.3</code>, hasta dónde son exactos los enteros, qué son <code>NaN</code>, <code>-0</code> e <code>Infinity</code> y qué hace de verdad <code>x | 0</code>.</li>
+      <li>Sabrás que <code>%</code> es un resto con el signo del dividendo y cómo escribir el módulo que usa GLSL.</li>
+      <li>Evitarás las trampas de las conversiones, <code>==</code>, los valores <em>falsy</em>, las referencias compartidas y el <code>this</code> perdido.</li>
+      <li>Escribirás funciones, closures, desestructuraciones y una clase <code>Particula</code> como las que usarás en el resto del curso.</li>
+      <li>Sabrás por qué crear objetos en cada frame provoca pausas del recolector de basura, y cómo evitarlo.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué repasar JavaScript con lupa</h2>
+<p>En este curso, JavaScript es el lado CPU del esquema de la lección <a href="../00-inicio/01-bienvenida.html">0.1</a>: guarda el estado, mide el tiempo, integra la física, aplica el easing y prepara los datos que la GPU va a consumir. Sus fallos típicos no son de sintaxis, que el motor te señala enseguida. Son silenciosos: un <code>NaN</code> que se cuela en una posición y hace desaparecer una partícula sin ningún error, un <code>-1 % 5</code> que devuelve −1 y rompe un índice cíclico, cien partículas que se mueven a la vez porque comparten un objeto, un <code>this</code> que se pierde al pasar un método a <code>requestAnimationFrame</code>.</p>
+<p>Esta lección no es un curso de JavaScript desde cero: supone que sabes qué es una variable, un <code>if</code> y un bucle. Es un repaso de lo que de verdad importa para animar, con cada comportamiento raro medido en Chrome. Todos los editores imprimen en la consola que tienen debajo; úsalos para comprobar cada afirmación.</p>
+
+<h2>Valores y tipos</h2>
+<p>JavaScript tiene siete tipos <em>primitivos</em> (<code>number</code>, <code>string</code>, <code>boolean</code>, <code>undefined</code>, <code>null</code>, <code>bigint</code> y <code>symbol</code>) y un tipo compuesto: <code>object</code>, que incluye los arrays, las funciones y las instancias de clases. Los primitivos son inmutables y se comparan por valor; los objetos se comparan por <em>identidad</em>, algo que veremos con calma porque es fuente de errores. El operador <code>typeof</code> te dice el tipo… casi siempre:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Expresión</th><th>Resultado en Chrome</th><th>Comentario</th></tr></thead>
+  <tbody>
+    <tr><td><code>typeof null</code></td><td><code>"object"</code></td><td>un error de la primera versión de JavaScript, de 1995, que ya no se puede corregir sin romper la web</td></tr>
+    <tr><td><code>typeof []</code></td><td><code>"object"</code></td><td>para arrays, usa <code>Array.isArray(x)</code></td></tr>
+    <tr><td><code>typeof function () {}</code></td><td><code>"function"</code></td><td>las funciones son objetos, pero <code>typeof</code> las distingue</td></tr>
+    <tr><td><code>typeof class {}</code></td><td><code>"function"</code></td><td>una clase es una función especial</td></tr>
+    <tr><td><code>typeof NaN</code></td><td><code>"number"</code></td><td>«no es un número» es… un número</td></tr>
+    <tr><td><code>typeof 1n</code></td><td><code>"bigint"</code></td><td>enteros de tamaño arbitrario; no se mezclan con <code>number</code></td></tr>
+  </tbody>
+</table>
+
+<h2>Variables: <code>const</code>, <code>let</code> y <code>var</code></h2>
+<p>La regla práctica cabe en una línea: <strong><code>const</code> por defecto, <code>let</code> cuando necesites reasignar, <code>var</code> nunca</strong>. Los matices:</p>
+<ul>
+  <li><code>const</code> impide <em>reasignar la variable</em>, no modificar el objeto al que apunta. <code>const c = 1; c = 2;</code> lanza <code>TypeError: Assignment to constant variable.</code>, pero <code>const o = { x: 1 }; o.x = 2;</code> funciona. Una posición en un <code>const</code> se puede mover; lo que no puedes es apuntar la variable a otra posición.</li>
+  <li><code>let</code> y <code>const</code> tienen ámbito de <em>bloque</em> (entre llaves); <code>var</code> tiene ámbito de <em>función</em> e ignora los bloques.</li>
+</ul>
+<p>Y luego está el <em>hoisting</em> («izado»): antes de ejecutar un ámbito, el motor registra todas sus declaraciones. Lo que cambia es qué valor tienen antes de llegar a su línea. Lo medí:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Usar antes de la línea que declara…</th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td><code>let a = 1;</code> (o <code>const</code>)</td><td><code>ReferenceError: Cannot access 'a' before initialization</code></td></tr>
+    <tr><td><code>var v = 1;</code></td><td><code>undefined</code>, sin error (la declaración sube; la asignación, no)</td></tr>
+    <tr><td><code>function saluda() {…}</code></td><td>funciona: la función entera sube</td></tr>
+    <tr><td><code>var saluda = function () {…};</code></td><td><code>TypeError: saluda is not a function</code> (vale <code>undefined</code>)</td></tr>
+    <tr><td><code>class P {}</code></td><td><code>ReferenceError: Cannot access 'P' before initialization</code></td></tr>
+  </tbody>
+</table>
+<p>El tramo entre el comienzo del bloque y la línea de un <code>let</code>, <code>const</code> o <code>class</code> se llama <strong>zona muerta temporal</strong> (<em>TDZ</em>): la variable existe, pero tocarla es un error. Es una red de seguridad, no un fastidio: con <code>var</code>, el mismo error pasa desapercibido como un <code>undefined</code>.</p>
+
+<div class="callout senior" data-titulo="Todos los scripts clásicos comparten un único ámbito global">
+  <p>Los <code>let</code>, <code>const</code> y <code>class</code> del nivel superior de un <code>&lt;script&gt;</code> clásico viven en un ámbito global compartido por <em>todos</em> los scripts de la página. Lo comprobé con dos scripts que declaraban <code>const lienzo</code>: el segundo falló con <code>SyntaxError: Identifier 'lienzo' has already been declared</code> y <strong>no se ejecutó ni una línea suya</strong> (el error se detecta antes de ejecutar). Y hay nombres que ya están ocupados por el objeto <code>window</code>:</p>
+  <ul>
+    <li><code>let top = 1;</code> en el nivel superior da el mismo <code>SyntaxError</code>, porque <code>window.top</code> es una propiedad que no se puede redefinir.</li>
+    <li><code>var top = 5;</code> no da error, pero no hace nada: <code>typeof top</code> siguió siendo <code>"object"</code>, la ventana.</li>
+    <li><code>var name = 123;</code> «funciona»… y <code>name</code> vale el string <code>"123"</code>, porque en realidad estás asignando <code>window.name</code>, que convierte todo a texto.</li>
+  </ul>
+  <p>Por eso las librerías (y los archivos de este curso: mira el principio de <code>curso.js</code>) envuelven todo su código en una función que se llama a sí misma, <code>(function () { "use strict"; … })();</code>, que crea un ámbito propio. Otra opción es un simple bloque <code>{ … }</code> para los <code>let</code>/<code>const</code>. La solución moderna son los módulos, que tienen ámbito propio… y que no funcionan con <code>file://</code> (final de la lección).</p>
+</div>
+
+<div class="callout bestiario" data-id="m1-ya-declarado" data-titulo="«Identifier 'x' has already been declared» sin haberlo declarado dos veces">
+  <p><strong>Síntoma:</strong> un script entero no se ejecuta y la consola dice <code>SyntaxError: Identifier 'lienzo' has already been declared</code> (o <code>'top'</code>, <code>'status'</code>…), aunque en ese archivo solo hay una declaración.</p>
+  <p><strong>Causa:</strong> otro <code>&lt;script&gt;</code> clásico de la página ya declaró ese nombre con <code>let</code>/<code>const</code>/<code>class</code> en su nivel superior, o el nombre es una propiedad fija de <code>window</code> (<code>top</code>, <code>location</code>…). Todos los scripts clásicos comparten el ámbito global.</p>
+  <p><strong>Solución:</strong> envuelve el código de cada script en su propio ámbito, con un bloque <code>{ … }</code> o una función autoejecutada <code>(function () { … })()</code>, o renombra la variable.</p>
+</div>
+
+<h2>Números: todos son doubles de 64 bits</h2>
+<p>En JavaScript solo hay un tipo de número para enteros y decimales: el <strong>double IEEE-754</strong> de 64 bits, el mismo que el <code>double</code> de C. Tiene 1 bit de signo, 11 de exponente y 52 de mantisa, lo que da unas 15–17 cifras decimales significativas. Es un formato binario con coma flotante: puede representar exactamente 0.5 o 0.25, pero no 0.1, igual que en decimal no puedes escribir 1/3 con un número finito de cifras. Desmontarás un float bit a bit en la lección <a href="06-binario.html">1.6</a>, y la GPU usa una versión más pequeña, de 32 bits, con sus propios problemas (lección <a href="../03-matematicas/07-precision.html">3.7</a>).</p>
+
+<h3>0.1 + 0.2 y cómo comparar decimales</h3>
+<p><code>0.1 + 0.2</code> da <code>0.30000000000000004</code>: ni 0.1 ni 0.2 son exactos, y el error de los dos, sumado y redondeado, se nota en la última cifra. Por eso <strong>nunca compares decimales con <code>===</code></strong>. Otros resultados reales: <code>1.1 + 2.2 = 3.3000000000000003</code> y <code>4.35 * 100 = 434.99999999999994</code> (así que <code>Math.floor(4.35 * 100)</code> da 434).</p>
+<div class="callout senior" data-titulo="Number.EPSILON no es una tolerancia universal">
+  <p>La receta que aparece en todas partes es <code>Math.abs(a - b) &lt; Number.EPSILON</code>, con <code>Number.EPSILON = 2.220446049250313e-16</code>. Funciona con <code>0.1 * 3</code> frente a <code>0.3</code>, pero <strong>falla</strong> con <code>1.1 + 2.2</code> frente a <code>3.3</code>: la diferencia es 4,4 · 10<sup>−16</sup>, el doble de <code>EPSILON</code>. El motivo: <code>EPSILON</code> es la distancia entre 1 y el siguiente double, y la distancia entre doubles consecutivos crece con el tamaño del número (entre 2 y 4 es el doble que entre 1 y 2; entre 1024 y 2048 es 1024 veces mayor, unos 2,3 · 10<sup>−13</sup>). Es una tolerancia pensada para valores cercanos a 1, no para cualquier escala.</p>
+</div>
+<p>Una comparación que funciona en cualquier escala usa una tolerancia <em>relativa</em>:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+function casiIguales(a, b, tolerancia = 1e-9) {
+  return Math.abs(a - b) <= tolerancia * Math.max(1, Math.abs(a), Math.abs(b));
+}
+casiIguales(1.1 + 2.2, 3.3);          // true  (la diferencia es relativa a 3.3)
+casiIguales(1000.1 + 1000.2, 2000.3); // true  (la diferencia real fue 2.27e-13)
+</script>
+<p>El <code>Math.max(1, …)</code> convierte la tolerancia en absoluta cerca de cero, donde una tolerancia relativa no tendría sentido.</p>
+
+<h3>Enteros exactos… hasta 2<sup>53</sup></h3>
+<p>Con 52 bits de mantisa (más uno implícito), un double representa exactamente todos los enteros hasta 2<sup>53</sup> = 9 007 199 254 740 992. <code>Number.MAX_SAFE_INTEGER</code> vale 2<sup>53</sup> − 1. A partir de ahí faltan números: <code>2**53 === 2**53 + 1</code> da <code>true</code>, y si escribes el literal <code>9007199254740993</code>, JavaScript lo guarda y lo imprime como <code>9007199254740992</code>. Para animar no suele importar (<code>performance.now()</code> y <code>Date.now()</code> quedan muy lejos del límite), pero la GPU trabaja con floats de 32 bits, donde el límite de enteros exactos es 2<sup>24</sup> = 16 777 216. Lo verás al convertir en la lección <a href="06-binario.html">1.6</a>.</p>
+
+<h3>NaN, -0 e Infinity</h3>
+<p><strong><code>NaN</code></strong> (<em>Not a Number</em>) es el resultado de una operación sin sentido: <code>0 / 0</code>, <code>Math.sqrt(-1)</code>, <code>Number("12px")</code>, <code>undefined * 2</code>. Tres propiedades que lo hacen peligroso:</p>
+<ul>
+  <li><strong>No es igual a nada, ni a sí mismo</strong>: <code>NaN === NaN</code> da <code>false</code>. Por eso <code>[NaN].indexOf(NaN)</code> da −1, mientras que <code>[NaN].includes(NaN)</code> da <code>true</code> (usa otra comparación).</li>
+  <li><strong>Se propaga</strong>: cualquier operación con un <code>NaN</code> da <code>NaN</code>. Una sola velocidad <code>NaN</code> contamina la posición, que contamina todo lo que dependa de ella.</li>
+  <li><strong>Es silencioso</strong>: nada lanza un error. <code>ctx.arc()</code> ignora las coordenadas <code>NaN</code> sin decir nada (lo viste en el ejercicio 1.1.3), y un uniform <code>NaN</code> en un shader produce colores imprevisibles.</li>
+</ul>
+<p>Para detectarlo, <code>Number.isNaN(x)</code>. No uses la función global <code>isNaN</code>, que convierte antes de comprobar: <code>isNaN("hola")</code> da <code>true</code>, pero <code>Number.isNaN("hola")</code> da <code>false</code> (un string no es el valor <code>NaN</code>). Para comprobar que un valor es un número usable, <code>Number.isFinite(x)</code>, que rechaza <code>NaN</code>, <code>Infinity</code> y cualquier cosa que no sea un número.</p>
+
+<div class="callout bestiario" data-id="m1-nan" data-titulo="La animación desaparece sin ningún error">
+  <p><strong>Síntoma:</strong> una partícula, un objeto o todo el dibujo desaparece de repente (o nunca aparece), y la consola está limpia.</p>
+  <p><strong>Causa:</strong> un <code>NaN</code> se coló en una posición y se propagó. Los orígenes típicos: dividir por cero al normalizar un vector de longitud 0 (<code>0 / 0</code>), un <code>dt</code> que vale <code>undefined</code> en el primer frame, una propiedad mal escrita (<code>p.vx</code> cuando se llamaba <code>p.velX</code> da <code>undefined</code>, y <code>undefined * dt</code> es <code>NaN</code>) o un string que no se pudo convertir.</p>
+  <p><strong>Solución:</strong> imprime la posición: si ves <code>NaN</code>, sigue hacia atrás hasta la primera operación que lo produjo. Protege las divisiones (<code>const l = Math.hypot(x, y); if (l &gt; 0) { x /= l; y /= l; }</code>) y valida entradas con <code>Number.isFinite</code>. Un <code>console.assert(Number.isFinite(p.x), p)</code> en el bucle lo caza en el acto.</p>
+</div>
+
+<p><strong><code>-0</code></strong> existe: el signo es un bit aparte, y el cero lo tiene. <code>0 === -0</code> da <code>true</code>, pero <code>Object.is(0, -0)</code> da <code>false</code> y <code>1 / -0</code> da <code>-Infinity</code>. Aparece más de lo que crees: <code>Math.round(-0.4)</code> da <code>-0</code>, y <code>0 * -5</code> también. Casi siempre es inofensivo, con dos excepciones que sí te afectarán:</p>
+<ul>
+  <li><code>Math.atan2(0, -1)</code> da π, pero <code>Math.atan2(-0, -1)</code> da −π. El ángulo salta una vuelta entera según el signo de un cero, algo que desconcierta cuando calculas la dirección de un vector.</li>
+  <li><code>(-0.04).toFixed(1)</code> da <code>"-0.0"</code>, que en una interfaz queda raro. En cambio, <code>String(-0)</code> y <code>JSON.stringify(-0)</code> dan <code>"0"</code>, y lo esconden. (La consola de los editores del curso sí escribe <code>-0</code>.)</li>
+</ul>
+<p><strong><code>Infinity</code></strong> sale de dividir por cero (<code>1 / 0</code>) o de pasarse del máximo (<code>1e308 * 10</code>; <code>Number.MAX_VALUE</code> ≈ 1,8 · 10<sup>308</sup>). Operar con él da resultados razonables hasta que no los da: <code>Infinity - Infinity</code> y <code>0 * Infinity</code> son <code>NaN</code>.</p>
+
+<h3><code>x | 0</code>: truncar a entero de 32 bits</h3>
+<p>Los operadores de bits (<code>|</code>, <code>&amp;</code>, <code>^</code>, <code>~</code>, <code>&lt;&lt;</code>, <code>&gt;&gt;</code>, <code>&gt;&gt;&gt;</code>) convierten sus operandos a <strong>enteros de 32 bits con signo</strong> antes de operar. Así que <code>x | 0</code> (hacer OR con cero, que no cambia ningún bit) es una forma de convertir a entero. Lo que hace exactamente:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Expresión</th><th>Resultado</th><th>Qué ha pasado</th></tr></thead>
+  <tbody>
+    <tr><td><code>3.7 | 0</code> / <code>-3.7 | 0</code></td><td>3 / −3</td><td>trunca hacia cero (no es <code>Math.floor</code>: <code>Math.floor(-3.7)</code> es −4)</td></tr>
+    <tr><td><code>NaN | 0</code>, <code>Infinity | 0</code>, <code>"12px" | 0</code></td><td>0</td><td>lo que no es un entero finito se convierte en 0, sin avisar</td></tr>
+    <tr><td><code>2**31 | 0</code></td><td>−2147483648</td><td>el bit 31 es el de signo: da la vuelta</td></tr>
+    <tr><td><code>1e10 | 0</code></td><td>1410065408</td><td>se queda con los 32 bits bajos (módulo 2<sup>32</sup>)</td></tr>
+    <tr><td><code>Date.now() | 0</code></td><td>un número negativo sin sentido (−346922120 en mi prueba)</td><td>los milisegundos desde 1970 no caben en 32 bits</td></tr>
+    <tr><td><code>-1 &gt;&gt;&gt; 0</code></td><td>4294967295</td><td><code>&gt;&gt;&gt; 0</code> reinterpreta como entero <em>sin</em> signo</td></tr>
+  </tbody>
+</table>
+<div class="callout hack" data-titulo="Aritmética entera de 32 bits en JavaScript">
+  <p>Con <code>| 0</code>, <code>&gt;&gt;&gt; 0</code> y <code>Math.imul</code> (multiplicación entera de 32 bits) puedes hacer en JavaScript la aritmética entera de C, que es la base de los generadores pseudoaleatorios deterministas. El generador <em>mulberry32</em> que usa <code>assets/js/texturas.js</code> para dibujar las texturas del curso está escrito exactamente así, y de esa idea salen las funciones de <em>hash</em> de los shaders de ruido (lección <a href="../06-glsl/06-ruido.html">6.6</a>). Además, <code>| 0</code> les dice a los motores JavaScript que un valor es entero, lo que permitía optimizaciones; hoy los motores lo deducen solos casi siempre.</p>
+</div>
+<div class="callout cuidado">
+  <p>La trampa: <code>| 0</code> solo es seguro con valores entre −2<sup>31</sup> y 2<sup>31</sup> − 1. Fuera de ese rango da números absurdos, sin error. Para truncar valores grandes (marcas de tiempo, índices de muchos millones), usa <code>Math.trunc</code>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué imprime <code>console.log(0.1 + 0.2 === 0.3, Number.isNaN("abc"), -7.9 | 0)</code>?</p>
+  <ul>
+    <li><code>false true -8</code><div class="explicacion"><code>Number.isNaN</code> no convierte: un string no es el valor <code>NaN</code>, así que da <code>false</code> (la global <code>isNaN("abc")</code> sí daría <code>true</code>). Y <code>| 0</code> trunca hacia cero: −7.</div></li>
+    <li data-correcta><code>false false -7</code><div class="explicacion">Exacto. La suma da 0.30000000000000004; <code>Number.isNaN</code> solo es <code>true</code> para el valor <code>NaN</code>; y <code>| 0</code> trunca hacia cero, como <code>Math.trunc</code>, no hacia abajo como <code>Math.floor</code>.</div></li>
+    <li><code>true false -7</code><div class="explicacion"><code>0.1 + 0.2</code> vale 0.30000000000000004, así que la comparación estricta con 0.3 da <code>false</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Math, con sus rarezas</h2>
+<p>El objeto <code>Math</code> tiene todo lo que usarás para animar. Todos sus ángulos van en <strong>radianes</strong> (una vuelta = <code>2 * Math.PI</code>), como en el resto del curso. Estos resultados, medidos en Chrome, son los que conviene tener en la cabeza:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Expresión</th><th>Resultado</th><th>Por qué importa</th></tr></thead>
+  <tbody>
+    <tr><td><code>Math.round(2.5)</code> / <code>Math.round(-2.5)</code></td><td>3 / −2</td><td>los medios se redondean hacia +∞, no «alejándose del cero»</td></tr>
+    <tr><td><code>Math.floor(-2.5)</code> / <code>Math.trunc(-2.5)</code> / <code>Math.ceil(-2.5)</code></td><td>−3 / −2 / −2</td><td><code>floor</code> baja, <code>trunc</code> corta hacia cero; con negativos no son lo mismo</td></tr>
+    <tr><td><code>Math.sin(Math.PI)</code></td><td><code>1.2246467991473532e-16</code></td><td>no es 0: π no es exacto. Si comparas con 0, usa una tolerancia</td></tr>
+    <tr><td><code>Math.atan2(1, 0)</code></td><td>π/2 ≈ 1.5708</td><td>ojo: primero la <strong>y</strong>, después la x</td></tr>
+    <tr><td><code>Math.hypot(3, 4)</code></td><td>5</td><td>la longitud de un vector, sin desbordamientos intermedios</td></tr>
+    <tr><td><code>Math.max()</code> / <code>Math.min()</code></td><td><code>-Infinity</code> / <code>Infinity</code></td><td>así que <code>Math.max(...[])</code> da <code>-Infinity</code></td></tr>
+    <tr><td><code>Math.max(1, NaN)</code> / <code>Math.max(1, undefined)</code> / <code>Math.max(1, null)</code></td><td><code>NaN</code> / <code>NaN</code> / 1</td><td>un solo <code>NaN</code> gana; <code>null</code> cuenta como 0</td></tr>
+    <tr><td><code>(-8) ** (1/3)</code> / <code>Math.cbrt(-8)</code></td><td><code>NaN</code> / −2</td><td>potencia fraccionaria de un negativo; usa <code>cbrt</code> o el signo aparte</td></tr>
+    <tr><td><code>(1.005).toFixed(2)</code></td><td><code>"1.00"</code></td><td>1.005 se guarda como 1.00499999…; y <code>toFixed</code> devuelve un <em>string</em></td></tr>
+  </tbody>
+</table>
+<p><code>Math.random()</code> devuelve un número en [0, 1): puede dar 0, nunca 1. No se puede fijar su semilla, así que no sirve para efectos reproducibles (la misma nube de puntos cada vez que recargas); para eso se escribe un generador propio como el mulberry32 que mencionábamos. Para convertir entre grados y radianes: <code>rad = grados * Math.PI / 180</code>.</p>
+
+<h2><code>%</code> no es el módulo matemático</h2>
+<p>El operador <code>%</code> de JavaScript es el <strong>resto</strong> de la división truncada, y su resultado tiene <strong>el signo del dividendo</strong> (el número de la izquierda):</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Expresión</th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td><code>7 % 5</code></td><td>2</td></tr>
+    <tr><td><code>-1 % 5</code></td><td><strong>−1</strong> (no 4)</td></tr>
+    <tr><td><code>5 % -3</code></td><td>2</td></tr>
+    <tr><td><code>-5 % 5</code></td><td><code>-0</code></td></tr>
+    <tr><td><code>5.5 % 2</code> / <code>-7.5 % 2</code></td><td>1.5 / −1.5 (funciona con decimales)</td></tr>
+    <tr><td><code>0.3 % 0.1</code></td><td><code>0.09999999999999998</code> (¡no 0!)</td></tr>
+    <tr><td><code>1 % 0</code></td><td><code>NaN</code></td></tr>
+  </tbody>
+</table>
+<p>El <strong>módulo matemático</strong>, el que devuelve siempre un valor entre 0 y <code>n</code>, se define con <code>floor</code> en lugar de truncar: <code>a − n · floor(a / n)</code>. Así es exactamente como define GLSL su función <code>mod(x, y)</code>, que usarás constantemente para repetir patrones (lección <a href="../03-matematicas/04-funciones-forma.html">3.4</a>). En JavaScript:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+const mod = (a, n) => a - n * Math.floor(a / n);   // como el mod() de GLSL
+// alternativa muy común, solo con %:  ((a % n) + n) % n
+mod(-1, 5);    // 4
+mod(-7.5, 2);  // 0.5
+</script>
+<p>Esta gráfica está dibujada por un shader, es decir, es lo que calcula de verdad la GPU. La primera curva es <code>mod(x, 1.0)</code> de GLSL: un diente de sierra que se repite igual a ambos lados del cero. La segunda, <code>x - trunc(x)</code>, es lo que hace el <code>%</code> de JavaScript con <code>x % 1</code>: para x negativa, la sierra se da la vuelta y va de 0 a −1. (Con x positiva las dos curvas coinciden, y por eso solo ves la segunda, en azul, dibujada encima de la primera.)</p>
+<div class="graficador" data-x="-2.5,2.5" data-y="-1.3,1.3" data-titulo="mod() de GLSL frente al % de JavaScript">
+<script type="text/x-exprs">
+mod(x, 1.0)
+x - trunc(x)
+</script>
+</div>
+
+<div class="callout bestiario" data-id="m1-modulo-negativo" data-titulo="El índice cíclico se vuelve undefined al ir hacia atrás">
+  <p><strong>Síntoma:</strong> recorres una paleta de colores o unos fotogramas con <code>(i - 1) % n</code> para ir hacia atrás, y al pasar del primero sale <code>undefined</code>. O un patrón que repites con <code>x % tamaño</code> se ve bien a la derecha del origen y roto (o reflejado) a la izquierda.</p>
+  <p><strong>Causa:</strong> <code>%</code> conserva el signo del dividendo: <code>(0 - 1) % 5</code> es −1, y <code>colores[-1]</code> es <code>undefined</code>.</p>
+  <p><strong>Solución:</strong> usa un módulo de verdad, <code>((a % n) + n) % n</code> o <code>a - n * Math.floor(a / n)</code>, siempre que el dividendo pueda ser negativo.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Cuánto vale <code>-7 % 3</code> en JavaScript, y cuánto <code>mod(-7.0, 3.0)</code> en GLSL?</p>
+  <ul>
+    <li>2 y 2<div class="explicacion">El <code>mod</code> de GLSL sí da 2 (−7 − 3·floor(−7/3) = −7 − 3·(−3) = 2), pero el <code>%</code> de JavaScript conserva el signo del dividendo.</div></li>
+    <li data-correcta>−1 y 2<div class="explicacion">Correcto. JavaScript trunca la división (−7/3 → −2) y el resto es −7 − 3·(−2) = −1. GLSL usa <code>floor</code> (−7/3 → −3) y da −7 − 3·(−3) = 2, siempre entre 0 y 3.</div></li>
+    <li>−1 y −1<div class="explicacion">El <code>mod()</code> de GLSL está definido con <code>floor</code>, así que con divisor positivo nunca devuelve negativos.</div></li>
+  </ul>
+</div>
+
+<h2>Strings, template literals y conversiones</h2>
+<p>Los strings son inmutables (<code>s[0] = "x"</code> no hace nada) y están codificados en UTF-16, lo que tiene un efecto curioso: <code>"😀".length</code> es 2, porque el emoji ocupa dos unidades de 16 bits; <code>[..."😀"].length</code> es 1, porque el operador <code>...</code> recorre caracteres completos. E incluso <code>"ñ"</code> puede medir 1 o 2 según cómo esté escrita: <code>"ñ".normalize("NFD").length</code> es 2 (una «n» más una tilde combinable).</p>
+<p>Las <strong>template literals</strong>, entre comillas invertidas, insertan expresiones con <code>${…}</code>. Las usarás a todas horas para construir valores CSS y hasta código de shaders:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+el.style.transform = `translate(${x}px, ${y}px) rotate(${angulo}rad)`;
+const fuente = `#version 300 es
+#define NUM_LUCES ${luces.length}
+precision highp float;`;   // pueden ocupar varias líneas
+</script>
+
+<h3>Conversiones implícitas: el <code>+</code> es especial</h3>
+<p>JavaScript convierte tipos solo, y cada operador lo hace a su manera. El <code>+</code> concatena en cuanto uno de los dos lados es un string; los demás operadores aritméticos convierten a número:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Expresión</th><th>Resultado</th><th>Expresión</th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td><code>"5" + 1</code></td><td><code>"51"</code></td><td><code>"5" - 1</code></td><td>4</td></tr>
+    <tr><td><code>1 + 2 + "3"</code></td><td><code>"33"</code> (de izquierda a derecha)</td><td><code>"1" + 2 + 3</code></td><td><code>"123"</code></td></tr>
+    <tr><td><code>+"3.5"</code></td><td>3.5</td><td><code>+""</code>, <code>+" "</code></td><td>0 (¡un campo vacío es 0!)</td></tr>
+    <tr><td><code>+"12px"</code></td><td><code>NaN</code></td><td><code>parseInt("12px")</code></td><td>12</td></tr>
+    <tr><td><code>parseFloat("3.5e2px")</code></td><td>350</td><td><code>parseInt(0.0000005)</code></td><td>5 (!)</td></tr>
+    <tr><td><code>Number(null)</code></td><td>0</td><td><code>Number(undefined)</code></td><td><code>NaN</code></td></tr>
+  </tbody>
+</table>
+<p>El caso de <code>parseInt(0.0000005)</code> merece explicación: <code>parseInt</code> espera un string, así que primero convierte el número, y <code>String(0.0000005)</code> es <code>"5e-7"</code>; después lee los dígitos iniciales, «5», y se detiene en la «e». Moraleja: <code>parseInt</code> y <code>parseFloat</code> son para <em>leer texto</em> (un <code>"12px"</code> que viene del CSS); para truncar un número, <code>Math.trunc</code>.</p>
+
+<h2><code>==</code> frente a <code>===</code>, y la verdad según JavaScript</h2>
+<p><code>===</code> (igualdad estricta) compara sin convertir: mismo tipo y mismo valor. <code>==</code> convierte los tipos siguiendo una tabla que casi nadie recuerda entera, y que produce joyas como estas (todas comprobadas):</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Expresión</th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td><code>"" == 0</code>, <code>"0" == false</code>, <code>[] == false</code></td><td><code>true</code>, <code>true</code>, <code>true</code></td></tr>
+    <tr><td><code>[] == ![]</code></td><td><code>true</code> (un array es igual a su negación)</td></tr>
+    <tr><td><code>null == 0</code></td><td><code>false</code>…</td></tr>
+    <tr><td><code>null &gt;= 0</code></td><td>…pero <code>true</code>: las comparaciones <code>&lt;</code>/<code>&gt;=</code> convierten <code>null</code> a 0, y <code>==</code> no</td></tr>
+    <tr><td><code>null == undefined</code></td><td><code>true</code></td></tr>
+    <tr><td><code>"10" &lt; "9"</code></td><td><code>true</code>: entre dos strings se compara carácter a carácter, como en un diccionario</td></tr>
+  </tbody>
+</table>
+<p>La regla: usa siempre <code>===</code> y <code>!==</code>. La única excepción aceptada es <code>x == null</code>, que es <code>true</code> justo para <code>null</code> y <code>undefined</code> y nada más (ni 0 ni <code>""</code>), una forma compacta de preguntar «¿falta este valor?».</p>
+
+<h3>Truthy y falsy</h3>
+<p>En un <code>if</code>, en un <code>while</code> o con <code>!</code>, cualquier valor se convierte en booleano. Son <em>falsy</em> exactamente estos: <code>false</code>, <code>0</code>, <code>-0</code>, <code>0n</code>, <code>""</code>, <code>null</code>, <code>undefined</code> y <code>NaN</code>. Todo lo demás es <em>truthy</em>, incluidos <code>"0"</code>, <code>" "</code>, <code>"false"</code>, <code>[]</code> y <code>{}</code>.</p>
+<p>La trampa clásica está en los valores por defecto. <code>a || b</code> devuelve <code>b</code> si <code>a</code> es falsy, así que confunde «no me lo han dado» con «me han dado un 0». El operador <code>??</code> (<em>nullish coalescing</em>) solo recurre al valor por defecto con <code>null</code> o <code>undefined</code>: <code>0 || 1</code> es 1, pero <code>0 ?? 1</code> es 0. Su pariente <code>?.</code> (encadenamiento opcional) lee una propiedad solo si lo de la izquierda existe: <code>undefined?.x</code> da <code>undefined</code> en vez de un <code>TypeError</code>.</p>
+
+<div class="callout bestiario" data-id="m1-cero-falsy" data-titulo="Pongo la velocidad a 0 y sigue moviéndose">
+  <p><strong>Síntoma:</strong> un parámetro que puede valer 0 (velocidad, retraso, opacidad, un ángulo inicial, la coordenada x del ratón en el borde) se ignora y se usa el valor por defecto.</p>
+  <p><strong>Causa:</strong> el valor por defecto se escribió con <code>||</code>, como en <code>const velocidad = opciones.velocidad || 1</code>. Como 0 es falsy, <code>0 || 1</code> da 1. Lo mismo pasa con <code>if (x)</code> cuando <code>x</code> puede ser 0 legítimamente.</p>
+  <p><strong>Solución:</strong> <code>opciones.velocidad ?? 1</code>, o un parámetro con valor por defecto, <code>function animar({ velocidad = 1 } = {})</code>, que también solo actúa con <code>undefined</code>. Y compara explícitamente: <code>if (x !== undefined)</code>.</p>
+</div>
+
+<h2>Objetos y referencias</h2>
+<p>Una variable que contiene un objeto no contiene el objeto: contiene una <strong>referencia</strong> a él, como una dirección. Asignar copia la referencia, no el objeto:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const a = { x: 1, y: 2 };
+const b = a;
+b.x = 99;
+console.log(a.x);                 // 99
+console.log({ x: 1 } === { x: 1 });  // false
+function mover(p) { p.x += 10; }
+mover(a);
+console.log(a.x);                 // 109
+</script>
+<ol>
+  <li data-l="1">Se crea un objeto en memoria y <code>a</code> guarda una referencia a él.</li>
+  <li data-l="2">No se copia nada: <code>b</code> es otra referencia al <strong>mismo</strong> objeto. A esto se le llama <em>aliasing</em>: dos nombres para una sola cosa.</li>
+  <li data-l="3-4">Modificar a través de <code>b</code> modifica el objeto que también ve <code>a</code>.</li>
+  <li data-l="5"><code>===</code> entre objetos compara <em>identidad</em> (¿es el mismo objeto?), no contenido. Dos objetos iguales en contenido son distintos.</li>
+  <li data-l="6-8">Una función recibe una copia de la referencia: puede modificar el objeto del que llama (aunque no puede hacer que la variable del que llama apunte a otro objeto).</li>
+</ol>
+</div>
+<p>Las copias también engañan. El <em>spread</em> (<code>{ ...a }</code>) y <code>Object.assign</code> hacen copias <strong>superficiales</strong>: copian el primer nivel, pero los objetos anidados siguen compartidos. Lo comprobé: con <code>a = { pos: { x: 1 } }</code> y <code>b = { ...a }</code>, cambiar <code>b.pos.x</code> cambió <code>a.pos.x</code>. <code>structuredClone(a)</code> hace una copia profunda. Y <code>Object.freeze</code> también es superficial: congela el primer nivel (asignar lanza <code>TypeError: Cannot assign to read only property 'x'…</code> en modo estricto), pero los objetos de dentro se pueden seguir modificando.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.3.1 — Cien partículas que se mueven como una sola</h3>
+  <p>Queremos 100 partículas, cada una con su posición y una velocidad aleatoria. El código parece correcto, pero todas se mueven exactamente igual. Ejecuta:</p>
+  <div class="js-playground" data-titulo="Partículas gemelas" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const mod = (a, n) => a - n * Math.floor(a / n);          // el de la sección anterior
+
+const origen = { x: canvas.width / 2, y: canvas.height / 2 };
+const particulas = [];
+for (let i = 0; i < 100; i++) {
+  particulas.push({
+    pos: origen,                                          // ← el error está aquí
+    vel: { x: Math.random() * 2 - 1, y: Math.random() * 2 - 1 },
+  });
+}
+console.log("¿misma posición?", particulas[0].pos === particulas[99].pos);
+
+function frame() {
+  ctx.fillStyle = "rgba(14, 16, 20, 0.25)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#3fd0e8";
+  for (const p of particulas) {
+    p.pos.x = mod(p.pos.x + p.vel.x, canvas.width);    // al salir por un borde, entra por el opuesto
+    p.pos.y = mod(p.pos.y + p.vel.y, canvas.height);
+    ctx.fillRect(p.pos.x - 2, p.pos.y - 2, 4, 4);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const mod = (a, n) => a - n * Math.floor(a / n);          // el de la sección anterior
+
+const origen = { x: canvas.width / 2, y: canvas.height / 2 };
+const particulas = [];
+for (let i = 0; i < 100; i++) {
+  particulas.push({
+    pos: { x: origen.x, y: origen.y },                   // un objeto NUEVO por partícula
+    vel: { x: Math.random() * 2 - 1, y: Math.random() * 2 - 1 },
+  });
+}
+console.log("¿misma posición?", particulas[0].pos === particulas[99].pos);
+
+function frame() {
+  ctx.fillStyle = "rgba(14, 16, 20, 0.25)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#3fd0e8";
+  for (const p of particulas) {
+    p.pos.x = mod(p.pos.x + p.vel.x, canvas.width);    // al salir por un borde, entra por el opuesto
+    p.pos.y = mod(p.pos.y + p.vel.y, canvas.height);
+    ctx.fillRect(p.pos.x - 2, p.pos.y - 2, 4, 4);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p><strong>Lo que se ve.</strong> Un único punto que cruza el lienzo en línea recta (y reaparece por el lado contrario gracias al <code>mod</code>), no una explosión de cien. La consola lo confirma: <code>particulas[0].pos === particulas[99].pos</code> es <code>true</code>.</p>
+  <p><strong>Por qué.</strong> <code>pos: origen</code> no copia el objeto <code>origen</code>: guarda en cada partícula una referencia al mismo objeto. Las cien partículas comparten <em>una sola</em> posición. En cada frame, cada partícula le suma su velocidad a esa posición compartida, así que el punto avanza la suma de las cien velocidades. Esa suma es siempre la misma, de ahí la línea recta; y como las velocidades aleatorias se compensan solo en parte, el punto va bastante deprisa.</p>
+  <p><strong>La corrección</strong> (botón «Ver solución»): crear un objeto nuevo por partícula, <code>pos: { x: origen.x, y: origen.y }</code>. La consola pasa a decir <code>false</code> y aparece la explosión. La misma trampa, en versión compacta: <code>new Array(100).fill({ x: 0, y: 0 })</code> rellena el array con cien referencias al mismo objeto (lo comprobé: al mover el primero se movían todos). Para objetos independientes: <code>Array.from({ length: 100 }, () =&gt; ({ x: 0, y: 0 }))</code>, donde la función se llama una vez por elemento.</p>
+</section>
+
+<div class="callout bestiario" data-id="m1-particulas-juntas" data-titulo="Todas mis partículas se mueven a la vez">
+  <p><strong>Síntoma:</strong> muchos objetos que deberían ser independientes se mueven, cambian de color o reaccionan todos a la vez, como si fueran uno.</p>
+  <p><strong>Causa:</strong> comparten un objeto por referencia: se creó una vez y se asignó a todos (<code>pos: origen</code>, <code>.fill({…})</code>, un objeto de configuración reutilizado y modificado).</p>
+  <p><strong>Solución:</strong> crea un objeto nuevo por elemento (<code>Array.from({ length: n }, () =&gt; ({…}))</code>, <code>{ ...obj }</code> si es plano, <code>structuredClone</code> si tiene anidados). Para comprobarlo: <code>a.pos === b.pos</code> debe ser <code>false</code>.</p>
+</div>
+
+<h2>Arrays y sus métodos</h2>
+<p>Un array es una lista ordenada con índices desde 0. Los métodos que más usarás, con el detalle que importa de cada uno:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+const xs = [3, 1, 2];
+xs.forEach((x, i) => console.log(i, x));      // recorre; devuelve undefined; no se puede cortar con break
+const dobles = xs.map((x) => x * 2);          // [6, 2, 4]  → un array NUEVO del mismo tamaño
+const grandes = xs.filter((x) => x > 1);      // [3, 2]     → un array NUEVO con los que cumplen
+const suma = xs.reduce((acc, x) => acc + x, 0); // 6        → acumula; el 0 es el valor inicial
+const primero = xs.find((x) => x > 1);        // 3          → el primero que cumple (o undefined)
+for (const x of xs) { if (x === 1) break; }   // el bucle de toda la vida sí admite break y continue
+</script>
+<p>Tres detalles que muerden:</p>
+<ul>
+  <li><strong><code>sort()</code> sin función compara como strings</strong>: <code>[10, 9, 1, 100].sort()</code> dio <code>[1, 10, 100, 9]</code>. Para números: <code>sort((a, b) =&gt; a - b)</code>. Además, <code>sort</code> ordena el array original (lo modifica); <code>toSorted</code> devuelve una copia ordenada.</li>
+  <li><strong><code>reduce</code> sin valor inicial</strong> falla con un array vacío: <code>TypeError: Reduce of empty array with no initial value</code>. Pon siempre el segundo argumento.</li>
+  <li><strong>Los huecos</strong>: <code>new Array(3)</code> crea un array de longitud 3 sin elementos, y <code>map</code> se salta los huecos, así que <code>new Array(3).map((_, i) =&gt; i)</code> sigue siendo un array de tres huecos. Usa <code>Array.from({ length: 3 }, (_, i) =&gt; i)</code>.</li>
+</ul>
+<p>Y un apunte que conecta con el final de la lección: <code>map</code> y <code>filter</code> crean arrays nuevos en cada llamada. En el código de inicialización da igual; dentro de un bucle que se ejecuta 60 veces por segundo sobre miles de partículas, es basura que el recolector tendrá que limpiar.</p>
+
+<h2>Funciones y closures</h2>
+<p>Hay tres formas de crear una función, y se diferencian en detalles que importan:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function lerp(a, b, t) { return a + (b - a) * t; }   // declaración
+const suavizar = function (t) { return t * t * (3 - 2 * t); };   // expresión
+const alCuadrado = (x) => x * x;                      // flecha, retorno implícito
+const conValores = (a, b = 10, ...resto) => a + b + resto.length;
+requestAnimationFrame(frame);
+</script>
+<ol>
+  <li data-l="1">Una <strong>declaración</strong> sube entera con el <em>hoisting</em>: se puede llamar antes de su línea. <code>lerp</code> (interpolación lineal) la usarás en todo el módulo 2.</li>
+  <li data-l="2">Una <strong>expresión</strong>: la función es un valor asignado a una variable, y solo existe a partir de esa línea. (Es el <code>smoothstep</code> de GLSL, por cierto; lo verás en la lección <a href="../03-matematicas/04-funciones-forma.html">3.4</a>.)</li>
+  <li data-l="3">Una <strong>flecha</strong>: más corta, y con una sola expresión, sin llaves, la devuelve sin <code>return</code>. Además, no tiene <code>this</code> ni <code>arguments</code> propios: usa los del sitio donde se escribió. Enseguida veremos por qué eso es justo lo que quieres en un bucle de animación.</li>
+  <li data-l="4">Parámetros con valor por defecto (solo se aplica si llega <code>undefined</code>) y parámetros <em>rest</em> (<code>...resto</code> recoge los sobrantes en un array).</li>
+  <li data-l="5">Las funciones son valores: se pasan como argumento. Aquí le pasamos <code>frame</code> (sin paréntesis: la función, no su resultado) al navegador para que la llame en el próximo fotograma.</li>
+</ol>
+</div>
+
+<h3>Closures: funciones con memoria</h3>
+<p>Una función recuerda las variables del ámbito donde se creó, aunque ese ámbito ya haya terminado. A esa combinación de función más variables recordadas se le llama <strong>closure</strong>. Es la forma natural de guardar el estado de una animación sin variables globales:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function crearCronometro() {
+  let inicio = null;
+  let vueltas = 0;
+  return function (ms) {
+    if (inicio === null) inicio = ms;
+    vueltas++;
+    return { segundos: (ms - inicio) / 1000, vueltas };
+  };
+}
+const cronometro = crearCronometro();
+</script>
+<ol>
+  <li data-l="2-3">Estado privado: estas variables solo existen dentro de <code>crearCronometro</code>. Nadie de fuera puede leerlas ni estropearlas.</li>
+  <li data-l="4">Devolvemos una función creada <em>aquí dentro</em>. Se lleva consigo el acceso a <code>inicio</code> y <code>vueltas</code>.</li>
+  <li data-l="5">La primera vez que se llama, fija el instante inicial. Las siguientes, ya no. (Comparamos con <code>=== null</code> y no con <code>!inicio</code> porque un instante 0 sería falsy: el bestiario de antes.)</li>
+  <li data-l="10">Cuando <code>crearCronometro</code> termina, sus variables no se destruyen: la función devuelta las mantiene vivas. Cada llamada a <code>crearCronometro()</code> crea un juego nuevo de variables, así que puedes tener varios cronómetros independientes.</li>
+</ol>
+</div>
+<p>Las closures capturan <em>variables</em>, no valores. El experimento clásico: crear tres funciones en un bucle que devuelven el contador. Con <code>for (var i …)</code> las tres devolvieron <code>[3, 3, 3]</code>; con <code>for (let j …)</code>, <code>[0, 1, 2]</code>. Con <code>var</code> hay una sola variable <code>i</code> para todo el bucle, y cuando las funciones se ejecutan ya vale 3; con <code>let</code>, cada vuelta del bucle crea una variable nueva.</p>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué imprime este código?</p>
+  <script type="text/plain" class="codigo" data-lang="js">
+for (var i = 0; i < 3; i++) setTimeout(() => console.log("var", i), 0);
+for (let j = 0; j < 3; j++) setTimeout(() => console.log("let", j), 0);
+</script>
+  <ul>
+    <li><code>var 0, var 1, var 2, let 0, let 1, let 2</code><div class="explicacion">Eso pasaría si las closures capturaran el <em>valor</em> de <code>i</code> en cada vuelta. Capturan la <em>variable</em>, y con <code>var</code> solo hay una para todo el bucle.</div></li>
+    <li data-correcta><code>var 3, var 3, var 3, let 0, let 1, let 2</code><div class="explicacion">Correcto. Los <code>setTimeout</code> se ejecutan después de que termine todo el código (lección <a href="05-event-loop.html">1.5</a>). Para entonces, la única variable <code>i</code> vale 3. Con <code>let</code>, cada vuelta tiene su propia variable <code>j</code>, y cada closure recuerda la suya.</div></li>
+    <li><code>var 2, var 2, var 2, let 0, let 1, let 2</code><div class="explicacion">El bucle termina cuando <code>i &lt; 3</code> es falso, es decir, cuando <code>i</code> ya vale 3, no 2: el último <code>i++</code> se ejecuta antes de la comprobación que corta el bucle.</div></li>
+  </ul>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.3.2 — Un bucle de animación sin variables globales</h3>
+  <p>Queremos una función <code>crearAnimacion(canvas)</code> que devuelva un objeto con <code>iniciar()</code> y <code>parar()</code>, y que guarde todo su estado (tiempo inicial, identificador del frame pendiente, fotogramas dibujados) en una closure. Así podremos tener varias animaciones en la misma página sin que se pisen.</p>
+  <div class="js-playground" data-titulo="Animación encapsulada con una closure" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="a"></canvas><canvas id="b"></canvas>
+<button id="parar">parar la de la derecha</button>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 6px; box-sizing: border-box; }
+canvas { width: calc(50% - 3px); height: 180px; background: #161a22; }
+button { font: 13px sans-serif; }
+</script>
+<script type="text/x-js">
+function crearAnimacion(canvas, color, velocidad) {
+  const ctx = canvas.getContext("2d");
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+  let inicio = null;      // estado privado de ESTA animación
+  let pendiente = 0;      // id del frame pedido (para poder cancelarlo)
+  let fotogramas = 0;
+
+  function frame(ms) {
+    if (inicio === null) inicio = ms;
+    const t = (ms - inicio) / 1000;                    // segundos desde que empezó
+    const x = canvas.width / 2 + Math.cos(t * velocidad) * canvas.width * 0.35;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, canvas.height / 2, 14, 0, 2 * Math.PI);
+    ctx.fill();
+    fotogramas++;
+    pendiente = requestAnimationFrame(frame);          // pide el siguiente
+  }
+  return {
+    iniciar() { if (!pendiente) pendiente = requestAnimationFrame(frame); },
+    parar() { cancelAnimationFrame(pendiente); pendiente = 0; console.log("parada tras", fotogramas, "fotogramas"); },
+  };
+}
+
+const izquierda = crearAnimacion(document.getElementById("a"), "#8b7bff", 2);
+const derecha = crearAnimacion(document.getElementById("b"), "#3fd0e8", 5);
+izquierda.iniciar();
+derecha.iniciar();
+document.getElementById("parar").addEventListener("click", () => derecha.parar());
+</script>
+  </div>
+  <p><strong>El estado.</strong> <code>inicio</code>, <code>pendiente</code> y <code>fotogramas</code> se declaran dentro de <code>crearAnimacion</code>. Las funciones <code>frame</code>, <code>iniciar</code> y <code>parar</code> se crean ahí también, así que las tres ven <em>las mismas</em> variables, y nadie más las ve. Las dos animaciones son dos llamadas distintas, con dos juegos de variables distintos: parar una no afecta a la otra.</p>
+  <p><strong>El tiempo.</strong> <code>requestAnimationFrame</code> llama a <code>frame</code> con un argumento: el instante del fotograma en milisegundos (el mismo reloj que <code>performance.now()</code>). Guardamos el primero en <code>inicio</code> y calculamos <code>t</code> como la diferencia en segundos. Calcular la posición a partir del tiempo transcurrido, y no sumando un poco en cada frame, hace que la velocidad no dependa de los fotogramas por segundo de tu pantalla; lo verás a fondo en la lección <a href="../02-animacion/03-raf.html">2.3</a>.</p>
+  <p><strong>Parar.</strong> <code>requestAnimationFrame</code> devuelve un número que identifica la petición; <code>cancelAnimationFrame(id)</code> la anula. Por eso guardamos <code>pendiente</code> en cada frame: siempre contiene la petición que está por llegar. Ponerlo a 0 al parar permite que <code>iniciar()</code> sepa si ya hay una animación en marcha (el identificador nunca es 0) y no arranque dos bucles a la vez, que es el origen de muchas animaciones que «van el doble de rápido».</p>
+</section>
+
+<h2><code>this</code>, lo justo</h2>
+<p><code>this</code> no depende de dónde se escribe una función, sino de <strong>cómo se llama</strong>:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Llamada</th><th><code>this</code> vale</th></tr></thead>
+  <tbody>
+    <tr><td><code>obj.metodo()</code></td><td><code>obj</code>, lo que va antes del punto</td></tr>
+    <tr><td><code>const f = obj.metodo; f()</code></td><td><code>undefined</code> en modo estricto (en las clases lo es siempre); la ventana, en scripts antiguos sin <code>"use strict"</code></td></tr>
+    <tr><td><code>new Particula()</code></td><td>el objeto nuevo que se está creando</td></tr>
+    <tr><td><code>el.addEventListener("click", function () {…})</code></td><td>el elemento <code>el</code></td></tr>
+    <tr><td>una función flecha</td><td>el <code>this</code> del código que la rodea; la forma de llamarla no lo cambia</td></tr>
+  </tbody>
+</table>
+<p>El caso que te va a pasar: pasar un método a <code>requestAnimationFrame</code> o a <code>addEventListener</code>. <code>requestAnimationFrame(this.paso)</code> entrega la función <em>suelta</em>, sin el objeto; cuando el navegador la llama, lo hace como <code>f()</code>, y <code>this</code> es <code>undefined</code>. Lo comprobé con un método que hacía <code>this.t = ms</code>: <code>TypeError: Cannot set properties of undefined (setting 't')</code>. (Si el método <em>leyera</em> <code>this.t</code>, el mensaje sería <code>Cannot read properties of undefined (reading 't')</code>.) Hay tres arreglos:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+requestAnimationFrame((ms) => this.paso(ms));   // 1. una flecha que llama al método COMO método
+this.paso = this.paso.bind(this);               // 2. en el constructor: una copia atada a este objeto
+paso = (ms) => { /* … */ };                     // 3. un campo de clase con una flecha
+</script>
+<div class="callout bestiario" data-id="m1-this-perdido" data-titulo="«Cannot read properties of undefined» dentro de un método">
+  <p><strong>Síntoma:</strong> un método de tu clase funciona si lo llamas a mano (<code>anim.paso()</code>), pero falla con <code>TypeError: Cannot read properties of undefined (reading '…')</code> (o <code>Cannot set properties of undefined</code>) cuando lo llama <code>requestAnimationFrame</code>, un <code>setTimeout</code> o un evento.</p>
+  <p><strong>Causa:</strong> se pasó el método suelto (<code>requestAnimationFrame(this.paso)</code>). El navegador lo llama sin objeto delante, y en una clase <code>this</code> vale <code>undefined</code>.</p>
+  <p><strong>Solución:</strong> pasa una flecha que lo llame como método, <code>requestAnimationFrame((t) =&gt; this.paso(t))</code>, átalo con <code>bind</code> en el constructor, o decláralo como campo flecha (<code>paso = (t) =&gt; {…}</code>).</p>
+</div>
+
+<h2>Desestructuración y spread</h2>
+<script type="text/plain" class="codigo" data-lang="js">
+const { x, y } = particula;                 // saca propiedades a variables
+const { vida: v = 1 } = particula;          // renombra (v) y da valor por defecto (1)
+const [primero, segundo] = puntos;          // por posición
+[a, b] = [b, a];                            // intercambio sin variable temporal
+const copia = { ...estado, pausado: true }; // copia superficial cambiando una propiedad
+const todos = [...viejos, ...nuevos];       // concatena
+function crearParticula({ x = 0, y = 0, vida = 1 } = {}) { /* … */ }  // "opciones con nombre"
+</script>
+<p>La última línea es un patrón muy común para configurar cosas: la función recibe un objeto y lo desestructura con valores por defecto, así puedes llamar a <code>crearParticula({ vida: 3 })</code> sin acordarte del orden de los parámetros. El <code>= {}</code> final permite llamarla sin argumentos.</p>
+<div class="callout cuidado">
+  <p><code>Math.max(...valores)</code> pasa cada elemento como un argumento, y el número de argumentos tiene un límite que depende del motor y de la memoria de la pila. En mi Chrome, con 100 000 elementos funcionó y con 200 000 lanzó <code>RangeError: Maximum call stack size exceeded</code>. Con arrays grandes (por ejemplo, los vértices de una malla), usa un bucle o <code>reduce</code>.</p>
+</div>
+
+<h2>Clases, lo justo: una <code>Particula</code></h2>
+<p>Una clase es una plantilla para crear objetos con la misma forma y los mismos métodos. Es lo que usarás para las partículas, los muelles y los objetos de escena del curso:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+class Particula {
+  static creadas = 0;
+  #vida;
+  constructor(x, y, vx = 0, vy = 0, vida = 2) {
+    this.x = x; this.y = y;
+    this.vx = vx; this.vy = vy;
+    this.#vida = vida;
+    Particula.creadas++;
+  }
+  actualizar(dt) {
+    this.vy += 300 * dt;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.#vida -= dt;
+  }
+  get viva() { return this.#vida > 0; }
+}
+const p = new Particula(100, 50, 40, -120);
+</script>
+<ol>
+  <li data-l="2">Campo <em>estático</em>: pertenece a la clase, no a cada objeto. Se lee como <code>Particula.creadas</code>.</li>
+  <li data-l="3">Campo <em>privado</em>: el <code>#</code> forma parte del nombre y solo el código de dentro de la clase puede leerlo. Desde fuera, <code>p.#vida</code> es un error de sintaxis.</li>
+  <li data-l="4-9">El constructor se ejecuta con <code>new</code>. <code>this</code> es el objeto que se está creando; cada asignación le añade una propiedad propia.</li>
+  <li data-l="10-15">Un método. Todas las partículas comparten una única copia de la función (vive en <code>Particula.prototype</code>); lo que cambia es el <code>this</code> con que se llama. Dentro, una integración elemental: la gravedad (300 px/s²) cambia la velocidad y, después, la velocidad ya actualizada mueve la posición. Ese orden tiene nombre, Euler semi-implícito, y en la lección <a href="../02-animacion/05-fisica-muelles.html">2.5</a> verás por qué importa tanto: con el orden contrario, lo que oscila acaba explotando.</li>
+  <li data-l="16">Un <em>getter</em>: se lee como una propiedad (<code>p.viva</code>, sin paréntesis), pero ejecuta código.</li>
+  <li data-l="18">Sin <code>new</code>, una clase no se puede llamar: <code>Particula()</code> lanza <code>TypeError: Class constructor Particula cannot be invoked without 'new'</code>. Y recuerda la TDZ: usar la clase antes de su línea es un <code>ReferenceError</code>.</li>
+</ol>
+</div>
+<p>Dos detalles más: el cuerpo de una clase siempre está en modo estricto (de ahí que <code>this</code> sea <code>undefined</code> en un método suelto), y las clases son azúcar sobre los prototipos de JavaScript: <code>typeof Particula</code> es <code>"function"</code>.</p>
+
+<h2>Por qué este curso no usa módulos</h2>
+<p>Los <strong>módulos</strong> de JavaScript (<code>&lt;script type="module"&gt;</code> con <code>import</code> y <code>export</code>) son la forma moderna de organizar código: cada archivo tiene su propio ámbito (adiós al problema del ámbito global compartido), se cargan con <code>defer</code> automático y siempre en modo estricto. En tus proyectos, úsalos.</p>
+<p>Pero este curso tiene que funcionar abriendo los archivos con doble clic, con <code>file://</code>, y ahí los módulos no cargan. Lo comprobé con una página que importaba un módulo vecino: con <code>file://</code>, Chrome se negó con este error:</p>
+<script type="text/plain" class="codigo" data-lang="text">
+Access to script at 'file:///…/modulos/principal.js' from origin 'null' has been blocked by
+CORS policy: Cross origin requests are only supported for protocol schemes: chrome,
+chrome-experimental-site-token-provider, chrome-extension, chrome-untrusted, data, http,
+https, isolated-app.
+</script>
+<p>La misma página servida por HTTP cargó los dos módulos sin problema. El motivo (los módulos se piden como una petición <em>CORS</em>, y un archivo local tiene un origen «nulo» que no puede autorizarla) lo desmontamos en la lección <a href="07-herramientas.html">1.7</a>. Por eso aquí todo son scripts clásicos que comparten objetos globales (<code>Curso</code>, <code>GLKit</code>, <code>Texturas</code>) y cada archivo se protege con una función autoejecutada.</p>
+
+<h2>El recolector de basura y los bucles calientes</h2>
+<p>JavaScript libera la memoria solo: un <em>recolector de basura</em> (GC) busca de vez en cuando los objetos a los que ya no apunta nadie y los borra. Para hacerlo, V8 (el motor de Chrome) interrumpe tu código durante un momento. En la mayoría de programas no se nota; en un bucle de animación, que tiene 16,7 ms por frame a 60 Hz, cada pausa es tiempo que no dibuja.</p>
+<p>Lo medí con una traza de rendimiento de Chrome: 20 000 partículas actualizadas durante 300 frames, primero creando dos objetos nuevos por partícula y frame (<code>const d = { x: …, y: … }</code> y <code>pos[i] = { x: …, y: … }</code>, 40 000 objetos por frame), y después modificando los mismos objetos en su sitio:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th></th><th>objetos nuevos cada frame</th><th>reutilizando</th></tr></thead>
+  <tbody>
+    <tr><td>20 000 partículas: recolecciones menores en el hilo principal</td><td>33 (42 ms en total)</td><td>4 (las de cargar la página)</td></tr>
+    <tr><td>20 000 partículas: trabajo por frame (mediana)</td><td>0,9 ms</td><td>0,4 ms</td></tr>
+    <tr><td>200 000 partículas: pausas de GC</td><td>29, de ellas 20 recolecciones mayores de hasta 4 ms</td><td>8, solo al crear los objetos iniciales</td></tr>
+    <tr><td>200 000 partículas: trabajo por frame (percentil 99 / máximo)</td><td>7,1 / 9,2 ms</td><td>4,2 / 4,3 ms</td></tr>
+  </tbody>
+</table>
+<p>En un M1, con 20 000 partículas, las pausas son cortas (poco más de 1 ms cada una): no es un desastre, pero es trabajo que no produce nada. Al crecer la basura, V8 pasa a recolecciones mayores y los frames lentos se alargan; en un móvil modesto, esas pausas se convierten en los típicos tirones que aparecen cada pocos segundos.</p>
+<div class="callout senior" data-titulo="Las reglas de un bucle caliente">
+  <ul>
+    <li>Crea los objetos una vez, fuera del bucle, y modifícalos en su sitio (<code>p.x += p.vx * dt</code> en lugar de <code>p = { x: … }</code>).</li>
+    <li>Evita <code>map</code>, <code>filter</code>, spread, desestructurar en objetos nuevos y template literals dentro del bucle por partícula.</li>
+    <li>Recicla en vez de crear y destruir: un <em>pool</em> de partículas donde las muertas se reutilizan como nuevas.</li>
+    <li>Para miles de elementos, guarda los datos en arrays tipados (<code>Float32Array</code>), sin un objeto por partícula. Es además el formato que la GPU consume directamente: lección <a href="06-binario.html">1.6</a>.</li>
+  </ul>
+</div>
+<p>Verás estas pausas en el panel <em>Performance</em> de DevTools como bloques «Minor GC» y «Major GC» (lección <a href="07-herramientas.html">1.7</a>).</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 1.3.1 — Una paleta que da la vuelta</h3>
+  <p>Escribe la función <code>mod(a, n)</code> para que devuelva siempre un valor entre 0 y <code>n</code> (sin incluir <code>n</code>), también con <code>a</code> negativo. El código recorre la paleta hacia atrás desde el índice 0; con tu <code>mod</code>, la consola debe mostrar cinco colores válidos (ningún <code>undefined</code>) y la tabla de comprobación debe salir entera en verde (<code>✓</code>).</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.3.1" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+function mod(a, n) {
+  return a % n;          // ← arréglala
+}
+
+const paleta = ["rojo", "naranja", "amarillo", "verde", "azul"];
+let i = 0;
+const vistos = [];
+for (let paso = 0; paso < 5; paso++) {
+  i = mod(i - 1, paleta.length);    // un paso hacia atrás
+  vistos.push(paleta[i]);
+}
+console.log("hacia atrás:", vistos);
+
+const pruebas = [[7, 5, 2], [-1, 5, 4], [-6, 5, 4], [-5, 5, 0], [2.5, 2, 0.5], [-0.25, 1, 0.75]];
+for (const [a, n, esperado] of pruebas) {
+  const r = mod(a, n);
+  console.log((Object.is(r, esperado) || r === esperado ? "✓" : "✗"), `mod(${a}, ${n}) = ${r}`, "(esperado " + esperado + ")");
+}
+</script>
+<script type="text/x-js" data-solucion>
+function mod(a, n) {
+  return a - n * Math.floor(a / n);   // la definición de GLSL: floor en vez de truncar
+}
+
+const paleta = ["rojo", "naranja", "amarillo", "verde", "azul"];
+let i = 0;
+const vistos = [];
+for (let paso = 0; paso < 5; paso++) {
+  i = mod(i - 1, paleta.length);    // un paso hacia atrás
+  vistos.push(paleta[i]);
+}
+console.log("hacia atrás:", vistos);
+
+const pruebas = [[7, 5, 2], [-1, 5, 4], [-6, 5, 4], [-5, 5, 0], [2.5, 2, 0.5], [-0.25, 1, 0.75]];
+for (const [a, n, esperado] of pruebas) {
+  const r = mod(a, n);
+  console.log((Object.is(r, esperado) || r === esperado ? "✓" : "✗"), `mod(${a}, ${n}) = ${r}`, "(esperado " + esperado + ")");
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Mira qué devuelve el <code>%</code> con <code>-1 % 5</code>. ¿En qué se diferencia truncar la división de redondearla hacia abajo?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La definición de GLSL es <code>a − n · floor(a / n)</code>. Otra opción: si el resto sale negativo, súmale <code>n</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>a - n * Math.floor(a / n)</code>, para <code>a = -1, n = 5</code>: <code>floor(-0.2) = -1</code>, así que el resultado es −1 − 5·(−1) = 4. El <code>%</code> original truncaba (−0.2 → 0) y daba −1, y <code>paleta[-1]</code> es <code>undefined</code>. Con el <code>mod</code> correcto, el recorrido hacia atrás desde 0 visita azul, verde, amarillo, naranja y rojo.</p>
+    <p>La versión <code>((a % n) + n) % n</code> también pasa todas las pruebas: si el resto es negativo, sumarle <code>n</code> lo lleva al rango, y el segundo <code>%</code> deshace la suma cuando el resto ya era positivo. Un detalle fino: con <code>a = -5</code>, <code>-5 % 5</code> es <code>-0</code>; la versión con <code>floor</code> da <code>0</code> positivo. Por eso la comprobación usa <code>Object.is(r, esperado) || r === esperado</code>, que acepta los dos ceros; si alguna vez imprimes un ángulo o un índice y ves <code>-0</code>, ya sabes de dónde viene.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.3.2 — El bucle que nunca llega a 1</h3>
+  <p>El código quiere muestrear una curva de easing en los instantes <code>t = 0, 0.1, 0.2, …, 1</code> (once muestras, la última exactamente en 1). Tiene una red de seguridad: si da más de 15 vueltas se detiene, porque sin ella se colgaría la página. Ejecútalo, entiende por qué no para, y reescríbelo para que imprima exactamente once muestras, con <code>t</code> terminando en <code>1</code> y valores «limpios» (<code>0.3</code>, no <code>0.30000000000000004</code>).</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.3.2" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+const easing = (t) => t * t * (3 - 2 * t);    // smoothstep
+
+let t = 0, vueltas = 0;
+while (t !== 1) {
+  console.log("t =", t, "→", easing(t).toFixed(3));
+  t += 0.1;
+  if (++vueltas > 15) { console.log("⚠ ¡Más de 15 vueltas! Sin esta red, el bucle no pararía nunca."); break; }
+}
+</script>
+<script type="text/x-js" data-solucion>
+const easing = (t) => t * t * (3 - 2 * t);    // smoothstep
+
+const N = 10;                      // número de tramos: 11 muestras
+for (let i = 0; i <= N; i++) {     // el contador es un ENTERO: exacto y con final garantizado
+  const t = i / N;                 // cada t se calcula de cero, sin acumular error
+  console.log("t =", t, "→", easing(t).toFixed(3));
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Mira los valores de <code>t</code> que imprime la consola alrededor de 0.9. ¿Pasa alguna vez por 1 exactamente?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Los enteros pequeños son exactos en un double. ¿Y si el bucle contara con un entero y calcularas <code>t</code> a partir de él en cada vuelta?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>0.1 no es exacto en binario, y cada <code>t += 0.1</code> suma un error diminuto. En Chrome, la secuencia fue 0.30000000000000004 en la tercera suma, 0.7999999999999999, 0.8999999999999999, 0.9999999999999999… y después 1.0999999999999999: salta por encima de 1 sin tocarlo, así que <code>t !== 1</code> nunca es falso.</p>
+    <p>La solución cuenta con un entero, <code>i</code>, que es exacto y tiene un final garantizado (<code>i &lt;= N</code>), y calcula <code>t = i / N</code> desde cero en cada vuelta. Una sola división produce el double más cercano al valor deseado, que se imprime como <code>0.3</code>; acumular sumas, en cambio, arrastra el error de todas las anteriores. Es el mismo principio que en el ejemplo 1.3.2: calcula a partir de una fuente exacta (el tiempo transcurrido, un contador) en lugar de sumar poquito a poco.</p>
+    <p>Y si alguna vez necesitas un bucle con decimales, compara con <code>&lt;</code> o <code>&lt;=</code> más un margen, nunca con <code>===</code> o <code>!==</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.3.3 — Valores por defecto que no respetan el cero</h3>
+  <p>La función <code>configurar</code> rellena las opciones que faltan con valores por defecto. Pero cuando pides <code>velocidad: 0</code> (animación en pausa), <code>retraso: 0</code> u <code>opacidad: 0</code>, se ignoran. Arréglala para que solo use el valor por defecto cuando la opción <strong>no se ha dado</strong>. La consola debe mostrar <code>velocidad: 0, retraso: 0, opacidad: 0, color: "tomato"</code> en la primera línea y todos los valores por defecto en la segunda.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.3.3" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+function configurar(opciones) {
+  return {
+    velocidad: opciones.velocidad || 1,
+    retraso: opciones.retraso || 0.5,
+    opacidad: opciones.opacidad || 1,
+    color: opciones.color || "white",
+  };
+}
+console.log(configurar({ velocidad: 0, retraso: 0, opacidad: 0, color: "tomato" }));
+console.log(configurar({}));
+</script>
+<script type="text/x-js" data-solucion>
+function configurar({ velocidad = 1, retraso = 0.5, opacidad = 1, color = "white" } = {}) {
+  // Los valores por defecto de la desestructuración solo actúan con undefined
+  return { velocidad, retraso, opacidad, color };
+}
+console.log(configurar({ velocidad: 0, retraso: 0, opacidad: 0, color: "tomato" }));
+console.log(configurar({}));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué valores hacen que <code>a || b</code> devuelva <code>b</code>? ¿Está el 0 entre ellos?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Hay un operador que solo mira <code>null</code> y <code>undefined</code>. Y hay otra forma, con desestructuración, que ni siquiera necesita operador.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>||</code> devuelve el lado derecho cuando el izquierdo es <em>falsy</em>, y 0 es falsy: <code>0 || 1</code> es 1. Hay dos arreglos equivalentes. El más directo cambia cada <code>||</code> por <code>??</code>, que solo recurre al valor por defecto con <code>null</code> o <code>undefined</code>. La solución propuesta va un paso más allá: desestructura el parámetro con valores por defecto, que solo se aplican cuando la propiedad vale <code>undefined</code>. Y el <code>= {}</code> final permite incluso llamar a <code>configurar()</code> sin argumentos (con la versión original, <code>configurar()</code> lanzaría <code>TypeError</code> al leer <code>undefined.velocidad</code>).</p>
+    <p>Fíjate en que <code>color</code> no tenía el problema: un color nunca es un string vacío válido. El error solo aparece con valores que pueden ser legítimamente 0, <code>""</code> o <code>false</code>, que en animación son muchísimos: velocidades, retrasos, ángulos, opacidades, posiciones en el borde.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 1.3.4 — El <code>this</code> perdido</h3>
+  <p>La clase <code>Animacion</code> debería mover un cuadrado de lado a lado y contar fotogramas. Pulsa el botón: en vez de arrancar, la consola muestra un error. Arréglalo. Después escribe un método <code>alternar()</code> que pause y reanude sin crear nunca dos bucles a la vez, y haz que el botón lo use. Al terminar: el cuadrado se mueve, no hay errores, y cada pulsación imprime <code>pausada</code> o <code>reanudada</code> junto con los fotogramas dibujados hasta ese momento.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.3.4" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+<button id="boton">iniciar / pausa</button>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+button { font: 13px sans-serif; margin: 6px; align-self: flex-start; }
+</script>
+<script type="text/x-js">
+class Animacion {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+    this.fotogramas = 0;
+    this.pendiente = 0;
+    this.dibujar(0);
+  }
+  dibujar(ms) {
+    const { ctx, canvas } = this;
+    const x = (Math.sin(ms / 500) * 0.4 + 0.5) * canvas.width;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#f5b84b";
+    ctx.fillRect(x - 15, canvas.height / 2 - 15, 30, 30);
+  }
+  paso(ms) {
+    this.fotogramas++;
+    this.dibujar(ms);
+    this.pendiente = requestAnimationFrame(this.paso);
+  }
+  iniciar() {
+    this.pendiente = requestAnimationFrame(this.paso);
+  }
+  // alternar() { … }   ← escríbelo tú
+}
+
+const anim = new Animacion(document.getElementById("lienzo"));
+// Cuando funcione, cambia esta línea para que el botón llame a anim.alternar()
+document.getElementById("boton").addEventListener("click", () => anim.iniciar());
+</script>
+<script type="text/x-js" data-solucion>
+class Animacion {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+    this.fotogramas = 0;
+    this.pendiente = 0;                    // 0 = no hay ningún frame pedido
+    this.dibujar(0);
+  }
+  dibujar(ms) {
+    const { ctx, canvas } = this;
+    const x = (Math.sin(ms / 500) * 0.4 + 0.5) * canvas.width;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#f5b84b";
+    ctx.fillRect(x - 15, canvas.height / 2 - 15, 30, 30);
+  }
+  // Campo flecha: "this" queda fijado a la instancia, se llame como se llame
+  paso = (ms) => {
+    this.fotogramas++;
+    this.dibujar(ms);
+    this.pendiente = requestAnimationFrame(this.paso);
+  };
+  iniciar() {
+    if (this.pendiente) return;            // ya hay un bucle en marcha: no crear otro
+    this.pendiente = requestAnimationFrame(this.paso);
+  }
+  parar() {
+    cancelAnimationFrame(this.pendiente);
+    this.pendiente = 0;
+  }
+  alternar() {
+    if (this.pendiente) { this.parar(); console.log("pausada tras", this.fotogramas, "fotogramas"); }
+    else { this.iniciar(); console.log("reanudada con", this.fotogramas, "fotogramas"); }
+  }
+}
+
+const anim = new Animacion(document.getElementById("lienzo"));
+document.getElementById("boton").addEventListener("click", () => anim.alternar());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Lee el error: ¿qué es <code>undefined</code>? ¿Quién llama a <code>paso</code>, y con qué delante del punto?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Tienes tres arreglos para el <code>this</code>: una flecha en cada llamada, <code>bind</code> en el constructor o un campo de clase con una flecha.</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>Para pausar necesitas el identificador que devuelve <code>requestAnimationFrame</code> y <code>cancelAnimationFrame</code>. Para no crear dos bucles, usa ese mismo identificador como marca de «hay un bucle en marcha».</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>El error.</strong> <code>requestAnimationFrame(this.paso)</code> entrega la función suelta. El navegador la llama sin objeto, y dentro de una clase eso deja <code>this</code> en <code>undefined</code>, así que la primera línea, <code>this.fotogramas++</code>, lanza <code>TypeError: Cannot read properties of undefined (reading 'fotogramas')</code>. Fíjate en que <code>iniciar()</code> sí funciona (lo llamamos como método, <code>anim.iniciar()</code>): el fallo llega un fotograma después, cuando es el navegador quien llama a <code>paso</code>. Por eso el error no apunta a la línea del botón, sino a la de dentro de <code>paso</code>.</p>
+    <p><strong>El arreglo.</strong> La solución declara <code>paso</code> como campo de clase con una flecha. Un campo se crea en cada instancia, dentro del constructor, y una flecha toma el <code>this</code> del sitio donde se crea: la instancia. Da igual quién la llame después. (Contrapartida: cada instancia tiene su propia copia de la función en lugar de compartir una en el prototipo; con unas pocas animaciones no importa.)</p>
+    <p><strong>Pausar sin duplicar bucles.</strong> <code>this.pendiente</code> guarda siempre el identificador del próximo frame; <code>parar()</code> lo cancela y lo pone a 0. <code>iniciar()</code> sale si ya hay uno pendiente, así que pulsar dos veces seguidas no crea dos bucles. Si creas dos bucles sin darte cuenta, cada frame se actualiza dos veces y todo lo que avance «un poco por frame» va el doble de rápido: el mismo síntoma que una pantalla de 120 Hz, que la lección <a href="../02-animacion/03-raf.html">2.3</a> te enseña a evitar midiendo el tiempo.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><code>typeof null</code> es <code>"object"</code> y <code>typeof NaN</code> es <code>"number"</code>. <code>const</code> por defecto, <code>let</code> si reasignas; <code>let</code>/<code>const</code>/<code>class</code> tienen zona muerta temporal. Los scripts clásicos comparten ámbito global: envuelve tu código.</li>
+    <li>Todo número es un double: <code>0.1 + 0.2 !== 0.3</code>; compara con tolerancia relativa. Enteros exactos hasta 2<sup>53</sup>. <code>NaN</code> no es igual a nada y se propaga en silencio: <code>Number.isNaN</code>, <code>Number.isFinite</code>. <code>-0</code> existe (<code>atan2</code> lo nota).</li>
+    <li><code>x | 0</code> trunca hacia cero a un entero de 32 bits: útil para aritmética entera, peligroso fuera de ±2<sup>31</sup>.</li>
+    <li><code>%</code> es un resto con el signo del dividendo (<code>-1 % 5 === -1</code>); el <code>mod</code> de GLSL es <code>a − n·floor(a/n)</code>.</li>
+    <li><code>+</code> con un string concatena; <code>===</code> siempre (salvo <code>x == null</code>); 0, <code>""</code> y <code>NaN</code> son falsy: usa <code>??</code> para valores por defecto.</li>
+    <li>Los objetos se pasan por referencia: asignar no copia, <code>.fill(obj)</code> comparte, el spread es superficial.</li>
+    <li>Las closures guardan variables (no valores): úsalas para encapsular el estado de una animación. <code>this</code> depende de cómo se llama la función: pasa una flecha a <code>requestAnimationFrame</code>.</li>
+    <li>Los módulos no funcionan con <code>file://</code>. En los bucles calientes, no crees objetos: reutilízalos.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide">MDN, «JavaScript Guide»</a>: la referencia de consulta para cualquier detalle del lenguaje.</li>
+  <li><a href="https://0.30000000000000004.com/">0.30000000000000004.com</a>: el mismo resultado en decenas de lenguajes, y por qué.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/this">MDN, <code>this</code></a>: todos los casos, con ejemplos.</li>
+  <li><a href="https://v8.dev/blog/trash-talk">V8, «Trash talk: the Orinoco garbage collector»</a>: cómo recoge V8 la basura y por qué casi nunca se nota… salvo cuando sí.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

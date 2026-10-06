@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.8 · Efectos con texturas — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/b-m6.css">
+</head>
+<body data-leccion="06-glsl/texturas-efectos">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>Efectos con texturas</h1>
+  <p class="resumen">Casi todos los filtros de imagen que conoces (zoom, ondas, lupa, aberración cromática, pixelado, sepia, desenfoque, detección de bordes, viñeta, grano) son unas pocas líneas de fragment shader que leen una textura. En esta lección los escribes todos, y de paso te enfrentas a lo que los tutoriales no cuentan: por qué la imagen se deforma al girarla, de dónde salen las líneas finas en un mosaico, qué pasa en los bordes y cuánto cuesta cada lectura.</p>
+  <div class="meta"><span class="chip">⏱ 120 min</span><span class="chip">Requisitos: 5.5, 5.8, 6.2, 6.4, 6.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Pensarás una imagen como una función <code>texture(u_tex0, uv)</code> y sabrás cuándo usar <code>texture</code> y cuándo <code>texelFetch</code>.</li>
+      <li>Transformarás coordenadas (zoom, giro, espejo) sin deformar la imagen y escribirás distorsiones (ondas, ondulación, remolino, lente) entendiendo por qué se «invierten».</li>
+      <li>Escribirás efectos de color y kernels de convolución (desenfoques, enfoque, Sobel) en unidades de texel, y conocerás su coste y la idea del desenfoque separable.</li>
+      <li>Diagnosticarás los tres bichos clásicos: colores del borde contrario al desenfocar, líneas en los mosaicos por la selección de mipmap, e imágenes estiradas.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>La imagen como función</h2>
+<p>En <a href="../05-webgl/05-texturas.html">5.5</a> subiste imágenes a la GPU llamada por llamada. Aquí la textura ya está preparada y lo que cambia es cómo la miras: para un fragment shader, una textura es una <strong>función</strong> que le preguntas en cualquier punto. <code>texture(u_tex0, uv)</code> responde «¿de qué color es la imagen en la posición uv?», con uv entre 0 y 1 en cada eje. Todo efecto de imagen es una combinación de tres decisiones:</p>
+<ol>
+  <li><strong>Dónde leer</strong>: en lugar de leer en la posición del píxel, leer en otra. Zoom, giro, ondas y lentes son eso y nada más.</li>
+  <li><strong>Qué hacer con el color</strong> que has leído: escala de grises, sepia, umbral, posterizado.</li>
+  <li><strong>Cuántas lecturas combinar</strong>: un desenfoque o un detector de bordes lee varios puntos vecinos y los mezcla.</li>
+</ol>
+<p>En los editores de esta lección, las texturas llegan como <code>u_tex0</code>, <code>u_tex1</code>… según el atributo <code>data-texturas</code> (<code>paisaje</code>, <code>uv</code>, <code>damero</code>, <code>letraF</code>…). Por defecto son de 512 × 512 texels, con filtrado <code>LINEAR</code> y mipmaps, modo de repetición <code>REPEAT</code>, y se suben con <code>UNPACK_FLIP_Y_WEBGL</code> activado, así que v = 0 es la parte de abajo de la imagen, como <code>gl_FragCoord</code>. El varying <code>v_uv</code> vale (0, 0) en la esquina inferior izquierda del lienzo y (1, 1) en la superior derecha.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.8.1 — Encajar la imagen sin deformarla</h3>
+  <p>El primer efecto es no estropear la imagen. <code>texture(u_tex0, v_uv)</code> estira la textura cuadrada para llenar el lienzo, que casi nunca es cuadrado. Queremos las dos opciones de CSS: <strong>contain</strong> (la imagen entera, con bandas donde sobra lienzo) y <strong>cover</strong> (el lienzo lleno, recortando la imagen).</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.8.1 — contain y cover" data-altura="300" data-texturas="paisaje:clamp"
+       data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":2,"valor":1,"etiqueta":"ajuste"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform int u_modo;        // 0 estirar, 1 contain, 2 cover
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  vec2 tam = vec2(textureSize(u_tex0, 0));                 // 512 × 512
+  float aspectoTex = tam.x / tam.y;
+  float aspectoLienzo = u_resolution.x / u_resolution.y;
+  vec2 uv = v_uv;
+  if (u_modo > 0) {
+    vec2 escala = vec2(aspectoLienzo / aspectoTex, 1.0);   // cuánto más ancho es el lienzo
+    if (u_modo == 1 && escala.x < 1.0) escala = vec2(1.0, 1.0 / escala.x);
+    if (u_modo == 2 && escala.x > 1.0) escala = vec2(1.0, 1.0 / escala.x);
+    uv = (v_uv - 0.5) * escala + 0.5;                        // escalar alrededor del centro
+  }
+  vec3 color = texture(u_tex0, uv).rgb;
+  // Fuera de la imagen (solo pasa en contain): bandas oscuras
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) color = vec3(0.05);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <p>El deslizador <code>ajuste</code> elige 0 = estirar, 1 = contain, 2 = cover. Paso a paso:</p>
+  <ol>
+    <li><strong>Los dos aspectos.</strong> <code>textureSize(u_tex0, 0)</code> devuelve el tamaño en texels del nivel 0 como <code>ivec2</code>; convertirlo a <code>vec2</code> permite dividir. Con él, el shader funciona con cualquier textura, cuadrada o no.</li>
+    <li><strong>La escala.</strong> Si el lienzo es 1,2 veces más ancho (en proporción) que la imagen, en contain hay que recorrer en x un rango de uv 1,2 veces mayor que 0–1: el centro queda en la imagen y los lados caen fuera. Multiplicar las coordenadas por 1,2 alrededor del centro (<code>(v_uv - 0.5) * escala + 0.5</code>) hace justo eso.</li>
+    <li><strong>Tirar, no empujar.</strong> Fíjate en el sentido: para que la imagen se vea <em>más pequeña</em>, multiplicamos las coordenadas por un número <em>mayor</em> que 1. Es la regla de toda esta lección: no movemos la imagen, decidimos de dónde lee cada píxel, y eso es la transformación inversa.</li>
+    <li><strong>Fuera de rango.</strong> Con <code>clamp</code> (la textura se cargó con <code>:clamp</code>), leer fuera de 0–1 repite el color del borde; aquí lo sustituimos por un gris oscuro. <code>lessThan</code> y <code>greaterThan</code> comparan componente a componente y devuelven un <code>bvec2</code>; <code>any</code> dice si alguna componente es verdadera.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m6b-imagen-estirada" data-titulo="La imagen sale estirada o aplastada">
+  <p><strong>Síntoma:</strong> una foto o textura se ve ensanchada, o las caras parecen alargadas; al redimensionar la ventana, la deformación cambia.</p>
+  <p><strong>Causa:</strong> <code>v_uv</code> (o <code>gl_FragCoord.xy / u_resolution</code>) va de 0 a 1 en los dos ejes sea cual sea la forma del lienzo, así que la textura se estira para llenarlo. Es el mismo bicho del aspecto de <a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a>, en versión textura.</p>
+  <p><strong>Solución:</strong> compara el aspecto del lienzo (<code>u_resolution.x / u_resolution.y</code>) con el de la textura (<code>textureSize</code>) y escala las coordenadas alrededor del centro, como en el ejemplo 6.8.1: contain si toda la imagen debe verse, cover si el lienzo debe quedar lleno.</p>
+</div>
+
+<h2>texture() frente a texelFetch()</h2>
+<p>GLSL ES 3.00 tiene dos maneras de leer una textura, y conviene tener claro qué hace cada una:</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec4 a = texture(u_tex0, uv);                        // uv normalizada, 0..1
+vec4 b = texelFetch(u_tex0, ivec2(37, 120), 0);      // texel (37, 120) del nivel 0
+ivec2 tam = textureSize(u_tex0, 0);                  // (512, 512)
+vec2 texel = 1.0 / vec2(tam);                        // tamaño de un texel en unidades de uv
+vec4 c = textureLod(u_tex0, uv, 0.0);                // como texture, pero en el nivel de mipmap que digas
+</script>
+<ol>
+  <li data-l="1"><code>texture</code>: coordenadas normalizadas; aplica el <strong>filtrado</strong> (<code>LINEAR</code> mezcla los 4 texels más cercanos), el <strong>modo de repetición</strong> (qué pasa fuera de 0–1) y elige el <strong>nivel de mipmap</strong> automáticamente a partir de cuánto cambia <code>uv</code> entre píxeles vecinos (las derivadas de <a href="02-pensar-en-paralelo.html">6.2</a>; volveremos a esto, porque es la causa de un bicho).</li>
+  <li data-l="2"><code>texelFetch</code>: coordenadas <strong>enteras</strong> de texel y un nivel de mipmap explícito. Sin filtrado, sin repetición y sin derivadas: lee exactamente un texel. Fuera de rango (coordenadas negativas o mayores que el tamaño, o un nivel de mipmap que no existe), OpenGL ES lo deja indefinido, pero WebGL 2.0 obliga a devolver cero: (0, 0, 0, 0), o (0, 0, 0, 1) si la textura está incompleta. En el M1 medimos (0, 0, 0, 0) en los tres casos, como en <a href="../05-webgl/05-texturas.html#donde-esta-cada-texel">5.5</a>. Es una garantía de la web (para que un shader no pueda leer memoria ajena): en OpenGL nativo no cuentes con ella.</li>
+  <li data-l="3"><code>textureSize</code>: el tamaño del nivel pedido, en texels (<code>ivec2</code>). Medimos (256, 256) en el nivel 0 de una textura de 256 y (32, 32) en el nivel 3: cada nivel mide la mitad que el anterior.</li>
+  <li data-l="4">El tamaño de un texel en uv: la distancia entre centros de texels vecinos. Es la unidad natural para leer «el texel de al lado», y la usarás en todos los kernels de esta lección.</li>
+  <li data-l="5"><code>textureLod</code>: filtrado y repetición como <code>texture</code>, pero el nivel lo das tú. Con 0.0 lee siempre la imagen original.</li>
+</ol>
+</div>
+<p>La regla práctica: <code>texture</code> para <strong>imágenes</strong> (quieres filtrado suave y mipmaps al reducir); <code>texelFetch</code> para <strong>datos</strong> (una tabla de valores, una textura de estado de una simulación ping-pong, <a href="../05-webgl/08-framebuffers.html">5.8</a>), donde mezclar vecinos sería corromperlos.</p>
+
+<div class="quiz">
+  <p class="pregunta">Tienes una textura de 256 × 1 texels que guarda una tabla de 256 números (uno por texel) y quieres leer la entrada número <code>i</code>. ¿Qué es lo más fiable?</p>
+  <ul>
+    <li data-correcta><code>texelFetch(u_tabla, ivec2(i, 0), 0)</code><div class="explicacion">Correcto: índices enteros, nivel 0, sin filtrado ni mipmaps. Es exactamente «dame la entrada i». Solo tienes que garantizar que i está entre 0 y 255.</div></li>
+    <li><code>texture(u_tabla, vec2(float(i) / 256.0, 0.5))</code><div class="explicacion">Casi: <code>i / 256</code> es el borde izquierdo del texel i, no su centro. Con filtrado <code>LINEAR</code> obtendrías la media entre el texel i y el i − 1. Haría falta <code>(i + 0.5) / 256</code>, y aun así dependes del filtro y del mipmap.</div></li>
+    <li><code>textureLod(u_tabla, vec2(float(i) / 255.0, 0.5), 0.0)</code><div class="explicacion">Fijar el nivel 0 evita los mipmaps, pero <code>i / 255</code> no cae en los centros de los texels (el centro del último texel es 255,5/256, no 1). Los valores intermedios se mezclarían con sus vecinos.</div></li>
+  </ul>
+</div>
+
+<h2>Manipular las coordenadas</h2>
+<p>Todas las transformaciones de imagen siguen el mismo esquema: tomas la coordenada del píxel, la transformas y lees ahí. Para que una transformación se haga «alrededor del centro» (o de cualquier punto), el patrón es siempre el mismo: <strong>trasladar el centro al origen, transformar, devolver</strong>.</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Zoom, desplazamiento, giro y espejo alrededor del centro">
+vec2 uv = v_uv - 0.5;                    // 1) el centro de la imagen al origen
+uv /= zoom;                              // 2a) zoom: DIVIDIR para ampliar
+uv = rotar(-angulo) * uv;                // 2b) girar la imagen +angulo = girar las coordenadas -angulo
+uv.x = abs(uv.x);                        // 2c) espejo: la mitad izquierda repite la derecha
+uv += 0.5 + desplazamiento;              // 3) de vuelta, y desplazar
+vec4 color = texture(u_tex0, uv);
+</script>
+<p>Tres detalles que separan un efecto que funciona de uno que casi funciona:</p>
+<ul>
+  <li><strong>El zoom divide.</strong> Ampliar ×2 significa que los píxeles leen en un área dos veces más pequeña de la imagen: coordenadas entre dos. Y girar la imagen en un sentido significa girar las coordenadas en el contrario (<a href="../03-matematicas/05-matrices.html">3.5</a>, el bicho de la rotación inversa).</li>
+  <li><strong>El desplazamiento no necesita <code>fract</code></strong> si la textura tiene <code>REPEAT</code>: el hardware ya repite. Añadir <code>fract</code> es peor, como verás en la sección de mipmaps.</li>
+  <li><strong>El giro necesita espacio cuadrado.</strong> <code>v_uv</code> no mide lo mismo en x que en y cuando el lienzo no es cuadrado. Girar en ese espacio estirado mezcla las dos escalas y la imagen se inclina en lugar de girar. Hay que girar en coordenadas con el aspecto corregido.</li>
+</ul>
+
+<div class="glsl-playground" data-titulo="Transformar las coordenadas" data-altura="320" data-texturas="letraF"
+     data-uniforms='{"u_zoom":{"tipo":"float","min":0.3,"max":3,"valor":1,"etiqueta":"zoom"},"u_angulo":{"tipo":"float","min":-3.1416,"max":3.1416,"valor":0.6,"etiqueta":"ángulo"},"u_aspecto":{"tipo":"bool","valor":true,"etiqueta":"corregir aspecto"},"u_espejo":{"tipo":"bool","valor":false,"etiqueta":"espejo"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform float u_zoom, u_angulo;
+uniform bool u_aspecto, u_espejo;
+in vec2 v_uv;
+out vec4 fragColor;
+
+mat2 rotar(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+void main() {
+  // Con aspecto corregido: centrado y con la misma escala en x e y (la altura va de -0.5 a 0.5).
+  // Sin corregir: v_uv centrada, que se estira con la forma del lienzo.
+  vec2 uv = u_aspecto ? (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y : v_uv - 0.5;
+  uv /= u_zoom;                        // ampliar = dividir
+  uv = rotar(-u_angulo) * uv;          // girar la imagen +ángulo = girar las coordenadas -ángulo
+  if (u_espejo) uv.x = abs(uv.x);      // la mitad izquierda refleja la derecha
+  uv += 0.5;                           // (con REPEAT, fuera de 0..1 la F se repite)
+  fragColor = vec4(texture(u_tex0, uv).rgb, 1.0);
+}
+</script>
+</div>
+<p>Con «corregir aspecto» activado, la F gira como un objeto rígido y mantiene sus ángulos rectos (y, como la textura tiene <code>REPEAT</code>, se repite a los lados). Desactívalo: con un ángulo de 0,6 la F se inclina y se deforma como un paralelogramo, y cambia de forma al redimensionar la ventana. Activa «espejo»: la mitad izquierda es el reflejo de la derecha (<code>abs</code> dobla el eje x sobre sí mismo), un truco que usarás en el caleidoscopio del ejercicio 6.8.1.</p>
+
+<div class="callout bestiario" data-id="m6b-rotar-deforma" data-titulo="Al girar la imagen se inclina o se deforma">
+  <p><strong>Síntoma:</strong> al rotar una textura en el shader, en lugar de girar, se inclina como un paralelogramo; sus ángulos rectos dejan de serlo, y la deformación cambia al redimensionar la ventana.</p>
+  <p><strong>Causa:</strong> la rotación se aplicó a <code>v_uv</code> (o a <code>gl_FragCoord.xy / u_resolution</code>), coordenadas en las que una unidad en x no mide lo mismo que en y si el lienzo no es cuadrado. Una rotación solo conserva ángulos en un espacio con la misma escala en los dos ejes. Es la misma causa que la de los <a href="02-pensar-en-paralelo.html#m6a-circulo-estirado">círculos ovalados</a> de 6.2.</p>
+  <p><strong>Solución:</strong> antes de rotar, multiplica x por el aspecto (<code>uv.x *= u_resolution.x / u_resolution.y</code>), rota, y si quieres volver al espacio de la textura, divide después. O trabaja desde el principio con <code>(gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y</code>, que ya es cuadrado.</p>
+</div>
+
+<h2>Distorsiones</h2>
+<p>Una distorsión es un desplazamiento de las coordenadas que cambia de un punto a otro: <code>uv + desplazamiento(uv)</code>. Cuatro clásicos, todos calculados en coordenadas con el aspecto corregido para que los círculos sean círculos:</p>
+<ul>
+  <li><strong>Ondas</strong>: <code>uv.x += A * sin(uv.y * f + t)</code>. Cada fila se desplaza en horizontal según una onda: la imagen parece reflejada en agua.</li>
+  <li><strong>Ondulación desde un punto</strong>: un desplazamiento radial que oscila con la distancia al punto, $A \sin(k\,d - \omega t)$, y se atenúa con ella. Una piedra en un estanque.</li>
+  <li><strong>Remolino</strong>: girar las coordenadas un ángulo que depende de la distancia al centro, grande cerca y cero lejos.</li>
+  <li><strong>Lente o barril</strong>: escalar la coordenada según su distancia al centro, $\vec q = \vec p\,(1 + k\,r^2)$. Con $k &gt; 0$, las coordenadas de los bordes leen aún más lejos, la imagen se comprime hacia los bordes y el centro parece ampliado: la distorsión de barril de un objetivo gran angular. Con $k &lt; 0$, el efecto cojín.</li>
+</ul>
+
+<div class="glsl-playground" data-titulo="Cuatro distorsiones" data-altura="320" data-texturas="damero:clamp"
+     data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":3,"valor":3,"etiqueta":"distorsión"},"u_fuerza":{"tipo":"float","min":-1,"max":1,"valor":0.4,"etiqueta":"fuerza"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec2 u_mouse;
+uniform sampler2D u_tex0;
+uniform int u_modo;
+uniform float u_fuerza;
+in vec2 v_uv;
+out vec4 fragColor;
+
+mat2 rotar(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+void main() {
+  // Coordenadas cuadradas centradas: la altura del lienzo va de -0.5 a 0.5
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  vec2 raton = (u_mouse - 0.5 * u_resolution) / u_resolution.y;
+  vec2 q = p;
+  if (u_modo == 0) {                              // ondas horizontales
+    q.x += 0.05 * u_fuerza * sin(p.y * 30.0 + u_time * 3.0);
+  } else if (u_modo == 1) {                       // ondulación desde el ratón
+    vec2 d = p - raton;
+    float r = length(d);
+    float onda = sin(r * 60.0 - u_time * 8.0) * exp(-r * 4.0);
+    q += (d / max(r, 1e-4)) * onda * 0.03 * u_fuerza;   // radial: a lo largo de d/|d|
+  } else if (u_modo == 2) {                       // remolino
+    float r = length(p);
+    float giro = 4.0 * u_fuerza * (1.0 - smoothstep(0.0, 0.45, r));
+    q = rotar(giro) * p;
+  } else {                                        // lente / barril
+    q = p * (1.0 + u_fuerza * dot(p, p) * 4.0);
+  }
+  vec2 uv = q + 0.5;                              // la textura, cuadrada, centrada en el lienzo
+  vec3 color = texture(u_tex0, uv).rgb;
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) color *= 0.25;
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>El deslizador <code>distorsión</code> elige 0 = ondas, 1 = ondulación desde el ratón (pasa el ratón por el lienzo), 2 = remolino, 3 = lente. Con la lente, prueba fuerza +0,4 (barril: el damero se abomba) y −0,4 (cojín). Lo que cae fuera de la textura se oscurece para que veas dónde se lee «fuera»: con <code>:clamp</code>, esas zonas repetirían el color del borde en franjas estiradas.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec2 d = p - raton;
+float r = length(d);
+float onda = sin(r * 60.0 - u_time * 8.0) * exp(-r * 4.0);
+q += (d / max(r, 1e-4)) * onda * 0.03 * u_fuerza;
+</script>
+<ol>
+  <li data-l="1-2">Vector y distancia del ratón al píxel, en coordenadas cuadradas (por eso las ondas salen circulares aunque el lienzo no sea cuadrado).</li>
+  <li data-l="3">La forma de la onda: un seno de la distancia que avanza con el tiempo (<code>- u_time * 8.0</code> hace que las crestas se alejen del ratón a 8/60 unidades por segundo) y se atenúa exponencialmente con la distancia.</li>
+  <li data-l="4">El desplazamiento es <strong>radial</strong>: a lo largo de la dirección del ratón al píxel, <code>d / r</code>. Dividir por <code>max(r, 1e-4)</code> y no por <code>r</code> evita la división por cero en el píxel que cae justo bajo el ratón, donde la dirección no existe (el bicho de normalizar el vector cero, <a href="../03-matematicas/01-vectores.html">3.1</a>). Allí el desplazamiento es cero de todas formas, porque <code>d</code> es el vector cero, y 0 dividido por 0,0001 sigue siendo 0.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m6b-distorsion-invertida" data-titulo="La lupa encoge en lugar de ampliar (o el remolino gira al revés)">
+  <p><strong>Síntoma:</strong> programas una lupa que «empuja» los píxeles hacia fuera y el resultado encoge la imagen; un remolino gira en sentido contrario al que calculaste; una ola desplaza la imagen hacia el lado opuesto.</p>
+  <p><strong>Causa:</strong> un fragment shader no puede mover píxeles: cada píxel decide <strong>de dónde lee</strong>. Si en el píxel p lees en f(p), lo que había en f(p) aparece en p: la imagen se mueve según la transformación <em>inversa</em> de f. Leer más lejos del centro (f(p) = 1,5·p) trae hacia dentro lo que estaba fuera: la imagen se encoge.</p>
+  <p><strong>Solución:</strong> escribe la transformación inversa de la que quieres ver. Para ampliar ×1,5, lee en p / 1,5; para girar la imagen un ángulo, gira las coordenadas el ángulo opuesto. Si la inversa no tiene fórmula, aproxímala cambiando el signo de un desplazamiento pequeño.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.8.2 — Aberración cromática</h3>
+  <p>Los objetivos baratos no enfocan igual todos los colores: el rojo, el verde y el azul se refractan con ángulos ligeramente distintos y, lejos del centro, sus imágenes no coinciden. Aparecen bordes rojos por un lado y azules por el otro. En un shader se imita leyendo cada canal en una posición un poco distinta, desplazada en dirección radial:</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.8.2 — Aberración cromática" data-altura="300" data-texturas="paisaje:clamp"
+       data-uniforms='{"u_intensidad":{"tipo":"float","min":0,"max":0.04,"valor":0.012,"etiqueta":"intensidad"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform float u_intensidad;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = v_uv - 0.5;                       // del centro al píxel
+  float r2 = dot(p, p);                      // crece hacia los bordes
+  vec2 desplazamiento = p * r2 * u_intensidad * 16.0;
+  float rojo  = texture(u_tex0, v_uv + desplazamiento).r;
+  float verde = texture(u_tex0, v_uv).g;
+  float azul  = texture(u_tex0, v_uv - desplazamiento).b;
+  fragColor = vec4(rojo, verde, azul, 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>La dirección radial.</strong> <code>p</code> apunta del centro al píxel. Desplazar a lo largo de <code>p</code> separa los canales hacia dentro y hacia fuera, como en una lente real, donde el defecto es radial.</li>
+    <li><strong>La intensidad crece con la distancia.</strong> Multiplicar por <code>r2</code> (el cuadrado de la distancia al centro) deja el centro limpio y concentra el defecto en los bordes. Sin ese factor, toda la imagen se desdoblaría por igual y parecería un error de impresión.</li>
+    <li><strong>Tres lecturas, un canal de cada una.</strong> El verde se lee donde toca, el rojo un poco hacia fuera (su imagen aparece desplazada hacia dentro: la regla de tirar, no empujar) y el azul hacia dentro. El coste es triple, pero las tres lecturas caen muy juntas y la caché de texturas las sirve casi gratis.</li>
+    <li><strong>Sin ninguna condición de «borde de color».</strong> Nadie ha programado «pon bordes rojos en los contornos»: aparecen solos donde la imagen tiene contraste, porque solo allí los tres canales, leídos en sitios distintos, dejan de coincidir. Mira el sol y los bordes de las montañas.</li>
+  </ol>
+</section>
+
+<h2>Pixelado</h2>
+<p>El pixelado agrupa los píxeles en bloques y pinta cada bloque de un solo color. Es cuantizar las coordenadas con <code>floor</code>, la escalera de <a href="07-animacion-shaders.html">6.7</a> en el espacio: <code>(floor(uv * N) + 0.5) / N</code> es el centro del bloque que contiene a uv, con N bloques por lado. Para bloques cuadrados, N debe ser distinto en x y en y según el aspecto, o mejor, se mide el bloque en píxeles: <code>floor(gl_FragCoord.xy / tamaño)</code>.</p>
+<p>El pixelado tiene una trampa que es la primera aparición del bicho más desconcertante de las texturas. Mira el editor con la opción «textureGrad» desactivada:</p>
+
+<div class="glsl-playground" data-titulo="Pixelado y la selección de mipmap" data-altura="300" data-texturas="paisaje"
+     data-uniforms='{"u_bloque":{"tipo":"float","min":2,"max":40,"valor":13,"paso":1,"etiqueta":"bloque (px)"},"u_grad":{"tipo":"bool","valor":false,"etiqueta":"textureGrad"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform float u_bloque;
+uniform bool u_grad;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  // El centro del bloque de u_bloque × u_bloque píxeles que contiene a este píxel
+  vec2 centroBloque = (floor(gl_FragCoord.xy / u_bloque) + 0.5) * u_bloque;
+  vec2 uvBloque = centroBloque / u_resolution;
+  vec3 color;
+  if (u_grad) {
+    // Derivadas de la uv CONTINUA: el nivel de mipmap que tocaría sin pixelar
+    color = textureGrad(u_tex0, uvBloque, dFdx(v_uv), dFdy(v_uv)).rgb;
+  } else {
+    color = texture(u_tex0, uvBloque).rgb;
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>Sin <code>textureGrad</code>, entre muchos bloques aparecen líneas finas de un color distinto, más borroso o más apagado. Con él, desaparecen. Pon el bloque en 12 o en 8: las líneas desaparecen solas, sin activar nada (con tamaños pares no aparecen nunca, y con 13 sí; el porqué, enseguida). La explicación es la selección de mipmap, y como la vas a necesitar también en la sección de mosaicos, merece su propia sección un poco más abajo. De momento, quédate con el síntoma y con el arreglo.</p>
+
+<h2>Efectos de color</h2>
+<p>Los efectos de color no cambian dónde se lee, sino qué se hace con el color leído. Son funciones de <code>vec3</code> a <code>vec3</code>, y casi todas caben en una línea:</p>
+<table>
+  <thead><tr><th>Efecto</th><th>Código</th><th>Idea</th></tr></thead>
+  <tbody>
+    <tr><td>Escala de grises</td><td><code>vec3(dot(c, vec3(0.2126, 0.7152, 0.0722)))</code></td><td>la luminancia: el verde pesa más porque el ojo es más sensible a él</td></tr>
+    <tr><td>Sepia</td><td><code>mat3(…) * c</code></td><td>una matriz que mezcla los canales hacia tonos marrones</td></tr>
+    <tr><td>Umbral</td><td><code>vec3(step(0.5, lum))</code></td><td>blanco o negro según la luminancia</td></tr>
+    <tr><td>Posterizado</td><td><code>floor(c * n + 0.5) / n</code></td><td>solo n + 1 niveles por canal (la escalera, otra vez)</td></tr>
+    <tr><td>Invertir</td><td><code>1.0 - c</code></td><td>el negativo</td></tr>
+    <tr><td>Duotono</td><td><code>mix(oscuro, claro, lum)</code></td><td>la luminancia se reinterpreta con dos colores</td></tr>
+    <tr><td>Paleta</td><td><code>a + b * cos(6.2832 * (c * lum + d))</code></td><td>la paleta de coseno de Quilez (<a href="04-color.html">6.4</a>) indexada por la luminancia</td></tr>
+  </tbody>
+</table>
+
+<div class="glsl-playground" data-titulo="Efectos de color" data-altura="300" data-texturas="paisaje"
+     data-uniforms='{"u_efecto":{"tipo":"int","min":0,"max":7,"valor":6,"etiqueta":"efecto"},"u_mezcla":{"tipo":"float","min":0,"max":1,"valor":1,"etiqueta":"mezcla"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform int u_efecto;
+uniform float u_mezcla;
+in vec2 v_uv;
+out vec4 fragColor;
+
+// Luminancia con los pesos de Rec. 709 (ver la caja de senior)
+float luminancia(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+vec3 efecto(vec3 c) {
+  float l = luminancia(c);
+  if (u_efecto == 1) return vec3(l);                                 // grises
+  if (u_efecto == 2) return clamp(mat3(0.393, 0.349, 0.272,          // sepia (por columnas:
+                                       0.769, 0.686, 0.534,          //  cuánto aporta R, G y B
+                                       0.189, 0.168, 0.131) * c, 0.0, 1.0);  //  a cada salida)
+  if (u_efecto == 3) return vec3(smoothstep(0.45, 0.55, l));         // umbral suave
+  if (u_efecto == 4) return floor(c * 4.0 + 0.5) / 4.0;              // posterizado: 5 niveles
+  if (u_efecto == 5) return 1.0 - c;                                 // negativo
+  if (u_efecto == 6) return mix(vec3(0.08, 0.05, 0.25), vec3(1.0, 0.8, 0.45), l);   // duotono
+  if (u_efecto == 7) return 0.5 + 0.5 * cos(6.2831853 * (l + vec3(0.0, 0.33, 0.67)));  // paleta
+  return c;                                                          // original
+}
+
+void main() {
+  vec3 c = texture(u_tex0, v_uv).rgb;
+  vec3 e = efecto(c);
+  // La mitad izquierda, original; la derecha con el efecto (y la mezcla entre ambos)
+  vec3 color = v_uv.x < 0.5 ? c : mix(c, e, u_mezcla);
+  if (abs(v_uv.x - 0.5) < 0.002) color = vec3(1.0);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p><code>efecto</code>: 0 original, 1 grises, 2 sepia, 3 umbral, 4 posterizado, 5 negativo, 6 duotono, 7 paleta. La mitad izquierda es siempre la original, para comparar. Dos detalles del código: la matriz de sepia se escribe <strong>por columnas</strong> (el constructor <code>mat3</code> rellena columna a columna, <a href="../03-matematicas/05-matrices.html">3.5</a>), así que la primera columna (0.393, 0.349, 0.272) es cuánto aporta el rojo de entrada a cada canal de salida; y el <code>clamp</code> es necesario porque la sepia de un blanco da (1.35, 1.2, 0.94): las dos primeras filas de la matriz suman más de 1.</p>
+
+<div class="callout senior" data-titulo="Grises, gamma y la textura que llega codificada">
+  <p>Los pesos de la luminancia (Rec. 709) y la luma de la televisión (Rec. 601, 0.299/0.587/0.114) los viste en <a href="04-color.html">6.4</a>: la luminancia se calcula sobre luz lineal. Las texturas de los editores llegan al shader <strong>codificadas en sRGB</strong> (se subieron como <code>RGBA</code>, no como <code>SRGB8_ALPHA8</code>), así que, siendo estrictos, habría que decodificar, pesar y volver a codificar. Para una escala de grises la diferencia es pequeña y casi todo el mundo aplica los pesos directamente. Donde la gamma sí se ve es al <strong>promediar</strong> colores, que es lo que hace cualquier kernel de desenfoque de esta lección: un desenfoque sobre valores sRGB oscurece los bordes entre zonas de colores distintos (el mismo tono sucio de la mezcla de colores de <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>), y por eso los post-procesos serios trabajan en luz lineal.</p>
+</div>
+
+
+
+<h2>Convolución: leer a los vecinos</h2>
+<p>Hasta aquí, cada píxel leía un solo punto. Los efectos más potentes combinan <strong>varios vecinos</strong>: una <strong>convolución</strong> multiplica cada texel de un entorno (típicamente 3 × 3 o 5 × 5) por un peso y suma. La tabla de pesos se llama <strong>kernel</strong>. Cambiando solo los pesos, el mismo bucle desenfoca, enfoca o detecta bordes:</p>
+$$\text{resultado}(x, y) = \sum_{j=-R}^{R}\ \sum_{i=-R}^{R} k_{i,j}\ \text{imagen}(x + i,\ y + j)$$
+<table class="b-num">
+  <thead><tr><th>Kernel</th><th>Pesos (3 × 3)</th><th>Efecto</th></tr></thead>
+  <tbody>
+    <tr><td>Caja</td><td>todos 1/9</td><td>desenfoque (media de los vecinos)</td></tr>
+    <tr><td>Gaussiano</td><td>1 2 1 / 2 4 2 / 1 2 1, entre 16</td><td>desenfoque más natural: el centro pesa más</td></tr>
+    <tr><td>Enfoque</td><td>0 −1 0 / −1 5 −1 / 0 −1 0</td><td>realza la diferencia con los vecinos</td></tr>
+    <tr><td>Sobel x</td><td>−1 0 1 / −2 0 2 / −1 0 1</td><td>cambio de brillo en horizontal (bordes verticales)</td></tr>
+    <tr><td>Sobel y</td><td>−1 −2 −1 / 0 0 0 / 1 2 1</td><td>cambio de brillo en vertical (bordes horizontales)</td></tr>
+  </tbody>
+</table>
+<p>Los desenfoques suman 1 (el brillo medio no cambia); el de enfoque también (5 − 4 = 1), pero con pesos negativos, así que puede salirse de $[0, 1]$; los de Sobel suman 0 (en una zona uniforme dan 0: solo responden a los cambios).</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec2 texel = 1.0 / vec2(textureSize(u_tex0, 0));
+const float K[9] = float[9](1.0, 2.0, 1.0,
+                            2.0, 4.0, 2.0,
+                            1.0, 2.0, 1.0);
+vec3 suma = vec3(0.0);
+for (int j = -1; j <= 1; j++) {
+  for (int i = -1; i <= 1; i++) {
+    float peso = K[(j + 1) * 3 + (i + 1)];
+    suma += peso * texture(u_tex0, v_uv + vec2(i, j) * texel).rgb;
+  }
+}
+vec3 color = suma / 16.0;
+</script>
+<ol>
+  <li data-l="1">El paso entre texels vecinos, en uv. Si usaras el tamaño del píxel de la pantalla (<code>1.0 / u_resolution</code>) en lugar del texel, el kernel leería más cerca o más lejos de lo previsto según cuánto se amplíe la imagen.</li>
+  <li data-l="2-4">Un array constante inicializado con su constructor (GLSL ES 3.00). Se escribe como una tabla de 3 × 3 por legibilidad, pero es un array plano de 9.</li>
+  <li data-l="6-7">Dos bucles de −1 a 1 con límites constantes: el compilador los puede desenrollar por completo, 9 lecturas sin bucle real.</li>
+  <li data-l="8">El índice en el array plano: fila <code>j + 1</code>, columna <code>i + 1</code>. Como <code>K</code> es constante y los índices salen de bucles desenrollables, el compilador sustituye cada peso por su valor.</li>
+  <li data-l="9"><code>vec2(i, j)</code> convierte los enteros a float (el constructor sí convierte; la suma directa de un <code>int</code> y un <code>float</code> no compilaría) y los multiplica por el tamaño del texel. Con <code>LINEAR</code> y coordenadas en centros de texel exactos, cada lectura devuelve un texel sin mezclar; si <code>v_uv</code> no cae en un centro, cada lectura ya es una mezcla bilineal, lo que suaviza un poco más.</li>
+  <li data-l="12">Normalizar: los pesos suman 16.</li>
+</ol>
+</div>
+
+<div class="glsl-playground" data-titulo="Kernels de convolución" data-altura="320" data-texturas="paisaje"
+     data-uniforms='{"u_kernel":{"tipo":"int","min":0,"max":4,"valor":4,"etiqueta":"kernel"},"u_separacion":{"tipo":"float","min":1,"max":6,"valor":1,"etiqueta":"separación"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform int u_kernel;
+uniform float u_separacion;
+in vec2 v_uv;
+out vec4 fragColor;
+
+float luminancia(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+  vec2 texel = u_separacion / vec2(textureSize(u_tex0, 0));
+  vec3 color = texture(u_tex0, v_uv).rgb;
+  if (u_kernel == 1) {                              // caja 3×3
+    vec3 s = vec3(0.0);
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++)
+      s += texture(u_tex0, v_uv + vec2(i, j) * texel).rgb;
+    color = s / 9.0;
+  } else if (u_kernel == 2) {                       // gaussiano 5×5 (binomial 1 4 6 4 1)
+    const float B[5] = float[5](1.0, 4.0, 6.0, 4.0, 1.0);
+    vec3 s = vec3(0.0);
+    for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++)
+      s += B[i + 2] * B[j + 2] * texture(u_tex0, v_uv + vec2(i, j) * texel).rgb;
+    color = s / 256.0;
+  } else if (u_kernel == 3) {                       // enfoque
+    vec3 s = 5.0 * color;
+    s -= texture(u_tex0, v_uv + vec2( 1.0, 0.0) * texel).rgb;
+    s -= texture(u_tex0, v_uv + vec2(-1.0, 0.0) * texel).rgb;
+    s -= texture(u_tex0, v_uv + vec2(0.0,  1.0) * texel).rgb;
+    s -= texture(u_tex0, v_uv + vec2(0.0, -1.0) * texel).rgb;
+    color = clamp(s, 0.0, 1.0);
+  } else if (u_kernel == 4) {                       // bordes: Sobel sobre la luminancia
+    float gx = 0.0, gy = 0.0;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+      float l = luminancia(texture(u_tex0, v_uv + vec2(i, j) * texel).rgb);
+      float wx = float(i) * (j == 0 ? 2.0 : 1.0);   // -1 0 1 / -2 0 2 / -1 0 1
+      float wy = float(j) * (i == 0 ? 2.0 : 1.0);   // la misma, traspuesta
+      gx += wx * l;
+      gy += wy * l;
+    }
+    color = vec3(length(vec2(gx, gy)));
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p><code>kernel</code>: 0 original, 1 caja 3 × 3, 2 gaussiano 5 × 5, 3 enfoque, 4 bordes (Sobel). La <code>separación</code> multiplica la distancia entre las lecturas: con 1, cada lectura cae en el texel vecino; con valores mayores, el kernel «abarca» más imagen con las mismas lecturas. Súbela con la caja: el desenfoque crece, pero aparecen copias fantasma escalonadas, porque ahora las lecturas se saltan texels (un kernel de 9 muestras no puede representar un desenfoque de 18 texels sin perder información).</p>
+
+<div class="quiz">
+  <p class="pregunta">Aplicas el kernel de Sobel horizontal (−1 0 1 / −2 0 2 / −1 0 1) a una zona de la imagen de un color uniforme, por ejemplo un cielo azul liso. ¿Qué sale?</p>
+  <ul>
+    <li>El mismo azul, porque en una zona uniforme el kernel no cambia nada.<div class="explicacion">Eso le pasa a un kernel cuyos pesos suman 1 (un desenfoque): la media de valores iguales es ese valor. Los pesos de Sobel suman 0.</div></li>
+    <li data-correcta>Negro (0): los pesos suman 0, así que en una zona uniforme las contribuciones se cancelan.<div class="explicacion">Correcto. Sobel mide diferencias: la columna derecha menos la izquierda. Si todos los texels valen lo mismo, la diferencia es 0. Por eso solo «ve» los bordes. Un kernel que suma 0 responde a los cambios; uno que suma 1 conserva el brillo medio.</div></li>
+    <li>Un valor negativo, que se recorta a negro al escribirlo.<div class="explicacion">El resultado es exactamente 0, no negativo: cada peso negativo tiene su pareja positiva y los texels valen lo mismo. (Donde sí salen negativos es en un borde que baja de claro a oscuro; por eso se usa la magnitud, <code>length(vec2(gx, gy))</code>.)</div></li>
+  </ul>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.8.3 — Sobel paso a paso</h3>
+  <p>El detector de bordes de Sobel es el kernel más útil de la lista (contornos de estilo cómic, efectos de «visión nocturna», máscaras para otros efectos), y su código en el editor anterior condensa las dos matrices en dos líneas. Desenrollémoslo:</p>
+  <ol>
+    <li><strong>Trabajar en luminancia.</strong> Un borde es un cambio de brillo. Convertir cada lectura a un solo número con la luminancia hace el detector independiente del color y ahorra operaciones (un float en lugar de un <code>vec3</code>).</li>
+    <li><strong>El gradiente horizontal.</strong> $G_x$ resta la columna izquierda a la derecha, con peso doble en la fila central: $G_x = (l_{1,-1} + 2\,l_{1,0} + l_{1,1}) - (l_{-1,-1} + 2\,l_{-1,0} + l_{-1,1})$. En una zona uniforme vale 0; en un borde vertical (claro a la derecha), es grande y positivo. El peso central doble suaviza en vertical: Sobel es una derivada en x combinada con un pequeño desenfoque en y, y por eso es menos sensible al ruido que una resta de dos vecinos.</li>
+    <li><strong>La fórmula compacta.</strong> En el código, el peso de $G_x$ para la posición (i, j) es <code>i * (j == 0 ? 2 : 1)</code>: vale −1, 0 o 1 según la columna, doblado en la fila central. El de $G_y$ es el mismo con los papeles de i y j intercambiados.</li>
+    <li><strong>La magnitud.</strong> <code>length(vec2(gx, gy))</code> es la intensidad del borde sin importar su orientación. Y la orientación también está disponible: <code>atan(gy, gx)</code> es la dirección en la que aumenta el brillo, útil para colorear los bordes según su ángulo o para efectos de trazo.</li>
+    <li><strong>Umbral.</strong> Para un contorno limpio, se pasa la magnitud por un <code>smoothstep</code>: <code>smoothstep(0.1, 0.3, magnitud)</code> elimina los bordes débiles (el ruido de las texturas) y deja las líneas principales.</li>
+  </ol>
+</section>
+
+<h3>Cuánto cuesta leer: el desenfoque separable</h3>
+<p>Un kernel de N × N hace N² lecturas por píxel. Lo medimos en el M1 dibujando a 2048 × 2048 (con el método que explica el senior de <a href="06-ruido.html#medir-coste-shader">6.6</a>): una caja de 9 × 9 (81 lecturas) tardó 5,4 ms; una de 15 × 15 (225 lecturas), 14,3 ms; una de 25 × 25 (625 lecturas), 39 ms. El coste crece en proporción al número de lecturas (a unos 65 000 millones de lecturas por segundo en los tres casos), y el último son más de dos frames enteros de 60 Hz para un solo efecto.</p>
+<p>La salida es que el gaussiano (y la caja) son <strong>separables</strong>: el kernel 2D es el producto de uno horizontal por uno vertical ($k_{i,j} = b_i\,b_j$, justo lo que hace el gaussiano 5 × 5 del editor con <code>B[i + 2] * B[j + 2]</code>). Así que un desenfoque 2D equivale a un desenfoque horizontal de N lecturas seguido de uno vertical de N lecturas <strong>sobre el resultado del primero</strong>: 2N lecturas en lugar de N². Para eso, la primera pasada tiene que escribir en una textura intermedia (un framebuffer) que la segunda lee: es el ejercicio 5.8.5 de <a href="../05-webgl/08-framebuffers.html">5.8</a>. Medido: una pasada de 25 lecturas en 1D tardó 1,65 ms, así que las dos pasadas cuestan unos 3,3 ms frente a los 39 ms del kernel completo: doce veces menos. En un editor de un solo pase como los de esta lección no se puede hacer (no hay framebuffers intermedios), por eso aquí los kernels son pequeños.</p>
+
+<div class="callout senior" data-titulo="Lo que cuesta de verdad una lectura: la caché">
+  <p>Contar lecturas no basta: importa <strong>dónde</strong> caen. La GPU trae los texels de la memoria en bloques y los guarda en una caché de texturas; si los píxeles vecinos leen texels vecinos (un kernel, una distorsión suave), casi todas las lecturas se sirven de la caché. Si cada píxel lee en posiciones sin relación (una coordenada que sale de un hash, un «desorden» aleatorio de la imagen), cada lectura es un viaje a memoria. Lo medimos a 2048 × 2048 con 32 lecturas por píxel: cerca unas de otras, 6,3 ms; en posiciones aleatorias de una textura de 512, 29 ms, y de una de 2048, 213 ms (calcular las posiciones con hashes, sin leer, ya costaba 5,8 ms, así que las 32 lecturas vecinas apenas añadieron medio milisegundo). El mismo número de lecturas, más de treinta veces más caro, y el efecto crece con el tamaño de la textura: la de 512 ocupa 1 MB y la de 2048, 16 MB, y cuanto mayor es la zona de memoria de la que se lee al azar, menos lecturas encuentra ya en la caché. Es también la razón de que el ruido leído de una textura de <a href="06-ruido.html">6.6</a> sea barato: sus lecturas, aunque «aleatorias» en valor, son coherentes en posición.</p>
+</div>
+
+<div class="callout hack" data-titulo="Dos texels por lectura: el truco del filtrado lineal">
+  <p>Daniel Rákos popularizó un truco que usa el hardware de filtrado como calculadora: si lees con <code>LINEAR</code> en un punto <em>entre</em> dos texels, la GPU te devuelve su media ponderada gratis. Colocando la lectura en la posición justa (más cerca del texel de mayor peso, en proporción a los pesos), una sola lectura sustituye a dos multiplicaciones y dos lecturas del kernel. Un gaussiano de 9 muestras en 1D se hace con 5 lecturas. Letra pequeña: la posición entre texels se cuantiza con la precisión del filtrado, 8 bits en la GPU que medimos en <a href="06-ruido.html">6.6</a>, así que los pesos resultantes son aproximados (de sobra para un desenfoque, no para cálculos exactos).</p>
+</div>
+
+<h2>Los bordes de la imagen</h2>
+<p>Un kernel en el borde de la imagen lee texels que no existen: el de la izquierda del primer texel, por ejemplo. Qué recibe depende del <strong>modo de repetición</strong> (wrap) de la textura (<a href="../05-webgl/05-texturas.html">5.5</a>): con <code>REPEAT</code>, el texel del borde opuesto; con <code>CLAMP_TO_EDGE</code>, el propio texel del borde repetido. Ya viste en 5.5 el caso de un solo texel (una línea finísima del color del borde contrario con filtrado <code>LINEAR</code>). Con un kernel ancho, el problema es tan ancho como el kernel:</p>
+
+<div class="glsl-playground" data-titulo="Desenfoque en los bordes: REPEAT frente a CLAMP" data-altura="300" data-texturas="uv,uv:clamp"
+     data-uniforms='{"u_clamp":{"tipo":"bool","valor":false,"etiqueta":"CLAMP_TO_EDGE"},"u_radio":{"tipo":"float","min":0,"max":6,"valor":4,"etiqueta":"radio"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;   // "uv" con REPEAT
+uniform sampler2D u_tex1;   // "uv" con CLAMP_TO_EDGE
+uniform bool u_clamp;
+uniform float u_radio;
+in vec2 v_uv;
+out vec4 fragColor;
+
+vec3 leer(vec2 uv) { return u_clamp ? texture(u_tex1, uv).rgb : texture(u_tex0, uv).rgb; }
+
+void main() {
+  vec2 texel = u_radio / vec2(textureSize(u_tex0, 0));
+  vec3 s = vec3(0.0);
+  for (int j = -4; j <= 4; j++) for (int i = -4; i <= 4; i++)     // caja de 9 × 9
+    s += leer(v_uv + vec2(i, j) * texel);
+  fragColor = vec4(s / 81.0, 1.0);
+}
+</script>
+</div>
+<p>La textura <code>uv</code> es roja a la derecha y negra a la izquierda, verde arriba y negra abajo. Con <code>REPEAT</code>, el borde izquierdo se tiñe de rojo (el desenfoque trae el rojo del borde derecho) y el de arriba se oscurece (trae el negro de abajo). Con <code>CLAMP_TO_EDGE</code>, los bordes se limitan a repetir su propio color: sin contaminación. El editor carga la misma imagen dos veces con modos distintos (<code>data-texturas="uv,uv:clamp"</code>: dos texturas en dos unidades, <code>u_tex0</code> y <code>u_tex1</code>) para poder alternar con un uniform.</p>
+
+<div class="callout bestiario" data-id="m6b-borde-desenfoque" data-titulo="El desenfoque trae colores del borde contrario">
+  <p><strong>Síntoma:</strong> al desenfocar una imagen (o aplicar cualquier kernel), aparece una banda del color del lado opuesto en cada borde: cielo en la parte de abajo, suelo en la de arriba, y la banda es tan ancha como el radio del desenfoque.</p>
+  <p><strong>Causa:</strong> el modo de repetición es <code>REPEAT</code> (el valor por defecto de WebGL), y las lecturas que se salen de 0–1 vuelven a entrar por el lado contrario.</p>
+  <p><strong>Solución:</strong> <code>CLAMP_TO_EDGE</code> en las texturas que no se repiten (fotos, post-proceso de la escena): el borde se extiende en lugar de envolverse. Si quieres un borde reflejado, WebGL (ya desde WebGL1) tiene <code>MIRRORED_REPEAT</code> (<code>gl.texParameteri(…, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT)</code>), o puedes reflejar las coordenadas en el shader: <code>uv = 1.0 - abs(1.0 - mod(uv, 2.0))</code>.</p>
+</div>
+
+<h2>Mipmaps, derivadas y costuras</h2>
+<p>Volvamos a las líneas del pixelado. Para elegir el nivel de mipmap, <code>texture</code> necesita saber cuántos texels abarca el píxel. No lo sabe de antemano: lo <strong>mide</strong>. Los píxeles se sombrean en grupos de 2 × 2 (los <em>quads</em> de <a href="02-pensar-en-paralelo.html">6.2</a>), y la GPU compara la coordenada <code>uv</code> de cada píxel con la de su vecino en el quad: esa diferencia es la derivada, $\partial uv/\partial x$ y $\partial uv/\partial y$. Multiplicada por el tamaño de la textura, dice cuántos texels hay entre dos píxeles vecinos; su logaritmo en base 2 es el nivel de mipmap. Una derivada de 1 texel por píxel da el nivel 0; de 4 texels por píxel, el nivel 2 (<code>log2(4)</code>).</p>
+<p>Ahora piensa en coordenadas que saltan. En el pixelado, dentro de un bloque la coordenada es constante: derivada 0, nivel 0, perfecto. Pero en un quad que cae a caballo entre dos bloques, dos píxeles vecinos tienen coordenadas de bloques distintos: la derivada es el tamaño de un bloque entero, la GPU cree que el píxel abarca muchísimos texels y lee un nivel de mipmap muy reducido, la media borrosa de una gran zona. Resultado: una línea de 1 o 2 píxeles de ancho con el color «promedio». Lo mismo pasa con <code>fract</code> en un mosaico, donde la coordenada salta de 1 a 0 (derivada de una imagen entera: lee el nivel 1 × 1, el color medio de toda la textura), y con el <code>atan</code> de las coordenadas polares en su costura (<a href="../03-matematicas/03-trigonometria.html">3.3</a>).</p>
+
+<div class="glsl-playground" data-titulo="Un mosaico con fract y sus costuras" data-altura="300" data-texturas="paisaje"
+     data-uniforms='{"u_repeticiones":{"tipo":"float","min":1,"max":6,"valor":3.3,"etiqueta":"repet."},"u_grad":{"tipo":"bool","valor":false,"etiqueta":"textureGrad"},"u_nivel":{"tipo":"bool","valor":false,"etiqueta":"ver nivel"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform float u_repeticiones;
+uniform bool u_grad, u_nivel;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = v_uv * u_repeticiones;             // continua: crece sin saltos
+  vec2 mosaico = fract(uv);                    // salta de 1 a 0 en cada junta
+  vec3 color = u_grad
+    ? textureGrad(u_tex0, mosaico, dFdx(uv), dFdy(uv)).rgb   // derivadas de la continua
+    : texture(u_tex0, mosaico).rgb;                          // derivadas de la que salta
+  if (u_nivel) {
+    // El nivel de mipmap que la GPU calcula a partir de las derivadas de lo que le pasas
+    vec2 d = max(abs(dFdx(u_grad ? uv : mosaico)), abs(dFdy(u_grad ? uv : mosaico)));
+    float nivel = log2(max(d.x, d.y) * 512.0);
+    color = mix(vec3(0.1, 0.1, 0.4), vec3(1.0, 0.9, 0.2), clamp(nivel / 9.0, 0.0, 1.0));
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>Con 3,3 repeticiones verás líneas finas de color violáceo en algunas juntas (el color medio del paisaje). Activa «ver nivel»: el shader calcula él mismo, con <code>dFdx</code> y <code>dFdy</code>, el nivel que se deduce de las derivadas y lo pinta de azul (nivel 0) a amarillo (nivel 9, el de 1 × 1 texels). Las juntas problemáticas salen amarillas. Activa «textureGrad»: las líneas desaparecen, y el mapa de niveles queda uniforme.</p>
+<p>Un detalle que desconcierta al depurar: <strong>la costura no siempre aparece</strong>. Solo se produce si la junta cae <em>dentro</em> de un quad de 2 × 2. Si cae justo en la frontera entre dos quads, ningún quad ve el salto y la derivada es normal. Lo comprobamos con un lienzo de 600 × 300 píxeles: con 3 repeticiones, las juntas caen en las columnas 200 y 400 y las filas 100 y 200, todas pares, justo entre quads, y no apareció ninguna costura (todos los píxeles leyeron el nivel 2); con 3,3 repeticiones, 2 992 píxeles leyeron el nivel de 1 × 1. Por eso la costura aparece y desaparece al redimensionar la ventana o al mover la cámara. Es el mismo fenómeno que la <a href="05-patrones.html#m6a-costura-fwidth">costura de <code>fwidth</code></a> de 6.5, que también dependía de en qué fila de quads caía el salto del <code>atan</code>: allí la derivada desbocada ensanchaba un borde suave; aquí elige un mipmap equivocado.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec2 uv = v_uv * repeticiones;
+vec2 mosaico = fract(uv);
+vec4 c = textureGrad(u_tex0, mosaico, dFdx(uv), dFdy(uv));
+</script>
+<ol>
+  <li data-l="1">La coordenada continua: la que tiene las derivadas «de verdad» (cuánto avanza la imagen por píxel, sin saltos).</li>
+  <li data-l="2">La coordenada con saltos, la que dice qué punto de la imagen toca leer.</li>
+  <li data-l="3"><code>textureGrad(sampler, coordenada, dPdx, dPdy)</code>: lee en <code>mosaico</code>, pero elige el nivel de mipmap con las derivadas que le das, no con las que mediría. <code>dFdx(uv)</code> y <code>dFdy(uv)</code> son las de la coordenada continua. Hay que calcularlas fuera de cualquier <code>if</code> cuya condición cambie de un píxel a otro: las derivadas comparan valores entre los píxeles del quad, y si un vecino no ejecutó la línea, el valor que se compara no está definido (el bicho de las <a href="03-formas-sdf.html#m6a-derivadas-rama">derivadas dentro de una rama</a> de 6.3).</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m6b-costura-mipmap" data-titulo="Líneas finas en las juntas de un mosaico o entre los bloques de un pixelado">
+  <p><strong>Síntoma:</strong> al repetir una textura con <code>fract</code>, pixelar con <code>floor</code> o mapearla en polares con <code>atan</code>, aparecen líneas de 1 o 2 píxeles, de un color «medio» o borroso, justo en las juntas. Aparecen y desaparecen al redimensionar o al mover la imagen.</p>
+  <p><strong>Causa:</strong> la GPU elige el mipmap a partir de las derivadas de la coordenada, medidas en quads de 2 × 2 píxeles. Donde la coordenada salta, la derivada es enorme y se lee un nivel muy reducido (en el extremo, el de 1 × 1 texel: el color medio de toda la textura). Solo ocurre en los quads que caen a caballo de la junta.</p>
+  <p><strong>Solución:</strong> <code>textureGrad(tex, coordenadaConSaltos, dFdx(coordenadaContinua), dFdy(coordenadaContinua))</code>. Alternativas: <code>textureLod(tex, uv, 0.0)</code> (sin mipmaps: vuelve el muaré al reducir), una textura sin mipmaps, o, en un mosaico simple, no usar <code>fract</code> y dejar que <code>REPEAT</code> repita.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un shader hace <code>texture(u_tex0, fract(v_uv * 4.0))</code> con una textura con <code>REPEAT</code> y mipmaps, y aparecen líneas en las juntas. ¿Cuál es el arreglo más simple?</p>
+  <ul>
+    <li>Cambiar el filtro de ampliación (<code>TEXTURE_MAG_FILTER</code>) a <code>NEAREST</code>.<div class="explicacion">El filtro de ampliación solo se usa cuando el texel ocupa más de un píxel; el nivel de mipmap se elige igualmente con las derivadas, así que la línea seguiría ahí. (Poner también el filtro de reducción sin mipmaps, <code>NEAREST</code> o <code>LINEAR</code> a secas, sí la quitaría, pero a costa de recuperar el muaré al reducir la imagen: es un remedio peor que quitar el <code>fract</code>.)</div></li>
+    <li>Usar <code>highp</code> para que la derivada sea más precisa.<div class="explicacion">No es un problema de precisión: la derivada es correcta, la coordenada realmente salta de 1 a 0 entre dos píxeles vecinos. La GPU interpreta ese salto como «este píxel abarca toda la imagen».</div></li>
+    <li data-correcta>Quitar el <code>fract</code>: <code>texture(u_tex0, v_uv * 4.0)</code>.<div class="explicacion">Correcto. Con <code>REPEAT</code>, el hardware ya repite la textura fuera de 0–1, y la coordenada es continua: derivadas correctas en todas partes. <code>textureGrad</code> es la solución general cuando el salto no se puede evitar (pixelado, polares, mosaicos con variaciones por celda).</div></li>
+  </ul>
+</div>
+
+<h2>Viñeteado y grano</h2>
+<p>Los dos acabados que casi todo post-proceso cinematográfico lleva al final:</p>
+<ul>
+  <li><strong>Viñeteado</strong>: oscurecer las esquinas, como hacen los objetivos reales. Un <code>smoothstep</code> de la distancia al centro, medida en coordenadas con el aspecto corregido (o la viñeta será una elipse que depende de la ventana), que multiplica el color: <code>color *= 1.0 - smoothstep(0.4, 0.9, length(p)) * fuerza</code>.</li>
+  <li><strong>Grano</strong>: ruido blanco (<a href="06-ruido.html">6.6</a>) que cambia en cada fotograma, centrado en 0 para no aclarar ni oscurecer la imagen en promedio: <code>color += (hash(píxel, fotograma) - 0.5) * intensidad</code>. El grano del cine cambia 24 veces por segundo; usar <code>floor(u_time * 24.0)</code> como fotograma lo imita en cualquier pantalla. Cuanto más visible, más conviene aplicarlo a la luminancia (el mismo valor en los tres canales) para que no parezca ruido de color de una cámara barata.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.8.4 — Película antigua</h3>
+  <p>Una cadena de post-proceso completa, en el orden en que se aplicaría: temblor del encuadre, sepia, parpadeo del brillo, rayas verticales, viñeta y grano. Cada eslabón es una de las técnicas de la lección.</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.8.4 — Película antigua" data-altura="320" data-texturas="paisaje:clamp">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+in vec2 v_uv;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  float fotograma = floor(u_time * 24.0);                 // 24 fotogramas por segundo
+  // 1) Temblor del encuadre: un pequeño desplazamiento distinto en cada fotograma
+  vec2 temblor = (vec2(hash12(vec2(fotograma, 1.0)), hash12(vec2(fotograma, 2.0))) - 0.5) * 0.004;
+  vec3 c = texture(u_tex0, v_uv + temblor).rgb;
+  // 2) Sepia
+  c = clamp(mat3(0.393, 0.349, 0.272, 0.769, 0.686, 0.534, 0.189, 0.168, 0.131) * c, 0.0, 1.0);
+  // 3) Parpadeo del brillo, fotograma a fotograma
+  c *= 0.9 + 0.1 * hash12(vec2(fotograma, 3.0));
+  // 4) Una raya vertical que aparece en fotogramas al azar
+  float xRaya = hash12(vec2(fotograma, 4.0));
+  if (hash12(vec2(fotograma, 5.0)) < 0.4) {
+    float d = abs(v_uv.x - xRaya) * u_resolution.x;        // distancia en píxeles
+    c = mix(c, vec3(0.9, 0.85, 0.7), (1.0 - smoothstep(0.5, 1.5, d)) * 0.6);
+  }
+  // 5) Viñeta, con el aspecto corregido
+  vec2 p = (v_uv - 0.5) * vec2(u_resolution.x / u_resolution.y, 1.0);
+  c *= 1.0 - smoothstep(0.35, 0.85, length(p)) * 0.75;
+  // 6) Grano de luminancia, centrado en 0
+  float grano = hash12(gl_FragCoord.xy + fotograma * 17.0) - 0.5;
+  c += grano * 0.09;
+  fragColor = vec4(c, 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>El fotograma</strong>, <code>floor(u_time * 24.0)</code>, es la semilla de todo lo aleatorio: cambia 24 veces por segundo, sea cual sea la frecuencia de la pantalla (lo contrario del bicho de <code>u_frame</code> de <a href="07-animacion-shaders.html">6.7</a>). Con segundas coordenadas distintas (1, 2, 3…), cada efecto tiene su propio número aleatorio por fotograma.</li>
+    <li><strong>El temblor</strong> desplaza toda la lectura: es una transformación de coordenadas, y va primero porque afecta a <em>dónde</em> se lee. ±0,002 en uv es un píxel en una imagen de 512.</li>
+    <li><strong>La sepia y el parpadeo</strong> son efectos de color sobre el valor leído; el orden entre ellos da igual porque el parpadeo es un producto por un escalar.</li>
+    <li><strong>La raya</strong> aparece en el 40&nbsp;% de los fotogramas en una x aleatoria, con 1 píxel de ancho antialiasado: la distancia se mide en píxeles para que tenga el mismo grosor en cualquier lienzo.</li>
+    <li><strong>La viñeta y el grano</strong> van al final porque simulan lo que ocurre en la cámara y en la película, después de todo lo demás. El grano usa <code>gl_FragCoord.xy</code> (cada píxel) más el fotograma: un patrón nuevo cada 1/24 s.</li>
+  </ol>
+</section>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.8.1 — Un caleidoscopio</h3>
+  <p>Convierte la imagen en un caleidoscopio de 6 segmentos que gira lentamente: pasa a coordenadas polares alrededor del centro, pliega el ángulo para que cada segmento de 60° repita al primero reflejado (como los espejos de un caleidoscopio de verdad), y vuelve a cartesianas para leer. Es la repetición polar con espejo de <a href="05-patrones.html">6.5</a>, aplicada a una imagen en lugar de a una forma. El código de partida ya calcula el ángulo y el radio.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.8.1" data-altura="300" data-texturas="paisaje">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;   // centrado, cuadrado
+  float angulo = atan(p.y, p.x);
+  float radio = length(p);
+  // TODO: plegar el ángulo en segmentos de 60°, con espejo, y hacerlo girar
+  vec2 q = radio * vec2(cos(angulo), sin(angulo));
+  fragColor = vec4(texture(u_tex0, q + 0.5).rgb, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  float angulo = atan(p.y, p.x) + u_time * 0.2;         // girar el caleidoscopio
+  float radio = length(p);
+  const float SEGMENTO = 6.2831853 / 6.0;                // 60°
+  angulo = mod(angulo, SEGMENTO);                        // 0..60°: todos los segmentos iguales
+  angulo = abs(angulo - 0.5 * SEGMENTO);                 // espejo en la mitad: 30..0..30
+  vec2 q = radio * vec2(cos(angulo), sin(angulo));
+  fragColor = vec4(texture(u_tex0, q * 0.8 + vec2(0.35, 0.45)).rgb, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Con <code>mod(angulo, SEGMENTO)</code> todos los segmentos muestran lo mismo que el primero, pero con un salto en cada frontera (una copia girada, no reflejada). Para el espejo, pliega cada segmento por su mitad con <code>abs(angulo - SEGMENTO / 2.0)</code>: es el truco de <code>abs</code> del espejo, aplicado al ángulo.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para que gire, suma el tiempo al ángulo antes de plegarlo. Y si el resultado es demasiado oscuro (el centro de la textura es cielo), desplaza la lectura: <code>texture(u_tex0, q * 0.8 + vec2(0.35, 0.45))</code> centra el caleidoscopio en otra zona de la imagen.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El caleidoscopio es un patrón de repetición angular (<a href="05-patrones.html">6.5</a>) con espejo. <code>mod(angulo, 60°)</code> hace que el ángulo de cualquier punto se reduzca al primer segmento: seis copias. Pero dos copias giradas no casan en su frontera (el borde izquierdo de un segmento es el derecho del siguiente sin reflejar). <code>abs(angulo - 30°)</code> dobla cada segmento por la mitad: el ángulo va de 30° a 0° y vuelve a 30°, así que ambos bordes de cada segmento leen el mismo rayo de la imagen y las fronteras se funden. Es exactamente lo que hacen los espejos de un caleidoscopio: reflejar, no copiar.</p>
+    <p>Fíjate en que el salto de <code>atan</code> (de π a −π, <a href="../03-matematicas/03-trigonometria.html">3.3</a>) queda oculto: 360° es múltiplo de 60°, así que las dos caras del salto caen en posiciones equivalentes de sus segmentos. Y el espejo tiene un regalo extra: tras el pliegue, la coordenada con la que se lee es <strong>continua</strong> en todas partes, así que no hay saltos que confundan a los mipmaps. Sin el <code>abs</code> (solo con <code>mod</code>), cada frontera entre segmentos sería un salto de coordenada y aparecerían las líneas del bicho de las costuras: lo medimos con una textura cuyos niveles de mipmap tienen colores distintos, y sin espejo, entre 900 y 1 400 píxeles de las fronteras (según el instante) leían niveles del 3 al 8, muy reducidos; con espejo, todos leyeron el nivel 0.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.8.2 — Una lupa que sigue al ratón</h3>
+  <p>Haz una lupa circular de radio 0,15 (en unidades de altura del lienzo) centrada en el ratón que <strong>amplíe ×2</strong> lo que hay debajo, con un borde fino blanco y un poco de aberración cromática en el borde interior. Fuera de la lupa, la imagen normal. Cuidado con el sentido de la ampliación (repasa el bicho de la lupa que encoge).</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.8.2" data-altura="300" data-texturas="paisaje:clamp">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform sampler2D u_tex0;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  float aspecto = u_resolution.x / u_resolution.y;
+  // Posiciones en un espacio cuadrado: x de 0 a aspecto, y de 0 a 1
+  vec2 p = gl_FragCoord.xy / u_resolution.y;
+  vec2 m = u_mouse / u_resolution.y;
+  vec3 color = texture(u_tex0, v_uv).rgb;
+  // TODO: dentro del círculo de radio 0.15 alrededor de m, leer ampliado ×2
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform sampler2D u_tex0;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  float aspecto = u_resolution.x / u_resolution.y;
+  vec2 p = gl_FragCoord.xy / u_resolution.y;
+  vec2 m = u_mouse / u_resolution.y;
+  vec3 color = texture(u_tex0, v_uv).rgb;
+  vec2 d = p - m;
+  float r = length(d);
+  const float RADIO = 0.15, ZOOM = 2.0;
+  // Ampliar ×2 = leer a la MITAD de distancia del centro de la lupa
+  vec2 q = m + d / ZOOM;                            // en el espacio cuadrado
+  vec2 uv = vec2(q.x / aspecto, q.y);               // de vuelta a 0..1
+  // Aberración: separar los canales cerca del borde interior
+  float borde = smoothstep(0.6 * RADIO, RADIO, r);
+  vec2 sep = d * 0.04 * borde;
+  sep.x /= aspecto;
+  vec3 lupa = vec3(texture(u_tex0, uv + sep).r, texture(u_tex0, uv).g, texture(u_tex0, uv - sep).b);
+  // Las lecturas se hacen en TODOS los píxeles, fuera de cualquier if (derivadas bien definidas);
+  // después se elige
+  if (r < RADIO) color = lupa;
+  float px = 1.0 / u_resolution.y;
+  color = mix(color, vec3(1.0), 1.0 - smoothstep(px, 2.0 * px, abs(r - RADIO)));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Trabaja en el espacio cuadrado <code>p</code> (x de 0 al aspecto): ahí un círculo es un círculo. Dentro de la lupa, el píxel en <code>p</code> debe leer lo que hay en un punto <strong>más cerca</strong> del centro de la lupa: <code>m + (p - m) / 2.0</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para leer la textura, vuelve a 0..1 dividiendo la x por el aspecto. El borde blanco es un anillo: <code>abs(r - RADIO)</code> menor que un par de píxeles. La aberración, como en el ejemplo 6.8.2, pero con el desplazamiento a lo largo de <code>p - m</code> y más fuerte cerca del borde.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La clave es el sentido: para ampliar ×2, cada píxel de la lupa lee en un punto que está a la <strong>mitad</strong> de distancia del centro (<code>m + d / 2</code>). Así, lo que en la imagen original ocupaba un círculo de radio 0,075 se reparte en el de radio 0,15: se ve el doble de grande. Si escribieras <code>m + d * 2.0</code>, la lupa mostraría un círculo de radio 0,3 comprimido en 0,15: una lupa que encoge.</p>
+    <p>El espacio cuadrado evita la lupa ovalada, y la conversión final (<code>q.x / aspecto</code>) devuelve a las coordenadas de la textura, que llenan el lienzo con <code>v_uv</code>. El desplazamiento de la aberración también pasa por esa conversión (<code>sep.x /= aspecto</code>), para que sea radial en pantalla. Un detalle de senior: las tres lecturas de la lupa se hacen en todos los píxeles y el <code>if</code> solo elige el resultado. Si las pusieras dentro del <code>if</code>, en los quads que cruzan el contorno de la lupa unos píxeles ejecutarían la lectura y otros no, y la derivada que <code>texture</code> usa para elegir el mipmap compararía la coordenada con la de un vecino que nunca la calculó: según la especificación, indefinido. En 6.3 viste que, en nuestra misma GPU, una lectura de textura dentro de una rama divergente llegó a dar basura (<a href="03-formas-sdf.html#m6a-derivadas-rama">el bicho de las derivadas en una rama</a>); aquí el anillo blanco taparía el contorno, pero no dependas de eso. Leer de más cuesta poco; el comportamiento indefinido, depurarlo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.8.3 — Estética de 8 bits sin costuras</h3>
+  <p>Pixela la imagen en bloques de 9 píxeles de pantalla <strong>sin las líneas del mipmap</strong>, y reduce el color a una paleta de 4 niveles por canal con un ligero <em>dithering</em> ordenado (un patrón de Bayer de 2 × 2) que rompa las bandas. Al terminar, no debe verse ninguna línea entre bloques, y los degradados del cielo deben mostrar un tramado en lugar de franjas lisas. (El 9 es a propósito: con un tamaño de bloque par, las juntas caen siempre entre dos quads y las líneas ni siquiera aparecen; la solución lo explica.)</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.8.3" data-altura="300" data-texturas="paisaje">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  const float BLOQUE = 9.0;
+  vec2 bloque = floor(gl_FragCoord.xy / BLOQUE);
+  vec2 uv = (bloque + 0.5) * BLOQUE / u_resolution;
+  vec3 c = texture(u_tex0, uv).rgb;          // (tiene las líneas del mipmap: mira con atención entre los bloques)
+  // TODO: quitar las líneas; cuantizar a 4 niveles con dithering de Bayer 2×2 por bloque
+  fragColor = vec4(c, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  const float BLOQUE = 9.0;
+  vec2 bloque = floor(gl_FragCoord.xy / BLOQUE);
+  vec2 uv = (bloque + 0.5) * BLOQUE / u_resolution;
+  // Nivel de mipmap según la coordenada continua: sin líneas en las juntas
+  vec3 c = textureGrad(u_tex0, uv, dFdx(v_uv), dFdy(v_uv)).rgb;
+  // Bayer 2×2: umbrales 0, 2, 3, 1 (en cuartos) según la paridad del bloque
+  vec2 par = mod(bloque, 2.0);
+  float bayer = (par.x == 0.0) ? (par.y == 0.0 ? 0.0 : 3.0) : (par.y == 0.0 ? 2.0 : 1.0);
+  float umbral = (bayer + 0.5) / 4.0 - 0.5;           // -0.375 .. 0.375
+  const float NIVELES = 3.0;                          // 4 niveles: 0, 1/3, 2/3, 1
+  c = floor(c * NIVELES + 0.5 + umbral) / NIVELES;
+  fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Las líneas son el bicho de los mipmaps: la coordenada del bloque salta de un bloque al siguiente. <code>textureGrad</code> con las derivadas de <code>v_uv</code> (la coordenada continua) elige el nivel correcto.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Cuantizar a 4 niveles es <code>floor(c * 3.0 + 0.5) / 3.0</code>. El dithering suma, antes del <code>floor</code>, un umbral distinto según la posición del bloque en un patrón 2 × 2 (valores 0, 2, 3, 1 en cuartos, centrados en 0), así que un color intermedio se redondea hacia arriba en unos bloques y hacia abajo en otros.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Primera parte: <code>textureGrad(u_tex0, uv, dFdx(v_uv), dFdy(v_uv))</code> lee en el centro del bloque pero elige el mipmap como si no hubiera pixelado. Sin saltos en las derivadas, sin líneas. ¿Y por qué 9 y no 8? Los quads de 2 × 2 empiezan siempre en coordenadas pares, y con un bloque de 8 (o de cualquier tamaño par) las juntas caen justo entre dos quads: ningún quad ve el salto de coordenada y las líneas no aparecen. Lo comprobamos comparando <code>texture</code> con <code>textureLod(…, 0.0)</code>: con bloques de 2, 4, 8, 10, 12 o 40 píxeles, ningún píxel distinto; con 3, 7, 9, 13 o 39, miles. Con un bloque impar, la mitad de las juntas cae dentro de un quad y sí las verías.</p>
+    <p>Segunda parte: con 4 niveles, un degradado suave se convierte en cuatro franjas. El dithering ordenado cambia el punto de redondeo según la posición: la matriz de Bayer 2 × 2 (0 2 / 3 1) reparte cuatro umbrales de forma que en cualquier zona 2 × 2 haya uno de cada. Con el <code>+ 0.5</code> y estos umbrales, un bloque sube al nivel superior cuando su parte fraccionaria supera 12,5&nbsp;%, 37,5&nbsp;%, 62,5&nbsp;% u 87,5&nbsp;% según su posición en el patrón: un color que está al 30&nbsp;% entre dos niveles sube en uno de cada cuatro bloques, y uno al 50&nbsp;%, en dos. De lejos, el ojo promedia y ve el tono intermedio. Es la técnica de las pantallas antiguas con pocos colores, y la misma idea que el dithering contra el banding de <a href="04-color.html">6.4</a>, pero con un patrón fijo en lugar de ruido. Aplicarlo por <em>bloque</em> (y no por píxel) mantiene la estética: cada «píxel gordo» tiene un solo color.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.8.4 — Tilt-shift: desenfoque que depende de la altura</h3>
+  <p>El efecto <em>tilt-shift</em> hace que un paisaje parezca una maqueta: una franja horizontal nítida y un desenfoque que crece hacia arriba y hacia abajo. Escribe un gaussiano de 9 × 9 cuyos pesos se calculen con la fórmula $e^{-(i^2 + j^2)/(2\sigma^2)}$ (normalizando por la suma de pesos) y cuyo radio dependa de la distancia a la franja central (entre y = 0,4 y 0,6 de la imagen, nítida). Usa límites de bucle constantes: para variar el tamaño del desenfoque, escala la separación entre muestras.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.8.4" data-altura="320" data-texturas="paisaje:clamp"
+       data-uniforms='{"u_maximo":{"tipo":"float","min":0,"max":4,"valor":2.5,"etiqueta":"desenfoque"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform float u_maximo;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  // TODO: cuánto desenfocar según v_uv.y (0 en la franja 0.4–0.6, u_maximo en los extremos)
+  // TODO: gaussiano 9×9 con pesos exp(-(i²+j²)/(2σ²)) y separación proporcional al desenfoque
+  fragColor = vec4(texture(u_tex0, v_uv).rgb, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform float u_maximo;
+in vec2 v_uv;
+out vec4 fragColor;
+
+void main() {
+  // Distancia a la franja nítida (0 dentro, 0.4 en los bordes de la imagen)
+  float fuera = max(0.4 - v_uv.y, v_uv.y - 0.6);
+  float desenfoque = u_maximo * smoothstep(0.0, 0.4, fuera);
+  vec2 texel = 1.0 / vec2(textureSize(u_tex0, 0));
+  vec2 paso = texel * desenfoque;                  // separación entre muestras
+  const float SIGMA = 2.0;                         // en unidades de muestra
+  vec3 suma = vec3(0.0);
+  float pesos = 0.0;
+  for (int j = -4; j <= 4; j++) {
+    for (int i = -4; i <= 4; i++) {
+      float w = exp(-float(i * i + j * j) / (2.0 * SIGMA * SIGMA));
+      suma += w * texture(u_tex0, v_uv + vec2(i, j) * paso).rgb;
+      pesos += w;
+    }
+  }
+  vec3 color = suma / pesos;
+  // Un toque de saturación ayuda a la ilusión de maqueta
+  float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  color = mix(vec3(l), color, 1.25);
+  fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Fuera de la franja, la distancia a ella es <code>max(0.4 - v_uv.y, v_uv.y - 0.6)</code> (negativa dentro). Pásala por un <code>smoothstep</code> para que el desenfoque crezca suave, y multiplícala por <code>u_maximo</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Dos bucles de −4 a 4. En cada muestra, calcula el peso con <code>exp</code>, acumula <code>peso * color</code> y también la suma de pesos; al final divide. La separación entre muestras es <code>texel * desenfoque</code>: con desenfoque 0, todas las muestras caen en el mismo punto y la imagen queda nítida sin ningún caso especial.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El truco de rendimiento es no cambiar el número de muestras (los bucles tienen límites constantes, y 81 lecturas por píxel es un coste fijo) sino su <strong>separación</strong>: con desenfoque 0 las 81 lecturas caen en el mismo texel y la media es el propio texel; con desenfoque 2,5 las muestras abarcan 20 texels de lado. Normalizar por la suma de pesos calculada en el bucle hace que el kernel sume 1 con cualquier σ, sin tener que precalcular la constante.</p>
+    <p>Dos limitaciones honestas. Con separaciones grandes, 9 muestras por eje se quedan cortas y aparece el escalonado de copias fantasma que viste en el editor de kernels: lo correcto sería el desenfoque separable en dos pasadas (<a href="../05-webgl/08-framebuffers.html">5.8</a>) con más muestras, o leer de un nivel de mipmap más reducido con <code>textureLod</code> (que ya es la imagen desenfocada y reducida, gratis). Y el coste: 81 lecturas por píxel en toda la pantalla, también en la franja nítida, donde no sirven para nada. Una salida anticipada con un <code>if (desenfoque &lt; 0.01)</code> antes del bucle ahorra trabajo en la franja, a cambio de que los warps que cruzan su borde paguen las dos ramas (la divergencia de <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>). Y ojo con la lectura que pongas dentro de esa rama: una <code>texture</code> en una rama divergente tiene derivadas indefinidas en los quads que cruzan el borde (el mismo argumento que en el ejercicio 6.8.2); usa <code>textureLod(…, 0.0)</code> o <code>textureGrad</code>.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Una textura es una función del punto: los efectos deciden <strong>dónde</strong> leer (coordenadas), <strong>qué</strong> hacer con el color y <strong>cuántas</strong> lecturas combinar.</li>
+    <li><code>texture</code> filtra, repite y elige mipmap con derivadas; <code>texelFetch</code> lee un texel exacto (datos); <code>textureSize</code> da el tamaño y, con él, el tamaño del texel <code>1.0 / vec2(textureSize(t, 0))</code>.</li>
+    <li>Tirar, no empujar: cada píxel decide de dónde lee, así que escribes la transformación <strong>inversa</strong> de la que ves (el zoom divide; girar la imagen es girar las coordenadas al revés).</li>
+    <li>Gira y mide distancias en coordenadas con el aspecto corregido; ajusta la imagen al lienzo con contain o cover comparando aspectos.</li>
+    <li>Distorsiones: desplazamientos que dependen del punto (ondas, ondulación radial, remolino, barril). Aberración cromática: un canal por lectura, desplazado en dirección radial.</li>
+    <li>Color: luminancia con pesos de Rec. 709, sepia con una <code>mat3</code> (por columnas), umbral, posterizado, duotono y paleta de coseno. Ojo con la gamma al mezclar.</li>
+    <li>Convolución: N² lecturas; el gaussiano es separable (2N lecturas en dos pasadas con un framebuffer). Sobel = derivada con suavizado; su magnitud son los bordes.</li>
+    <li>En los bordes, <code>REPEAT</code> trae el color del lado opuesto: <code>CLAMP_TO_EDGE</code> para imágenes que no se repiten.</li>
+    <li>Coordenadas con saltos (<code>fract</code>, <code>floor</code>, <code>atan</code>) confunden la selección de mipmap en los quads que cruzan el salto: líneas finas. <code>textureGrad</code> con las derivadas de la coordenada continua lo arregla.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li>Daniel Rákos, <a href="https://www.rastergrid.com/blog/2010/09/efficient-gaussian-blur-with-linear-sampling/">Efficient Gaussian blur with linear sampling</a>: el desenfoque separable y el truco del filtrado lineal, con números.</li>
+  <li>Iñigo Quilez, <a href="https://iquilezles.org/articles/hwinterpolation/">Hardware interpolation</a>: la precisión del filtrado de texturas y cómo esquivarla.</li>
+  <li>MDN, <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/texParameter">texParameter</a>: los modos de filtrado y repetición, incluido <code>MIRRORED_REPEAT</code>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

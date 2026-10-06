@@ -1,0 +1,2458 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7.4 · Animar vértices: mallas que se deforman — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m7.css">
+</head>
+<body data-leccion="07-integracion/vertex-animacion">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 7 · JavaScript + shaders juntos</p>
+  <h1>Animar vértices: mallas que se deforman</h1>
+  <p class="resumen">Todo lo que pintaste en el módulo 6 vivía dentro de un rectángulo: podías fingir olas con la luz, pero el borde seguía recto. Aquí movemos la geometría de verdad. Una malla que no cambia nunca en memoria, un vertex shader que decide en cada frame dónde va cada vértice y unas normales recalculadas para que la luz se entere.</p>
+  <div class="meta"><span class="chip">⏱ 160 min</span><span class="chip">Requisitos: 4.5, 5.3, 5.6, 6.6, 7.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Generarás un plano subdividido con índices, sabrás cuántos vértices, triángulos e índices tiene y qué tipo de índice necesita, y por qué el vértice 65 535 es especial.</li>
+      <li>Desplazarás vértices en el vertex shader con ondas y ruido animados por <code>u_time</code>, y recalcularás las normales con la derivada analítica o con diferencias finitas, sabiendo elegir el paso.</li>
+      <li>Decidirás qué calcular por vértice y qué por fragmento según la resolución de la malla, y verás los triángulos con el truco baricéntrico.</li>
+      <li>Montarás una bandera, una superficie que se abomba bajo el ratón, geometría sin buffers con <code>gl_VertexID</code>, campos de puntos con <code>gl_PointSize</code> y un terreno que el vertex shader lee de una textura.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>La silueta no miente</h2>
+<p>En <a href="../06-glsl/07-animacion-shaders.html">6.7</a> hiciste agua, humo y baldosas que giraban, todo en el fragment shader. Funciona mientras el truco se mire de frente: el fragment shader solo puede decidir el color de los píxeles que ya cubre un triángulo. Una bandera dibujada así es un rectángulo con sombras pintadas; su borde no ondea, porque el borde lo deciden los vértices. Para que la forma cambie (una ola que asoma por el horizonte, una tela que se retuerce, un terreno que tapa lo que hay detrás) hay que mover los vértices.</p>
+<p>Hay dos maneras de hacerlo. La primera es la que ya conoces de <a href="../05-webgl/03-buffers-atributos.html">5.3</a>: calcular en JavaScript las posiciones nuevas de cada vértice y subirlas con <code>bufferSubData</code> en cada frame. La segunda es dejar la malla quieta en la memoria de la GPU y que el vertex shader calcule el desplazamiento a partir del tiempo, como adelantamos en <a href="../05-webgl/04-uniforms-animacion.html">5.4</a>. Medimos las dos con la misma superficie (tres senos y su normal por vértice) en la máquina de pruebas (Apple M1, Chrome, ANGLE sobre Metal):</p>
+
+<table class="m7-medidas">
+  <thead><tr><th>Rejilla</th><th class="num">Vértices</th><th class="num">JavaScript: calcular</th><th class="num">JavaScript: subir</th><th class="num">Vertex shader: dibujo completo</th></tr></thead>
+  <tbody>
+    <tr><td>256 × 256 celdas</td><td class="num">66 049</td><td class="num">3,2 ms</td><td class="num">&lt; 0,1 ms</td><td class="num">0,6 ms</td></tr>
+    <tr><td>512 × 512 celdas</td><td class="num">263 169</td><td class="num">12,7 ms</td><td class="num">0,2 ms</td><td class="num">1,1 ms</td></tr>
+    <tr><td>1024 × 1024 celdas</td><td class="num">1 050 625</td><td class="num">50,7 ms</td><td class="num">—</td><td class="num">3,2 ms</td></tr>
+  </tbody>
+</table>
+
+<p>Las dos columnas de JavaScript son tiempo del hilo principal, el mismo que tiene que atender eventos, layout y el resto de tu página: con 263 000 vértices, solo el cálculo se come tres cuartas partes de un frame de 60 Hz. Subir los datos es casi gratis (lo mismo que medimos en 5.3: lo caro es calcular). La última columna es el dibujo entero en la GPU, fragmentos incluidos, en un lienzo de 512 × 512: a la GPU, dibujar un millón de vértices en paralelo le cuesta lo mismo (3,2 ms) que a JavaScript solo calcular 66 000, uno detrás de otro. De ahí la regla: <strong>si el cambio de cada vértice se puede escribir como una función del tiempo y de unos pocos parámetros, se calcula en el vertex shader</strong>. JavaScript queda para lo que de verdad no se puede calcular así (una simulación con memoria, una edición del usuario).</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Modelo mental: una malla fija en memoria, un vertex shader que la deforma según los uniforms">
+  <defs>
+    <marker id="m74-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="10" y="80" width="170" height="92" rx="10"/>
+  <text x="95" y="104" text-anchor="middle" style="font-weight:700">buffers (quietos)</text>
+  <text x="95" y="126" text-anchor="middle" style="font-size:12px">uv de cada vértice</text>
+  <text x="95" y="144" text-anchor="middle" style="font-size:12px">índices de los triángulos</text>
+  <text x="95" y="162" text-anchor="middle" class="texto-tenue" style="font-size:11px">se suben una vez</text>
+  <path d="M182 126 L222 126" stroke="currentColor" stroke-width="2" marker-end="url(#m74-fl)"/>
+  <rect class="caja acento" x="226" y="70" width="230" height="112" rx="10"/>
+  <text x="341" y="94" text-anchor="middle" style="font-weight:700">vertex shader</text>
+  <text x="341" y="116" text-anchor="middle" style="font-size:12px">posición = f(uv, u_time, …)</text>
+  <text x="341" y="136" text-anchor="middle" style="font-size:12px">normal = de las derivadas de f</text>
+  <text x="341" y="158" text-anchor="middle" class="texto-tenue" style="font-size:11px">una vez por vértice y frame</text>
+  <rect class="caja" x="241" y="8" width="200" height="40" rx="10" style="stroke-dasharray:6 4"/>
+  <text x="341" y="33" text-anchor="middle" style="font-size:12px">uniforms: u_time, u_raton, textura</text>
+  <path d="M341 50 L341 66" stroke="currentColor" stroke-width="2" marker-end="url(#m74-fl)"/>
+  <path d="M458 126 L498 126" stroke="currentColor" stroke-width="2" marker-end="url(#m74-fl)"/>
+  <rect class="caja" x="502" y="80" width="112" height="92" rx="10"/>
+  <text x="558" y="112" text-anchor="middle" style="font-weight:700">rasterizar</text>
+  <text x="558" y="134" text-anchor="middle" style="font-size:11px">interpola</text>
+  <text x="558" y="150" text-anchor="middle" style="font-size:11px">normal, uv…</text>
+  <path d="M616 126 L640 126" stroke="currentColor" stroke-width="2" marker-end="url(#m74-fl)"/>
+  <rect class="caja acento" x="644" y="80" width="106" height="92" rx="10"/>
+  <text x="697" y="112" text-anchor="middle" style="font-weight:700">fragment</text>
+  <text x="697" y="134" text-anchor="middle" style="font-size:11px">luz y color</text>
+  <text x="697" y="150" text-anchor="middle" style="font-size:11px">por píxel</text>
+  <text x="380" y="222" text-anchor="middle" class="texto-tenue" style="font-size:12px">Lo que cambia de un frame a otro son los uniforms; la malla en memoria es siempre la misma.</text>
+</svg>
+
+<p>Guárdate este dibujo: toda la lección es rellenar la caja del vertex shader. La malla es una tela de puntos numerados; el vertex shader recibe cada punto con su número y sus coordenadas de reposo y decide dónde está <em>ahora</em>. El rasterizador y el fragment shader no saben que la malla se ha movido: reciben triángulos como siempre (<a href="../04-gpu/02-pipeline-grafico.html">4.2</a>).</p>
+
+<div class="callout porque">
+  <p>Porque el vertex shader es el sitio barato. Se ejecuta una vez por vértice, y una malla de 100 000 vértices es poca cosa comparada con los dos o tres millones de píxeles de una pantalla. El precio es otro: lo que calcules por vértice solo existe <em>en los vértices</em>, y entre ellos el rasterizador interpola en línea recta. La resolución de la malla es la resolución de la deformación. Esa tensión (más vértices o más trabajo por píxel) recorre toda la lección.</p>
+</div>
+
+<h2>La materia prima: un plano subdividido</h2>
+<p>Casi todo lo que se deforma empieza siendo un plano cortado en una rejilla de celdas, cada celda partida en dos triángulos. En <a href="../05-webgl/03-buffers-atributos.html">5.3</a> ya dibujaste una (el ejemplo de la rejilla con índices, rellena y en alambre); ahora la vamos a construir pensando en lo que viene: muchos vértices, deformados en el shader, y una cuenta exacta de cuánto ocupan.</p>
+
+<svg class="diagrama" viewBox="0 0 760 300" width="760" role="img" aria-label="Rejilla de 3 por 3 celdas con los vértices numerados y los dos triángulos de una celda">
+  <defs>
+    <marker id="m74-fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <polygon class="acento-relleno" points="120,270 200,270 120,190" style="opacity:0.35"/>
+  <polygon class="acento-relleno" points="120,190 200,270 200,190" style="opacity:0.18"/>
+  <g stroke="currentColor" stroke-width="1.5" fill="none" class="tenue">
+    <path d="M40 30 L280 30 M40 110 L280 110 M40 190 L280 190 M40 270 L280 270"/>
+    <path d="M40 30 L40 270 M120 30 L120 270 M200 30 L200 270 M280 30 L280 270"/>
+  </g>
+  <g stroke="currentColor" stroke-width="1" class="tenue" style="stroke-dasharray:3 3">
+    <path d="M120 270 L40 190 M200 270 L120 190 M280 270 L200 190 M120 190 L40 110 M200 190 L120 110 M280 190 L200 110 M120 110 L40 30 M200 110 L120 30 M280 110 L200 30"/>
+  </g>
+  <path d="M200 270 L120 190" stroke="currentColor" stroke-width="2.5" class="acento"/>
+  <path d="M158 246 A 13 13 0 1 0 145 259" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#m74-fl2)"/>
+  <g style="font-size:12px">
+    <text x="30" y="288">0</text><text x="112" y="288" style="font-weight:700">1 (a)</text><text x="192" y="288" style="font-weight:700">2 (a+1)</text><text x="272" y="288">3</text>
+    <text x="24" y="186">4</text><text x="100" y="180" style="font-weight:700">5 (b)</text><text x="206" y="180" style="font-weight:700">6 (b+1)</text><text x="286" y="186">7</text>
+    <text x="24" y="106">8</text><text x="104" y="104">9</text><text x="204" y="104">10</text><text x="286" y="106">11</text>
+    <text x="18" y="26">12</text><text x="104" y="24">13</text><text x="204" y="24">14</text><text x="286" y="26">15</text>
+  </g>
+  <path d="M300 280 L340 280" stroke="currentColor" stroke-width="1.5" marker-end="url(#m74-fl2)"/><text x="346" y="284" style="font-size:12px">u (i)</text>
+  <path d="M300 280 L300 240" stroke="currentColor" stroke-width="1.5" marker-end="url(#m74-fl2)"/><text x="306" y="244" style="font-size:12px">v (j)</text>
+  <g style="font-size:14px">
+    <text x="400" y="50" style="font-weight:700">N × N celdas (aquí N = 3)</text>
+    <text x="400" y="82">vértices: (N + 1)² = 16</text>
+    <text x="400" y="108">triángulos: 2N² = 18</text>
+    <text x="400" y="134">índices: 6N² = 54</text>
+    <text x="400" y="170">vértice (i, j) → k = j · (N + 1) + i</text>
+    <text x="400" y="196">celda (i, j): a = k,  b = a + (N + 1)</text>
+    <text x="400" y="222">triángulos (a, a+1, b) y (b, a+1, b+1)</text>
+    <text x="400" y="248" class="texto-tenue" style="font-size:12px">los dos, antihorarios en el plano uv</text>
+  </g>
+</svg>
+
+<p>Tres números salen solos del dibujo. Con N celdas por lado hay <strong>(N + 1)² vértices</strong> (una fila y una columna más que celdas), <strong>2N² triángulos</strong> y <strong>6N² índices</strong>. Numeramos los vértices fila a fila: el de la columna <code>i</code> y la fila <code>j</code> es el <code>k = j·(N+1) + i</code>. Cada celda tiene su esquina inferior izquierda en <code>a</code>, la de encima en <code>b = a + N + 1</code>, y sus dos triángulos son <code>(a, a+1, b)</code> y <code>(b, a+1, b+1)</code>, los dos en sentido antihorario en el plano uv, que es lo que el <em>face culling</em> de <a href="../05-webgl/06-3d-cubo.html">5.6</a> considera «de frente». La diagonal de cada celda va de <code>a+1</code> a <code>b</code>: esa elección tendrá consecuencias en la sección del alambre.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function crearRejilla(N) {
+  const lado = N + 1, nVertices = lado * lado;
+  const uv = new Float32Array(nVertices * 2);
+  for (let j = 0; j < lado; j++) {
+    for (let i = 0; i < lado; i++) {
+      const k = j * lado + i;
+      uv[2 * k] = i / N;
+      uv[2 * k + 1] = j / N;
+    }
+  }
+  const Tipo = nVertices - 1 <= 65534 ? Uint16Array : Uint32Array;
+  const indices = new Tipo(6 * N * N);
+  let k = 0;
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const a = j * lado + i, b = a + lado;
+      indices[k++] = a; indices[k++] = a + 1; indices[k++] = b;
+      indices[k++] = b; indices[k++] = a + 1; indices[k++] = b + 1;
+    }
+  }
+  return { uv, indices };
+}
+</script>
+<ol>
+  <li data-l="2-3"><code>lado</code> es el número de vértices por fila. El único atributo es <code>(u, v)</code>, dos floats por vértice: 8 bytes. No guardamos posición ni normal: el vertex shader las calculará a partir de <code>(u, v)</code>, porque la forma del plano en reposo es trivial y la deformada cambia en cada frame.</li>
+  <li data-l="4-10">Fila a fila, columna a columna. <code>i / N</code> recorre de 0 a 1 exactamente: la primera columna da 0 y la última, <code>N / N = 1</code>. Por eso el divisor es <code>N</code> (celdas) y no <code>lado</code> (vértices): con <code>i / lado</code> la última columna valdría 0,97 y el plano quedaría corto.</li>
+  <li data-l="11">La decisión del tipo de índice. El índice más alto es <code>nVertices − 1</code>. Con <code>Uint16Array</code> caben del 0 al 65 535, pero el 65 535 no es un vértice: es la orden de «reinicio de primitiva» que WebGL2 tiene siempre activada (<a href="../05-webgl/03-buffers-atributos.html#m5-indice-65535">5.3</a>). Así que el máximo útil es 65 534, y con más vértices hace falta <code>Uint32Array</code>.</li>
+  <li data-l="12">6 índices por celda, N² celdas. Un array tipado nace lleno de ceros y de tamaño fijo: si la cuenta estuviera mal, sobrarían ceros (triángulos degenerados en el vértice 0, invisibles) o faltarían triángulos.</li>
+  <li data-l="16-18">Las esquinas de la celda y sus dos triángulos, en el orden del dibujo. Fíjate en que <code>a + 1</code> y <code>b</code> se repiten: son los dos extremos de la diagonal, compartidos por los dos triángulos.</li>
+</ol>
+</div>
+
+<p>¿Cuánto ocupa? La tabla sale de las fórmulas; la última columna es lo que se sube a la GPU una sola vez:</p>
+<table class="m7-medidas">
+  <thead><tr><th class="num">N</th><th class="num">Vértices</th><th class="num">Triángulos</th><th class="num">Índices</th><th>Tipo</th><th class="num">uv + índices</th></tr></thead>
+  <tbody>
+    <tr><td class="num">16</td><td class="num">289</td><td class="num">512</td><td class="num">1 536</td><td>Uint16Array</td><td class="num">5 kB</td></tr>
+    <tr><td class="num">64</td><td class="num">4 225</td><td class="num">8 192</td><td class="num">24 576</td><td>Uint16Array</td><td class="num">83 kB</td></tr>
+    <tr><td class="num">128</td><td class="num">16 641</td><td class="num">32 768</td><td class="num">98 304</td><td>Uint16Array</td><td class="num">330 kB</td></tr>
+    <tr><td class="num">254</td><td class="num">65 025</td><td class="num">129 032</td><td class="num">387 096</td><td>Uint16Array</td><td class="num">1,29 MB</td></tr>
+    <tr><td class="num">255</td><td class="num">65 536</td><td class="num">130 050</td><td class="num">390 150</td><td>Uint32Array</td><td class="num">2,09 MB</td></tr>
+    <tr><td class="num">512</td><td class="num">263 169</td><td class="num">524 288</td><td class="num">1 572 864</td><td>Uint32Array</td><td class="num">8,4 MB</td></tr>
+    <tr><td class="num">1024</td><td class="num">1 050 625</td><td class="num">2 097 152</td><td class="num">6 291 456</td><td>Uint32Array</td><td class="num">33,6 MB</td></tr>
+  </tbody>
+</table>
+<p>Dos cosas que llaman la atención. La primera: <strong>los índices ocupan más que los vértices</strong>. Cada vértice interior aparece en seis triángulos, así que hay unos seis índices por vértice: 12 bytes en <code>Uint16</code> (24 en <code>Uint32</code>) frente a los 8 bytes de su <code>uv</code>. La segunda: el salto de N = 254 a 255 añade 511 vértices y duplica la memoria de los índices, porque el vértice 65 535 obliga a pasar a 4 bytes por índice. Si tu malla ronda ese tamaño, quedarte en 254 es gratis.</p>
+
+<div class="callout bestiario" data-id="m7-4-indices-uint16" data-titulo="Una rejilla grande sale sin su parte de arriba, con triángulos estirados o con un agujero en la esquina">
+  <p><strong>Síntoma:</strong> la rejilla se ve perfecta hasta cierto tamaño. A partir de ahí, falta un trozo entero (la parte superior) y aparecen triángulos alargados que cruzan la malla; o, justo en el límite, falta un solo triángulo en una esquina. No hay ningún error en la consola.</p>
+  <p><strong>Causa:</strong> índices en <code>Uint16Array</code> con más vértices de los que caben. Un array tipado no avisa al desbordar: guarda el valor módulo 65 536 (comprobado: <code>new Uint16Array([65535, 65536, 70000])</code> da <code>[65535, 0, 4464]</code>), así que los triángulos de arriba apuntan a vértices de abajo. Lo medimos dibujando la rejilla plana que llena un lienzo de 256 × 256: con N = 300 y <code>Uint16Array</code> solo se pintaron 47 306 de los 65 536 píxeles (la franja superior, vacía), sin <code>getError</code>; con <code>Uint32Array</code>, los 65 536. Con N = 255 el único índice problemático es el último vértice, el 65 535, que es la orden de reinicio de primitiva: faltó exactamente el triángulo que lo usa.</p>
+  <p><strong>Solución:</strong> elige el tipo por el índice máximo (<code>nVertices − 1 ≤ 65 534</code> → <code>Uint16Array</code>; si no, <code>Uint32Array</code>) y pasa a <code>drawElements</code> el tipo que corresponde (<code>UNSIGNED_SHORT</code> o <code>UNSIGNED_INT</code>). En WebGL2 <code>Uint32</code> está siempre disponible (<code>MAX_ELEMENT_INDEX</code> vale 4 294 967 294 en la máquina de pruebas). Puedes provocarlo en el ejemplo siguiente con la casilla «forzar Uint16Array».</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Quieres una rejilla de 200 × 200 celdas. ¿Cuántos vértices e índices tiene y qué tipo de índice necesita?</p>
+  <ul>
+    <li>40 000 vértices y 240 000 índices en <code>Uint16Array</code>.<div class="explicacion">40 000 es el número de <em>celdas</em>. Los vértices son uno más por lado: 201 × 201 = 40 401. Los índices sí son 6 × 200² = 240 000.</div></li>
+    <li data-correcta>40 401 vértices y 240 000 índices; <code>Uint16Array</code> basta.<div class="explicacion">Correcto. El índice más alto es 40 400, muy por debajo de 65 534. Los triángulos son 2 × 200² = 80 000, y los índices, tres por triángulo.</div></li>
+    <li>40 401 vértices y 240 000 índices; hace falta <code>Uint32Array</code> porque 240 000 no cabe en 16 bits.<div class="explicacion">Lo que tiene que caber en 16 bits es el <em>valor</em> de cada índice (el número de vértice, como mucho 40 400), no la cantidad de índices. Un <code>Uint16Array</code> puede tener millones de elementos.</div></li>
+  </ul>
+</div>
+
+<h2>Ondas en el vertex shader</h2>
+<p>Con la rejilla en la GPU, deformarla es escribir una función. Para una superficie que sube y baja, la más directa es una <strong>altura</strong>: cada punto <code>(x, z)</code> del plano en reposo sube hasta <code>h(x, z, t)</code>. La ola más sencilla es un seno que avanza (<a href="../03-matematicas/03-trigonometria.html">3.3</a>):</p>
+<p>$$h(x, t) = A \sin(k\,x - \omega\,t)$$</p>
+<p>donde $A$ es la amplitud (la altura de la cresta), $k$ el número de onda (radianes por unidad de longitud: la longitud de onda es $\lambda = 2\pi/k$) y $\omega$ la velocidad angular (radianes por segundo). La cresta está donde $k\,x - \omega\,t$ vale $\pi/2$; si $t$ crece, la $x$ de la cresta tiene que crecer para compensar, así que la ola avanza hacia $+x$ a $\omega/k$ unidades por segundo. Sumando dos o tres senos con direcciones distintas sale algo que ya parece agua. Con ruido es igual: <code>h = A · fbm(p · f + v · t)</code>, con el fbm de <a href="../06-glsl/06-ruido.html">6.6</a> desplazado con el tiempo, da un terreno o un oleaje sin periodo visible (lo verás en el campo de puntos). La diferencia importante con los senos llegará con las normales: el seno se deriva a mano; el fbm, mejor no.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.4.1 — Una rejilla que ondula</h3>
+  <p>Todo a mano: la rejilla de la sección anterior, un vertex shader con dos ondas y una cámara fija. El color depende de la altura y las líneas blancas son los bordes de las celdas. Cambia el número de celdas y fíjate en la línea de información; después prueba la casilla «forzar Uint16Array» con N por encima de 254.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.4.1 — La rejilla que ondula" data-altura="360" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <label>N <input type="range" id="n" min="1" max="320" value="24"> <span id="vn">24</span></label>
+  <label>A <input type="range" id="amp" min="0" max="0.6" step="0.01" value="0.25"></label>
+  <label>k <input type="range" id="k" min="0.5" max="14" step="0.1" value="3"></label>
+  <label><input type="checkbox" id="u16"> forzar Uint16Array</label>
+  <div id="info"></div>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; }
+#panel { position: absolute; left: 8px; top: 8px; right: 8px; color: #e4e7ee; font: 12px system-ui; }
+#panel label { margin-right: 10px; white-space: nowrap; }
+#panel input[type=range] { width: 90px; vertical-align: middle; }
+#info { font: 12px ui-monospace, monospace; margin-top: 4px; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;   // lo único que hay en el buffer: (u, v) de 0 a 1
+uniform mat4 u_vp;                   // proyección × vista (5.6)
+uniform float u_time;                // s del reloj de la app (7.1)
+uniform float u_amp;                 // A: altura de la cresta
+uniform float u_k;                   // k: radianes por unidad de longitud
+out float v_altura;                  // −1..1, para el color
+out vec2 v_uv;
+
+float altura(vec2 p, float t) {
+  return u_amp * sin(u_k * p.x - 2.0 * t)
+       + 0.5 * u_amp * sin(u_k * 0.8 * dot(p, vec2(0.6, 0.8)) - 2.7 * t);
+}
+
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 4.0;   // (x, z) del mundo: un plano de 4 × 4
+  float h = altura(p, u_time);
+  v_altura = h / max(1.5 * u_amp, 1e-4);
+  v_uv = a_uv;
+  gl_Position = u_vp * vec4(p.x, h, p.y, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform float u_n;                   // celdas por lado
+in float v_altura;
+in vec2 v_uv;
+out vec4 fragColor;
+void main() {
+  vec3 col = mix(vec3(0.08, 0.13, 0.35), vec3(0.35, 0.85, 0.95), 0.5 + 0.5 * v_altura);
+  vec2 q = v_uv * u_n;                                 // coordenadas en celdas
+  vec2 d = abs(fract(q - 0.5) - 0.5) / fwidth(q);      // distancia a la línea más cercana, en px
+  float linea = 1.0 - min(min(d.x, d.y), 1.0);
+  linea *= smoothstep(2.0, 6.0, 1.0 / max(fwidth(q).x, fwidth(q).y));   // celdas de pocos px: sin líneas (muaré)
+  fragColor = vec4(mix(col, vec3(0.9, 0.95, 1.0), 0.45 * linea), 1.0);
+}`;
+
+function crearRejilla(N, forzar16) {
+  const lado = N + 1, nVertices = lado * lado;
+  const uv = new Float32Array(nVertices * 2);
+  for (let j = 0; j < lado; j++) for (let i = 0; i < lado; i++) {
+    const k = j * lado + i;                            // vértice (i, j) → índice k
+    uv[2 * k] = i / N; uv[2 * k + 1] = j / N;
+  }
+  const Tipo = forzar16 || nVertices - 1 <= 65534 ? Uint16Array : Uint32Array;
+  const indices = new Tipo(6 * N * N);
+  let k = 0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * lado + i, b = a + lado;
+    indices[k++] = a; indices[k++] = a + 1; indices[k++] = b;
+    indices[k++] = b; indices[k++] = a + 1; indices[k++] = b + 1;
+  }
+  return { uv, indices, nVertices };
+}
+function construirMalla(gl, N, forzar16) {
+  const r = crearRejilla(N, forzar16);
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, r.uv, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);  // a_uv: 2 floats, sin huecos
+  const ebo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);          // con el VAO enlazado: se queda en él
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, r.indices, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  const u32 = r.indices instanceof Uint32Array;
+  return { vao, vbo, ebo, N, forzar16, nIndices: r.indices.length, nVertices: r.nVertices,
+           tipo: u32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, nombre: u32 ? 'Uint32Array' : 'Uint16Array' };
+}
+
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const app = M7.crearApp(canvas, {
+  estado: { N: 24, amp: 0.25, k: 3, forzar16: false },
+  iniciar(gl, app) {
+    const programa = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { programa, u: GLKit.uniforms(gl, programa), malla: null };   // la malla, en el primer frame
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    if (!g.malla || g.malla.N !== e.N || g.malla.forzar16 !== e.forzar16) {  // se rehace aquí, no en el evento
+      if (g.malla) { gl.deleteVertexArray(g.malla.vao); gl.deleteBuffer(g.malla.vbo); gl.deleteBuffer(g.malla.ebo); }
+      g.malla = construirMalla(gl, e.N, e.forzar16);
+    }
+    const proyeccion = mat4.perspectiva(0.8, app.ancho / app.alto, 0.1, 50);
+    const vista = mat4.mirarA([0, 3.4, 4.8], [0, -0.3, 0], [0, 1, 0]);
+    gl.enable(gl.DEPTH_TEST);                           // estado del contexto: cada frame (también tras perderlo)
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.programa);
+    GLKit.ponerUniform(gl, g.u.u_vp, mat4.multiplicar(proyeccion, vista));
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_amp, e.amp);
+    GLKit.ponerUniform(gl, g.u.u_k, e.k);
+    GLKit.ponerUniform(gl, g.u.u_n, e.N);
+    gl.bindVertexArray(g.malla.vao);
+    gl.drawElements(gl.TRIANGLES, g.malla.nIndices, g.malla.tipo, 0);
+    const m = g.malla;
+    info.textContent = `${m.nVertices} vértices · ${2 * m.N * m.N} triángulos · ${m.nIndices} índices en ${m.nombre}`;
+  },
+});
+// Los controles solo anotan en el estado
+const $ = (id) => document.getElementById(id);
+$('n').oninput = (ev) => { app.estado.N = +ev.target.value; $('vn').textContent = ev.target.value; };
+$('amp').oninput = (ev) => { app.estado.amp = +ev.target.value; };
+$('k').oninput = (ev) => { app.estado.k = +ev.target.value; };
+$('u16').onchange = (ev) => { app.estado.forzar16 = ev.target.checked; };
+</script>
+  </div>
+  <p>Lo que hace cada pieza, empezando por lo nuevo:</p>
+  <ol>
+    <li><strong>El único atributo es <code>a_uv</code></strong>. La primera línea del <code>main</code> convierte <code>(u, v)</code> en <code>(x, z)</code> del mundo: un plano de 4 × 4 unidades centrado en el origen. La <code>v</code> va con signo menos (<code>0.5 − v</code>) para que la <code>v</code> creciente se aleje de la cámara hacia <code>−z</code>: así, vista desde arriba, la rejilla conserva el sentido antihorario de sus triángulos.</li>
+    <li><strong><code>altura(p, t)</code></strong> suma dos senos: uno que avanza a lo largo de <code>x</code> y otro, más débil, en la dirección <code>(0,6, 0,8)</code> (el producto punto con una dirección unitaria mide cuánto has avanzado en esa dirección, <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>). La posición final es <code>(x, h, z)</code> y pasa por la matriz de proyección × vista, calculada en JavaScript con las funciones de 5.6.</li>
+    <li><strong>El buffer no cambia nunca.</strong> Cada frame solo viajan cinco uniforms; la ola avanza porque <code>u_time</code> avanza. Si pausaras el reloj de la app (7.1), la superficie se quedaría quieta sin tocar nada más.</li>
+    <li><strong>Las líneas de la rejilla</strong> salen del fragment shader con la técnica de <a href="../06-glsl/05-patrones.html">6.5</a>: <code>v_uv × N</code> vale un entero justo en los bordes de las celdas, y <code>fwidth</code> convierte la distancia a ese entero en píxeles; <code>1 / fwidth(q)</code> son los píxeles que mide una celda, y cuando bajan de unos 4 las líneas se apagan, porque líneas más juntas que los píxeles solo dibujan un muaré (<a href="../05-webgl/05-texturas.html#m5-muare">5.5</a>). Como <code>uv</code> se interpola linealmente dentro de cada triángulo, las líneas caen exactamente en las aristas de las celdas… pero no se ven las diagonales. Para ver los triángulos de verdad hará falta otro truco, el de la sección siguiente.</li>
+    <li><strong>La malla se reconstruye en <code>dibujar</code></strong> cuando cambia <code>N</code>, igual que la variante del shader del ejemplo 7.1.7: el deslizador solo anota el número en el estado. Borrar el VAO y los dos buffers antes de crear los nuevos no es opcional: cada malla de N = 320 son 2,9 MB de GPU que el recolector de basura no libera a tiempo (<a href="../05-webgl/10-depuracion.html#m5-memoria-sin-liberar">5.10</a>).</li>
+    <li><strong><code>gl.enable(gl.DEPTH_TEST)</code> en cada frame</strong>: es estado del contexto, y el contexto se puede perder y volver en blanco (7.1). Activarlo en <code>dibujar</code> no cuesta nada y lo hace imposible de olvidar.</li>
+  </ol>
+  <p>Con la casilla «forzar Uint16Array» y N = 300 verás el bestiario de la sección anterior: la parte de la rejilla más alejada desaparece y los triángulos de esa zona se estiran hacia la parte cercana. Y prueba otra cosa: N = 8 y k al máximo. Lo que ves no se parece a la ola que describe la fórmula. Volveremos a ello.</p>
+</section>
+
+<p>Un detalle del vertex shader que no has escrito: la línea <code>precision</code>. En el vertex shader no hace falta, porque GLSL ES 3.00 declara por defecto <code>precision highp float;</code> e <code>int</code> para él (en el fragment shader no hay precisión por defecto para <code>float</code>, <a href="../06-glsl/01-lenguaje.html">6.1</a>). En la máquina de pruebas, <code>getShaderPrecisionFormat(VERTEX_SHADER, MEDIUM_FLOAT)</code> devuelve 23 bits de precisión, los mismos que <code>highp</code>: en un M1, <code>mediump</code> ni siquiera existe como tal. En un móvil sí puede existir, y ahí hay que tener cuidado con una trampa: un uniform que aparece en los dos shaders tiene que tener la misma precisión en ambos, o el programa no enlaza (<a href="../04-gpu/05-uniforms-varyings.html#m4-precision-uniform">4.5</a>).</p>
+
+<div class="callout senior" data-titulo="l74kit: lo mismo, empaquetado">
+  <p>A partir de aquí, para que los ejemplos se centren en el vertex shader, usaremos <a href="recursos/l74kit.js">l74kit</a> (en los playgrounds, <code>data-incluir="glkit,m7kit,l74kit"</code>). No tiene nada que no hayas visto: <code>L74.crearMalla(gl, N)</code> es la <code>construirMalla</code> de este ejemplo (devuelve <code>vao</code>, <code>nIndices</code>, <code>tipo</code>, <code>dibujar()</code> y <code>liberar()</code>); <code>L74.Orbita</code> es la cámara orbital de <a href="../05-webgl/06-3d-cubo.html">5.6</a> con la regla de 7.1 (los eventos del puntero solo acumulan el desplazamiento y <code>actualizar()</code> lo aplica una vez por frame); <code>L74.GLSL.RUIDO</code> son el hash, el ruido de gradiente y el fbm de <a href="../06-glsl/06-ruido.html">6.6</a>, tal cual. Las piezas nuevas de la lección (el alambre y el rayo del ratón) también están ahí, pero las escribiremos antes a mano.</p>
+</div>
+
+<h2>Ver la malla: el truco baricéntrico</h2>
+<p>Cuando algo sale raro en una malla deformada, lo primero que quieres es ver sus triángulos: ¿son los que crees?, ¿tienen el tamaño que esperas?, ¿hay alguno estirado o degenerado? La primera idea es dibujar las aristas con <code>gl.LINES</code>, como en el ejemplo de la rejilla de 5.3, y tiene tres pegas. Necesita otro buffer de índices (el de las aristas). Las líneas miden siempre 1 píxel, porque <code>lineWidth</code> no hace nada (<a href="../05-webgl/03-buffers-atributos.html#m5-linewidth">5.3</a>). Y si las dibujas encima de la superficie rellena, están exactamente a la misma profundidad que ella: la prueba de profundidad decide al azar quién gana, píxel a píxel (<em>z-fighting</em>), y las líneas salen a trozos.</p>
+<p>El truco que usan casi todos los visores de mallas es otro, y cabe en el fragment shader. Da a los tres vértices de cada triángulo los valores <code>(1, 0, 0)</code>, <code>(0, 1, 0)</code> y <code>(0, 0, 1)</code> en un varying. Interpolado, ese varying son exactamente las <strong>coordenadas baricéntricas</strong> del píxel dentro de su triángulo (las de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a> y <a href="../04-gpu/02-pipeline-grafico.html">4.2</a>): cada componente vale 1 en su vértice y 0 en la arista de enfrente. Un píxel está sobre una arista cuando alguna de las tres componentes está cerca de 0. «Cerca» se mide en píxeles con <code>fwidth</code>, como las líneas de antialiasing de <a href="../06-glsl/03-formas-sdf.html">6.3</a>:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+float alambre(vec3 b, float grosor) {
+  vec3 d = max(fwidth(b), vec3(1e-6));
+  vec3 a = smoothstep(d * (grosor - 0.5), d * (grosor + 0.5), b);
+  return min(min(a.x, a.y), a.z);
+}
+</script>
+<ol>
+  <li data-l="1"><code>b</code> son las baricéntricas interpoladas; <code>grosor</code>, la anchura de la línea en píxeles del búfer. Devuelve 0 sobre una arista y 1 lejos de todas.</li>
+  <li data-l="2"><code>fwidth(b)</code> es cuánto cambia cada componente de un píxel al vecino (<code>|dFdx| + |dFdy|</code>, 6.3). Dividir una componente entre ella da su distancia a la arista <em>en píxeles</em>. El <code>max</code> evita un <code>smoothstep</code> con los dos bordes iguales (resultado indefinido) en el caso raro de que <code>fwidth</code> dé 0.</li>
+  <li data-l="3">Cada componente pasa de 0 a 1 entre <code>grosor − 0,5</code> y <code>grosor + 0,5</code> píxeles de su arista: un borde suavizado de un píxel. El grosor es el mismo en pantalla cerca y lejos de la cámara, porque se mide en píxeles, no en unidades del mundo.</li>
+  <li data-l="4">El píxel está en una arista si lo está respecto a <em>cualquiera</em> de las tres: el mínimo.</li>
+</ol>
+</div>
+
+<p>La parte difícil es la otra: dar los tres valores distintos a los tres vértices de <em>cada</em> triángulo. Si cada triángulo tuviera sus propios vértices (<code>drawArrays</code> sin índices), sería trivial: el vértice <code>gl_VertexID % 3</code> recibe la componente número <code>gl_VertexID % 3</code>. Pero nuestra rejilla comparte vértices: el vértice 6 del dibujo pertenece a seis triángulos a la vez y solo puede tener un valor. Necesitamos «colorear» los vértices con tres colores de forma que ningún triángulo repita color. Para esta rejilla existe una fórmula, y además se puede calcular en el vertex shader sin ningún atributo:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 baricentrica(int id, int lado) {
+  int i = id % lado, j = id / lado;
+  int c = (i + 2 * j) % 3;
+  return vec3(c == 0, c == 1, c == 2);
+}
+// en main():  v_bary = baricentrica(gl_VertexID, u_lado);
+</script>
+<ol>
+  <li data-l="1">Con <code>drawElements</code>, <code>gl_VertexID</code> no es la posición en la lista de índices, sino <em>el valor del índice</em>: el número de vértice. Lo comprobamos dibujando puntos con los índices <code>[5, 9, 2]</code>: el shader recibió 5, 9 y 2 (<a href="../04-gpu/05-uniforms-varyings.html">4.5</a>).</li>
+  <li data-l="2">Del número de vértice a su columna y su fila, deshaciendo <code>k = j·lado + i</code>. <code>%</code> y <code>/</code> entre <code>int</code> son exactos en GLSL ES 3.00.</li>
+  <li data-l="3">El «color» del vértice: 0, 1 o 2.</li>
+  <li data-l="4">Un <code>bool</code> convertido a <code>float</code> vale 1.0 o 0.0: el vector tiene un 1 en la posición del color.</li>
+</ol>
+</div>
+
+<div class="callout hack" data-titulo="¿Por qué (i + 2j) mod 3 funciona?">
+  <p>Mira los dos triángulos de la celda <code>(i, j)</code> con su color <code>c = i + 2j</code> (todo módulo 3). El primero, <code>(a, a+1, b)</code>, tiene los vértices <code>(i, j)</code>, <code>(i+1, j)</code> e <code>(i, j+1)</code>: colores <code>c</code>, <code>c + 1</code> y <code>c + 2</code>. El segundo, <code>(b, a+1, b+1)</code>, tiene <code>(i, j+1)</code>, <code>(i+1, j)</code> e <code>(i+1, j+1)</code>: colores <code>c + 2</code>, <code>c + 1</code> y <code>c + 3 = c</code>. En los dos, los tres colores son distintos, sea cual sea la celda. El 2 no es casual: depende de la diagonal que elegimos al crear los índices. Con la otra diagonal, esta fórmula repite colores y hay que buscar otra (es el ejercicio 7.4.3). Y fíjate en lo que <em>no</em> necesitamos: ni un atributo más, ni duplicar vértices. La información ya estaba en el número del vértice.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.4.2 — La malla, a la vista</h3>
+  <p>Una onda circular sobre la rejilla, con el alambre baricéntrico encima. Arrastra para girar la cámara. Cambia el modo para ver solo el alambre o las baricéntricas en bruto (cada triángulo en rojo, verde y azul), y mueve el grosor: las líneas miden lo mismo cerca y lejos.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.4.2 — Alambre baricéntrico" data-altura="360" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <label>N <input type="range" id="n" min="2" max="96" value="20"></label>
+  <label>grosor <input type="range" id="grosor" min="0.5" max="4" step="0.1" value="1.2"></label>
+  <select id="modo">
+    <option value="0">relleno + alambre</option>
+    <option value="1">solo alambre</option>
+    <option value="2">baricéntricas</option>
+  </select>
+  <div id="info">arrastra para girar</div>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#panel { position: absolute; left: 8px; top: 8px; right: 8px; color: #e4e7ee; font: 12px system-ui; pointer-events: none; }
+#panel label, #panel select { pointer-events: auto; margin-right: 10px; }
+#panel input[type=range] { width: 90px; vertical-align: middle; }
+#info { font: 12px ui-monospace, monospace; margin-top: 4px; color: #b4bccb; }
+select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 2px 6px; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+uniform int u_lado;                   // N + 1: vértices por fila
+out vec3 v_bary;
+out float v_altura;
+
+vec3 baricentrica(int id, int lado) {
+  int i = id % lado, j = id / lado;
+  int c = (i + 2 * j) % 3;
+  return vec3(c == 0, c == 1, c == 2);
+}
+
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 4.0;
+  float r = length(p);
+  float h = 0.45 * sin(3.0 * r - 2.5 * u_time) / (1.0 + r);   // onda circular que se apaga lejos
+  v_bary = baricentrica(gl_VertexID, u_lado);
+  v_altura = h;
+  gl_Position = u_vp * vec4(p.x, h, p.y, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform float u_grosor;               // px del búfer
+uniform int u_modo;
+in vec3 v_bary;
+in float v_altura;
+out vec4 fragColor;
+
+float alambre(vec3 b, float grosor) {
+  vec3 d = max(fwidth(b), vec3(1e-6));
+  vec3 a = smoothstep(d * (grosor - 0.5), d * (grosor + 0.5), b);
+  return min(min(a.x, a.y), a.z);
+}
+
+void main() {
+  float a = alambre(v_bary, u_grosor);               // 0 en la arista, 1 dentro
+  vec3 relleno = mix(vec3(0.10, 0.12, 0.30), vec3(0.50, 0.44, 0.98), clamp(0.5 + 1.6 * v_altura, 0.0, 1.0));
+  vec3 linea = vec3(0.95, 0.97, 1.0);
+  vec3 col = u_modo == 0 ? mix(linea, relleno, a)
+           : u_modo == 1 ? mix(linea, vec3(0.05, 0.06, 0.09), a)
+           : v_bary;
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const orbita = new L74.Orbita(canvas, { yaw: 0.5, pitch: 0.55, distancia: 5.6 });
+const app = M7.crearApp(canvas, {
+  estado: { N: 20, grosor: 1.2, modo: 0 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: null };
+  },
+  actualizar(e, dt, app) { orbita.actualizar(); },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    if (!g.malla || g.malla.N !== e.N) { if (g.malla) g.malla.liberar(); g.malla = L74.crearMalla(gl, e.N); }
+    const cam = orbita.matrices(app.ancho / app.alto);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_lado, e.N + 1);
+    GLKit.ponerUniform(gl, g.u.u_grosor, e.grosor * app.ancho / app.anchoCSS);   // px CSS → px del búfer
+    GLKit.ponerUniform(gl, g.u.u_modo, e.modo);
+    g.malla.dibujar();
+  },
+});
+const $ = (id) => document.getElementById(id);
+$('n').oninput = (ev) => { app.estado.N = +ev.target.value; };
+$('grosor').oninput = (ev) => { app.estado.grosor = +ev.target.value; };
+$('modo').onchange = (ev) => { app.estado.modo = +ev.target.value; };
+</script>
+  </div>
+  <p>Tres observaciones. En «solo alambre», las aristas de detrás de las crestas no se ven: la superficie sigue escribiendo su profundidad (aunque la pintemos casi del color del fondo), así que el alambre respeta las oclusiones, algo que las líneas de <code>gl.LINES</code> no hacen sin trucos. En «baricéntricas» ves la coloración en bruto: cada triángulo tiene exactamente un vértice rojo, uno verde y uno azul, y los píxeles del interior son mezclas. Y el grosor se pasa en píxeles CSS multiplicados por <code>app.ancho / app.anchoCSS</code>: la misma proporción que usaste en 7.2 para que un efecto mida lo mismo con cualquier DPR y con la calidad adaptativa.</p>
+</section>
+
+<div class="callout senior" data-titulo="Alambre de verdad: WEBGL_polygon_mode">
+  <p>En OpenGL de escritorio existe <code>glPolygonMode(GL_LINE)</code>: la GPU rasteriza solo las aristas de cada triángulo, sin tocar el shader. WebGL2 no lo tiene, pero hay una extensión en borrador, <code>WEBGL_polygon_mode</code>, con <code>polygonModeWEBGL(gl.FRONT_AND_BACK, ext.LINE_WEBGL)</code>. En el Chrome de pruebas existe y funciona (la rejilla de 8 × 8 pasó de 211 600 píxeles rellenos a 11 843 en líneas de un píxel), pero Chrome escribe en la consola un aviso al pedirla: <em>«this extension has very low support on mobile devices; do not rely on it for rendering effects without implementing a fallback path»</em>. Úsala para depurar en tu máquina; para algo que vea el usuario, el truco baricéntrico funciona en todas partes, con grosor y antialiasing.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Dibujas un plano con <code>drawArrays(gl.TRIANGLES, 0, 6 * N * N)</code>, sin índices, calculando cada vértice a partir de <code>gl_VertexID</code> (seis vértices por celda). ¿Cómo obtienes las baricéntricas para el alambre?</p>
+  <ul>
+    <li>Con la misma fórmula <code>(i + 2j) mod 3</code> a partir de la columna y la fila del vértice.<div class="explicacion">Funcionaría, pero es dar un rodeo: sin índices, cada triángulo tiene sus propios tres vértices consecutivos y no hace falta ninguna coloración.</div></li>
+    <li data-correcta>Con <code>gl_VertexID % 3</code>: el primer vértice de cada triángulo recibe <code>(1, 0, 0)</code>, el segundo <code>(0, 1, 0)</code> y el tercero <code>(0, 0, 1)</code>.<div class="explicacion">Correcto. Con <code>drawArrays</code>, los vértices 3t, 3t + 1 y 3t + 2 forman el triángulo t y no se comparten con nadie: la posición dentro del triángulo es la componente. La coloración solo es necesaria cuando los vértices se comparten.</div></li>
+    <li>No se puede: sin un atributo con las baricéntricas, el truco no funciona.<div class="explicacion">El atributo es una forma de pasarlas, pero cualquier cosa que el vertex shader pueda calcular sirve, y <code>gl_VertexID</code> tiene justo la información necesaria.</div></li>
+  </ul>
+</div>
+
+<h2>Normales: que la luz se entere</h2>
+<p>La rejilla del ejemplo 7.4.1 se colorea por altura, y eso disimula. En cuanto quieras iluminarla con el modelo de Lambert de <a href="../05-webgl/06-3d-cubo.html">5.6</a>, necesitas la normal de cada punto, y la normal del plano en reposo, <code>(0, 1, 0)</code>, ya no sirve: el vertex shader ha movido los vértices, pero nadie ha girado sus normales. La superficie se deforma y la luz sigue creyendo que es plana.</p>
+
+<div class="callout bestiario" data-id="m7-4-normal-plana" data-titulo="La malla ondula, pero la luz no cambia: se ve plana aunque se mueva">
+  <p><strong>Síntoma:</strong> la silueta de la superficie se mueve (el borde sube y baja contra el fondo), pero de frente parece una lámina plana: sin sombras en las laderas, sin brillos en las crestas. Solo se nota la deformación por el perfil.</p>
+  <p><strong>Causa:</strong> el vertex shader cambió la posición y dejó la normal del plano en reposo (un atributo <code>a_normal</code> constante o un <code>vec3(0.0, 1.0, 0.0)</code> fijo). Lambert solo mira la normal: si todas valen lo mismo, todos los puntos reciben la misma luz. Lo provocarás en el ejemplo 7.4.3 con el modo «normal del plano».</p>
+  <p><strong>Solución:</strong> recalcula la normal en el vertex shader a partir de la misma función que desplaza la posición: con la derivada analítica o con diferencias finitas (esta sección). Y si la malla además pasa por una matriz de modelo con escala no uniforme, esa normal nueva pasa después por la matriz normal (<a href="../05-webgl/06-3d-cubo.html#m5-matriz-normal">5.6</a>).</p>
+</div>
+
+<h3>La normal sale de dos tangentes</h3>
+<p>La superficie deformada es el conjunto de puntos $P(x, z) = (x,\ h(x, z),\ z)$. Si avanzas un poquito en $x$, te mueves por la superficie en la dirección de la derivada de $P$ respecto a $x$; si avanzas en $z$, en la de la derivada respecto a $z$. Son dos <strong>vectores tangentes</strong>:</p>
+<p>$$T_x = \frac{\partial P}{\partial x} = (1,\ h_x,\ 0) \qquad T_z = \frac{\partial P}{\partial z} = (0,\ h_z,\ 1)$$</p>
+<p>donde $h_x = \partial h / \partial x$ y $h_z = \partial h / \partial z$ son las pendientes de la superficie en cada dirección. La normal es perpendicular a las dos tangentes, y el producto cruz de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a> fabrica justo eso:</p>
+<p>$$N = T_z \times T_x = (-h_x,\ 1,\ -h_z)$$</p>
+<p>Compruébalo en dos casos. En un plano sin pendiente, $h_x = h_z = 0$ y sale $(0, 1, 0)$. En una ladera que sube hacia $+x$ ($h_x > 0$), la normal se inclina hacia $-x$, hacia el lado del que viene la subida, que es exactamente lo que hace una normal de verdad. Falta normalizarla (su longitud es $\sqrt{h_x^2 + 1 + h_z^2}$), y ya está. Una sola línea de GLSL: <code>normalize(vec3(-hx, 1.0, -hz))</code>.</p>
+<p>El orden del producto cruz importa: $T_x \times T_z = (h_x,\ -1,\ h_z)$, la misma recta pero apuntando hacia abajo. Con esa normal, la luz que llega desde arriba da un producto punto negativo y la superficie se ve negra justo donde debería brillar.</p>
+
+<div class="callout bestiario" data-id="m7-4-normal-invertida" data-titulo="La superficie sale oscura donde mira a la luz y clara donde le da la espalda">
+  <p><strong>Síntoma:</strong> la iluminación parece venir del lado contrario, o desde debajo del suelo: las laderas que miran al sol están oscuras, las otras claras, y en un plano sin deformar todo sale casi negro (solo con la luz ambiente).</p>
+  <p><strong>Causa:</strong> la normal apunta hacia abajo. Casi siempre es el orden del producto cruz (<code>cross(tx, tz)</code> en lugar de <code>cross(tz, tx)</code>), un signo perdido en la fórmula (<code>vec3(hx, 1.0, hz)</code>, que inclina la normal hacia el lado equivocado) o un eje de la malla invertido (nuestra <code>z = 0,5 − v</code>) que no se tuvo en cuenta al derivar.</p>
+  <p><strong>Solución:</strong> comprueba el caso plano (debe salir <code>(0, 1, 0)</code>) y una ladera conocida. Y usa la visualización de normales como color, <code>n * 0.5 + 0.5</code>: una superficie casi horizontal debe verse verde claro (<code>y ≈ 1</code>), nunca oscura. El ejemplo 7.4.3 tiene ese modo.</p>
+</div>
+
+<p>En la demo, un corte de la superficie a lo largo de $x$: la curva es $h(x)$, la flecha T es la tangente $(1, h')$ normalizada y la N, la normal $(-h', 1)$. Arrastra el punto. La recta naranja es la aproximación de la sección siguiente: la secante entre $x - \varepsilon$ y $x + \varepsilon$.</p>
+
+<div class="demo" id="demo-normal-2d">
+  <div class="demo-lienzo"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<h3>Derivada analítica: exacta y casi gratis</h3>
+<p>Si la altura es una suma de ondas, su derivada se escribe a mano. Para una onda que avanza en la dirección unitaria $\mathbf{d}$, $h = A \sin(k\,\mathbf{d} \cdot \mathbf{p} - \omega t)$, la regla de la cadena da el gradiente (el vector de las dos pendientes):</p>
+<p>$$\nabla h = (h_x,\ h_z) = A\,k\,\cos(k\,\mathbf{d}\cdot\mathbf{p} - \omega t)\ \mathbf{d}$$</p>
+<p>El seno y el coseno de la misma fase se calculan juntos, así que conviene una función que devuelva la altura y las dos pendientes de una vez:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+const vec2 DIR[3] = vec2[3](vec2(1.0, 0.0), vec2(0.6, 0.8), vec2(-0.71, 0.71));
+const float K[3] = float[3](1.7, 2.9, 4.3);
+const float A[3] = float[3](0.14, 0.07, 0.035);
+const float W[3] = float[3](1.4, 2.0, 2.7);
+vec3 ondas(vec2 p, float t) {
+  vec3 r = vec3(0.0);
+  for (int i = 0; i < 3; i++) {
+    float fase = K[i] * dot(DIR[i], p) - W[i] * t;
+    r.x += A[i] * sin(fase);
+    r.yz += A[i] * K[i] * cos(fase) * DIR[i];
+  }
+  return r;
+}
+// en main():  vec3 o = ondas(p, u_time);  n = normalize(vec3(-o.y, 1.0, -o.z));
+</script>
+<ol>
+  <li data-l="1-4">Tres ondas descritas con arrays constantes (<a href="../06-glsl/01-lenguaje.html">6.1</a>): dirección unitaria, número de onda, amplitud y velocidad angular. Las más cortas son más bajas, como en el mar: si una ola corta fuera tan alta como una larga, la superficie parecería de gelatina.</li>
+  <li data-l="5-6">Devuelve un <code>vec3</code> empaquetado: <code>x</code> es la altura, <code>y</code> la pendiente en <code>x</code> e <code>z</code> la pendiente en <code>z</code>.</li>
+  <li data-l="8">La fase de la onda <em>i</em>. <code>dot(DIR[i], p)</code> es la distancia recorrida en su dirección.</li>
+  <li data-l="9-10">La altura y su gradiente. <code>r.yz +=</code> suma el vector <code>A·k·cos·d</code> a las dos pendientes a la vez (el <em>swizzle</em> escribe dos componentes de golpe).</li>
+  <li data-l="14">La normal de la sección anterior, con las pendientes en <code>o.y</code> y <code>o.z</code>. Ojo con lo que <code>z</code> significa: aquí <code>p.y</code> es la <code>z</code> del mundo, y la derivada se toma respecto a esa coordenada.</li>
+</ol>
+</div>
+
+<p>Coste: un coseno y cuatro multiplicaciones más por onda. Es exacta (salvo el redondeo de <code>float</code>) y no depende de ningún parámetro que haya que ajustar. Su único problema es que alguien tiene que hacer la derivada, y con funciones complicadas (un fbm de ruido, una composición de varias deformaciones, el abombamiento del ratón encima de las olas) se vuelve tedioso o imposible. Para eso están las diferencias finitas.</p>
+
+<h3>Diferencias finitas: la derivada por la fuerza bruta</h3>
+<p>La definición de derivada es el límite de una pendiente entre dos puntos cercanos. Sin límite, con dos puntos a una distancia $\varepsilon$ a cada lado, sale la <strong>diferencia central</strong>:</p>
+<p>$$h_x \approx \frac{h(x + \varepsilon,\ z) - h(x - \varepsilon,\ z)}{2\varepsilon}$$</p>
+<p>y lo mismo en $z$. Cuatro evaluaciones más de <code>h</code> por vértice, y funciona con cualquier función, por complicada que sea: no hay que derivar nada. La <em>diferencia hacia delante</em>, $(h(x + \varepsilon) - h(x))/\varepsilon$, reutiliza el <code>h(x)</code> que ya tienes y cuesta solo dos evaluaciones, pero su error es proporcional a $\varepsilon$ en lugar de a $\varepsilon^2$: para el mismo error necesita un paso mucho más pequeño, y eso choca con el problema de verdad, que es elegir $\varepsilon$.</p>
+<p>Con un $\varepsilon$ grande, la secante no se parece a la tangente (lo ves en la demo con ε = 1,5): la normal sale suavizada, como si la superficie tuviera menos detalle. La intuición dice «cuanto más pequeño, mejor», y en <code>float</code> es falsa. <code>h(x + ε)</code> y <code>h(x − ε)</code> son dos números casi iguales, cada uno con su error de redondeo; al restarlos, los dígitos buenos se cancelan y queda sobre todo el error (<a href="../03-matematicas/07-precision.html">3.7</a>), que después se divide por un $\varepsilon$ diminuto. Lo medimos en el vertex shader con <em>transform feedback</em> (la extensión de WebGL2 que devuelve a un buffer lo que calcula el vertex shader): 2000 puntos al azar sobre una superficie de tres senos, y el error máximo del ángulo de la normal frente a la exacta calculada en JavaScript con 64 bits (Apple M1, ANGLE/Metal, <code>highp</code>):</p>
+
+<table class="m7-medidas">
+  <thead><tr><th class="num">ε</th><th class="num">x, z en 0–10<br>t = 10</th><th class="num">x, z en 100–110</th><th class="num">x, z en 1000–1010</th><th class="num">x, z en 0–10<br>t = 1000</th><th class="num">x, z en 0–10<br>t = 10 000</th></tr></thead>
+  <tbody>
+    <tr><td class="num">0,3</td><td class="num">3,2°</td><td class="num">3,2°</td><td class="num">3,2°</td><td class="num">—</td><td class="num">—</td></tr>
+    <tr><td class="num">0,1</td><td class="num">0,36°</td><td class="num">0,36°</td><td class="num">0,38°</td><td class="num">0,37°</td><td class="num">0,44°</td></tr>
+    <tr><td class="num">0,01</td><td class="num">0,02°</td><td class="num">0,04°</td><td class="num">0,29°</td><td class="num">0,15°</td><td class="num">1,3°</td></tr>
+    <tr><td class="num">0,001</td><td class="num">0,05°</td><td class="num">0,46°</td><td class="num">3,1°</td><td class="num">1,4°</td><td class="num">14°</td></tr>
+    <tr><td class="num">0,0001</td><td class="num">0,47°</td><td class="num">4,1°</td><td class="num">24°</td><td class="num">16°</td><td class="num">73°</td></tr>
+    <tr><td class="num">0,00001</td><td class="num">4,5°</td><td class="num">45°</td><td class="num">48°</td><td class="num">—</td><td class="num">—</td></tr>
+  </tbody>
+</table>
+
+<p>Dos errores que tiran en sentidos opuestos: arriba de la tabla manda el de truncamiento (la secante no es la tangente) y abajo el de redondeo, que crece con el tamaño de los números que entran en el seno. Por eso el mejor ε no es un número fijo: con coordenadas pequeñas, 0,01 da menos de una décima de grado; con coordenadas de 1000, el mismo 0,01 ya se equivoca 0,3° y 0,001 se equivoca 3°. Y el tiempo cuenta igual que las coordenadas, porque también está dentro del seno: con la página abierta tres horas (t ≈ 10 000 s), un ε de 0,001 da normales con errores de 14°, un granulado que se ve a simple vista.</p>
+
+<div class="callout bestiario" data-id="m7-4-epsilon" data-titulo="Las normales por diferencias finitas salen con granulado o chispas (o empeoran con el tiempo)">
+  <p><strong>Síntoma:</strong> una superficie iluminada con normales por diferencias finitas tiene un moteado fino que parpadea, brillos sueltos que saltan de vértice en vértice, o una luz «sucia» que no estaba al abrir la página y aparece al cabo de un rato (o al alejar la malla del origen).</p>
+  <p><strong>Causa:</strong> el paso ε es demasiado pequeño para la magnitud de los números. La resta <code>h(x + ε) − h(x − ε)</code> cancela los dígitos significativos de dos floats casi iguales y lo que queda es redondeo, amplificado al dividir por ε. Medido en el vertex shader del M1: ε = 0,0001 da hasta 0,5° de error con coordenadas de 0 a 10, 24° con coordenadas cerca de 1000 y 73° con t = 10 000 s dentro del seno.</p>
+  <p><strong>Solución:</strong> un ε de entre 1/100 y 1/1000 de la longitud de onda más corta que te importe (0,01 para olas de un par de unidades), nunca 1e-5 «por si acaso». Mantén pequeños los números que entran en la función: la malla centrada en el origen, el tiempo envuelto (<code>reloj.envuelto(periodo)</code> de 7.1) o, mejor, la fase de cada onda calculada en JavaScript con 64 bits y reducida a [0, 2π) antes de enviarla. Y si la función es derivable a mano, la derivada analítica no tiene este problema.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.4.3 — Agua con tres ondas</h3>
+  <p>Las tres ondas de la sección, con agua de verdad: luz difusa, un brillo especular del sol y el reflejo del cielo más fuerte cuanto más rasante es la mirada. Compara los modos. En «diferencias finitas», baja ε hasta 10⁻⁵ y aleja el origen a 1000 para ver el granulado; sube ε hasta 0,5 para ver cómo se suaviza el oleaje. «Ver normales» pinta <code>n × 0,5 + 0,5</code>. Arrastra para girar.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.4.3 — Normales del agua" data-altura="380" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <select id="modo">
+    <option value="0">normal del plano (mal)</option>
+    <option value="1">diferencias finitas</option>
+    <option value="2" selected>derivada analítica</option>
+    <option value="3">ver normales</option>
+  </select>
+  <label>log₁₀ ε <input type="range" id="eps" min="-5" max="-0.3" step="0.1" value="-2"></label>
+  <label>origen <select id="origen"><option>0</option><option>100</option><option>1000</option></select></label>
+  <label><input type="checkbox" id="alambre"> alambre</label>
+  <div id="info"></div>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#panel { position: absolute; left: 8px; top: 8px; right: 8px; color: #e4e7ee; font: 12px system-ui; pointer-events: none; }
+#panel label, #panel select { pointer-events: auto; margin-right: 8px; }
+#panel input[type=range] { width: 90px; vertical-align: middle; }
+#info { font: 12px ui-monospace, monospace; margin-top: 4px; color: #b4bccb; }
+select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 2px 6px; }
+</script>
+<script type="text/x-js">
+const ONDAS = `
+const vec2 DIR[3] = vec2[3](vec2(1.0, 0.0), vec2(0.6, 0.8), vec2(-0.71, 0.71));
+const float K[3] = float[3](1.7, 2.9, 4.3);        // rad por unidad
+const float A[3] = float[3](0.14, 0.07, 0.035);    // unidades
+const float W[3] = float[3](1.4, 2.0, 2.7);        // rad por segundo
+vec3 ondas(vec2 p, float t) {                      // (h, ∂h/∂x, ∂h/∂z)
+  vec3 r = vec3(0.0);
+  for (int i = 0; i < 3; i++) {
+    float fase = K[i] * dot(DIR[i], p) - W[i] * t;
+    r.x += A[i] * sin(fase);
+    r.yz += A[i] * K[i] * cos(fase) * DIR[i];
+  }
+  return r;
+}`;
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+uniform int u_modo;              // 0 plano · 1 diferencias · 2 analítica · 3 ver normales
+uniform float u_eps;
+uniform vec2 u_origen;           // desplaza el punto donde se evalúan las ondas
+uniform int u_lado;
+out vec3 v_pos;
+out vec3 v_normal;
+out vec3 v_bary;
+${ONDAS}
+float altura(vec2 q) { return ondas(q, u_time).x; }
+${L74.GLSL.ALAMBRE_VS}
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 6.0;   // plano de 6 × 6, centrado
+  vec2 q = p + u_origen;
+  vec3 o = ondas(q, u_time);
+  vec3 n;
+  if (u_modo == 0) {
+    n = vec3(0.0, 1.0, 0.0);                          // la del plano en reposo: MAL
+  } else if (u_modo == 1) {
+    float e = u_eps;
+    float hx = (altura(q + vec2(e, 0.0)) - altura(q - vec2(e, 0.0))) / (2.0 * e);
+    float hz = (altura(q + vec2(0.0, e)) - altura(q - vec2(0.0, e))) / (2.0 * e);
+    n = normalize(vec3(-hx, 1.0, -hz));
+  } else {
+    n = normalize(vec3(-o.y, 1.0, -o.z));
+  }
+  v_pos = vec3(p.x, o.x, p.y);
+  v_normal = n;
+  v_bary = baricentrica(gl_VertexID, u_lado);
+  gl_Position = u_vp * vec4(v_pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec3 u_ojo;              // posición de la cámara en el mundo
+uniform highp int u_modo;        // highp: también está en el VS (ver el texto de abajo)
+uniform bool u_alambre;
+uniform float u_grosor;
+in vec3 v_pos;
+in vec3 v_normal;
+in vec3 v_bary;
+out vec4 fragColor;
+${L74.GLSL.ALAMBRE_FS}
+void main() {
+  vec3 n = normalize(v_normal);                       // interpolar acorta: renormalizar (5.6)
+  vec3 col;
+  if (u_modo == 3) {
+    col = n * 0.5 + 0.5;
+  } else {
+    vec3 L = normalize(vec3(-0.3, 0.45, -0.85));      // hacia el sol (bajo, al fondo)
+    vec3 V = normalize(u_ojo - v_pos);                // hacia la cámara
+    vec3 H = normalize(L + V);                        // vector medio (Blinn-Phong)
+    float difusa = max(dot(n, L), 0.0);
+    float brillo = pow(max(dot(n, H), 0.0), 250.0);
+    float fresnel = pow(1.0 - max(dot(n, V), 0.0), 4.0);
+    vec3 agua = vec3(0.03, 0.15, 0.27), cielo = vec3(0.42, 0.58, 0.82);
+    col = agua * (0.3 + 0.7 * difusa) + cielo * fresnel * 0.85 + vec3(1.0, 0.92, 0.8) * brillo * 1.3;
+  }
+  if (u_alambre) col = mix(vec3(0.85), col, 0.4 + 0.6 * alambre(v_bary, u_grosor));
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const orbita = new L74.Orbita(canvas, { yaw: 0.0, pitch: 0.32, distancia: 6.5, centro: [0, -0.3, 0] });
+const N = 160;
+const app = M7.crearApp(canvas, {
+  estado: { modo: 2, logEps: -2, origen: 0, alambre: false },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: L74.crearMalla(gl, N) };
+  },
+  actualizar(e, dt, app) { orbita.actualizar(); },
+  dibujar(gl, e, app) {
+    const g = app.gpu, cam = orbita.matrices(app.ancho / app.alto);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.36, 0.5, 0.72, 1);                                // el cielo
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.u.u_ojo, cam.ojo);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_modo, e.modo);
+    GLKit.ponerUniform(gl, g.u.u_eps, Math.pow(10, e.logEps));
+    GLKit.ponerUniform(gl, g.u.u_origen, [e.origen, e.origen]);
+    GLKit.ponerUniform(gl, g.u.u_lado, N + 1);
+    GLKit.ponerUniform(gl, g.u.u_alambre, e.alambre);
+    GLKit.ponerUniform(gl, g.u.u_grosor, app.ancho / app.anchoCSS);
+    g.malla.dibujar();
+    info.textContent = `ε = ${Math.pow(10, e.logEps).toPrecision(2)} · origen (${e.origen}, ${e.origen}) · ${g.malla.nVertices} vértices`;
+  },
+});
+const $ = (id) => document.getElementById(id);
+$('modo').onchange = (ev) => { app.estado.modo = +ev.target.value; };
+$('eps').oninput = (ev) => { app.estado.logEps = +ev.target.value; };
+$('origen').onchange = (ev) => { app.estado.origen = +ev.target.value; };
+$('alambre').onchange = (ev) => { app.estado.alambre = ev.target.checked; };
+</script>
+  </div>
+  <p>Lo que deberías ver en cada modo, y por qué:</p>
+  <ul>
+    <li><strong>Normal del plano:</strong> el bestiario de arriba. La silueta del horizonte ondula, pero la superficie es un espejo plano: el reflejo del cielo y el brillo del sol son iguales en todas partes.</li>
+    <li><strong>Derivada analítica:</strong> el agua. El brillo del sol se rompe en destellos sobre las crestas que miran hacia él y el reflejo del cielo aparece en las laderas que te dan la espalda. Todo sale de la normal: la luz es la misma que en el modo anterior.</li>
+    <li><strong>Diferencias finitas:</strong> con ε = 0,01 y el origen en 0 es indistinguible de la analítica. Con ε = 10⁻⁵ empieza un moteado; con el origen en 1000 y ε = 10⁻³, el agua se llena de chispas: es la tabla de arriba en vivo. Con ε = 0,5, las olas cortas desaparecen de la luz (la secante salta por encima de ellas) aunque sigan en la geometría.</li>
+    <li><strong>Ver normales:</strong> verde claro dominante (la normal casi vertical, <code>y ≈ 1</code>), con tintes rojizos y azulados donde la pendiente tiene componente en <code>x</code> o en <code>z</code>. Si alguna vez ves esta superficie morada u oscura, la normal apunta hacia abajo.</li>
+  </ul>
+  <p>Un detalle de la línea <code>normalize(v_normal)</code> del fragment shader: aunque el vertex shader entregue normales unitarias, el rasterizador las interpola componente a componente y el vector intermedio es más corto (el punto medio de dos vectores unitarios está dentro del círculo). Sin renormalizar, el brillo especular, que eleva el producto punto a 250, se apaga en el centro de cada triángulo y se ve la malla. Es el mismo detalle de 5.6, con más consecuencias.</p>
+  <p>Y un tropiezo real al escribir este ejemplo: la primera versión declaraba <code>uniform int u_modo;</code> en los dos shaders y el programa no enlazaba, con <code>Precisions of uniform 'u_modo' differ between VERTEX and FRAGMENT shaders</code>. Es el bestiario de <a href="../04-gpu/05-uniforms-varyings.html#m4-precision-uniform">4.5</a>, pero con enteros: el vertex shader tiene <code>highp int</code> por defecto y el fragment shader, <code>mediump int</code>, aunque hayas escrito <code>precision highp float</code> (esa línea solo habla de los <code>float</code>). En el M1 las dos precisiones son la misma en la práctica, pero el enlazador compara lo <em>declarado</em>, no lo que hace el hardware. Por eso el fragment shader dice <code>uniform highp int u_modo;</code>.</p>
+</section>
+
+<div class="callout senior" data-titulo="Superficies que no son una altura">
+  <p>La fórmula $(-h_x, 1, -h_z)$ vale para superficies que son una altura sobre un plano. Una bandera se mueve en profundidad <em>y</em> se descuelga; una esfera que respira se desplaza a lo largo de su propia normal. El método general es el mismo con otra función: si la superficie es $P(u, v)$ (una posición 3D para cada punto del plano uv), las tangentes son $\partial P / \partial u$ y $\partial P / \partial v$ y la normal es su producto cruz, en el orden que dé la cara de fuera. Con diferencias finitas: <code>tu = P(uv + (ε, 0)) − P(uv − (ε, 0))</code>, <code>tv = P(uv + (0, ε)) − P(uv − (0, ε))</code> y <code>normalize(cross(tu, tv))</code> (dividir por 2ε no hace falta, porque normalizamos). Lo usarás en la bandera.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu océano usa diferencias centrales con <code>ε = 0.00001</code> «para que sean exactas». Al abrir la página se ve bien; al cabo de una hora, el agua se llena de chispas. ¿Qué pasa?</p>
+  <ul>
+    <li>Las diferencias finitas acumulan error de un frame al siguiente.<div class="explicacion">No hay nada acumulado: cada frame se evalúa de cero. Lo que cambia con el tiempo es el tamaño de los números que se evalúan.</div></li>
+    <li data-correcta><code>u_time</code> ha crecido y está dentro del seno: con fases grandes, <code>h(x + ε)</code> y <code>h(x − ε)</code> solo difieren en el redondeo, que al dividir por un ε diminuto se convierte en una normal al azar.<div class="explicacion">Correcto. Es la cancelación de 3.7: el error de cada evaluación es proporcional al tamaño de la fase, y la resta de dos números casi iguales deja sobre todo ese error. Medido: con t = 1000 s y ε = 10⁻⁴, errores de hasta 16°. Un ε de 0,01 y la fase envuelta en JavaScript lo resuelven.</div></li>
+    <li>El reloj de la app pierde precisión en float64 al pasar una hora.<div class="explicacion">Un float64 representa horas (y siglos) con precisión de microsegundos. El problema está en la GPU, donde todo es float32.</div></li>
+  </ul>
+</div>
+
+<h2>Por vértice o por fragmento</h2>
+<p>Ya tienes una normal por vértice. Queda decidir dónde se calcula la luz, y no es un detalle: con una malla fina todas las opciones se parecen, pero con una malla gruesa dan imágenes muy distintas. Hay cuatro opciones clásicas:</p>
+<ol>
+  <li><strong>Luz por vértice</strong> (<em>Gouraud shading</em>): el vertex shader calcula el color iluminado y el rasterizador interpola colores. Es lo más barato, y lo que hacían las GPU de hace treinta años.</li>
+  <li><strong>Normal por vértice, luz por fragmento</strong> (<em>Phong shading</em>, no confundir con el modelo de brillo de Phong): se interpola la normal y el fragment shader la renormaliza e ilumina. Lo que hicimos en el ejemplo 7.4.3.</li>
+  <li><strong>Normal por fragmento</strong>: el fragment shader recibe la posición <code>(x, z)</code> interpolada y evalúa él mismo la derivada analítica. La geometría sigue siendo la de la malla, pero la luz tiene detalle de píxel, como un <em>normal map</em> calculado.</li>
+  <li><strong>Facetas</strong>: la normal de cada triángulo, sin interpolar. El fragment shader la obtiene de las derivadas de pantalla de la posición: <code>normalize(cross(dFdx(v_pos), dFdy(v_pos)))</code>. Dos vectores que están en el plano del triángulo, luego su producto cruz es la normal de la cara.</li>
+</ol>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.4.4 — Cuatro maneras de iluminar la misma malla</h3>
+  <p>El agua del ejemplo anterior con una malla gruesa. Empieza con N = 12 y recorre los cuatro modos con el alambre activado; después sube N hasta que dejen de distinguirse. Fíjate sobre todo en el brillo del sol.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.4.4 — Por vértice o por fragmento" data-altura="380" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <select id="modo">
+    <option value="0">luz por vértice (Gouraud)</option>
+    <option value="1">normal por vértice, luz por píxel</option>
+    <option value="2">normal por píxel</option>
+    <option value="3">facetas (dFdx, dFdy)</option>
+  </select>
+  <label>N <input type="range" id="n" min="4" max="128" value="12"> <span id="vn">12</span></label>
+  <label><input type="checkbox" id="alambre" checked> alambre</label>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#panel { position: absolute; left: 8px; top: 8px; right: 8px; color: #e4e7ee; font: 12px system-ui; pointer-events: none; }
+#panel label, #panel select { pointer-events: auto; margin-right: 8px; }
+#panel input[type=range] { width: 100px; vertical-align: middle; }
+select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 2px 6px; }
+</script>
+<script type="text/x-js">
+const ONDAS = `
+const vec2 DIR[3] = vec2[3](vec2(1.0, 0.0), vec2(0.6, 0.8), vec2(-0.71, 0.71));
+const float K[3] = float[3](1.7, 2.9, 4.3);
+const float A[3] = float[3](0.14, 0.07, 0.035);
+const float W[3] = float[3](1.4, 2.0, 2.7);
+vec3 ondas(vec2 p, float t) {
+  vec3 r = vec3(0.0);
+  for (int i = 0; i < 3; i++) {
+    float fase = K[i] * dot(DIR[i], p) - W[i] * t;
+    r.x += A[i] * sin(fase);
+    r.yz += A[i] * K[i] * cos(fase) * DIR[i];
+  }
+  return r;
+}`;
+// La misma luz en los dos shaders (por eso u_ojo tiene la misma precisión en ambos: highp)
+const LUZ = `
+vec3 luz(vec3 n, vec3 pos, vec3 ojo) {
+  vec3 L = normalize(vec3(-0.3, 0.45, -0.85));
+  vec3 V = normalize(ojo - pos);
+  vec3 H = normalize(L + V);
+  float difusa = max(dot(n, L), 0.0);
+  float brillo = pow(max(dot(n, H), 0.0), 250.0);
+  float fresnel = pow(1.0 - max(dot(n, V), 0.0), 4.0);
+  return vec3(0.03, 0.15, 0.27) * (0.3 + 0.7 * difusa) + vec3(0.42, 0.58, 0.82) * fresnel * 0.85
+       + vec3(1.0, 0.92, 0.8) * brillo * 1.3;
+}`;
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform vec3 u_ojo;
+uniform float u_time;
+uniform int u_modo;
+uniform int u_lado;
+out vec3 v_pos;
+out vec3 v_normal;
+out vec3 v_color;                // solo lo usa el modo Gouraud
+out vec3 v_bary;
+${ONDAS}
+${LUZ}
+${L74.GLSL.ALAMBRE_VS}
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 6.0;
+  vec3 o = ondas(p, u_time);
+  v_pos = vec3(p.x, o.x, p.y);
+  v_normal = normalize(vec3(-o.y, 1.0, -o.z));
+  v_color = u_modo == 0 ? luz(v_normal, v_pos, u_ojo) : vec3(0.0);   // la luz, AQUÍ, por vértice
+  v_bary = baricentrica(gl_VertexID, u_lado);
+  gl_Position = u_vp * vec4(v_pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec3 u_ojo;
+uniform float u_time;
+uniform highp int u_modo;        // la misma precisión que en el VS
+uniform bool u_alambre;
+uniform float u_grosor;
+in vec3 v_pos;
+in vec3 v_normal;
+in vec3 v_color;
+in vec3 v_bary;
+out vec4 fragColor;
+${ONDAS}
+${LUZ}
+${L74.GLSL.ALAMBRE_FS}
+void main() {
+  vec3 col;
+  if (u_modo == 0) {
+    col = v_color;                                                   // interpolado tal cual
+  } else if (u_modo == 1) {
+    col = luz(normalize(v_normal), v_pos, u_ojo);
+  } else if (u_modo == 2) {
+    vec3 o = ondas(v_pos.xz, u_time);                                // la derivada, en ESTE píxel
+    col = luz(normalize(vec3(-o.y, 1.0, -o.z)), v_pos, u_ojo);
+  } else {
+    col = luz(normalize(cross(dFdx(v_pos), dFdy(v_pos))), v_pos, u_ojo);
+  }
+  if (u_alambre) col = mix(vec3(0.85), col, 0.45 + 0.55 * alambre(v_bary, u_grosor));
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const orbita = new L74.Orbita(canvas, { yaw: 0.0, pitch: 0.42, distancia: 5.6, centro: [0, -0.2, 0] });
+const app = M7.crearApp(canvas, {
+  estado: { modo: 0, N: 12, alambre: true },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: null };
+  },
+  actualizar(e, dt, app) { orbita.actualizar(); },
+  dibujar(gl, e, app) {
+    const g = app.gpu, cam = orbita.matrices(app.ancho / app.alto);
+    if (!g.malla || g.malla.N !== e.N) { if (g.malla) g.malla.liberar(); g.malla = L74.crearMalla(gl, e.N); }
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.36, 0.5, 0.72, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.u.u_ojo, cam.ojo);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_modo, e.modo);
+    GLKit.ponerUniform(gl, g.u.u_lado, e.N + 1);
+    GLKit.ponerUniform(gl, g.u.u_alambre, e.alambre);
+    GLKit.ponerUniform(gl, g.u.u_grosor, app.ancho / app.anchoCSS);
+    g.malla.dibujar();
+  },
+});
+const $ = (id) => document.getElementById(id);
+$('modo').onchange = (ev) => { app.estado.modo = +ev.target.value; };
+$('n').oninput = (ev) => { app.estado.N = +ev.target.value; $('vn').textContent = ev.target.value; };
+$('alambre').onchange = (ev) => { app.estado.alambre = ev.target.checked; };
+</script>
+  </div>
+  <p>Con N = 12 (celdas de medio metro para olas de entre 1,5 y 3,7 unidades):</p>
+  <ul>
+    <li><strong>Luz por vértice:</strong> el brillo del sol casi desaparece, y cuando aparece tiene forma de rombo o de estrella, alineado con las aristas. Un destello más pequeño que un triángulo cae entre los vértices: ninguno lo ve, y la interpolación de colores no puede inventarlo. Si cae justo sobre un vértice, ese vértice brilla y el color se reparte por sus seis triángulos: la estrella.</li>
+    <li><strong>Normal por vértice, luz por píxel:</strong> el brillo vuelve y es redondo, pero su forma sigue a la malla: la normal interpolada solo sabe lo que sabían los vértices.</li>
+    <li><strong>Normal por píxel:</strong> el brillo y el reflejo tienen el detalle de las olas de verdad, aunque la malla sea gruesa. Fíjate en el horizonte: la silueta sigue siendo quebrada, porque la posición de los píxeles sigue siendo la de los triángulos planos. El fragment shader puede mentir sobre la luz, no sobre la forma.</li>
+    <li><strong>Facetas:</strong> cada triángulo, de un color. Es el aspecto <em>low poly</em>, y a veces es justo lo que se busca. Cuesta casi nada: <code>dFdx</code> y <code>dFdy</code> son restas entre píxeles vecinos del mismo quad de 2 × 2 (<a href="../06-glsl/03-formas-sdf.html">6.3</a>).</li>
+  </ul>
+</section>
+
+<table>
+  <thead><tr><th>Modo</th><th>Qué calcula quién</th><th>Coste extra</th><th>Cuándo</th></tr></thead>
+  <tbody>
+    <tr><td>Luz por vértice</td><td>VS: normal y color. FS: nada</td><td>ninguno</td><td>mallas muy finas, luz sin brillos, dispositivos muy justos</td></tr>
+    <tr><td>Normal por vértice</td><td>VS: normal. FS: luz</td><td>la luz por píxel</td><td>lo normal; el detalle de la luz es el de la malla</td></tr>
+    <tr><td>Normal por píxel</td><td>VS: posición. FS: derivada y luz</td><td>la función de altura por píxel</td><td>detalle fino con pocos vértices; solo si la derivada es barata</td></tr>
+    <tr><td>Facetas</td><td>VS: posición. FS: <code>dFdx</code>/<code>dFdy</code> y luz</td><td>casi nada</td><td>estilo <em>low poly</em>; depurar la malla</td></tr>
+  </tbody>
+</table>
+
+<p>La regla que se deduce separa forma y detalle: <strong>los vértices deciden la forma</strong> (la silueta, lo que tapa a qué, el perfil del horizonte) y <strong>los fragmentos pueden añadir detalle de luz</strong>. Pon los vértices justos para la forma que se ve de perfil y deja el oleaje fino para el fragment shader. Y cuidado con quedarte corto de vértices por el otro lado: una ola más corta que dos celdas no se puede representar con la malla, y lo que aparece en su lugar no es una versión borrosa, es otra ola.</p>
+
+<div class="callout bestiario" data-id="m7-4-aliasing-malla" data-titulo="Con olas cortas, la malla dibuja otra ola: más larga, torcida o que avanza hacia atrás">
+  <p><strong>Síntoma:</strong> al subir la frecuencia de las olas (o bajar la resolución de la malla), la superficie no se vuelve más rizada: aparece un oleaje más largo que el que pediste, en otra dirección, y a veces avanza en sentido contrario. En el ejemplo 7.4.1, con N = 8 y k = 10, la ola principal avanza hacia la izquierda cuando la fórmula la manda hacia la derecha.</p>
+  <p><strong>Causa:</strong> la malla <em>muestrea</em> la función en los vértices, cada Δ = tamaño / N unidades, y entre ellos une con rectas. Si la longitud de onda es menor que 2Δ (el límite de Nyquist), las muestras coinciden con las de una onda más larga, su «alias», el mismo efecto que hace girar hacia atrás las ruedas de los carros en las películas. En el ejemplo 7.4.1 (plano de 4 unidades, N = 8, Δ = 0,5) el límite es k = π / Δ ≈ 6,3; con k = 10, las muestras son las de una onda de unas 2,4 unidades que avanza al revés.</p>
+  <p><strong>Solución:</strong> al menos 4 a 8 vértices por longitud de onda de la ola más corta que quieras en la <em>geometría</em>. Lo que sea más fino, a la luz: normal por píxel (ejemplo 7.4.4) o un ruido en el fragment shader. Si la malla se ve de lejos, reduce la amplitud de las olas cortas con la distancia antes de que caigan por debajo del límite.</p>
+</div>
+
+<div class="callout senior" data-titulo="flat, el vértice provocador y por qué preferimos dFdx">
+  <p>GLSL tiene un calificador para no interpolar: <code>flat out vec3 v_normal;</code> en el vertex shader y <code>flat in</code> en el fragment. Todo el triángulo recibe el valor de un solo vértice, el <em>vértice provocador</em>, que en WebGL2 es el <strong>último</strong> del triángulo. Lo comprobamos: con <code>drawArrays</code>, el triángulo tomó el color del vértice 2; con <code>drawElements</code> y los índices <code>[1, 2, 0]</code>, el del vértice 0, el tercero de la lista. En nuestra rejilla, el último vértice de <code>(a, a+1, b)</code> es <code>b</code> y el de <code>(b, a+1, b+1)</code> es <code>b+1</code>: cada triángulo tomaría la normal de una de sus esquinas, que no es la de su cara. Las facetas salen, pero torcidas. La extensión <code>WEBGL_provoking_vertex</code> (disponible en el Chrome de pruebas) permite pasar al primer vértice con <code>provokingVertexWEBGL(ext.FIRST_VERTEX_CONVENTION_WEBGL)</code>, lo que no arregla nada aquí. <code>cross(dFdx(v_pos), dFdy(v_pos))</code> sí da la normal de la cara, y con una propiedad curiosa: como se construye con direcciones de la pantalla, apunta siempre hacia la cámara. Lo medimos con el mismo triángulo en los dos sentidos de giro: la misma normal. Útil para superficies de dos caras; inútil para saber cuál de las dos estás viendo.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu océano usa una malla de 64 × 64 celdas y la silueta del horizonte se ve bien. Quieres añadir un rizado fino, con olas diez veces más cortas que una celda, que haga centellear el sol. ¿Qué haces?</p>
+  <ul>
+    <li>Subir la malla a 640 × 640 celdas para que las olas quepan en la geometría.<div class="explicacion">Funcionaría, pero multiplica por 100 los vértices para algo que casi solo se ve en la luz. La silueta ya estaba bien: los vértices nuevos no cambiarían la forma que se ve de perfil.</div></li>
+    <li>Añadir las olas cortas a la función de altura del vertex shader.<div class="explicacion">Con olas más cortas que dos celdas, la malla no puede representarlas: aparecería un alias, otra ola más larga y falsa (el bestiario de arriba).</div></li>
+    <li data-correcta>Añadir el rizado solo a la normal, calculada por píxel en el fragment shader.<div class="explicacion">Correcto. El rizado es detalle de luz, no de forma: el fragment shader lo evalúa en cada píxel con su derivada, y la malla de 64 × 64 sigue encargándose de la silueta. Es el reparto «vértices para la forma, fragmentos para el detalle».</div></li>
+  </ul>
+</div>
+
+
+<h2>Una bandera al viento</h2>
+<p>Una bandera no es una altura sobre un plano: está de pie, se mueve hacia delante y hacia atrás (en <code>z</code>) y se descuelga (en <code>y</code>). Es la superficie paramétrica de la caja senior de arriba, $P(u, v, t)$, con tres ideas que la hacen creíble:</p>
+<ul>
+  <li><strong>Sujeta por un lado.</strong> La amplitud de la ondulación crece con <code>u</code>: cero junto al mástil (<code>u = 0</code>), máxima en el extremo libre.</li>
+  <li><strong>Ondas que viajan del mástil hacia fuera.</strong> Una fase <code>k·x − ω·t</code>, con un poco de <code>y</code> dentro para que las crestas no sean verticales, más una segunda onda más corta y más débil.</li>
+  <li><strong>Se descuelga con poco viento.</strong> El extremo libre baja en proporción a <code>u²</code> cuando el viento amaina.</li>
+</ul>
+<p>Y dos detalles de oficio: la normal sale de las dos tangentes por diferencias finitas (derivar a mano esta función sería un castigo), y la bandera se ve por las dos caras, lo que trae su propio bicho.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.4.5 — La bandera</h3>
+  <p>Arrastra para darle la vuelta. El deslizador fija el viento de fondo y el botón «ráfaga» le da un empujón a un muelle (<a href="../02-animacion/05-fisica-muelles.html">2.5</a>) que lleva la intensidad del viento. La luz acompaña a la cámara, como un flash algo desplazado: la cara que ves debería estar siempre iluminada. Desmarca la casilla y mira la bandera por detrás.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.4.5 — Bandera" data-altura="380" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <label>viento <input type="range" id="viento" min="0.1" max="1" step="0.01" value="0.7"></label>
+  <button id="rafaga">ráfaga</button>
+  <label><input type="checkbox" id="dosCaras" checked> girar la normal de la cara trasera</label>
+  <label><input type="checkbox" id="alambre"> alambre</label>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#panel { position: absolute; left: 8px; top: 8px; right: 8px; color: #e4e7ee; font: 12px system-ui; pointer-events: none; }
+#panel label, #panel button { pointer-events: auto; margin-right: 8px; }
+#panel input[type=range] { width: 100px; vertical-align: middle; }
+button { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+uniform float u_viento;            // 0: casi sin viento · 1: fuerte (puede pasarse un poco con la ráfaga)
+uniform int u_lado;
+out vec3 v_pos;
+out vec3 v_normal;
+out vec2 v_uv;
+out vec3 v_bary;
+
+vec3 bandera(vec2 uv, float t) {   // uv → mundo. Tela de 3 × 2, con el borde izquierdo en el mástil
+  float x = uv.x * 3.0, y = uv.y * 2.0;
+  float libre = uv.x;              // 0 sujeta, 1 extremo libre
+  float onda = sin(2.6 * x - 5.5 * t + 0.9 * y)
+             + 0.35 * sin(5.9 * x - 8.3 * t + 2.3 * y + 1.0);
+  float z = u_viento * 0.32 * libre * onda;
+  float caida = (1.15 - u_viento) * 0.5 * libre * libre;            // con poco viento, el extremo cae
+  float aleteo = 0.05 * u_viento * libre * sin(4.1 * x - 6.7 * t);   // un poco de movimiento vertical
+  return vec3(x, 0.6 + y - caida + aleteo, z);
+}
+${L74.GLSL.ALAMBRE_VS}
+void main() {
+  vec3 pos = bandera(a_uv, u_time);
+  float e = 0.002;                                                   // paso en uv (la tela mide 1 × 1 en uv)
+  vec3 tu = bandera(a_uv + vec2(e, 0.0), u_time) - bandera(a_uv - vec2(e, 0.0), u_time);
+  vec3 tv = bandera(a_uv + vec2(0.0, e), u_time) - bandera(a_uv - vec2(0.0, e), u_time);
+  v_normal = normalize(cross(tu, tv));                               // cara de delante: hacia +z
+  v_pos = pos;
+  v_uv = a_uv;
+  v_bary = baricentrica(gl_VertexID, u_lado);
+  gl_Position = u_vp * vec4(pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+uniform vec3 u_luz;                // hacia la luz (unitario, en el mundo)
+uniform bool u_dosCaras;
+uniform bool u_alambre;
+uniform float u_grosor;
+in vec3 v_pos;
+in vec3 v_normal;
+in vec2 v_uv;
+in vec3 v_bary;
+out vec4 fragColor;
+${L74.GLSL.ALAMBRE_FS}
+void main() {
+  vec3 n = normalize(v_normal);
+  if (u_dosCaras && !gl_FrontFacing) n = -n;                         // vista por detrás: la otra cara
+  float difusa = max(dot(n, u_luz), 0.0);
+  vec3 col = texture(u_tex, v_uv).rgb * (0.12 + 0.88 * difusa);
+  if (u_alambre) col = mix(vec3(0.9), col, 0.4 + 0.6 * alambre(v_bary, u_grosor));
+  fragColor = vec4(col, 1.0);
+}`;
+// El mástil: un cilindro de 16 lados SIN buffers (lo explicamos en «Geometría sin buffers»)
+const VS_MASTIL = `#version 300 es
+uniform mat4 u_vp;
+out vec3 v_normal;
+const ivec2 ESQ[6] = ivec2[6](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(0, 1), ivec2(1, 0), ivec2(1, 1));
+void main() {
+  int lado = gl_VertexID / 6;
+  ivec2 e = ESQ[gl_VertexID % 6];
+  float a = 6.2831853 * float(lado + e.x) / 16.0;
+  v_normal = vec3(cos(a), 0.0, sin(a));
+  vec3 pos = vec3(-0.05, -2.4 + 5.2 * float(e.y), 0.0) + 0.05 * v_normal;
+  gl_Position = u_vp * vec4(pos, 1.0);
+}`;
+const FS_MASTIL = `#version 300 es
+precision highp float;
+uniform vec3 u_luz;
+in vec3 v_normal;
+out vec4 fragColor;
+void main() { fragColor = vec4(vec3(0.62, 0.64, 0.7) * (0.2 + 0.8 * max(dot(normalize(v_normal), u_luz), 0.0)), 1.0); }`;
+
+function lienzoBandera() {                      // la tela: un canvas 2D (nada de imágenes externas)
+  const c = document.createElement('canvas'); c.width = 512; c.height = 342;
+  const g = c.getContext('2d');
+  g.fillStyle = '#1b1f5e'; g.fillRect(0, 0, 512, 114);
+  g.fillStyle = '#8b7bff'; g.fillRect(0, 114, 512, 114);
+  g.fillStyle = '#3fd0e8'; g.fillRect(0, 228, 512, 114);
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(150, 171, 72, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#1b1f5e'; g.font = 'bold 60px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('7.4', 150, 174);
+  return c;
+}
+const imagen = lienzoBandera();
+const canvas = document.getElementById('c');
+const orbita = new L74.Orbita(canvas, { yaw: 0.45, pitch: 0.12, distancia: 7, centro: [1.4, 0.9, 0] });
+const muelle = new M7.Muelle({ rigidez: 40, amortiguamiento: 6, valor: 0.7 });
+const N = 48;
+const app = M7.crearApp(canvas, {
+  estado: { dosCaras: true, alambre: false },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS), pm = GLKit.crearPrograma(gl, VS_MASTIL, FS_MASTIL);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), pm, um: GLKit.uniforms(gl, pm), vacio: gl.createVertexArray(),
+                malla: L74.crearMalla(gl, N), tex: GLKit.crearTextura(gl, imagen, { mipmaps: true }) };
+  },
+  actualizar(e, dt, app) {
+    orbita.actualizar();
+    muelle.actualizar(dt);                        // el viento es parte de la animación: dt, no dtReal
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu, cam = orbita.matrices(app.ancho / app.alto);
+    // La luz «va con la cámara»: la dirección hacia el ojo, desviada hacia arriba y a la izquierda
+    const haciaOjo = vec3.normalizar(vec3.restar(cam.ojo, orbita.centro));
+    const luz = vec3.normalizar(vec3.sumar(haciaOjo, [-0.4, 0.6, 0]));
+    gl.enable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);                     // una tela tiene dos caras: no se descarta ninguna
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, g.tex);
+    GLKit.ponerUniform(gl, g.u.u_tex, 0);
+    GLKit.ponerUniform(gl, g.u.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_viento, Math.max(0, muelle.x));
+    GLKit.ponerUniform(gl, g.u.u_lado, N + 1);
+    GLKit.ponerUniform(gl, g.u.u_luz, luz);
+    GLKit.ponerUniform(gl, g.u.u_dosCaras, e.dosCaras);
+    GLKit.ponerUniform(gl, g.u.u_alambre, e.alambre);
+    GLKit.ponerUniform(gl, g.u.u_grosor, app.ancho / app.anchoCSS);
+    g.malla.dibujar();
+    gl.useProgram(g.pm);
+    GLKit.ponerUniform(gl, g.um.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.um.u_luz, luz);
+    gl.bindVertexArray(g.vacio);                  // un VAO sin atributos
+    gl.drawArrays(gl.TRIANGLES, 0, 16 * 6);
+  },
+});
+const $ = (id) => document.getElementById(id);
+$('viento').oninput = (ev) => { muelle.objetivo = +ev.target.value; };
+$('rafaga').onclick = () => { muelle.v += 3; };   // un empujón: el muelle se pasa y vuelve
+$('dosCaras').onchange = (ev) => { app.estado.dosCaras = ev.target.checked; };
+$('alambre').onchange = (ev) => { app.estado.alambre = ev.target.checked; };
+</script>
+  </div>
+  <p>Paso a paso:</p>
+  <ol>
+    <li><strong><code>bandera(uv, t)</code></strong> es toda la física (de mentira). <code>libre</code> multiplica la ondulación, así que el borde del mástil nunca se mueve y el extremo se mueve más. Las dos ondas viajan hacia <code>+x</code> porque la fase es <code>k·x − ω·t</code>. La caída usa <code>libre²</code>: casi nada cerca del mástil y mucho en el extremo, la forma de una tela que cuelga.</li>
+    <li><strong>La normal</strong> son dos tangentes por diferencias centrales en el espacio uv y su producto cruz. <code>tu</code> apunta hacia <code>+x</code> y <code>tv</code> hacia <code>+y</code>, así que <code>cross(tu, tv)</code> apunta hacia <code>+z</code>: hacia la cámara inicial, que ve la cara de delante. El paso <code>e = 0,002</code> es pequeño frente a la longitud de onda (unas 2,4 unidades, es decir 0,8 en uv) y los números que entran en la función son pequeños (uv entre 0 y 1, tiempo que empieza en 0): la tabla de la sección de las normales dice que vamos sobrados.</li>
+    <li><strong>Dos caras.</strong> <code>gl.disable(gl.CULL_FACE)</code> dibuja los triángulos se vean de frente o de espaldas, y <code>gl_FrontFacing</code> (<code>true</code> si el triángulo se ve en su sentido antihorario) dice cuál de las dos caras está pintando cada fragmento. Por detrás, la normal calculada apunta hacia el otro lado y hay que darle la vuelta.</li>
+    <li><strong>El viento</strong> es un muelle: el deslizador cambia su objetivo y la ráfaga le suma velocidad, así que la intensidad sube por encima del objetivo, rebota y se asienta, y la bandera se agita y se calma sola. Avanza con <code>dt</code> (no con <code>dtReal</code>) porque es parte de la animación: si pausaras el reloj de la app, el viento también se detendría.</li>
+    <li><strong>La textura</strong> es un canvas 2D dibujado con código, con mipmaps porque la tela se ve pequeña e inclinada. Por detrás verás el «7.4» al revés, como en una bandera de verdad.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m7-4-cara-trasera" data-titulo="Una tela (bandera, hoja, papel) se ve negra por detrás">
+  <p><strong>Síntoma:</strong> la bandera se ilumina bien por delante, pero al girar la cámara (o cuando una onda la dobla hacia ti) la parte que muestra su reverso sale negra o solo con la luz ambiente, aunque la luz esté de tu lado.</p>
+  <p><strong>Causa:</strong> una normal por vértice apunta hacia un solo lado de la superficie, el de delante. Por detrás, el producto punto con una luz de tu lado es negativo, y <code>max(…, 0.0)</code> lo deja en 0. El culling está desactivado (si no, el reverso ni se dibujaría), pero nadie le dijo al fragment shader qué cara está viendo.</p>
+  <p><strong>Solución:</strong> <code>if (!gl_FrontFacing) n = -n;</code> en el fragment shader. <code>gl_FrontFacing</code> depende del sentido de giro en pantalla del triángulo: lo comprobamos dibujando el mismo triángulo en los dos órdenes (<code>true</code> antihorario, <code>false</code> horario). Si tu malla tiene el winding al revés, la corrección oscurecerá la cara de delante: arregla los índices o invierte la condición. Para un efecto de tela translúcida, suma además un poco de luz por detrás: <code>max(-dot(n, L), 0.0) × 0,3</code>.</p>
+</div>
+
+<div class="callout nota">
+  <p>Esto no es una simulación de tela: la función no conserva la longitud de la tela (al ondular en <code>z</code> sin encogerse en <code>x</code>, la bandera se estira un poco) y no sabe de choques ni de gravedad de verdad. Para eso hacen falta partículas unidas por muelles, con memoria entre frames: en JavaScript para unos cientos de nudos (<a href="../02-animacion/05-fisica-muelles.html">2.5</a>) o en la GPU con texturas que guardan el estado (<a href="../05-webgl/08-framebuffers.html">5.8</a>, <a href="05-particulas-gpu.html">7.5</a>). Para una bandera de fondo, una función del tiempo es más barata, no se descontrola nunca y queda igual de bien.</p>
+</div>
+
+<h2>Deformar con el ratón: el abombamiento</h2>
+<p>Hasta ahora la deformación dependía solo del tiempo. Hacer que dependa del usuario es añadir uniforms: un punto del mundo (<code>u_centro</code>) y una fuerza (<code>u_fuerza</code>). El vertex shader levanta los vértices cercanos con una campana de Gauss, $g = F\,e^{-d^2/r^2}$, donde $d$ es la distancia horizontal del vértice al centro, y la suma a la altura que ya tenía. La derivada de la campana es fácil, así que la normal sigue siendo analítica: $\nabla g = g \cdot (-2\,(\mathbf{p} - \mathbf{c}) / r^2)$.</p>
+<p>La parte nueva está en JavaScript: ¿qué punto <code>(x, z)</code> del mundo hay bajo el puntero? El puntero vive en píxeles de pantalla y el plano, en el mundo 3D. Hay que deshacer el camino de <a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a>: de pantalla a NDC, de NDC al mundo con la inversa de proyección × vista, y cortar el rayo resultante con el plano.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function rayo(vp, nx, ny) {
+  const inv = mat4.invertir(vp);
+  const x = nx * 2 - 1, y = ny * 2 - 1;
+  const a = mat4.porVector(inv, [x, y, -1, 1]);
+  const b = mat4.porVector(inv, [x, y, 1, 1]);
+  const origen = [a[0] / a[3], a[1] / a[3], a[2] / a[3]];
+  const lejos = [b[0] / b[3], b[1] / b[3], b[2] / b[3]];
+  return { origen, dir: vec3.normalizar(vec3.restar(lejos, origen)) };
+}
+function cortarPlanoY(r, y) {
+  if (Math.abs(r.dir[1]) < 1e-6) return null;
+  const t = (y - r.origen[1]) / r.dir[1];
+  if (t < 0) return null;
+  return [r.origen[0] + t * r.dir[0], y, r.origen[2] + t * r.dir[2]];
+}
+</script>
+<ol>
+  <li data-l="1-2"><code>nx, ny</code> es el puntero de 0 a 1 con el origen abajo (lo que da <code>M7.Puntero</code> de <a href="02-interaccion.html">7.2</a>, convertido en el frame). La inversa de <code>proyección × vista</code> lleva de NDC al mundo.</li>
+  <li data-l="3">De 0..1 a −1..1: NDC.</li>
+  <li data-l="4-5">Dos puntos de NDC con la misma x e y: uno en el plano cercano (z = −1) y otro en el lejano (z = 1). Los dos están en la misma línea de visión, la que pasa por el píxel del puntero.</li>
+  <li data-l="6-7">La multiplicación da coordenadas homogéneas: hay que dividir por <code>w</code>, deshaciendo la división de perspectiva (<a href="../04-gpu/02-pipeline-grafico.html">4.2</a>). Olvidarla es el error clásico: los puntos salen escalados por un número distinto cada uno y el rayo apunta a cualquier parte.</li>
+  <li data-l="8">El rayo: sale del punto cercano hacia el lejano.</li>
+  <li data-l="10-15">Corte con el plano horizontal de altura <code>y</code>: el <code>t</code> que hace que la coordenada y del rayo valga lo pedido. Si el rayo es horizontal no hay corte, y si <code>t</code> es negativo el plano está detrás de la cámara (el puntero apunta al cielo).</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.4.6 — Una superficie que se abomba bajo el ratón</h3>
+  <p>Pasa el puntero por encima: la superficie se levanta un poco. Mantén pulsado para levantarla del todo y suelta para ver el rebote (un muelle poco amortiguado). El anillo blanco marca el punto que calculó JavaScript. Mientras no toques nada, un puntero fantasma hace la demostración.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.4.6 — Abombamiento" data-altura="380" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <label>radio <input type="range" id="radio" min="0.3" max="1.6" step="0.05" value="0.8"></label>
+  <label><input type="checkbox" id="corregir"> rayo contra la superficie deformada</label>
+  <div id="info"></div>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
+#panel { position: absolute; left: 8px; top: 8px; right: 8px; color: #e4e7ee; font: 12px system-ui; pointer-events: none; }
+#panel label { pointer-events: auto; margin-right: 8px; }
+#panel input[type=range] { width: 100px; vertical-align: middle; }
+#info { font: 12px ui-monospace, monospace; margin-top: 4px; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+uniform vec2 u_centro;             // (x, z) del mundo bajo el puntero
+uniform float u_fuerza;            // altura de la campana (la mueve un muelle)
+uniform float u_radio;
+out vec3 v_pos;
+out vec3 v_normal;
+out float v_bulto;
+
+vec3 superficie(vec2 p) {          // (h, ∂h/∂x, ∂h/∂z)
+  float f1 = 1.3 * p.x + 0.4 * p.y - 1.1 * u_time;
+  float f2 = 1.7 * p.y - 0.9 * p.x - 1.4 * u_time;
+  vec3 r = vec3(0.04 * sin(f1) + 0.03 * sin(f2),                    // oleaje de fondo, suave
+                0.04 * 1.3 * cos(f1) - 0.03 * 0.9 * cos(f2),
+                0.04 * 0.4 * cos(f1) + 0.03 * 1.7 * cos(f2));
+  vec2 d = p - u_centro;
+  float g = u_fuerza * exp(-dot(d, d) / (u_radio * u_radio));      // la campana
+  r.x += g;
+  r.yz += g * (-2.0 * d / (u_radio * u_radio));                    // y su derivada
+  return r;
+}
+
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 6.0;
+  vec3 s = superficie(p);
+  v_pos = vec3(p.x, s.x, p.y);
+  v_normal = normalize(vec3(-s.y, 1.0, -s.z));
+  v_bulto = abs(s.x);
+  gl_Position = u_vp * vec4(v_pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec3 u_ojo;
+uniform vec2 u_centro;
+in vec3 v_pos;
+in vec3 v_normal;
+in float v_bulto;
+out vec4 fragColor;
+void main() {
+  vec3 n = normalize(v_normal);
+  vec3 L = normalize(vec3(-0.5, 0.8, 0.4)), V = normalize(u_ojo - v_pos), H = normalize(L + V);
+  vec3 base = mix(vec3(0.22, 0.18, 0.52), vec3(0.95, 0.42, 0.71), clamp(v_bulto * 1.4, 0.0, 1.0));
+  vec3 col = base * (0.18 + 0.82 * max(dot(n, L), 0.0)) + 0.35 * pow(max(dot(n, H), 0.0), 60.0);
+  vec2 q = fract(v_pos.xz * 2.0) - 0.5;                             // cuadrícula tenue para ver la deformación
+  col *= 0.85 + 0.15 * smoothstep(0.0, 0.04, min(abs(q.x), abs(q.y)));
+  float anillo = abs(length(v_pos.xz - u_centro) - 0.07);           // el punto calculado por JavaScript
+  col = mix(vec3(1.0), col, smoothstep(0.0, 0.015, anillo));
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const puntero = new M7.Puntero(canvas, { semivida: 0.03 });
+const muelle = new M7.Muelle({ rigidez: 120, amortiguamiento: 7 });   // poco amortiguado: rebota
+const camara = { ojo: [0, 4.2, 5.2], centro: [0, -0.4, 0] };
+function matrices(app) {                           // JavaScript puro: se puede llamar en actualizar
+  const vista = mat4.mirarA(camara.ojo, camara.centro, [0, 1, 0]);
+  const proyeccion = mat4.perspectiva(0.8, app.ancho / app.alto, 0.1, 50);
+  return { vp: mat4.multiplicar(proyeccion, vista) };
+}
+function alturaBulto(x, z, e) {                    // la campana, también en JavaScript (para el rayo corregido)
+  const dx = x - e.centro[0], dz = z - e.centro[1];
+  return muelle.x * Math.exp(-(dx * dx + dz * dz) / (e.radio * e.radio));
+}
+const N = 128;
+const app = M7.crearApp(canvas, {
+  estado: { centro: [0, 0], objetivo: [0, 0], radio: 0.8, corregir: false, tocado: 0 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: L74.crearMalla(gl, N) };
+  },
+  actualizar(e, dt, app) {
+    const dtr = app.reloj.dtReal;
+    puntero.actualizar(dtr);
+    if (puntero.visto) {                           // 1. del puntero a un punto del plano
+      if (puntero.dentro) {
+        const r = L74.rayo(matrices(app).vp, puntero.nx, puntero.ny);
+        let hit = L74.cortarPlanoY(r, 0);
+        if (hit && e.corregir) {                   // 2 iteraciones: cortar a la altura de la superficie
+          for (let k = 0; k < 2; k++) { const h2 = L74.cortarPlanoY(r, alturaBulto(hit[0], hit[2], e)); if (h2) hit = h2; }
+        }
+        if (hit) e.objetivo = [hit[0], hit[2]];
+      }
+      muelle.objetivo = puntero.pulsado ? 0.9 : puntero.dentro ? 0.18 : 0;
+    } else {                                       // puntero fantasma para la demostración
+      const t = app.reloj.t;
+      e.objetivo = [1.4 * Math.cos(t * 0.7), 1.0 * Math.sin(t * 0.9)];
+      muelle.objetivo = (t % 3) < 1.6 ? 0.9 : 0.15;
+    }
+    e.centro[0] = M7.suavizar(e.centro[0], e.objetivo[0], 0.05, dtr);    // 2. el centro sigue con inercia
+    e.centro[1] = M7.suavizar(e.centro[1], e.objetivo[1], 0.05, dtr);
+    muelle.actualizar(dtr);                         // responde al usuario: tiempo real
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, matrices(app).vp);
+    GLKit.ponerUniform(gl, g.u.u_ojo, camara.ojo);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_centro, e.centro);
+    GLKit.ponerUniform(gl, g.u.u_fuerza, muelle.x);
+    GLKit.ponerUniform(gl, g.u.u_radio, e.radio);
+    g.malla.dibujar();
+    info.textContent = `centro (${e.centro[0].toFixed(2)}, ${e.centro[1].toFixed(2)}) · fuerza ${muelle.x.toFixed(2)}`;
+  },
+});
+const $ = (id) => document.getElementById(id);
+$('radio').oninput = (ev) => { app.estado.radio = +ev.target.value; };
+$('corregir').onchange = (ev) => { app.estado.corregir = ev.target.checked; };
+</script>
+  </div>
+  <p>Cómo encaja con la arquitectura del módulo:</p>
+  <ol>
+    <li><strong>Los eventos no aparecen</strong> en el código de la app: <code>M7.Puntero</code> guarda <code>clientX/Y</code> y en <code>actualizar</code> los convierte con el rectángulo de ese frame (7.2). Ahí mismo se calcula el rayo con las matrices de este frame. <code>matrices(app)</code> es JavaScript puro, sin GL, así que se puede llamar en <code>actualizar</code> y otra vez en <code>dibujar</code>.</li>
+    <li><strong>Dos suavizados distintos</strong>: el centro sigue al punto calculado con una semivida de 50 ms (para que la campana se deslice en lugar de saltar) y la fuerza es un muelle con amortiguamiento 7, muy por debajo del crítico (2√120 ≈ 22): al soltar, la superficie se hunde por debajo del plano y rebota un par de veces. Los dos con <code>dtReal</code>, porque responden a la mano del usuario.</li>
+    <li><strong>La normal</strong> es analítica: la derivada del oleaje más la de la campana. Por eso la luz dibuja el bulto con una ladera iluminada y otra en sombra.</li>
+    <li><strong>El anillo</strong> lo pinta el fragment shader alrededor de <code>u_centro</code>, sobre la superficie deformada. Con la fuerza al máximo, fíjate en que no cae bajo la cruz del puntero, sino más arriba en la pantalla: el puntero señala la ladera de delante del bulto y el anillo está en su cima. El siguiente recuadro explica por qué, y la casilla «rayo contra la superficie deformada» lo corrige.</li>
+  </ol>
+</section>
+
+<div class="callout senior" data-titulo="La CPU no sabe dónde están tus vértices">
+  <p>Todo lo que el vertex shader desplaza existe solo en la GPU, durante un frame. JavaScript sigue creyendo que la malla es el plano en reposo. Tres consecuencias que muerden en proyectos reales. <strong>La selección con el ratón</strong> se hace contra la geometría sin deformar: el rayo corta el plano <code>y = 0</code>, no la cima del bulto que el usuario está viendo, y el punto calculado queda más allá de lo que el usuario señala (el anillo del ejemplo). <strong>La lógica del juego</strong> tampoco lo sabe: un barco que flota en las olas necesita la altura del agua en su posición. <strong>El descarte por visibilidad</strong> de los motores (Three.js descarta los objetos cuya esfera envolvente, calculada con los vértices originales, queda fuera de la cámara) puede hacer desaparecer una malla que el shader había desplazado hasta dentro de la vista.</p>
+  <p>La solución habitual es la <em>doble implementación</em>: la misma función de altura escrita en GLSL y en JavaScript, con las mismas constantes y alimentada con el mismo reloj (<code>reloj.t</code> de 7.1). JavaScript calcula en float64 y la GPU en float32, pero mientras las fases sean pequeñas (envueltas, como en la sección de las normales) las diferencias son del orden de una millonésima de unidad, invisibles. Para el rayo basta con iterar: cortar con <code>y = 0</code>, evaluar la altura en ese punto, cortar con el plano de esa altura y repetir un par de veces (la casilla del ejemplo hace dos iteraciones con la campana en JavaScript). Y en Three.js, <code>mesh.frustumCulled = false</code> o una esfera envolvente agrandada a mano.</p>
+</div>
+
+<h2>Geometría sin buffers: <code>gl_VertexID</code></h2>
+<p>En <a href="../04-gpu/05-uniforms-varyings.html">4.5</a> dibujaste el triángulo de pantalla completa sin un solo buffer, calculando las esquinas a partir de <code>gl_VertexID</code>, y allí se prometía que el truco escala: «una rejilla de N × N a partir de <code>gl_VertexID</code> (fila = <code>id / N</code>, columna = <code>id % N</code>)». Nuestra rejilla es el caso perfecto, porque su único atributo, <code>(u, v)</code>, es una función del número de vértice. Hay dos maneras de aprovecharlo.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+// Variante B: solo el buffer de índices. gl_VertexID es el valor del índice.
+uniform int u_lado;                         // N + 1
+vec2 uvDelVertice() {
+  int i = gl_VertexID % u_lado, j = gl_VertexID / u_lado;
+  return vec2(i, j) / float(u_lado - 1);
+}
+
+// Variante C: ningún buffer. drawArrays(TRIANGLES, 0, 6 * N * N)
+uniform int u_n;                            // N
+const ivec2 ESQ[6] = ivec2[6](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1),
+                              ivec2(0, 1), ivec2(1, 0), ivec2(1, 1));
+vec2 uvDelVertice() {
+  int celda = gl_VertexID / 6;
+  ivec2 ij = ivec2(celda % u_n, celda / u_n) + ESQ[gl_VertexID % 6];
+  return vec2(ij) / float(u_n);
+}
+</script>
+<ol>
+  <li data-l="1-6">La variante B conserva el buffer de índices y quita el de <code>uv</code>. El VAO solo tiene enlazado el <code>ELEMENT_ARRAY_BUFFER</code> y ningún atributo activado, y <code>drawElements</code> funciona igual: el vertex shader recibe en <code>gl_VertexID</code> el número de vértice (comprobado) y deshace <code>k = j·lado + i</code>. <code>vec2(i, j)</code> convierte los dos <code>int</code> a <code>float</code>, exactos hasta 2²⁴ = 16,7 millones.</li>
+  <li data-l="8-15">La variante C no tiene ni índices. Cada celda son seis vértices consecutivos, y la tabla <code>ESQ</code> dice qué esquina de la celda es cada uno: los mismos dos triángulos <code>(a, a+1, b)</code> y <code>(b, a+1, b+1)</code> de siempre. Se dibuja con un VAO vacío y <code>drawArrays(gl.TRIANGLES, 0, 6 * N * N)</code>, como el mástil de la bandera (que es lo mismo con un cilindro: cada «celda» es un lado y la esquina da el ángulo y la altura).</li>
+</ol>
+</div>
+
+<p>¿Qué cuestan? Las medimos contra la versión con buffer de <code>uv</code> (A), con dos vertex shaders: uno ligero (los tres senos con su derivada) y uno pesado (un fbm de 5 octavas y diferencias centrales: 25 ruidos de gradiente por vértice). Cada cifra es el tiempo por dibujo, mediana de 7 tandas de 8 dibujos sincronizadas con <code>readPixels</code>, en un lienzo de 512 × 512 (M1, Chrome, ANGLE/Metal):</p>
+
+<table class="m7-medidas">
+  <thead><tr><th>Variante</th><th class="num">N = 512<br>ligero</th><th class="num">N = 512<br>pesado</th><th class="num">N = 1024<br>ligero</th><th class="num">N = 1024<br>pesado</th></tr></thead>
+  <tbody>
+    <tr><td>A: <code>uv</code> en un buffer + índices</td><td class="num">1,1 ms</td><td class="num">1,3 ms</td><td class="num">3,2 ms</td><td class="num">4,2 ms</td></tr>
+    <tr><td>B: solo índices + <code>gl_VertexID</code></td><td class="num">1,4 ms</td><td class="num">1,4 ms</td><td class="num">3,2 ms</td><td class="num">4,3 ms</td></tr>
+    <tr><td>C: sin buffers, 6 vértices por celda</td><td class="num">1,6 ms</td><td class="num">3,1 ms</td><td class="num">4,5 ms</td><td class="num">11,0 ms</td></tr>
+  </tbody>
+</table>
+
+<p>La variante B empata con A en la malla grande y queda algo por detrás en la de 512 (la división entera no es gratis): quitar el buffer de <code>uv</code> sale prácticamente gratis y ahorra 8 bytes por vértice. La C, en cambio, se dispara con el shader pesado: 11 ms frente a 4,2. Es la caché de vértices de <a href="../05-webgl/03-buffers-atributos.html">5.3</a> vista desde el otro lado. Con índices, la GPU reconoce que el vértice 1000 ya se calculó hace un momento y reutiliza el resultado; sin índices, cada uno de los seis triángulos que tocan un vértice lo pide con un <code>gl_VertexID</code> distinto, y el shader se ejecuta seis veces por vértice en lugar de una. Con un shader ligero apenas se nota (el vertex shader no es el cuello de botella); con uno pesado, se nota mucho.</p>
+
+<div class="callout hack" data-titulo="Un solo buffer de índices para todas las rejillas">
+  <p>En la variante B, la malla ya no es «los datos de la malla»: es una lista de números de vértice que no depende de la forma. El mismo buffer de índices de N = 64 sirve para una bandera, una ola y un terreno de 64 × 64, cada uno con su vertex shader. Y como <code>gl_VertexID</code> se puede combinar con <code>gl_InstanceID</code> (<a href="../05-webgl/09-instancing.html">5.9</a>), un único <code>drawElementsInstanced</code> dibuja cien banderas distintas sin un solo byte de datos por vértice: la instancia elige la posición, la fase del viento y el color. El ejercicio 7.4.4 hace lo mismo con baldosas.</p>
+</div>
+
+<h2>Rejillas de puntos: el modo <code>POINTS</code></h2>
+<p>La misma rejilla sin triángulos es un campo de partículas. Con <code>gl.drawArrays(gl.POINTS, 0, lado * lado)</code> cada vértice se rasteriza como un cuadrado de <code>gl_PointSize</code> píxeles, y en el fragment shader <code>gl_PointCoord</code> va de 0 a 1 dentro del cuadrado, con lo que se hacen puntos redondos (<a href="../05-webgl/03-buffers-atributos.html">5.3</a>). No hacen falta índices ni buffers: la variante B sin índices, directamente con <code>gl_VertexID</code>. Tres rarezas de 5.3 que siguen valiendo: el tamaño tiene un máximo (<code>ALIASED_POINT_SIZE_RANGE</code>: 511 px en la máquina de pruebas, bastante menos en otras GPU), si no escribes <code>gl_PointSize</code> el tamaño es indefinido, y según la especificación un punto cuyo centro sale del volumen visible se descarta entero (en el M1 no pasó, pero en otras plataformas los puntos grandes desaparecen de golpe al tocar el borde).</p>
+<p>Y una que no estaba en 5.3: <strong><code>gl_PointSize</code> se mide en píxeles del búfer</strong>, no en píxeles CSS. Lo comprobamos con un canvas de 256 × 256 mostrado a 128 × 128 px CSS: un punto de <code>gl_PointSize = 10.0</code> cubrió 100 píxeles del búfer, que en pantalla son 5 × 5 px CSS. En una pantalla con DPR 2, o cuando la calidad adaptativa de 7.1 baja la resolución, un tamaño fijo cambia de tamaño visible.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.4.7 — Un campo de puntos que respira</h3>
+  <p>140 × 140 puntos sin ningún buffer, desplazados por el fbm de 6.6 y por una onda circular. Prueba los tres modos de tamaño con el búfer a resolución completa y a la mitad (lo que haría la calidad adaptativa). Arrastra para girar.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.4.7 — Campo de puntos" data-altura="360" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <select id="tam">
+    <option value="0">3 px del búfer (mal)</option>
+    <option value="1">3 px CSS</option>
+    <option value="2" selected>perspectiva (0,045 unidades)</option>
+  </select>
+  <button id="mitad">búfer a la mitad</button>
+  <div id="info"></div>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#panel { position: absolute; left: 8px; top: 8px; right: 8px; color: #e4e7ee; font: 12px system-ui; pointer-events: none; }
+#panel select, #panel button { pointer-events: auto; margin-right: 8px; }
+#info { font: 12px ui-monospace, monospace; margin-top: 4px; color: #b4bccb; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+uniform mat4 u_vp;
+uniform float u_time;
+uniform int u_lado;                 // puntos por fila
+uniform int u_modoTam;              // 0 px del búfer · 1 px CSS · 2 perspectiva
+uniform float u_escala;             // px del búfer por px CSS
+uniform float u_focal;              // 1 / tan(fov / 2): el elemento [5] de la proyección
+uniform float u_altoBufer;          // px
+out float v_altura;
+${L74.GLSL.RUIDO}
+void main() {
+  int i = gl_VertexID % u_lado, j = gl_VertexID / u_lado;          // sin atributos: todo sale del número
+  vec2 p = (vec2(i, j) / float(u_lado - 1) - 0.5) * 8.0;
+  float h = 1.1 * fbm(p * 0.3 + vec2(0.0, 0.12 * u_time))
+          + 0.12 * sin(2.0 * length(p) - 1.5 * u_time);
+  v_altura = h;
+  gl_Position = u_vp * vec4(p.x, h, p.y, 1.0);
+  float tam;
+  if (u_modoTam == 0) tam = 3.0;
+  else if (u_modoTam == 1) tam = 3.0 * u_escala;
+  else tam = 0.045 * u_focal * 0.5 * u_altoBufer / gl_Position.w; // 0,045 unidades del mundo, en px
+  gl_PointSize = clamp(tam, 1.0, 64.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+in float v_altura;
+out vec4 fragColor;
+void main() {
+  float d = length(gl_PointCoord - 0.5);                           // 0 en el centro, 0,5 en el borde
+  if (d > 0.5) discard;                                            // de cuadrado a círculo
+  float a = smoothstep(0.5, 0.25, d);
+  vec3 col = mix(vec3(0.25, 0.82, 0.91), vec3(1.0, 0.42, 0.71), clamp(0.5 + 1.3 * v_altura, 0.0, 1.0));
+  fragColor = vec4(col * a, a);                                    // premultiplicado, para mezcla aditiva
+}`;
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const orbita = new L74.Orbita(canvas, { yaw: 0.6, pitch: 0.45, distancia: 8.5 });
+const LADO = 140;
+const app = M7.crearApp(canvas, {
+  calidad: { min: 1, max: 1 },                   // escala fija: la cambiamos a mano con el botón
+  estado: { modoTam: 2 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vacio: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) { orbita.actualizar(); },
+  dibujar(gl, e, app) {
+    const g = app.gpu, cam = orbita.matrices(app.ancho / app.alto);
+    gl.disable(gl.DEPTH_TEST);                   // mezcla aditiva: el orden no importa
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.clearColor(0.03, 0.035, 0.06, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_lado, LADO);
+    GLKit.ponerUniform(gl, g.u.u_modoTam, e.modoTam);
+    GLKit.ponerUniform(gl, g.u.u_escala, app.ancho / app.anchoCSS);
+    GLKit.ponerUniform(gl, g.u.u_focal, cam.proyeccion[5]);
+    GLKit.ponerUniform(gl, g.u.u_altoBufer, app.alto);
+    gl.bindVertexArray(g.vacio);
+    gl.drawArrays(gl.POINTS, 0, LADO * LADO);
+    gl.disable(gl.BLEND);
+    info.textContent = `búfer ${app.ancho}×${app.alto} · ${(app.ancho / app.anchoCSS).toFixed(2)} px del búfer por px CSS · ${LADO * LADO} puntos`;
+  },
+});
+document.getElementById('tam').onchange = (ev) => { app.estado.modoTam = +ev.target.value; };
+document.getElementById('mitad').onclick = (ev) => {
+  const c = app.calidad, e = c.escala === 1 ? 0.5 : 1;
+  c.min = c.max = c.escala = e;                  // con min = max, el controlador no puede moverla
+  ev.target.textContent = e === 1 ? 'búfer a la mitad' : 'búfer completo';
+};
+</script>
+  </div>
+  <p>Con «3 px del búfer» y el búfer a la mitad, los puntos se ven del doble de tamaño: cada píxel del búfer ocupa ahora dos píxeles CSS. Con «3 px CSS», el tamaño se multiplica por <code>u_escala</code> y se ve igual en los dos casos (y en cualquier pantalla). Con «perspectiva», el tamaño es el de una esfera de 0,045 unidades vista desde su distancia: <code>0,045 × focal / w</code> es su altura en NDC dividida entre 2, y por <code>altoBúfer</code> pasa a píxeles; ya incluye el DPR y la calidad, porque sale de la altura real del búfer. Los puntos cercanos son más grandes y el campo gana profundidad. La mezcla es aditiva (<code>blendFunc(ONE, ONE)</code>, <a href="../05-webgl/07-blending.html">5.7</a>) con el color premultiplicado, así que no hace falta ordenar los puntos ni prueba de profundidad: donde se amontonan, brillan más.</p>
+</section>
+
+<div class="callout bestiario" data-id="m7-4-puntos-dpr" data-titulo="Los puntos cambian de tamaño según la pantalla (o cuando baja la calidad)">
+  <p><strong>Síntoma:</strong> un campo de partículas se ve bien en tu monitor y diminuto en un portátil retina o en un móvil; o los puntos engordan de repente cuando la calidad adaptativa baja la resolución.</p>
+  <p><strong>Causa:</strong> <code>gl_PointSize</code> está en píxeles del búfer. Con DPR 2 un píxel del búfer mide medio píxel CSS, y con el búfer a la mitad mide dos. Comprobado: <code>gl_PointSize = 10.0</code> cubrió exactamente 10 × 10 píxeles del búfer en un canvas mostrado a la mitad de su resolución.</p>
+  <p><strong>Solución:</strong> multiplica por la proporción <code>canvas.width / rect.width</code> (la <code>u_escala</code> de 7.2), o calcula el tamaño con perspectiva a partir de la altura del búfer. Y recuerda el techo: con tamaños grandes y DPR 3 puedes chocar con el máximo de <code>ALIASED_POINT_SIZE_RANGE</code> (511 en el M1, bastante menos en otras GPU); por encima, cuadrados con instancing (5.9).</p>
+</div>
+
+<p>Estos puntos solo se mueven según una función del tiempo, igual que la bandera: cada frame se calculan de cero. Un sistema de partículas de verdad, con velocidades, choques y memoria de un frame al siguiente, necesita guardar el estado en la GPU. Es el tema de <a href="05-particulas-gpu.html">7.5</a>.</p>
+
+<h2>Terreno desde una textura: el vertex shader también lee texturas</h2>
+<p>Hasta ahora la altura salía de una fórmula. Muchas veces sale de datos: un mapa de alturas (<em>heightmap</em>) generado por una herramienta, pintado por un artista o calculado por una simulación. Es una textura en escala de grises, y el vertex shader puede leerla con <code>texture()</code> igual que el fragment shader. En WebGL2 está garantizado (<code>MAX_VERTEX_TEXTURE_IMAGE_UNITS</code> vale al menos 16; en WebGL1 podía valer 0) y en la máquina de pruebas vale 16. Pero la lectura en el vertex shader tiene reglas propias, y las tres las comprobamos:</p>
+<ul>
+  <li><strong>No hay mipmaps automáticos.</strong> El fragment shader elige el nivel de mipmap con las derivadas de pantalla de las coordenadas (<a href="../05-webgl/05-texturas.html">5.5</a>), pero en el vertex shader no hay píxeles vecinos ni derivadas. <code>texture()</code> lee siempre el nivel 0: con una textura cuyos niveles 0, 1 y 2 eran rojo, verde y azul, y filtro <code>LINEAR_MIPMAP_LINEAR</code>, el vertex shader leyó rojo. Para elegir nivel hay que decirlo: <code>textureLod(t, uv, 1.0)</code> leyó verde y <code>textureLod(t, uv, 2.0)</code>, azul. La versión con sesgo, <code>texture(t, uv, 1.0)</code>, ni siquiera compila en el vertex shader: <code>'texture' : no matching overloaded function found</code>.</li>
+  <li><strong>Una textura incompleta lee 0.</strong> Igual que en el fragment shader (<a href="../05-webgl/05-texturas.html#m5-textura-negra">5.5</a>): con el filtro por defecto (<code>NEAREST_MIPMAP_LINEAR</code>) y sin mipmaps, el vertex shader leyó <code>(0, 0, 0, 1)</code>. En el fragment shader eso es una textura negra; en el vertex shader, un terreno completamente plano. Y ni <code>texelFetch</code>, que no filtra, se libra: con la misma textura incompleta devolvió ceros.</li>
+  <li><strong>Los floats de 32 bits no se filtran solos.</strong> Una textura <code>R32F</code> con filtro <code>LINEAR</code> leyó 0 hasta que pedimos la extensión <code>OES_texture_float_linear</code>; después, el valor correcto. <code>R16F</code> sí se filtra en WebGL2 sin pedir nada.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m7-4-heightmap-plano" data-titulo="El terreno sale completamente plano (y no hay ningún error)">
+  <p><strong>Síntoma:</strong> la malla del terreno se dibuja, pero plana, a altura 0, como si el mapa de alturas estuviera vacío. <code>getError</code> no dice nada.</p>
+  <p><strong>Causa:</strong> la lectura en el vertex shader devuelve 0. Las tres causas medidas: la textura está incompleta (sin mipmaps y con el <code>TEXTURE_MIN_FILTER</code> por defecto, que los pide), es <code>R32F</code> con <code>LINEAR</code> sin <code>OES_texture_float_linear</code>, o el sampler apunta a una unidad sin textura (<a href="../05-webgl/05-texturas.html#m5-sampler-unidad">5.5</a>). Las tres se comportan igual en el vertex shader que en el fragment shader; la diferencia es que un terreno plano parece un fallo de geometría y no de textura.</p>
+  <p><strong>Solución:</strong> <code>TEXTURE_MIN_FILTER</code> a <code>LINEAR</code> o <code>NEAREST</code> si no generas mipmaps (<code>GLKit.crearTextura</code> ya lo hace), <code>R16F</code> o la extensión para floats filtrados, y comprueba la unidad. Para depurar, pinta la altura leída como color en un varying: si sale negro, el problema está en la textura, no en la malla.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.4.8 — Pinta montañas</h3>
+  <p>A la izquierda, un canvas 2D de 256 × 256 que hace de mapa de alturas: blanco es alto y negro es bajo. Pinta encima arrastrando (con Mayús, o con el botón derecho, excavas). A la derecha, una rejilla de 256 × 256 vértices que lee ese canvas en el vertex shader. Arrastra sobre el terreno para girarlo, y sube la exageración al máximo para ver el bestiario de las terrazas.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.4.8 — Terreno pintado" data-altura="380" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="mapa" width="256" height="256"></canvas>
+<canvas id="c"></canvas>
+<div id="panel">
+  <label>exageración <input type="range" id="exag" min="0.2" max="3" step="0.05" value="1.4"></label>
+  <button id="borrar">allanar</button>
+</div>
+</script>
+<script type="text/x-css">
+body { margin: 0; overflow: hidden; display: flex; align-items: center; height: 100vh; background: #0e1014; }
+#mapa { width: min(38vw, calc(100vh - 16px)); height: auto; aspect-ratio: 1; margin: 0 8px; border: 1px solid #3a4256; cursor: crosshair; touch-action: none; image-rendering: auto; }
+#c { flex: 1; min-width: 0; height: 100%; display: block; touch-action: none; cursor: grab; }
+#panel { position: absolute; right: 8px; top: 8px; color: #e4e7ee; font: 12px system-ui; }
+#panel input[type=range] { width: 100px; vertical-align: middle; }
+button { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform sampler2D u_alturas;
+uniform float u_exag;              // metros del mundo por unidad de altura
+out vec3 v_pos;
+out vec3 v_normal;
+out float v_h;
+const float T = 6.0;               // el terreno mide T × T
+float altura(vec2 uv) { return texture(u_alturas, uv).r; }         // en el VS: siempre el nivel 0
+void main() {
+  float h = altura(a_uv);
+  vec2 e = 1.0 / vec2(textureSize(u_alturas, 0));                  // un texel, en uv
+  float hu = (altura(a_uv + vec2(e.x, 0.0)) - altura(a_uv - vec2(e.x, 0.0))) / (2.0 * e.x);
+  float hv = (altura(a_uv + vec2(0.0, e.y)) - altura(a_uv - vec2(0.0, e.y))) / (2.0 * e.y);
+  // mundo: x = (u − 0,5)·T, z = (0,5 − v)·T, y = h·exag  →  ∂y/∂x = exag·hu/T, ∂y/∂z = −exag·hv/T
+  v_normal = normalize(vec3(-u_exag * hu / T, 1.0, u_exag * hv / T));
+  v_h = h;
+  v_pos = vec3((a_uv.x - 0.5) * T, h * u_exag, (0.5 - a_uv.y) * T);
+  gl_Position = u_vp * vec4(v_pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec3 u_ojo;
+in vec3 v_pos;
+in vec3 v_normal;
+in float v_h;
+out vec4 fragColor;
+void main() {
+  vec3 n = normalize(v_normal);
+  vec3 col = v_h < 0.06 ? vec3(0.10, 0.25, 0.45)                   // agua
+           : v_h < 0.12 ? vec3(0.76, 0.70, 0.50)                   // arena
+           : v_h < 0.55 ? mix(vec3(0.32, 0.56, 0.24), vec3(0.18, 0.38, 0.16), (v_h - 0.12) / 0.43)   // hierba
+           : v_h < 0.80 ? vec3(0.45, 0.40, 0.36)                   // roca
+           : vec3(0.95);                                           // nieve
+  col = mix(col, vec3(0.45, 0.40, 0.36), smoothstep(0.75, 0.55, n.y) * step(0.12, v_h));   // laderas: roca
+  float difusa = max(dot(n, normalize(vec3(-0.7, 0.55, 0.35))), 0.0);   // sol bajo: marca el relieve
+  col *= 0.18 + 0.82 * difusa;
+  float niebla = smoothstep(4.0, 14.0, length(u_ojo - v_pos));
+  fragColor = vec4(mix(col, vec3(0.05, 0.06, 0.09), niebla), 1.0);
+}`;
+// ---------- el mapa de alturas: un canvas 2D ----------
+const mapa = document.getElementById('mapa');
+const g2 = mapa.getContext('2d', { willReadFrequently: false });
+function montaña(x, y, r, a) {                   // un «pincel» suave: degradado radial blanco
+  const gr = g2.createRadialGradient(x, y, 0, x, y, r);
+  gr.addColorStop(0, `rgba(255,255,255,${a})`);             // paradas que imitan una campana
+  gr.addColorStop(0.35, `rgba(255,255,255,${0.75 * a})`);
+  gr.addColorStop(0.7, `rgba(255,255,255,${0.22 * a})`);
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g2.fillStyle = gr; g2.fillRect(x - r, y - r, 2 * r, 2 * r);
+}
+function relieveInicial() {
+  g2.globalCompositeOperation = 'source-over';
+  g2.fillStyle = '#080808'; g2.fillRect(0, 0, 256, 256);       // 8/255 ≈ 0,03: bajo el nivel del agua
+  g2.globalCompositeOperation = 'lighter';       // las montañas se suman
+  [[80, 90, 70, 0.55], [150, 70, 55, 0.5], [175, 150, 80, 0.45], [110, 180, 45, 0.35], [60, 200, 30, 0.3], [200, 210, 40, 0.3]]
+    .forEach(([x, y, r, a]) => montaña(x, y, r, a));
+}
+relieveInicial();
+const trazos = [];                               // los eventos solo anotan: [x, y, excavar]
+let pintando = false;
+function anotar(e) {
+  const r = mapa.getBoundingClientRect();
+  trazos.push([(e.clientX - r.left) * 256 / r.width, (e.clientY - r.top) * 256 / r.height, e.shiftKey || e.buttons === 2]);
+}
+mapa.addEventListener('pointerdown', (e) => { pintando = true; mapa.setPointerCapture(e.pointerId); anotar(e); });
+mapa.addEventListener('pointermove', (e) => { if (pintando) anotar(e); });
+mapa.addEventListener('pointerup', () => { pintando = false; });
+mapa.addEventListener('contextmenu', (e) => e.preventDefault());
+
+const canvas = document.getElementById('c');
+const orbita = new L74.Orbita(canvas, { yaw: 0.5, pitch: 0.6, distancia: 7.5, centro: [0, 0.3, 0] });
+const N = 255;                                   // 256 × 256 vértices: uno por texel
+const app = M7.crearApp(canvas, {
+  estado: { exag: 1.4, sucio: true },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: L74.crearMalla(gl, N),
+                tex: GLKit.crearTextura(gl, mapa, { filtro: gl.LINEAR }) };   // LINEAR, sin mipmaps: completa
+    app.estado.sucio = true;
+  },
+  actualizar(e, dt, app) {
+    orbita.actualizar();
+    if (trazos.length) {                         // el canvas 2D se pinta aquí, una vez por frame
+      g2.globalCompositeOperation = 'source-over';
+      for (const [x, y, excavar] of trazos) {
+        const gr = g2.createRadialGradient(x, y, 0, x, y, 18);
+        gr.addColorStop(0, excavar ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.1)');
+        gr.addColorStop(1, excavar ? 'rgba(0,0,0,0)' : 'rgba(255,255,255,0)');
+        g2.fillStyle = gr; g2.fillRect(x - 18, y - 18, 36, 36);
+      }
+      trazos.length = 0;
+      e.sucio = true;
+    }
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu, cam = orbita.matrices(app.ancho / app.alto);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, g.tex);
+    if (e.sucio) {                               // subir el canvas solo si cambió
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);                 // como al crearla (GLKit lo deja en false)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, mapa);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      e.sucio = false;
+    }
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_alturas, 0);
+    GLKit.ponerUniform(gl, g.u.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.u.u_ojo, cam.ojo);
+    GLKit.ponerUniform(gl, g.u.u_exag, e.exag);
+    g.malla.dibujar();
+  },
+});
+document.getElementById('exag').oninput = (ev) => { app.estado.exag = +ev.target.value; };
+document.getElementById('borrar').onclick = () => { g2.globalCompositeOperation = 'source-over'; g2.fillStyle = '#080808'; g2.fillRect(0, 0, 256, 256); app.estado.sucio = true; };
+</script>
+  </div>
+  <p>El recorrido de un trazo, que es el recorrido de cualquier dato del DOM hacia la GPU:</p>
+  <ol>
+    <li><strong>El evento anota</strong> la posición en píxeles del mapa (el mismo cálculo de 7.2, con el rectángulo del canvas 2D) en la lista <code>trazos</code>.</li>
+    <li><strong><code>actualizar</code> pinta</strong> los trazos pendientes en el canvas 2D con un degradado radial suave y marca <code>sucio</code>. Es trabajo de CPU, sin GL.</li>
+    <li><strong><code>dibujar</code> sube</strong> el canvas con <code>texSubImage2D</code> solo si está sucio: la textura conserva su tamaño y su configuración y solo cambian los píxeles. En la máquina de pruebas, la llamada con un canvas de 256 × 256 tardó menos de 0,1 ms de JavaScript. Fíjate en el <code>pixelStorei</code>: es estado global del contexto, <code>GLKit.crearTextura</code> lo devuelve a <code>false</code> al terminar, y sin volver a ponerlo, la primera pincelada subiría el mapa boca abajo (<a href="../05-webgl/05-texturas.html#m5-textura-volteada">5.5</a>).</li>
+    <li><strong>El vertex shader lee</strong> la altura con <code>texture()</code> y la normal con diferencias centrales de un texel. La conversión de las pendientes al mundo tiene el signo cambiado en <code>z</code> porque <code>z = 0,5 − v</code>: el mismo cuidado que pedía el bestiario de la normal invertida.</li>
+  </ol>
+  <p>La rejilla es de 255 × 255 celdas (256 × 256 vértices, uno por texel): justo el caso del bestiario de los índices, y <code>L74.crearMalla</code> ha elegido <code>Uint32Array</code> sola. Con uno por texel podrías leer cada altura sin filtrado con <code>texelFetch(u_alturas, ivec2(gl_VertexID % 256, gl_VertexID / 256), 0)</code>, el mismo número de vértice de la variante B; con mallas de otra resolución, <code>texture()</code> con <code>LINEAR</code> interpola entre texeles y la malla puede ser más fina o más gruesa que el mapa.</p>
+</section>
+
+<div class="callout bestiario" data-id="m7-4-heightmap-escalones" data-titulo="El terreno sale en terrazas, con escalones que la luz delata">
+  <p><strong>Síntoma:</strong> un terreno leído de un mapa de alturas se ve bien de lejos, pero de cerca, o al exagerar la altura, las laderas están hechas de escalones: bandas planas separadas por saltos, muy visibles con luz rasante.</p>
+  <p><strong>Causa:</strong> el mapa tiene 8 bits por canal: solo 256 alturas posibles. Un canvas 2D (o un PNG normal) no puede guardar nada entre dos niveles, así que una ladera suave se convierte en una escalera de 256 peldaños, y la normal por diferencias de un texel, que vale 0 en los peldaños y mucho en los saltos, lo amplifica. En el ejemplo 7.4.8, con la exageración al máximo cada peldaño mide 3/255 ≈ 0,012 unidades del mundo, y la luz dibuja las curvas de nivel.</p>
+  <p><strong>Solución:</strong> más bits: una textura <code>R16F</code> o <code>R32F</code> (con la extensión de filtrado) rellenada desde un <code>Float32Array</code>, o dos canales de 8 bits combinados (<code>r + g / 255</code>) si el mapa tiene que viajar como PNG. Si solo puedes tener 8 bits, calcula la normal con un paso de varios texeles (suaviza los peldaños a costa de detalle) y no exageres la altura.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu terreno lee el mapa de alturas en el vertex shader con <code>texture()</code>. La textura tiene mipmaps y filtro <code>LINEAR_MIPMAP_LINEAR</code>. A lo lejos, donde cada triángulo es más pequeño que un píxel, las montañas centellean al mover la cámara. ¿Por qué no lo arreglan los mipmaps?</p>
+  <ul>
+    <li>Porque los mipmaps de un mapa de alturas se generan mal y hay que calcularlos a mano.<div class="explicacion"><code>generateMipmap</code> promedia bien las alturas. El problema es que el vertex shader no los usa.</div></li>
+    <li data-correcta>Porque en el vertex shader no hay derivadas de pantalla y <code>texture()</code> lee siempre el nivel 0; hay que elegir el nivel con <code>textureLod</code>, por ejemplo según la distancia.<div class="explicacion">Correcto. Comprobado: con niveles de colores distintos, <code>texture()</code> en el vertex shader leyó el nivel 0 aunque el filtro pidiera mipmaps. Cada vértice lejano toma una muestra del mapa a resolución completa, y al moverse la cámara las muestras saltan entre montaña y valle. <code>textureLod(t, uv, lod)</code> con un <code>lod</code> que crezca con la distancia promedia antes de muestrear.</div></li>
+    <li>Porque el filtrado <code>LINEAR</code> no funciona en el vertex shader.<div class="explicacion">Sí funciona: <code>LINEAR</code> interpola entre los cuatro texeles vecinos del nivel que se lee. Lo que no hay es selección automática de nivel.</div></li>
+  </ul>
+</div>
+
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 7.4.1 — Cuenta antes de dibujar</h3>
+  <p>Esta <code>crearRejilla</code> tiene tres errores, cada uno de los que se cometen de verdad. Arréglala para que pasen las siete pruebas. No hace falta dibujar nada: las pruebas comprueban los arrays.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.4.1" data-altura="300" data-sin-resultado data-consola-altura="220">
+<script type="text/x-js">
+function crearRejilla(N) {
+  const lado = N + 1, nVertices = lado * lado;
+  const uv = new Float32Array(nVertices * 2);
+  for (let j = 0; j < lado; j++) for (let i = 0; i < lado; i++) {
+    const k = j * lado + i;
+    uv[2 * k] = i / lado;
+    uv[2 * k + 1] = j / lado;
+  }
+  const Tipo = nVertices <= 65536 ? Uint16Array : Uint32Array;   // caben 65 536 valores… ¿no?
+  const indices = new Tipo(6 * N * N);
+  let k = 0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * lado + i, b = a + lado;
+    indices[k++] = a; indices[k++] = b; indices[k++] = a + 1;
+    indices[k++] = b; indices[k++] = a + 1; indices[k++] = b + 1;
+  }
+  return { uv, indices };
+}
+
+// ---------- pruebas (no las toques) ----------
+function prueba(nombre, ok, detalle) { console.log((ok ? '✓ ' : '✗ ') + nombre + (!ok && detalle ? '  → ' + detalle : '')); }
+const r3 = crearRejilla(3);
+prueba('N = 3: 16 vértices (32 floats de uv)', r3.uv.length === 32, 'hay ' + r3.uv.length / 2);
+prueba('N = 3: 54 índices', r3.indices.length === 54, 'hay ' + r3.indices.length);
+prueba('el último vértice está en uv = (1, 1)', r3.uv[30] === 1 && r3.uv[31] === 1, 'está en (' + r3.uv[30].toFixed(3) + ', ' + r3.uv[31].toFixed(3) + ')');
+const tipo = (N) => crearRejilla(N).indices.constructor.name;
+prueba('N = 200 → Uint16Array', tipo(200) === 'Uint16Array', tipo(200));
+prueba('N = 254 → Uint16Array (el último vértice es el 65 024)', tipo(254) === 'Uint16Array', tipo(254));
+prueba('N = 255 → Uint32Array (el último vértice es el 65 535)', tipo(255) === 'Uint32Array', tipo(255));
+function areaFirmada(r, t) {                     // > 0 si el triángulo t es antihorario en el plano uv
+  const [a, b, c] = [0, 1, 2].map((q) => r.indices[3 * t + q]);
+  const ax = r.uv[2 * a], ay = r.uv[2 * a + 1];
+  return ((r.uv[2 * b] - ax) * (r.uv[2 * c + 1] - ay) - (r.uv[2 * b + 1] - ay) * (r.uv[2 * c] - ax)) / 2;
+}
+const r8 = crearRejilla(8); let malos = 0;
+for (let t = 0; t < r8.indices.length / 3; t++) if (!(areaFirmada(r8, t) > 0)) malos++;
+prueba('los 128 triángulos de N = 8 son antihorarios', malos === 0, malos + ' horarios o degenerados');
+</script>
+<script type="text/x-js" data-solucion>
+function crearRejilla(N) {
+  const lado = N + 1, nVertices = lado * lado;
+  const uv = new Float32Array(nVertices * 2);
+  for (let j = 0; j < lado; j++) for (let i = 0; i < lado; i++) {
+    const k = j * lado + i;
+    uv[2 * k] = i / N;                           // 1. entre N (celdas): la última columna da 1
+    uv[2 * k + 1] = j / N;
+  }
+  const Tipo = nVertices - 1 <= 65534 ? Uint16Array : Uint32Array;   // 2. el 65 535 es el reinicio
+  const indices = new Tipo(6 * N * N);
+  let k = 0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * lado + i, b = a + lado;
+    indices[k++] = a; indices[k++] = a + 1; indices[k++] = b;        // 3. antihorario: a, a+1, b
+    indices[k++] = b; indices[k++] = a + 1; indices[k++] = b + 1;
+  }
+  return { uv, indices };
+}
+
+// ---------- pruebas (no las toques) ----------
+function prueba(nombre, ok, detalle) { console.log((ok ? '✓ ' : '✗ ') + nombre + (!ok && detalle ? '  → ' + detalle : '')); }
+const r3 = crearRejilla(3);
+prueba('N = 3: 16 vértices (32 floats de uv)', r3.uv.length === 32, 'hay ' + r3.uv.length / 2);
+prueba('N = 3: 54 índices', r3.indices.length === 54, 'hay ' + r3.indices.length);
+prueba('el último vértice está en uv = (1, 1)', r3.uv[30] === 1 && r3.uv[31] === 1, 'está en (' + r3.uv[30].toFixed(3) + ', ' + r3.uv[31].toFixed(3) + ')');
+const tipo = (N) => crearRejilla(N).indices.constructor.name;
+prueba('N = 200 → Uint16Array', tipo(200) === 'Uint16Array', tipo(200));
+prueba('N = 254 → Uint16Array (el último vértice es el 65 024)', tipo(254) === 'Uint16Array', tipo(254));
+prueba('N = 255 → Uint32Array (el último vértice es el 65 535)', tipo(255) === 'Uint32Array', tipo(255));
+function areaFirmada(r, t) {                     // > 0 si el triángulo t es antihorario en el plano uv
+  const [a, b, c] = [0, 1, 2].map((q) => r.indices[3 * t + q]);
+  const ax = r.uv[2 * a], ay = r.uv[2 * a + 1];
+  return ((r.uv[2 * b] - ax) * (r.uv[2 * c + 1] - ay) - (r.uv[2 * b + 1] - ay) * (r.uv[2 * c] - ax)) / 2;
+}
+const r8 = crearRejilla(8); let malos = 0;
+for (let t = 0; t < r8.indices.length / 3; t++) if (!(areaFirmada(r8, t) > 0)) malos++;
+prueba('los 128 triángulos de N = 8 son antihorarios', malos === 0, malos + ' horarios o degenerados');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Ejecuta y lee qué pruebas fallan. La del último vértice te dice dónde acaba el plano: ¿qué número divide a <code>i</code> para que la última columna valga 1?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con <code>Uint16Array</code> caben 65 536 valores, pero uno de ellos no es un vértice (<a href="../05-webgl/03-buffers-atributos.html#m5-indice-65535">5.3</a>). Y para el sentido de giro, compara el primer triángulo con el del dibujo de la rejilla: <code>(a, a+1, b)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>El tamaño del plano:</strong> con <code>i / lado</code>, la última columna vale <code>N / (N + 1)</code> (0,75 con N = 3): el plano queda corto y, peor, cambia de tamaño con N. Hay N celdas entre la primera y la última columna, así que el paso es <code>1 / N</code>.</p>
+    <p><strong>El tipo:</strong> la condición tiene que mirar el índice más alto, <code>nVertices − 1</code>, y compararlo con 65 534, porque 65 535 (<code>0xFFFF</code>) es el índice de reinicio de primitivas de WebGL2. Con la versión original, N = 255 da exactamente 65 536 vértices, «caben», y el último vértice se convierte en una orden de cortar: falta un triángulo en la esquina y no hay ningún error.</p>
+    <p><strong>El sentido de giro:</strong> <code>(a, b, a+1)</code> va de la esquina hacia arriba y después a la derecha: sentido horario en el plano uv. Con el culling activado (5.6), la mitad de los triángulos desaparecería; sin culling, se verían, pero <code>gl_FrontFacing</code> diría lo contrario en la mitad de la malla. El orden <code>(a, a+1, b)</code> es el antihorario. El segundo triángulo ya estaba bien.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.4.2 — La normal de dos ondas</h3>
+  <p>La superficie son dos ondas: una a lo largo de <code>x</code> y otra en la dirección <code>(0,6, 0,8)</code>. La función <code>normalTuya</code> devuelve la normal del plano. Escríbela con la derivada analítica de <code>altura</code>. El modo «comparar» pinta la diferencia entre tu normal y una de referencia por diferencias finitas, multiplicada por 10: al terminar, debe verse negro (y el modo «agua», con luz de verdad).</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.4.2" data-altura="340" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel"><select id="modo"><option value="1">comparar (negro = bien)</option><option value="0">agua</option></select></div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#panel { position: absolute; left: 8px; top: 8px; }
+select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 2px 6px; }
+</script>
+<script type="text/x-js">
+const SUPERFICIE = `
+float altura(vec2 p, float t) {            // p = (x, z) del mundo
+  return 0.15 * sin(1.8 * p.x - 1.5 * t)
+       + 0.08 * sin(3.1 * dot(p, vec2(0.6, 0.8)) - 2.2 * t);
+}
+vec3 normalTuya(vec2 p, float t) {
+  // ✗ La del plano. Deriva altura() respecto a x y a z y construye la normal.
+  return vec3(0.0, 1.0, 0.0);
+}`;
+
+// ---------- a partir de aquí, no hace falta tocar nada ----------
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+out vec3 v_pos;
+out vec3 v_tuya;
+out vec3 v_ref;
+${SUPERFICIE}
+vec3 normalReferencia(vec2 p, float t) {   // diferencias centrales, ε = 0,01
+  float e = 0.01;
+  float hx = (altura(p + vec2(e, 0.0), t) - altura(p - vec2(e, 0.0), t)) / (2.0 * e);
+  float hz = (altura(p + vec2(0.0, e), t) - altura(p - vec2(0.0, e), t)) / (2.0 * e);
+  return normalize(vec3(-hx, 1.0, -hz));
+}
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 6.0;
+  v_pos = vec3(p.x, altura(p, u_time), p.y);
+  v_tuya = normalTuya(p, u_time);
+  v_ref = normalReferencia(p, u_time);
+  gl_Position = u_vp * vec4(v_pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec3 u_ojo;
+uniform int u_modo;
+in vec3 v_pos;
+in vec3 v_tuya;
+in vec3 v_ref;
+out vec4 fragColor;
+void main() {
+  vec3 n = normalize(v_tuya);
+  if (u_modo == 1) { fragColor = vec4(abs(n - normalize(v_ref)) * 10.0, 1.0); return; }
+  vec3 L = normalize(vec3(-0.3, 0.45, -0.85)), V = normalize(u_ojo - v_pos), H = normalize(L + V);
+  vec3 col = vec3(0.03, 0.15, 0.27) * (0.3 + 0.7 * max(dot(n, L), 0.0))
+           + vec3(0.42, 0.58, 0.82) * 0.85 * pow(1.0 - max(dot(n, V), 0.0), 4.0)
+           + vec3(1.0, 0.92, 0.8) * 1.3 * pow(max(dot(n, H), 0.0), 250.0);
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const orbita = new L74.Orbita(canvas, { yaw: 0.0, pitch: 0.4, distancia: 6.2, centro: [0, -0.3, 0] });
+const app = M7.crearApp(canvas, {
+  estado: { modo: 1 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: L74.crearMalla(gl, 120) };
+  },
+  actualizar(e, dt, app) { orbita.actualizar(); },
+  dibujar(gl, e, app) {
+    const g = app.gpu, cam = orbita.matrices(app.ancho / app.alto);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.36, 0.5, 0.72, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.u.u_ojo, cam.ojo);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_modo, e.modo);
+    g.malla.dibujar();
+  },
+});
+document.getElementById('modo').onchange = (ev) => { app.estado.modo = +ev.target.value; };
+</script>
+<script type="text/x-js" data-solucion>
+const SUPERFICIE = `
+float altura(vec2 p, float t) {            // p = (x, z) del mundo
+  return 0.15 * sin(1.8 * p.x - 1.5 * t)
+       + 0.08 * sin(3.1 * dot(p, vec2(0.6, 0.8)) - 2.2 * t);
+}
+vec3 normalTuya(vec2 p, float t) {
+  float f1 = 1.8 * p.x - 1.5 * t;                           // la fase de cada onda
+  float f2 = 3.1 * dot(p, vec2(0.6, 0.8)) - 2.2 * t;
+  // ∂/∂x: A·k·cos(fase)·(componente x de la dirección); ∂/∂z: igual con la componente z
+  float hx = 0.15 * 1.8 * cos(f1) + 0.08 * 3.1 * 0.6 * cos(f2);
+  float hz = 0.08 * 3.1 * 0.8 * cos(f2);                    // la primera onda no depende de z
+  return normalize(vec3(-hx, 1.0, -hz));
+}`;
+
+// ---------- a partir de aquí, no hace falta tocar nada ----------
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+out vec3 v_pos;
+out vec3 v_tuya;
+out vec3 v_ref;
+${SUPERFICIE}
+vec3 normalReferencia(vec2 p, float t) {   // diferencias centrales, ε = 0,01
+  float e = 0.01;
+  float hx = (altura(p + vec2(e, 0.0), t) - altura(p - vec2(e, 0.0), t)) / (2.0 * e);
+  float hz = (altura(p + vec2(0.0, e), t) - altura(p - vec2(0.0, e), t)) / (2.0 * e);
+  return normalize(vec3(-hx, 1.0, -hz));
+}
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 6.0;
+  v_pos = vec3(p.x, altura(p, u_time), p.y);
+  v_tuya = normalTuya(p, u_time);
+  v_ref = normalReferencia(p, u_time);
+  gl_Position = u_vp * vec4(v_pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec3 u_ojo;
+uniform int u_modo;
+in vec3 v_pos;
+in vec3 v_tuya;
+in vec3 v_ref;
+out vec4 fragColor;
+void main() {
+  vec3 n = normalize(v_tuya);
+  if (u_modo == 1) { fragColor = vec4(abs(n - normalize(v_ref)) * 10.0, 1.0); return; }
+  vec3 L = normalize(vec3(-0.3, 0.45, -0.85)), V = normalize(u_ojo - v_pos), H = normalize(L + V);
+  vec3 col = vec3(0.03, 0.15, 0.27) * (0.3 + 0.7 * max(dot(n, L), 0.0))
+           + vec3(0.42, 0.58, 0.82) * 0.85 * pow(1.0 - max(dot(n, V), 0.0), 4.0)
+           + vec3(1.0, 0.92, 0.8) * 1.3 * pow(max(dot(n, H), 0.0), 250.0);
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const orbita = new L74.Orbita(canvas, { yaw: 0.0, pitch: 0.4, distancia: 6.2, centro: [0, -0.3, 0] });
+const app = M7.crearApp(canvas, {
+  estado: { modo: 1 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: L74.crearMalla(gl, 120) };
+  },
+  actualizar(e, dt, app) { orbita.actualizar(); },
+  dibujar(gl, e, app) {
+    const g = app.gpu, cam = orbita.matrices(app.ancho / app.alto);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.36, 0.5, 0.72, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, cam.vp);
+    GLKit.ponerUniform(gl, g.u.u_ojo, cam.ojo);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_modo, e.modo);
+    g.malla.dibujar();
+  },
+});
+document.getElementById('modo').onchange = (ev) => { app.estado.modo = +ev.target.value; };
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Cada onda es <code>A·sin(fase)</code> con <code>fase = k·(algo lineal en x y z) − ω·t</code>. Su derivada respecto a <code>x</code> es <code>A·cos(fase)·∂fase/∂x</code>. ¿Cuánto vale <code>∂fase/∂x</code> para <code>1,8·x</code>? ¿Y para <code>3,1·(0,6·x + 0,8·z)</code>?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La primera onda no depende de <code>z</code>: solo aporta a <code>hx</code>. La segunda aporta <code>0,08·3,1·0,6·cos(f2)</code> a <code>hx</code> y <code>0,08·3,1·0,8·cos(f2)</code> a <code>hz</code>. La normal es <code>normalize(vec3(-hx, 1.0, -hz))</code>: cuidado con los signos.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Las dos pendientes salen de la regla de la cadena, onda a onda. La fase de la primera, <code>1,8·x − 1,5·t</code>, cambia 1,8 por unidad de <code>x</code> y nada con <code>z</code>, así que aporta <code>0,15 · 1,8 · cos(f1)</code> a <code>hx</code> y cero a <code>hz</code>. La de la segunda, <code>3,1·(0,6·x + 0,8·z) − 2,2·t</code>, cambia <code>3,1 · 0,6</code> por unidad de <code>x</code> y <code>3,1 · 0,8</code> por unidad de <code>z</code>: es el <code>A·k·cos(fase)·d</code> de la lección con <code>d = (0,6, 0,8)</code>. Con las dos pendientes, la normal es <code>(−hx, 1, −hz)</code> normalizada, el producto <code>T<sub>z</sub> × T<sub>x</sub></code>.</p>
+    <p>El modo «comparar» es una técnica de depuración que merece la pena copiar: cuando tienes una versión lenta pero segura (diferencias finitas) y una rápida pero fácil de equivocar (analítica), pinta su diferencia amplificada. Un error de signo se ve como una mancha brillante en las laderas; olvidar una componente, como bandas de color en la dirección de la onda que falta. Negro es la prueba de que las dos coinciden hasta el redondeo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.4.3 — El alambre de la otra diagonal</h3>
+  <p>Esta rejilla corta sus celdas por la otra diagonal: los triángulos son <code>(a, a+1, b+1)</code> y <code>(a, b+1, b)</code>. El alambre baricéntrico usa la fórmula de la lección, <code>(i + 2j) mod 3</code>, y sale roto: la malla entera se ve rellena del color de las líneas. Cambia la cadena <code>FORMULA</code> (se usa a la vez en el shader y en la prueba de JavaScript) hasta que ningún triángulo repita color.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.4.3" data-altura="340" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+</script>
+<script type="text/x-js">
+const FORMULA = '(i + 2 * j) % 3';            // el «color» (0, 1 o 2) del vértice de la columna i y la fila j
+
+// ---------- prueba en JavaScript: ¿algún triángulo repite color? ----------
+const N = 12, lado = N + 1;
+const color = new Function('i', 'j', 'return ' + FORMULA + ';');
+const indices = new Uint16Array(6 * N * N);
+let k = 0;
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const a = j * lado + i, b = a + lado;
+  indices[k++] = a; indices[k++] = a + 1; indices[k++] = b + 1;     // la OTRA diagonal: de a a b+1
+  indices[k++] = a; indices[k++] = b + 1; indices[k++] = b;
+}
+let repetidos = 0;
+for (let t = 0; t < indices.length; t += 3) {
+  const c = [0, 1, 2].map((q) => { const v = indices[t + q]; return color(v % lado, Math.floor(v / lado)); });
+  if (c[0] === c[1] || c[1] === c[2] || c[0] === c[2]) repetidos++;
+}
+console.log((repetidos === 0 ? '✓' : '✗') + ' triángulos que repiten color: ' + repetidos + ' de ' + indices.length / 3);
+
+// ---------- el dibujo ----------
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+out vec3 v_bary;
+void main() {
+  int i = gl_VertexID % ${lado}, j = gl_VertexID / ${lado};
+  int c = ${FORMULA};
+  v_bary = vec3(c == 0, c == 1, c == 2);
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 4.0;
+  float h = 0.25 * sin(2.5 * p.x - 2.0 * u_time) * cos(1.7 * p.y);
+  gl_Position = u_vp * vec4(p.x, h, p.y, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform float u_grosor;
+in vec3 v_bary;
+out vec4 fragColor;
+${L74.GLSL.ALAMBRE_FS}
+void main() {
+  fragColor = vec4(mix(vec3(0.95), vec3(0.12, 0.13, 0.3), alambre(v_bary, u_grosor)), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const orbita = new L74.Orbita(canvas, { yaw: 0.3, pitch: 0.7, distancia: 5 });
+const uv = L74.rejilla(N).uv;                   // los mismos uv; los índices, los nuestros
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    GLKit.crearBuffer(gl, uv);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    GLKit.crearBuffer(gl, indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+    gl.bindVertexArray(null);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao };
+  },
+  actualizar(e, dt, app) { orbita.actualizar(); },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, orbita.matrices(app.ancho / app.alto).vp);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_grosor, 1.3 * app.ancho / app.anchoCSS);
+    gl.bindVertexArray(g.vao);
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+  },
+});
+</script>
+<script type="text/x-js" data-solucion>
+const FORMULA = '(i + j) % 3';                // con la diagonal de a a b+1, el coeficiente de j es 1
+
+// ---------- prueba en JavaScript: ¿algún triángulo repite color? ----------
+const N = 12, lado = N + 1;
+const color = new Function('i', 'j', 'return ' + FORMULA + ';');
+const indices = new Uint16Array(6 * N * N);
+let k = 0;
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const a = j * lado + i, b = a + lado;
+  indices[k++] = a; indices[k++] = a + 1; indices[k++] = b + 1;     // la OTRA diagonal: de a a b+1
+  indices[k++] = a; indices[k++] = b + 1; indices[k++] = b;
+}
+let repetidos = 0;
+for (let t = 0; t < indices.length; t += 3) {
+  const c = [0, 1, 2].map((q) => { const v = indices[t + q]; return color(v % lado, Math.floor(v / lado)); });
+  if (c[0] === c[1] || c[1] === c[2] || c[0] === c[2]) repetidos++;
+}
+console.log((repetidos === 0 ? '✓' : '✗') + ' triángulos que repiten color: ' + repetidos + ' de ' + indices.length / 3);
+
+// ---------- el dibujo ----------
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+out vec3 v_bary;
+void main() {
+  int i = gl_VertexID % ${lado}, j = gl_VertexID / ${lado};
+  int c = ${FORMULA};
+  v_bary = vec3(c == 0, c == 1, c == 2);
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 4.0;
+  float h = 0.25 * sin(2.5 * p.x - 2.0 * u_time) * cos(1.7 * p.y);
+  gl_Position = u_vp * vec4(p.x, h, p.y, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform float u_grosor;
+in vec3 v_bary;
+out vec4 fragColor;
+${L74.GLSL.ALAMBRE_FS}
+void main() {
+  fragColor = vec4(mix(vec3(0.95), vec3(0.12, 0.13, 0.3), alambre(v_bary, u_grosor)), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const orbita = new L74.Orbita(canvas, { yaw: 0.3, pitch: 0.7, distancia: 5 });
+const uv = L74.rejilla(N).uv;                   // los mismos uv; los índices, los nuestros
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    GLKit.crearBuffer(gl, uv);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    GLKit.crearBuffer(gl, indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+    gl.bindVertexArray(null);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao };
+  },
+  actualizar(e, dt, app) { orbita.actualizar(); },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, orbita.matrices(app.ancho / app.alto).vp);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_grosor, 1.3 * app.ancho / app.anchoCSS);
+    gl.bindVertexArray(g.vao);
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+  },
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Prueba fórmulas de la forma <code>(i + m * j) % 3</code> con <code>m</code> = 0, 1 y 2. La consola te dice cuántos triángulos fallan con cada una. ¿Por qué no hace falta probar <code>m = 3</code>?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Escribe los colores de los tres vértices del triángulo <code>(a, a+1, b+1)</code> en función de <code>c = i + m·j</code>: <code>c</code>, <code>c + 1</code> y <code>c + 1 + m</code>. ¿Qué valores de <code>m</code> los hacen distintos módulo 3? Haz lo mismo con <code>(a, b+1, b)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>c = i + m·j</code>, el triángulo <code>(a, a+1, b+1)</code> tiene los colores <code>c</code>, <code>c + 1</code> y <code>c + 1 + m</code>, y el <code>(a, b+1, b)</code>, <code>c</code>, <code>c + 1 + m</code> y <code>c + m</code>. Para que los tres sean distintos módulo 3 en el primero hace falta <code>1 + m ≢ 0</code> y <code>1 + m ≢ 1</code>, es decir, <code>m ≠ 2</code> y <code>m ≠ 0</code>. Queda <code>m = 1</code>, que también sirve para el segundo (<code>c</code>, <code>c + 2</code>, <code>c + 1</code>). Con la diagonal de la lección (de <code>a+1</code> a <code>b</code>) la misma cuenta da <code>m = 2</code>. <code>m = 3</code> es lo mismo que <code>m = 0</code>, porque solo importa el resto módulo 3.</p>
+    <p>¿Por qué, con la fórmula equivocada, los triángulos salen rellenos? Si un triángulo repite un color, por ejemplo con vértices <code>(1, 0, 0)</code>, <code>(1, 0, 0)</code> y <code>(0, 1, 0)</code>, hay un color que no tiene ninguno de sus vértices: la tercera componente vale 0 en los tres y, por tanto, en todo el interior. <code>alambre()</code> toma el mínimo de las tres componentes y ve un píxel «sobre una arista» en todo el triángulo. Con la otra diagonal y <code>(i + 2j) mod 3</code>, todos los triángulos repiten color (la consola dice 288 de 288), así que todo sale relleno. La lección general: el truco baricéntrico con vértices compartidos necesita una coloración con tres colores, y existe o no según la triangulación. Para mallas arbitrarias no siempre existe, y entonces se duplican vértices o se dibuja sin índices.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.4.4 — Las baldosas de 6.7, en 3D de verdad</h3>
+  <p>En <a href="../06-glsl/07-animacion-shaders.html">6.7</a> las baldosas «giraban» estrechándose con un <code>abs(cos(ángulo))</code>, sin perspectiva, y quedó pendiente hacerlo con una malla real. Aquí hay una baldosa dibujada sin buffers con <code>gl_VertexID</code>. Conviértela en un mosaico de 12 × 8 baldosas con un solo <code>drawArraysInstanced</code>: cada instancia se coloca según <code>gl_InstanceID</code> y gira 180° alrededor de su eje vertical, con un retraso que crece hacia la derecha, de modo que la ola de giros recorra el mosaico. La cara de delante es violeta y la de detrás, cian.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.4.4" data-altura="340" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const COLUMNAS = 12, FILAS = 8;
+const VS = `#version 300 es
+uniform mat4 u_vp;
+uniform float u_time;
+const vec2 ESQ[6] = vec2[6](vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(-0.5, 0.5),
+                            vec2(-0.5, 0.5), vec2(0.5, -0.5), vec2(0.5, 0.5));
+void main() {
+  vec2 q = ESQ[gl_VertexID] * 0.9;             // esquina de la baldosa (con un poco de margen)
+  vec3 pos = vec3(q, 0.0);                     // TODO: girar alrededor del eje y y colocar según gl_InstanceID
+  gl_Position = u_vp * vec4(pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(gl_FrontFacing ? vec3(0.55, 0.48, 1.0) : vec3(0.25, 0.82, 0.91), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    const vista = mat4.mirarA([2, 1.5, 11], [0, 0, 0], [0, 1, 0]);
+    const proyeccion = mat4.perspectiva(0.9, app.ancho / app.alto, 0.1, 50);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, mat4.multiplicar(proyeccion, vista));
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);           // TODO: una instancia por baldosa
+  },
+});
+</script>
+<script type="text/x-js" data-solucion>
+const COLUMNAS = 12, FILAS = 8;
+const VS = `#version 300 es
+uniform mat4 u_vp;
+uniform float u_time;
+const vec2 ESQ[6] = vec2[6](vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(-0.5, 0.5),
+                            vec2(-0.5, 0.5), vec2(0.5, -0.5), vec2(0.5, 0.5));
+void main() {
+  vec2 q = ESQ[gl_VertexID] * 0.9;
+  int col = gl_InstanceID % ${COLUMNAS}, fila = gl_InstanceID / ${COLUMNAS};
+  // Fase con retraso: cada columna empieza 0,12 s después que la anterior (y cada fila, 0,04 s)
+  float fase = 0.5 * u_time - 0.12 * float(col) - 0.04 * float(fila);
+  float angulo = 3.14159265 * (floor(fase) + smoothstep(0.2, 0.8, fract(fase)));   // media vuelta por ciclo
+  float c = cos(angulo), s = sin(angulo);
+  vec3 local = vec3(q.x * c, q.y, -q.x * s);   // rotación alrededor del eje y (3.5)
+  vec3 centro = vec3(float(col) - 0.5 * float(${COLUMNAS} - 1), float(fila) - 0.5 * float(${FILAS} - 1), 0.0);
+  gl_Position = u_vp * vec4(centro + local, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(gl_FrontFacing ? vec3(0.55, 0.48, 1.0) : vec3(0.25, 0.82, 0.91), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    const vista = mat4.mirarA([2, 1.5, 11], [0, 0, 0], [0, 1, 0]);
+    const proyeccion = mat4.perspectiva(0.9, app.ancho / app.alto, 0.1, 50);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, mat4.multiplicar(proyeccion, vista));
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    gl.bindVertexArray(g.vao);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, COLUMNAS * FILAS);   // 96 baldosas, 576 vértices, 0 buffers
+  },
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, 96)</code> repite los 6 vértices 96 veces; dentro de cada repetición, <code>gl_VertexID</code> va de 0 a 5 y <code>gl_InstanceID</code> dice qué baldosa es (<a href="../05-webgl/09-instancing.html">5.9</a>). La columna es <code>gl_InstanceID % 12</code> y la fila, <code>gl_InstanceID / 12</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Girar la esquina <code>(x, y, 0)</code> un ángulo <code>a</code> alrededor del eje y da <code>(x·cos a, y, −x·sin a)</code> (la matriz <code>rotacionY</code> de GLKit, <a href="../03-matematicas/05-matrices.html">3.5</a>). Para el ángulo, una fase <code>0,5·t − 0,12·columna</code> y medio giro suavizado en cada ciclo: <code>π·(floor(fase) + smoothstep(0,2, 0,8, fract(fase)))</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El vertex shader hace ahora tres cosas en orden: toma la esquina de la baldosa de la tabla (<code>gl_VertexID</code>), la gira alrededor del eje vertical de la baldosa y la traslada al centro de su celda (<code>gl_InstanceID</code>). El orden importa: si trasladaras antes de girar, todas las baldosas girarían alrededor del origen del mosaico, como una puerta giratoria gigante. Es la regla de <a href="../03-matematicas/05-matrices.html">3.5</a> (las transformaciones se aplican de dentro afuera) escrita a mano.</p>
+    <p>El ángulo es <code>π·floor(fase)</code> (las medias vueltas ya dadas) más una media vuelta suavizada con <code>smoothstep</code> en el tramo central de cada ciclo, así que cada baldosa descansa, gira y descansa. El retraso <code>−0,12·columna</code> es el mismo truco que en 6.7: la misma animación, desfasada según la posición. La diferencia está en la proyección: ahora el borde que se acerca a la cámara se agranda y el que se aleja se encoge, y a mitad del giro la baldosa se ve de canto. Y <code>gl_FrontFacing</code> elige el color: cuando la baldosa ha dado media vuelta, su winding en pantalla se invierte y vemos la cara cian. Todo el mosaico son 576 vértices sin un solo byte en buffers.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 7.4.5 — Ondas de clic sobre la malla</h3>
+  <p>Junta 7.2 y esta lección: cada clic sobre la superficie debe dejar un anillo que se expande <em>en la geometría</em>, levantando los vértices, con su normal para que la luz lo dibuje. Usa un buffer circular de 8 ondas (<code>u_ondas[8]</code>: centro <code>(x, z)</code> del mundo y edad en segundos, −1 si el hueco está libre) y el rayo contra el plano <code>y = 0</code> para convertir el clic en un punto del mundo. Un guion lanza tres ondas al principio; la consola debe mostrar el índice del próximo hueco tras cada una (1, 2, 3).</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.4.5" data-altura="360" data-apilado data-incluir="glkit,m7kit,l74kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+// TODO: uniform vec3 u_ondas[8];   // xy: centro (x, z) del mundo · z: edad en s (< 0: libre)
+out vec3 v_pos;
+out vec3 v_normal;
+float altura(vec2 p) {
+  float h = 0.03 * sin(1.3 * p.x - 1.1 * u_time) + 0.02 * sin(1.7 * p.y - 1.4 * u_time);
+  // TODO: sumar un anillo por cada onda viva
+  return h;
+}
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 6.0;
+  float e = 0.01;
+  float hx = (altura(p + vec2(e, 0.0)) - altura(p - vec2(e, 0.0))) / (2.0 * e);
+  float hz = (altura(p + vec2(0.0, e)) - altura(p - vec2(0.0, e))) / (2.0 * e);
+  v_normal = normalize(vec3(-hx, 1.0, -hz));
+  v_pos = vec3(p.x, altura(p), p.y);
+  gl_Position = u_vp * vec4(v_pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec3 u_ojo;
+in vec3 v_pos;
+in vec3 v_normal;
+out vec4 fragColor;
+void main() {
+  vec3 n = normalize(v_normal);
+  vec3 L = normalize(vec3(-0.4, 0.8, 0.3)), V = normalize(u_ojo - v_pos), H = normalize(L + V);
+  vec3 col = vec3(0.18, 0.2, 0.5) * (0.2 + 0.8 * max(dot(n, L), 0.0)) + 0.45 * pow(max(dot(n, H), 0.0), 80.0);
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const camara = { ojo: [0, 4.5, 5], centro: [0, -0.3, 0] };
+function vp(app) {
+  return mat4.multiplicar(mat4.perspectiva(0.8, app.ancho / app.alto, 0.1, 50), mat4.mirarA(camara.ojo, camara.centro, [0, 1, 0]));
+}
+const pendientes = [];                           // los eventos solo anotan
+canvas.addEventListener('pointerdown', (e) => pendientes.push([e.clientX, e.clientY]));
+function nuevaOnda(x, z, t) {
+  // TODO: buffer circular (7.2)
+}
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: L74.crearMalla(gl, 160) };
+  },
+  actualizar(e, dt, app) {
+    // TODO: convertir cada clic pendiente en un punto (x, z) del plano con L74.rayo y L74.cortarPlanoY
+    pendientes.length = 0;
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, vp(app));
+    GLKit.ponerUniform(gl, g.u.u_ojo, camara.ojo);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    // TODO: edades en JavaScript → u_ondas
+    g.malla.dibujar();
+  },
+});
+
+// ---------- guion de prueba (no lo toques) ----------
+[[0.2, -1.2, 0.4], [0.7, 1.1, -0.6], [1.3, 0.2, 1.2]].forEach(([t, x, z]) => setTimeout(() => {
+  nuevaOnda(x, z, app.reloj.t);
+  console.log('onda en (' + x + ', ' + z + ') · próximo hueco: ' + (typeof siguiente === 'number' ? siguiente : '(no hay buffer circular)'));
+}, t * 1000));
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_uv;
+uniform mat4 u_vp;
+uniform float u_time;
+uniform vec3 u_ondas[8];           // xy: centro (x, z) del mundo · z: edad en s (< 0: libre)
+out vec3 v_pos;
+out vec3 v_normal;
+float altura(vec2 p) {
+  float h = 0.03 * sin(1.3 * p.x - 1.1 * u_time) + 0.02 * sin(1.7 * p.y - 1.4 * u_time);
+  for (int i = 0; i < 8; i++) {
+    float edad = u_ondas[i].z;
+    if (edad < 0.0) continue;
+    float x = length(p - u_ondas[i].xy) - 1.6 * edad;                 // distancia al frente (1,6 u/s)
+    h += 0.22 * exp(-x * x * 6.0) * cos(6.0 * x) * exp(-1.2 * edad);   // anillo que se apaga
+  }
+  return h;
+}
+void main() {
+  vec2 p = vec2(a_uv.x - 0.5, 0.5 - a_uv.y) * 6.0;
+  float e = 0.01;
+  float hx = (altura(p + vec2(e, 0.0)) - altura(p - vec2(e, 0.0))) / (2.0 * e);
+  float hz = (altura(p + vec2(0.0, e)) - altura(p - vec2(0.0, e))) / (2.0 * e);
+  v_normal = normalize(vec3(-hx, 1.0, -hz));
+  v_pos = vec3(p.x, altura(p), p.y);
+  gl_Position = u_vp * vec4(v_pos, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec3 u_ojo;
+in vec3 v_pos;
+in vec3 v_normal;
+out vec4 fragColor;
+void main() {
+  vec3 n = normalize(v_normal);
+  vec3 L = normalize(vec3(-0.4, 0.8, 0.3)), V = normalize(u_ojo - v_pos), H = normalize(L + V);
+  vec3 col = vec3(0.18, 0.2, 0.5) * (0.2 + 0.8 * max(dot(n, L), 0.0)) + 0.45 * pow(max(dot(n, H), 0.0), 80.0);
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const camara = { ojo: [0, 4.5, 5], centro: [0, -0.3, 0] };
+function vp(app) {
+  return mat4.multiplicar(mat4.perspectiva(0.8, app.ancho / app.alto, 0.1, 50), mat4.mirarA(camara.ojo, camara.centro, [0, 1, 0]));
+}
+const pendientes = [];                           // los eventos solo anotan
+canvas.addEventListener('pointerdown', (e) => pendientes.push([e.clientX, e.clientY]));
+// Buffer circular de 7.2: centros, instantes (64 bits) y lo que viaja a la GPU
+const N_ONDAS = 8, VIDA = 3;
+const centros = new Float32Array(N_ONDAS * 2);
+const inicios = new Float64Array(N_ONDAS).fill(-Infinity);
+const datos = new Float32Array(N_ONDAS * 3);
+let siguiente = 0;
+function nuevaOnda(x, z, t) {
+  centros[siguiente * 2] = x; centros[siguiente * 2 + 1] = z;
+  inicios[siguiente] = t;
+  siguiente = (siguiente + 1) % N_ONDAS;         // la novena sobrescribe a la más antigua
+}
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), malla: L74.crearMalla(gl, 160) };
+  },
+  actualizar(e, dt, app) {
+    if (pendientes.length) {
+      const r = canvas.getBoundingClientRect(), m = vp(app);
+      for (const [cx, cy] of pendientes) {
+        const nx = (cx - r.left) / r.width, ny = (r.bottom - cy) / r.height;   // 0..1, origen abajo
+        const punto = L74.cortarPlanoY(L74.rayo(m, nx, ny), 0);
+        if (punto) nuevaOnda(punto[0], punto[2], app.reloj.t);
+      }
+    }
+    pendientes.length = 0;
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    for (let i = 0; i < N_ONDAS; i++) {
+      const edad = app.reloj.t - inicios[i];     // edades, no instantes: la resta en JavaScript
+      datos[i * 3] = centros[i * 2];
+      datos[i * 3 + 1] = centros[i * 2 + 1];
+      datos[i * 3 + 2] = edad < VIDA ? edad : -1;
+    }
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.06, 0.09, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(g.p);
+    GLKit.ponerUniform(gl, g.u.u_vp, vp(app));
+    GLKit.ponerUniform(gl, g.u.u_ojo, camara.ojo);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_ondas, datos);
+    g.malla.dibujar();
+  },
+});
+
+// ---------- guion de prueba (no lo toques) ----------
+[[0.2, -1.2, 0.4], [0.7, 1.1, -0.6], [1.3, 0.2, 1.2]].forEach(([t, x, z]) => setTimeout(() => {
+  nuevaOnda(x, z, app.reloj.t);
+  console.log('onda en (' + x + ', ' + z + ') · próximo hueco: ' + (typeof siguiente === 'number' ? siguiente : '(no hay buffer circular)'));
+}, t * 1000));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La parte de JavaScript es la del ejercicio 7.2.2: <code>centros</code> (<code>Float32Array(16)</code>), <code>inicios</code> (<code>Float64Array(8)</code> lleno de <code>-Infinity</code>), <code>datos</code> (<code>Float32Array(24)</code>) y un índice <code>let siguiente</code> que avanza con <code>% 8</code>. Para el clic: <code>nx = (clientX − r.left) / r.width</code>, <code>ny = (r.bottom − clientY) / r.height</code> y <code>L74.cortarPlanoY(L74.rayo(vp(app), nx, ny), 0)</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En el shader, un bucle sobre las 8 ondas dentro de <code>altura()</code>: salta las de edad negativa, calcula <code>x = distancia al centro − velocidad × edad</code> (la distancia al frente del anillo) y suma algo como <code>A·exp(−x²·6)·cos(6x)·exp(−1,2·edad)</code>. Como la normal ya usa diferencias finitas sobre <code>altura()</code>, se actualiza sola.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La arquitectura es la de siempre: el <code>pointerdown</code> solo anota <code>clientX/Y</code>; <code>actualizar</code> convierte cada clic en un punto del mundo con el rectángulo y las matrices de ese frame (rayo y corte con el plano) y lo registra en el buffer circular con el tiempo del reloj; <code>dibujar</code> calcula las edades en JavaScript y las manda en <code>u_ondas</code>. Es el ejemplo 7.2.3 con dos cambios: el centro está en coordenadas del mundo, no de la pantalla, y la onda se aplica en el vertex shader, no en el fragment.</p>
+    <p>En el shader, cada onda es un paquete: una campana estrecha alrededor del frente (<code>exp(−x²·6)</code>) que modula un coseno (las crestas dentro del paquete) y se apaga con la edad. La normal no necesita ningún cambio porque se calcula con diferencias finitas sobre la misma <code>altura()</code>: esa es la gran ventaja del método cuando la función crece. El precio es que ahora <code>altura()</code> tiene un bucle de 8 ondas y se evalúa 5 veces por vértice: 40 anillos por vértice y frame, 1 millón de evaluaciones con esta malla, nada para la GPU. Con ondas que se superponen, las crestas se suman: dos clics cercanos dan interferencias, gratis.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Si la deformación es una función del tiempo y de unos pocos parámetros, se calcula en el vertex shader: la malla se sube una vez y cada frame solo viajan uniforms. Medido: 263 000 vértices cuestan 12,7 ms de JavaScript por frame y 1,1 ms de GPU dibujados enteros.</li>
+    <li>Un plano de N × N celdas tiene (N + 1)² vértices, 2N² triángulos y 6N² índices; el vértice (i, j) es el <code>j·(N+1) + i</code>. <code>Uint16Array</code> vale hasta el vértice 65 534 (N ≤ 254): el 65 535 es el reinicio de primitivas y un array tipado desborda en silencio.</li>
+    <li>La normal de una altura <code>h(x, z)</code> es <code>normalize(vec3(−h_x, 1, −h_z))</code>, el producto <code>T_z × T_x</code> (el otro orden apunta hacia abajo). Derivada analítica si puedes; diferencias centrales si no, con ε entre 1/100 y 1/1000 de la longitud de onda y números pequeños dentro de la función (coordenadas centradas, fase envuelta).</li>
+    <li>Los vértices deciden la forma; los fragmentos, el detalle de la luz. Luz por vértice pierde los brillos pequeños; la normal por píxel da detalle de pantalla sobre una malla gruesa. Menos de dos vértices por longitud de onda produce un alias, no una ola borrosa.</li>
+    <li>El alambre baricéntrico dibuja los triángulos con grosor constante en píxeles y respetando la profundidad. Con vértices compartidos necesita una coloración con tres colores: <code>(i + 2j) mod 3</code> para nuestra diagonal, calculada desde <code>gl_VertexID</code>.</li>
+    <li>Superficies paramétricas (una bandera): normal = producto cruz de las dos tangentes. Con culling desactivado, <code>gl_FrontFacing</code> da la vuelta a la normal de la cara trasera.</li>
+    <li>Interacción: del puntero al mundo con la inversa de proyección × vista (dividiendo por <code>w</code>) y el corte con un plano. La CPU no conoce la geometría deformada: selección, lógica y descarte por visibilidad necesitan la misma función en JavaScript.</li>
+    <li><code>gl_VertexID</code> con <code>drawElements</code> es el número de vértice: una rejilla solo con índices cuesta lo mismo que con buffer de <code>uv</code>; sin índices, el vertex shader se ejecuta seis veces por vértice (11 ms frente a 4,2 con un shader pesado).</li>
+    <li>Puntos: <code>gl_PointSize</code> está en píxeles del búfer (multiplica por la escala CSS → búfer o usa perspectiva). Texturas en el vertex shader: siempre el nivel 0 salvo <code>textureLod</code>, una textura incompleta lee 0 (terreno plano) y 8 bits de altura son 256 escalones.</li>
+  </ul>
+</div>
+
+<p>Todo lo que se movió en esta lección se calculaba de cero en cada frame: una función del tiempo y de unos pocos uniforms. En <a href="05-particulas-gpu.html">7.5</a> damos el paso que falta: partículas con memoria, cuyo estado (posición, velocidad, edad) vive en la GPU y se actualiza de un frame al siguiente.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.nvidia.com/gpugems/gpugems/part-i-natural-effects/chapter-1-effective-water-simulation-physical-models">GPU Gems, capítulo 1: Effective Water Simulation from Physical Models</a>, sumas de ondas (y ondas de Gerstner) en el vertex shader, con sus normales analíticas.</li>
+  <li><a href="http://codeflow.org/entries/2012/aug/02/easy-wireframe-display-with-barycentric-coordinates/">Florian Bösch: Easy wireframe display with barycentric coordinates</a>, el truco del alambre explicado por uno de sus divulgadores.</li>
+  <li><a href="https://iquilezles.org/articles/morenoise/">Inigo Quilez: value noise derivatives</a>, cómo obtener la derivada analítica de un ruido para tener normales exactas sin diferencias finitas.</li>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">Especificación de GLSL ES 3.00</a>: la sección de funciones de textura explica por qué el vertex shader no calcula el nivel de detalle.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m7kit.js"></script>
+<script src="recursos/l74kit.js"></script>
+<script>
+Curso.alListo(() => {
+  /* Demo: tangente y normal de un corte h(x), y la secante de las diferencias centrales */
+  const raiz = document.getElementById('demo-normal-2d');
+  if (!raiz) return;
+  const info = raiz.querySelector('.demo-info');
+  const h = (x) => 0.9 * Math.sin(1.1 * x) + 0.35 * Math.sin(2.9 * x + 1.0);
+  const dh = (x) => 0.99 * Math.cos(1.1 * x) + 1.015 * Math.cos(2.9 * x + 1.0);
+  let eps = 0.5;
+  const pl = Curso.plano(raiz.querySelector('.demo-lienzo'), {
+    x: [-4.6, 4.6],
+    puntos: { p: { x: 0.9, y: h(0.9), etiqueta: 'P', color: 'texto' } },
+    restringir(nombre, q) { q.x = Math.max(-3.8, Math.min(3.8, q.x)); q.y = h(q.x); },
+    dibujar(p, pts) {
+      p.funcion(h, { color: 'texto2', grosor: 2 });
+      const x = pts.p.x, y = h(x), d = dh(x), l = Math.hypot(1, d);
+      const a = [x - eps, h(x - eps)], b = [x + eps, h(x + eps)];
+      p.linea(a, b, { color: 'naranja', discontinua: true, grosor: 2 });
+      p.punto(a, { color: 'naranja', radio: 4 }); p.punto(b, { color: 'naranja', radio: 4 });
+      p.flecha([x, y], [x + 1.2 / l, y + 1.2 * d / l], { color: 'acento2', etiqueta: 'T' });
+      p.flecha([x, y], [x - 1.2 * d / l, y + 1.2 / l], { color: 'acento', etiqueta: 'N' });
+      const df = (h(x + eps) - h(x - eps)) / (2 * eps);
+      const error = Math.abs(Math.atan(df) - Math.atan(d)) * 180 / Math.PI;
+      info.textContent = "h'(x) exacta = " + d.toFixed(4) + "   ·   diferencia central (ε = " + eps.toFixed(2) + ") = " + df.toFixed(4) + "   ·   error de la normal: " + error.toFixed(2) + "°";
+    },
+  });
+  Curso.control(raiz.querySelector('.demo-controles'), { etiqueta: 'ε', min: 0.02, max: 1.5, paso: 0.01, valor: 0.5, alCambiar: (v) => { eps = v; pl.redibujar(); } });
+});
+</script>
+</body>
+</html>

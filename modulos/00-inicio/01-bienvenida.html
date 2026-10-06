@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0.1 · Cómo usar este curso — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="00-inicio/bienvenida">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 0 · Bienvenida</p>
+  <h1>Cómo usar este curso</h1>
+  <p class="resumen">Qué vas a aprender, cómo está montado cada capítulo y cómo sacarle partido a los editores en vivo. Además, el mapa mental que usaremos durante todo el curso.</p>
+  <div class="meta"><span class="chip">⏱ 20 min</span><span class="chip">Nivel: todos</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás qué problema resuelve cada módulo y en qué orden recorrerlos.</li>
+      <li>Tendrás el mapa mental <em>CPU → GPU → píxeles</em> que da sentido a todo lo demás.</li>
+      <li>Sabrás usar los editores de shaders y de JavaScript, el graficador y los ejercicios.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>La idea del curso</h2>
+<p>Hay dos maneras de aprender shaders. La primera es copiar efectos bonitos de Shadertoy, cambiar números hasta que “quede bien” y no saber nunca por qué funciona. La segunda es entender el sistema: qué hace la GPU con cada byte que le mandas, por qué una línea de GLSL se ejecuta millones de veces por segundo, qué pasa entre <code>requestAnimationFrame</code> y el píxel que ves. Este curso va por la segunda.</p>
+<p>El objetivo no es cubrir todos los temas. Es que <strong>no quede ni una sola línea que no entiendas</strong>: cada llamada de la API, cada comportamiento raro, cada “esto funciona pero no sé por qué”. Ese conocimiento es lo que separa a un junior de un senior. Cuando conoces el sistema por dentro, los temas avanzados son variaciones de algo que ya dominas, e incluso puedes usar trucos (hacks) que solo se le ocurren a quien sabe cómo funciona la máquina.</p>
+
+<div class="callout porque">
+  <p>Porque la mayor parte del tiempo en gráficos no se va en escribir el efecto: se va en entender por qué la pantalla está negra, por qué la imagen sale al revés o por qué la animación va más rápida en un monitor de 120 Hz. Todo eso se diagnostica en segundos si sabes qué está pasando por dentro.</p>
+</div>
+
+<h2>El mapa mental: dos mundos que se hablan</h2>
+<p>Todo el curso gira alrededor de este esquema. Vuelve a él cuando te pierdas.</p>
+
+<svg class="diagrama" viewBox="0 0 760 330" width="760" role="img" aria-label="Esquema CPU a GPU a pantalla">
+  <defs>
+    <marker id="fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="10" y="30" width="250" height="270" rx="12"/>
+  <text x="135" y="58" text-anchor="middle" style="font-weight:700;font-size:15px">CPU · JavaScript</text>
+  <text x="30" y="92">• estado de la app, eventos</text>
+  <text x="30" y="116">• bucle requestAnimationFrame</text>
+  <text x="30" y="140">• física, easing, tiempo</text>
+  <text x="30" y="164">• prepara datos binarios</text>
+  <text x="44" y="184" class="texto-tenue">(Float32Array → VBO)</text>
+  <text x="30" y="208">• elige shaders y uniforms</text>
+  <text x="30" y="232">• ordena: “dibuja” (draw call)</text>
+  <text x="30" y="270" class="texto-tenue">pocos núcleos, muy listos</text>
+
+  <rect class="caja" x="330" y="30" width="250" height="270" rx="12"/>
+  <text x="455" y="58" text-anchor="middle" style="font-weight:700;font-size:15px">GPU · GLSL</text>
+  <text x="350" y="92">• vertex shader: 1 vez/vértice</text>
+  <text x="350" y="116">• rasterizador (hardware fijo)</text>
+  <text x="350" y="140">• fragment shader: 1 vez/píxel</text>
+  <text x="350" y="164">• test de profundidad, blending</text>
+  <text x="350" y="188">• escribe en el framebuffer</text>
+  <text x="350" y="270" class="texto-tenue">miles de núcleos, muy simples</text>
+
+  <rect class="caja" x="650" y="110" width="100" height="110" rx="12"/>
+  <text x="700" y="160" text-anchor="middle" style="font-weight:700">Pantalla</text>
+  <text x="700" y="182" text-anchor="middle" class="texto-tenue">compositor</text>
+
+  <path d="M262 120 L326 120" stroke="currentColor" stroke-width="2" marker-end="url(#fl)"/>
+  <text x="294" y="110" text-anchor="middle" class="texto-tenue" style="font-size:11px">buffers</text>
+  <path d="M262 170 L326 170" stroke="currentColor" stroke-width="2" marker-end="url(#fl)"/>
+  <text x="294" y="160" text-anchor="middle" class="texto-tenue" style="font-size:11px">uniforms</text>
+  <path d="M262 220 L326 220" stroke="currentColor" stroke-width="2" marker-end="url(#fl)"/>
+  <text x="294" y="210" text-anchor="middle" class="texto-tenue" style="font-size:11px">draw call</text>
+  <path d="M582 165 L646 165" stroke="currentColor" stroke-width="2" marker-end="url(#fl)"/>
+  <text x="614" y="155" text-anchor="middle" class="texto-tenue" style="font-size:11px">píxeles</text>
+</svg>
+
+<ul>
+  <li><strong>JavaScript (CPU)</strong> decide <em>qué</em> hay que dibujar y <em>cuándo</em>: guarda el estado, reacciona al ratón, calcula el tiempo, aplica el easing y prepara los datos en binario.</li>
+  <li><strong>GLSL (GPU)</strong> decide <em>cómo</em> se ve cada vértice y cada píxel. Un programa pequeño que la GPU ejecuta en paralelo, millones de veces por frame, sin memoria entre una ejecución y la siguiente.</li>
+  <li>Entre los dos mundos solo hay unos pocos canales: <strong>buffers</strong> (datos por vértice), <strong>uniforms</strong> (constantes que valen lo mismo en todo el dibujo), <strong>texturas</strong> (tablas de datos) y la orden de dibujar. Dominar esos canales es dominar los gráficos en tiempo real.</li>
+</ul>
+
+<h2>La ruta del curso</h2>
+<table>
+  <thead><tr><th>Módulo</th><th>Qué resuelve</th><th>Si ya sabes…</th></tr></thead>
+  <tbody>
+    <tr><td><strong>1 · Fundamentos web</strong></td><td>El HTML, CSS y JS justos, contados desde dentro: el DOM, el event loop, los datos binarios.</td><td>Si ya programas web, no te saltes <a href="../01-web/05-event-loop.html">1.5</a> (event loop) ni <a href="../01-web/06-binario.html">1.6</a> (TypedArrays): son la base del resto.</td></tr>
+    <tr><td><strong>2 · Animación</strong></td><td>Cómo pinta el navegador un frame, el bucle de animación, el tiempo, el easing, los muelles y Canvas 2D.</td><td>Aunque ya animes con CSS, <a href="../02-animacion/03-raf.html">2.3</a> y <a href="../02-animacion/04-interpolacion-easing.html">2.4</a> tienen detalles que casi nadie conoce.</td></tr>
+    <tr><td><strong>3 · Matemáticas</strong></td><td>Vectores, producto punto, trigonometría, funciones de forma, matrices, espacios y precisión.</td><td>Todo es interactivo; úsalo como repaso visual.</td></tr>
+    <tr><td><strong>4 · La GPU por dentro</strong></td><td>Qué es una GPU, el pipeline y una GPU de juguete en Python que hace visibles los VBO, VAO, uniforms y varyings.</td><td>Es el módulo más “hacker”: no lo saltes.</td></tr>
+    <tr><td><strong>5 · WebGL2</strong></td><td>La API cruda, llamada por llamada.</td><td>—</td></tr>
+    <tr><td><strong>6 · GLSL</strong></td><td>El lenguaje y el arte de los fragment shaders: SDF, color, ruido, patrones, raymarching.</td><td>—</td></tr>
+    <tr><td><strong>7 · Integración</strong></td><td>JavaScript y shaders juntos en una aplicación real, hasta el proyecto final.</td><td>—</td></tr>
+    <tr><td><strong>A · Anexos</strong></td><td>Referencias para tener abiertas mientras programas: el <a href="../08-anexos/01-bestiario.html">bestiario</a> de comportamientos raros, chuletas de GLSL y de WebGL, glosario y recursos para seguir.</td><td>Tenlos a mano desde el primer día.</td></tr>
+  </tbody>
+</table>
+
+<h2>Cómo abrir el curso</h2>
+<p>El curso son archivos HTML normales, sin compilación ni dependencias. Tienes dos opciones:</p>
+<ol>
+  <li><strong>Doble clic en <code>index.html</code>.</strong> Se abre con <code>file://</code> y todo funciona: el curso está preparado para eso.</li>
+  <li><strong>Servidor local</strong> (recomendado cuando hagas tus propios proyectos):</li>
+</ol>
+<script type="text/plain" class="codigo" data-lang="bash" data-titulo="Terminal, en la carpeta del curso">
+python3 -m http.server 8000 --bind 127.0.0.1
+# y abre http://127.0.0.1:8000 (--bind: que solo tu máquina vea los archivos)
+</script>
+<div class="callout senior">
+  <p>¿Por qué hay que preocuparse por esto? Con <code>file://</code>, Chrome trata cada archivo como un <em>origen</em> distinto y opaco. Si un shader intenta usar como textura una imagen <code>.jpg</code> cargada desde disco, WebGL lanza un <code>SecurityError</code>. Por eso todas las texturas de este curso se generan con código (un canvas dibujado por nosotros es siempre del mismo origen). En tus proyectos usarás un servidor y no tendrás ese problema. Lo explicamos a fondo en la lección <a href="../01-web/07-herramientas.html">1.7</a>, junto con un detalle que afecta a tu progreso: <code>localhost</code> y <code>127.0.0.1</code> son orígenes distintos, así que elige una de las dos direcciones y úsala siempre.</p>
+</div>
+
+<p>Comprobemos ya que tu navegador tiene lo necesario. Este bloque es un <strong>playground de JavaScript</strong>: el código de la izquierda se ejecuta en un <code>iframe</code> aislado y lo que imprime <code>console.log</code> aparece debajo.</p>
+
+<div class="js-playground" data-titulo="¿Qué GPU tengo?" data-altura="150" data-fondo="oscuro">
+<script type="text/x-html">
+<p id="salida" style="padding:16px;font-family:monospace">comprobando…</p>
+</script>
+<script type="text/x-js">
+const canvas = document.createElement('canvas');
+const gl = canvas.getContext('webgl2');
+
+if (!gl) {
+  console.error('Tu navegador NO tiene WebGL2. Prueba con Chrome, Edge o Firefox actualizados.');
+} else {
+  // Algunos navegadores ocultan el nombre real de la GPU; esta extensión lo revela.
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  console.log('Versión:', gl.getParameter(gl.VERSION));
+  console.log('GLSL:', gl.getParameter(gl.SHADING_LANGUAGE_VERSION));
+  console.log('GPU:', gpu);
+  console.log('Textura máxima:', gl.getParameter(gl.MAX_TEXTURE_SIZE), 'px');
+  document.getElementById('salida').textContent = '✓ WebGL2 disponible · ' + gpu;
+}
+</script>
+</div>
+
+<h2>Las piezas de cada lección</h2>
+<p>Todas las lecciones usan los mismos bloques. Conócelos una vez y ya no tendrás que pensar en ellos.</p>
+
+<h3>Cajas de aviso</h3>
+<div class="callout nota"><p><strong>Nota</strong>: una aclaración o un dato de contexto.</p></div>
+<div class="callout cuidado"><p><strong>Cuidado</strong>: una trampa en la que cae casi todo el mundo.</p></div>
+<div class="callout senior"><p><strong>Detalle de senior</strong>: lo que la documentación da por sabido y que distingue a quien entiende el sistema de quien copia código.</p></div>
+<div class="callout hack"><p><strong>Hack</strong>: un truco que funciona precisamente porque sabes cómo trabaja la máquina por dentro.</p></div>
+<div class="callout bestiario"><p><strong>Comportamiento raro</strong>: un síntoma extraño (pantalla negra, imagen al revés, parpadeos…), su causa y su solución. Todos se recogen en el <a href="../08-anexos/01-bestiario.html">Bestiario</a> del anexo.</p></div>
+
+<h3>El editor de shaders</h3>
+<p>Esto es un <strong>fragment shader</strong> real ejecutándose en tu GPU. Edita el código: se recompila solo mientras escribes (o con <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd>). Pasa el ratón por el lienzo: la barra inferior muestra la coordenada del píxel y el color exacto que produjo el shader.</p>
+
+<div class="glsl-playground" data-titulo="Tu primer contacto con un shader" data-uniforms='{"u_velocidad":{"tipo":"float","min":0,"max":4,"valor":1,"etiqueta":"velocidad"},"u_color":{"tipo":"color","valor":"#8b7bff","etiqueta":"color"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+
+uniform vec2  u_resolution; // tamaño del lienzo en píxeles
+uniform float u_time;       // segundos desde el inicio
+uniform vec2  u_mouse;      // ratón en píxeles (origen abajo-izquierda)
+uniform float u_velocidad;  // controlado por el deslizador
+uniform vec3  u_color;      // controlado por el selector de color
+
+out vec4 fragColor;         // el color que devolvemos para ESTE píxel
+
+void main() {
+  // Coordenadas del píxel normalizadas a 0..1
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+
+  // Distancia de este píxel al ratón, en píxeles
+  float d = distance(gl_FragCoord.xy, u_mouse);
+
+  // Anillos que se alejan del ratón con el tiempo
+  float ondas = 0.5 + 0.5 * sin(d * 0.08 - u_time * 4.0 * u_velocidad);
+
+  vec3 fondo = vec3(uv, 0.5 + 0.5 * sin(u_time));
+  vec3 col = mix(fondo * 0.35, u_color, ondas * smoothstep(400.0, 0.0, d));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>Lo que tienes que saber del editor:</p>
+<ul>
+  <li><strong>Uniforms automáticos</strong>: si declaras <code>u_time</code>, <code>u_resolution</code>, <code>u_mouse</code> o <code>u_frame</code>, el editor los rellena en cada frame. Algunos ejemplos traen además deslizadores para sus propios uniforms, como aquí <code>u_velocidad</code> y <code>u_color</code>.</li>
+  <li><strong>Errores</strong>: si el shader no compila, verás el mensaje del compilador de tu GPU y la línea marcada en rojo. Mientras tanto, el lienzo sigue mostrando la última versión que compiló bien. Prueba a borrar un <code>;</code>.</li>
+  <li><strong>Tus cambios se guardan</strong> en el navegador. <em>Restaurar</em> vuelve al código original de la lección.</li>
+  <li><strong>Pausa y <code>t=0</code></strong> congelan o reinician el tiempo: muy útil para estudiar un frame concreto.</li>
+</ul>
+
+<div class="callout nota">
+  <p>Todos los editores de shaders de una página comparten <strong>un único contexto WebGL</strong>, y cada uno se copia a su lienzo. ¿Por qué tanto lío? Porque Chrome solo permite unos 16 contextos WebGL vivos a la vez: al crear el decimoséptimo, pierde a la fuerza el que lleva más tiempo sin usarse, sin preguntar. Ya tienes tu primer comportamiento raro del curso, y lo desmontarás en la lección <a href="../05-webgl/01-contexto.html">5.1</a>.</p>
+</div>
+
+<h3>El editor de JavaScript</h3>
+<p>Para animaciones, Canvas 2D y WebGL “a mano” usamos este otro editor, con pestañas HTML, CSS y JS. El código <strong>no se re-ejecuta al teclear</strong>: pulsa <kbd>▶ Ejecutar</kbd> o <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd>. Si se re-ejecutara con cada tecla, un bucle a medio escribir (<code>while (i &lt; 10)</code> antes de escribir el <code>i++</code>) se quedaría girando para siempre.</p>
+<div class="callout senior">
+  <p>El resultado corre en un <code>&lt;iframe sandbox&gt;</code>. Chrome ejecuta los iframes aislados en <strong>otro proceso</strong>: un bucle infinito congela ese editor (el botón ■ Detener lo destruye), pero la lección sigue respondiendo. Lo comprobamos: un bucle ocupado de 2 segundos dentro del editor no retrasó ni un frame de la página. En otros navegadores el iframe puede compartir hilo con la página, y entonces sí se congelaría todo.</p>
+</div>
+
+<div class="js-playground" data-titulo="Un bucle de animación mínimo" data-altura="220" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('lienzo');
+const ctx = canvas.getContext('2d');
+
+// Ajustamos la resolución interna al tamaño real (lo explicamos en 2.6)
+const dpr = window.devicePixelRatio || 1;
+canvas.width = canvas.clientWidth * dpr;
+canvas.height = canvas.clientHeight * dpr;
+ctx.scale(dpr, dpr);
+
+let frames = 0;
+function dibujar(tiempoMs) {
+  const t = tiempoMs / 1000;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  ctx.fillStyle = 'rgba(14, 16, 20, 0.2)';   // borrado parcial = estela
+  ctx.fillRect(0, 0, w, h);
+  const x = w / 2 + Math.cos(t * 2) * w * 0.35;
+  const y = h / 2 + Math.sin(t * 3) * h * 0.35;
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath();
+  ctx.arc(x, y, 12, 0, Math.PI * 2);
+  ctx.fill();
+  if (++frames === 60) console.log('60 frames en', t.toFixed(2), 's');
+  requestAnimationFrame(dibujar);
+}
+requestAnimationFrame(dibujar);
+</script>
+</div>
+
+<h3>El graficador de funciones</h3>
+<p>Buena parte de los shaders consiste en combinar funciones. El graficador dibuja <code>y = f(x)</code> <strong>evaluando tu expresión en GLSL</strong>: es exactamente lo que devolvería en un shader. Puedes usar <code>x</code>, el tiempo <code>t</code> y cualquier función de GLSL. Arrastra para moverte.</p>
+
+<div class="graficador" data-x="-0.25,1.25" data-y="-0.25,1.25" data-titulo="smoothstep contra step">
+<script type="text/x-exprs">
+smoothstep(0.2, 0.8, x)
+step(0.5, x)
+0.5 + 0.5 * sin(x * 12.0 + t * 3.0)
+</script>
+</div>
+
+<h3>Código anotado</h3>
+<p>Cuando un fragmento necesita explicación línea a línea, verás este formato. Pasa el ratón sobre las notas para iluminar las líneas.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+#version 300 es
+precision highp float;
+
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  fragColor = vec4(uv, 0.0, 1.0);
+}
+</script>
+<ol>
+  <li data-l="1">Obligatorio y <strong>en la primera línea</strong>: ni siquiera se permite una línea vacía antes. Sin esta directiva, el compilador interpreta el shader como GLSL ES 1.00 (el de WebGL1) y falla con <code>out</code>.</li>
+  <li data-l="2">Precisión por defecto de los <code>float</code>. En el fragment shader es obligatorio declararla: no tiene valor por defecto.</li>
+  <li data-l="4">Un <em>uniform</em>: un valor que pone JavaScript y que es igual para todos los píxeles de este dibujo.</li>
+  <li data-l="5">La salida del fragment shader: el color de este píxel (RGBA, cada canal de 0 a 1).</li>
+  <li data-l="8"><code>gl_FragCoord.xy</code> es la posición del píxel en la ventana, medida en su <em>centro</em>: (0.5, 0.5), (1.5, 0.5)… Al dividir por la resolución obtenemos valores de 0 a 1.</li>
+  <li data-l="9">Rojo = x, verde = y, azul = 0, alfa = 1: un degradado que revela el sistema de coordenadas (origen abajo a la izquierda).</li>
+</ol>
+</div>
+
+<h3>Ejemplos resueltos y ejercicios</h3>
+<p>Los <strong>ejemplos resueltos</strong> explican un problema de principio a fin. Los <strong>ejercicios</strong> son para ti: traen un editor con el código de partida, pistas plegadas y un botón <em>Ver solución</em> que carga la solución en el editor sin borrar tu intento.</p>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 0.1 — Invierte el degradado</h3>
+  <p>Modifica el shader para que el rojo sea intenso en el borde <strong>izquierdo</strong> (y se apague hacia la derecha) y el verde sea intenso <strong>abajo</strong> (y se apague hacia arriba). La esquina inferior izquierda debe quedar amarilla.</p>
+  <div class="glsl-playground" data-altura="240" data-titulo="Ejercicio 0.1">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  fragColor = vec4(uv.x, uv.y, 0.0, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  // 1.0 - t invierte cualquier valor que va de 0 a 1
+  fragColor = vec4(1.0 - uv.x, 1.0 - uv.y, 0.0, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Si <code>t</code> va de 0 a 1, ¿qué expresión va de 1 a 0?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>1.0 - t</code> invierte cualquier valor que va de 0 a 1: vale 1 donde <code>t</code> vale 0 y viceversa. Así, <code>1.0 - uv.x</code> es 1 en el borde izquierdo y 0 en el derecho, y <code>1.0 - uv.y</code> es 1 abajo y 0 arriba.</p>
+    <p>Fíjate en ese “abajo”: en GL el eje Y crece <strong>hacia arriba</strong> (<code>gl_FragCoord.y = 0.5</code> es la fila inferior), al revés que en CSS y en Canvas 2D, donde y = 0 es arriba. Esta diferencia es la causa número uno de imágenes y ratones “volteados”, y la veremos muchas veces.</p>
+  </details>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">¿Cuántas veces se ejecuta el fragment shader de arriba en cada frame, con un lienzo de 800×400 píxeles físicos?</p>
+  <ul>
+    <li>Una vez: la GPU pinta el lienzo entero de golpe.<div class="explicacion">No. El fragment shader describe el color de <em>un</em> píxel. La GPU lo ejecuta una vez por cada píxel cubierto por la geometría.</div></li>
+    <li data-correcta>320 000 veces, una por píxel (en paralelo).<div class="explicacion">Exacto: 800 × 400 = 320 000 invocaciones por frame; a 60 fps son casi 20 millones por segundo. Por eso cada instrucción del fragment shader cuenta.</div></li>
+    <li>Tantas como vértices tenga el triángulo (3).<div class="explicacion">Eso es el <em>vertex</em> shader, que se ejecuta una vez por vértice. El fragment shader se ejecuta una vez por fragmento (≈ píxel).</div></li>
+  </ul>
+</div>
+
+<h2>Fórmulas</h2>
+<p>Las matemáticas aparecen escritas como en un libro, por ejemplo la interpolación lineal $\operatorname{mix}(a, b, t) = a + (b - a)\,t$ o el producto punto:</p>
+$$\vec a \cdot \vec b = a_x b_x + a_y b_y = |\vec a|\,|\vec b| \cos\theta$$
+<p>Pero siempre irán acompañadas de una demo o de código que puedas tocar. Una fórmula que no puedes tocar se olvida.</p>
+
+<h2>Convenciones del curso</h2>
+<ul>
+  <li><strong>WebGL2 y GLSL ES 3.00</strong> en todo el curso. Mucho código antiguo de internet está en GLSL ES 1.00 (WebGL1); en la lección <a href="../06-glsl/10-codigo-ajeno.html">6.10</a> aprenderás a traducirlo.</li>
+  <li>Nuestras variables y funciones van en <strong>español</strong> (<code>tiempo</code>, <code>crearPrograma</code>); las de la API, en inglés, como son (<code>gl.bufferData</code>, <code>smoothstep</code>). Así distingues de un vistazo qué es tuyo y qué es del sistema.</li>
+  <li>Prefijos en GLSL: <code>u_</code> para uniforms, <code>a_</code> para atributos, <code>v_</code> para varyings. Es una convención, no una regla del lenguaje, pero te ahorrará confusiones.</li>
+  <li>Unidades: tiempo en <strong>segundos</strong> dentro de los shaders y de la lógica; ángulos en <strong>radianes</strong>; <code>px</code> “CSS” frente a píxeles “físicos” (se explica en la lección <a href="../01-web/02-css.html">1.2</a> y, para el canvas, en la <a href="../02-animacion/06-canvas2d.html">2.6</a>).</li>
+  <li>Vocabulario: un <strong>frame</strong> (o fotograma) es cada una de las imágenes que muestra la pantalla, 60 por segundo en un monitor de 60 Hz, y los <strong>fps</strong> son frames por segundo. Qué hace el navegador en cada frame lo verás en <a href="../01-web/05-event-loop.html">1.5</a> y <a href="../02-animacion/01-pipeline-render.html">2.1</a>. No lo confundas con los <em>fotogramas clave</em> (<em>keyframes</em>) de las animaciones CSS de la lección <a href="../02-animacion/02-css-transiciones.html">2.2</a>, que son otra cosa. Y fíjate en la ortografía: escribimos <em>búfer</em> para la rejilla de píxeles donde se dibuja (el búfer de un canvas) y <em>buffer</em>, como en las APIs, para un bloque de bytes (<code>ArrayBuffer</code>, los buffers de WebGL).</li>
+</ul>
+
+<h2>Atajos de teclado</h2>
+<table>
+  <tbody>
+    <tr><td><kbd>/</kbd></td><td>Buscar en todo el curso</td></tr>
+    <tr><td><kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Lección anterior / siguiente</td></tr>
+    <tr><td><kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd></td><td>Ejecutar o recompilar el editor activo</td></tr>
+    <tr><td><kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>/</kbd></td><td>Comentar o descomentar líneas</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>Salir de pantalla completa</td></tr>
+  </tbody>
+</table>
+
+<div class="callout resumen">
+  <ul>
+    <li>El curso busca comprensión total, no cobertura: cada línea tiene explicación.</li>
+    <li>Mapa mental: JavaScript (CPU) prepara datos y da órdenes; GLSL (GPU) calcula vértices y píxeles en paralelo; se comunican por buffers, uniforms y texturas.</li>
+    <li>Juega con todo: los editores guardan tus cambios y siempre puedes restaurar.</li>
+  </ul>
+</div>
+
+</main>
+
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

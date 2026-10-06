@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3.2 · Producto punto y producto cruz — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m3.css">
+</head>
+<body data-leccion="03-matematicas/producto-punto-cruz">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 3 · Matemáticas para gráficos</p>
+  <h1>Producto punto y producto cruz</h1>
+  <p class="resumen">Dos operaciones entre vectores responden a casi todas las preguntas geométricas de un juego o de un shader: ¿delante o detrás?, ¿cuánta luz recibe esta cara?, ¿hacia dónde rebota la pelota?, ¿de qué lado de la línea está el ratón?, ¿este píxel está dentro del triángulo? Aquí las derivas, las tocas y las programas.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 3.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Calcularás e interpretarás el producto punto: definición algebraica y geométrica, proyecciones, ángulos y tests de signo.</li>
+      <li>Iluminarás una esfera con el modelo de Lambert en un shader, sabiendo por qué la luz depende de un coseno.</li>
+      <li>Derivarás la fórmula de la reflexión y entenderás qué hace <code>reflect()</code> de GLSL (y cuándo falla).</li>
+      <li>Usarás el producto cruz en 3D (perpendicular, área, regla de la mano derecha) y su versión 2D para orientación y lados de una recta.</li>
+      <li>Decidirás si un punto está dentro de un triángulo con funciones de arista: exactamente lo que hace el rasterizador de la GPU.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Dos preguntas que se repiten</h2>
+<p>En la lección anterior aprendiste a restar puntos, medir y normalizar. Con eso sabes <em>dónde</em> están las cosas y <em>a qué distancia</em>. Pero hay dos preguntas que aparecen una y otra vez y que la resta no responde:</p>
+<ul>
+  <li><strong>¿Cuánto se parecen dos direcciones?</strong> ¿Apunta el enemigo hacia mí? ¿Mira la superficie hacia la luz? ¿Qué parte de mi velocidad va contra la pared? La respuesta es el <strong>producto punto</strong>, que convierte dos vectores en un número.</li>
+  <li><strong>¿Hacia qué lado se gira?</strong> ¿El ratón está a la izquierda o a la derecha de la recta? ¿Los vértices de este triángulo van en sentido horario o antihorario? ¿Qué dirección es perpendicular a esta superficie? La respuesta es el <strong>producto cruz</strong>, que en 3D convierte dos vectores en otro vector.</li>
+</ul>
+<p>Los dos se calculan con unas pocas multiplicaciones y sumas, sin raíces ni funciones trigonométricas. Por eso la GPU los ejecuta miles de millones de veces por segundo, y por eso aparecen en casi cualquier shader que merezca la pena.</p>
+
+<h2>El producto punto</h2>
+<h3>Definición algebraica</h3>
+<p>Multiplica componente a componente y suma:</p>
+$$\vec a \cdot \vec b = a_x b_x + a_y b_y \quad(\text{en 2D}), \qquad \vec a \cdot \vec b = a_x b_x + a_y b_y + a_z b_z \quad(\text{en 3D})$$
+<p>El resultado es un número, no un vector (por eso también se llama <strong>producto escalar</strong>). En GLSL es <code>dot(a, b)</code>, para <code>vec2</code>, <code>vec3</code> o <code>vec4</code>. Algunas propiedades salen directamente de la definición: es conmutativo ($\vec a \cdot \vec b = \vec b \cdot \vec a$), se reparte sobre la suma ($\vec a \cdot (\vec b + \vec c) = \vec a\cdot\vec b + \vec a \cdot \vec c$), los escalares salen fuera ($(k\vec a)\cdot \vec b = k\,(\vec a \cdot \vec b)$) y, sobre todo:</p>
+$$\vec a \cdot \vec a = a_x^2 + a_y^2 = |\vec a|^2$$
+<p>El producto punto de un vector consigo mismo es su longitud al cuadrado: el truco de «comparar distancias al cuadrado» de la lección <a href="01-vectores.html">3.1</a> se escribe <code>dot(d, d) &lt; r * r</code>.</p>
+
+<h3>Definición geométrica, y de dónde sale</h3>
+<p>La propiedad que hace útil al producto punto es esta:</p>
+$$\vec a \cdot \vec b = |\vec a|\,|\vec b|\,\cos\theta$$
+<p>donde $\theta$ es el ángulo entre los dos vectores. No hace falta creérselo: se deduce en tres líneas. Los vectores $\vec a$, $\vec b$ y $\vec b - \vec a$ forman un triángulo. El teorema del coseno (Pitágoras generalizado a triángulos no rectángulos) dice:</p>
+$$|\vec b - \vec a|^2 = |\vec a|^2 + |\vec b|^2 - 2\,|\vec a|\,|\vec b| \cos\theta$$
+<p>Ahora calcula el lado izquierdo con las propiedades algebraicas de antes, sin geometría:</p>
+$$|\vec b - \vec a|^2 = (\vec b - \vec a)\cdot(\vec b - \vec a) = \vec b\cdot\vec b - 2\,\vec a \cdot \vec b + \vec a\cdot\vec a = |\vec b|^2 - 2\,\vec a\cdot \vec b + |\vec a|^2$$
+<p>Las dos expresiones tienen que ser iguales. Tachando lo que se repite queda $-2\,\vec a \cdot \vec b = -2\,|\vec a||\vec b|\cos\theta$, que es la fórmula. La suma de productos, que no sabe nada de ángulos, esconde un coseno.</p>
+
+<p>Arrastra <strong>a</strong> y <strong>b</strong>. La demo calcula el producto de las dos maneras (siempre coinciden) y dibuja la «sombra» de <strong>b</strong> sobre la recta de <strong>a</strong>, que explicamos justo después.</p>
+
+<div class="demo" id="demo-punto">
+  <div class="demo-lienzo"></div>
+  <div class="m3-leyenda"><span style="--c:var(--c-hack)">a·b &gt; 0: ángulo agudo</span><span style="--c:var(--c-resumen)">a·b ≈ 0: perpendiculares</span><span style="--c:var(--c-bestiario)">a·b &lt; 0: ángulo obtuso</span></div>
+  <div class="demo-info"></div>
+</div>
+
+<h3>El signo lo dice casi todo</h3>
+<p>Como las longitudes son positivas, el signo de $\vec a \cdot \vec b$ es el signo de $\cos\theta$:</p>
+<table>
+  <thead><tr><th>Resultado</th><th>Ángulo</th><th>Significado</th></tr></thead>
+  <tbody>
+    <tr><td>$\vec a \cdot \vec b > 0$</td><td>menor de 90°</td><td>apuntan «hacia el mismo lado»</td></tr>
+    <tr><td>$\vec a \cdot \vec b = 0$</td><td>exactamente 90°</td><td>perpendiculares (ortogonales)</td></tr>
+    <tr><td>$\vec a \cdot \vec b &lt; 0$</td><td>mayor de 90°</td><td>apuntan «hacia lados opuestos»</td></tr>
+  </tbody>
+</table>
+<p>Si los dos vectores son <strong>unitarios</strong>, el producto punto <em>es</em> el coseno: vale 1 si apuntan igual, 0 si son perpendiculares y −1 si son opuestos. Es la medida de parecido entre direcciones más barata que existe: dos multiplicaciones y una suma en 2D.</p>
+
+<div class="quiz">
+  <p class="pregunta">Un enemigo mira en la dirección unitaria <code>f</code> y el jugador está en el vector <code>t = jugador − enemigo</code>. Resulta que <code>dot(f, t) = -3.2</code>. ¿Qué sabes?</p>
+  <ul>
+    <li>El jugador está a 3.2 unidades delante del enemigo<div class="explicacion">El signo negativo indica lo contrario: está detrás. Y 3.2 es la distancia <em>a lo largo de la dirección de mirada</em> (la proyección), no la distancia total.</div></li>
+    <li data-correcta>El jugador está detrás del enemigo: el ángulo entre la mirada y el jugador es mayor de 90°<div class="explicacion">Correcto. Como <code>f</code> es unitario, además sabes que el jugador está 3.2 unidades por detrás del plano que pasa por el enemigo perpendicular a su mirada. Esa es la proyección escalar, justo lo siguiente.</div></li>
+    <li>El ángulo entre ambos es −3.2 radianes<div class="explicacion">El producto punto no es un ángulo sino $|\vec f||\vec t|\cos\theta$. Para sacar el ángulo habría que dividir por las longitudes y aplicar <code>acos</code>, y el resultado estaría entre 0 y π, nunca negativo.</div></li>
+  </ul>
+</div>
+
+<h2>Proyección: la sombra de un vector sobre otro</h2>
+<p>Imagina una luz que cae perpendicular sobre la recta de $\vec a$: la sombra de $\vec b$ sobre esa recta mide $|\vec b|\cos\theta$ (el cateto contiguo del triángulo rectángulo que forman $\vec b$ y su sombra). Si llamamos $\hat a = \vec a / |\vec a|$ a la dirección de $\vec a$, la definición geométrica da justo esa longitud:</p>
+$$\text{proyección escalar} = \vec b \cdot \hat a = |\vec b|\,\underbrace{|\hat a|}_{1}\cos\theta = |\vec b|\cos\theta$$
+<p>Es una longitud <strong>con signo</strong>: negativa si la sombra cae hacia atrás. Para tener la sombra como vector, multiplica esa longitud por la dirección:</p>
+$$\vec b_{\parallel} = (\vec b\cdot\hat a)\,\hat a = \frac{\vec a\cdot\vec b}{\vec a\cdot\vec a}\;\vec a$$
+<p>La segunda forma sale de sustituir $\hat a = \vec a/|\vec a|$: aparece $|\vec a|^2 = \vec a \cdot \vec a$ en el denominador y no hace falta ninguna raíz. Lo que sobra, $\vec b_{\perp} = \vec b - \vec b_{\parallel}$, es la parte de $\vec b$ perpendicular a $\vec a$. Toda la geometría de choques y deslizamientos se apoya en esta descomposición: <strong>cualquier vector se parte en «a lo largo de una dirección» más «perpendicular a ella»</strong>.</p>
+
+<div class="callout nota">
+  <p>Un uso inmediato: la <strong>distancia con signo de un punto a una recta</strong>. Si la recta pasa por $A$ y tiene normal unitaria $\hat n$, la distancia de $P$ a la recta es $(P - A)\cdot \hat n$: la proyección del vector $A \to P$ sobre la normal. Positiva a un lado, negativa al otro. Lo usarás en el ejemplo de la pelota que rebota y, a lo grande, en las SDF de la lección <a href="../06-glsl/03-formas-sdf.html">6.3</a>.</p>
+</div>
+
+<h2>El ángulo entre dos vectores</h2>
+<p>Despejando de la definición geométrica:</p>
+$$\theta = \arccos\!\left(\frac{\vec a\cdot\vec b}{|\vec a|\,|\vec b|}\right)$$
+<p>Funciona, pero en gráficos casi nunca necesitas el ángulo en sí. Si quieres saber si el ángulo es menor que 30°, no calcules <code>acos</code>: compara el coseno. Como el coseno decrece de 0 a 180°, $\theta &lt; 30° \iff \cos\theta > \cos 30°$, y $\cos 30°$ lo calculas una vez fuera del bucle. Te ahorras una función cara y, de paso, el bicho siguiente.</p>
+
+<div class="callout bestiario" data-id="m3-acos-nan" data-titulo="acos devuelve NaN con vectores casi paralelos">
+  <p><strong>Síntoma:</strong> un cálculo de ángulo funciona siempre, salvo en algunos casos «de libro» en los que da <code>NaN</code>: justo cuando los dos vectores son paralelos. El objeto que debía girar hacia su objetivo desaparece cuando ya lo tiene delante.</p>
+  <p><strong>Causa:</strong> por el redondeo, el coseno calculado puede pasarse de 1 por una unidad del último bit, y <code>acos</code> de algo mayor que 1 no existe. En JavaScript, si normalizas <code>(7, 7)</code> dividiendo cada componente entre <code>Math.hypot(7, 7)</code> y haces el producto punto del resultado consigo mismo, sale <code>1.0000000000000002</code>, y <code>Math.acos</code> de eso es <code>NaN</code>. (Con <code>(1, 1)</code> sale <code>0.9999999999999998</code> y funciona, y con la <code>normalizar</code> de 3.1, que multiplica por <code>1 / l</code>, también da <code>0.9999999999999998</code> para <code>(7, 7)</code>: depende de los bits exactos y de cómo normalices.) En la GPU pasa lo mismo en float32: en nuestra prueba, <code>dot(normalize(a), normalize(2.0 * a))</code> con <code>a = (0.3, 0.7, 0.1)</code> dio <code>1.0000001</code> y <code>acos</code> devolvió NaN.</p>
+  <p><strong>Solución:</strong> recorta siempre antes de <code>acos</code> o <code>asin</code>: <code>acos(clamp(c, -1.0, 1.0))</code>. Y si puedes, no uses <code>acos</code>: compara cosenos, o calcula el ángulo con signo como <code>atan(cruz, punto)</code> (lo verás en la sección de la cruz 2D), que además es más preciso para ángulos pequeños.</p>
+</div>
+
+<div class="callout senior">
+  <p>Hay un segundo problema, más sutil, con <code>acos</code> cerca de 1: está <strong>mal condicionado</strong>. Su pendiente se hace infinita en ±1, así que un error diminuto en el coseno se convierte en un error grande en el ángulo. En nuestra prueba en la GPU, dos vectores exactamente paralelos dieron un coseno de <code>0.99999988</code> (un solo bit por debajo de 1) y <code>acos</code> devolvió <code>0.000488</code> radianes en lugar de 0. Para ángulos pequeños, <code>atan(|a × b|, a · b)</code> no sufre este problema.</p>
+</div>
+
+<h2>Tests de signo: delante, detrás y conos de visión</h2>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.2.1 — ¿Me está viendo el guardia?</h3>
+  <p>Un guardia está en $G$ y mira en la dirección de $F$. Tiene un campo de visión de ancho <em>fov</em> (<em>field of view</em>). ¿Ve al objetivo $T$? Arrastra los tres puntos y cambia el campo de visión.</p>
+  <div class="demo" id="demo-cono">
+    <div class="demo-lienzo"></div>
+    <div class="demo-controles"></div>
+    <div class="demo-info"></div>
+  </div>
+  <p>El razonamiento, paso a paso:</p>
+  <ol>
+    <li><strong>Direcciones</strong>: la mirada es $\hat f = \operatorname{normalize}(F - G)$ y la dirección hacia el objetivo es $\hat t = \operatorname{normalize}(T - G)$. Las dos son unitarias, así que su producto punto es el coseno del ángulo entre ellas.</li>
+    <li><strong>Delante o detrás</strong> solo necesita el signo: $\hat f \cdot (T - G) > 0$. Ni siquiera hace falta normalizar $T - G$, porque dividir por una longitud positiva no cambia el signo.</li>
+    <li><strong>Dentro del cono</strong>: $T$ está dentro si el ángulo es menor que la mitad del fov, es decir, si $\hat f\cdot\hat t > \cos(\text{fov}/2)$. Ese coseno se calcula una vez, no para cada objetivo.</li>
+  </ol>
+  <div class="anotado" data-lang="js">
+<script type="text/plain">
+const cosMitad = Math.cos(fov / 2);
+const alcance = 5;
+
+function loVe(G, F, T) {
+  const f = normalizar(restar(F, G));
+  const t = restar(T, G);
+  const d2 = t.x * t.x + t.y * t.y;
+  if (d2 > alcance * alcance) return false;
+  const L = Math.sqrt(d2);
+  if (L < 1e-9) return true;
+  return (f.x * t.x + f.y * t.y) / L > cosMitad;
+}
+</script>
+<ol>
+  <li data-l="1">El umbral, calculado <strong>una vez</strong> (cuando cambia el fov), no por cada objetivo ni por cada frame. Comparar cosenos evita <code>acos</code> en el bucle.</li>
+  <li data-l="2">Distancia máxima a la que ve el guardia.</li>
+  <li data-l="5">La mirada como vector unitario, con las funciones de tu mini librería de <a href="01-vectores.html">3.1</a>. Si F pudiera coincidir con G, aquí habría que protegerse del vector nulo.</li>
+  <li data-l="6">Vector del guardia al objetivo, sin normalizar todavía: quizá no haga falta.</li>
+  <li data-l="7-8">La prueba barata primero: distancia al cuadrado contra alcance al cuadrado. Los objetivos lejanos (la mayoría, en un juego con muchos) salen sin raíz ni división.</li>
+  <li data-l="9">Solo ahora pagamos la raíz.</li>
+  <li data-l="10">Objetivo exactamente encima del guardia: la dirección no existe (dividiríamos por 0). Decidimos que lo ve.</li>
+  <li data-l="11">f̂·t̂ = f̂·t / |t|: dividir el producto punto por <code>L</code> equivale a normalizar <code>t</code>, pero con una división en lugar de dos.</li>
+</ol>
+  </div>
+  <p>Este mismo test, con <code>vec3</code>, decide si una luz de tipo foco (<em>spotlight</em>) ilumina un punto: el foco es un guardia que «ve» con luz.</p>
+</section>
+
+<h2>Iluminación de Lambert: N · L</h2>
+<p>El producto punto es la base de toda la iluminación en tiempo real. Una superficie mate (papel, yeso, tela) refleja la luz en todas direcciones por igual, así que su brillo no depende de desde dónde la mires: solo de <strong>cuánta luz le llega por unidad de superficie</strong>. Y eso depende del ángulo con el que llega la luz.</p>
+
+<svg class="diagrama" viewBox="0 0 700 220" width="700" role="img" aria-label="Un haz de luz perpendicular ilumina un segmento corto; inclinado, el mismo haz se reparte en un segmento más largo">
+  <defs>
+    <marker id="m32-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <!-- perpendicular -->
+  <line x1="40" y1="180" x2="300" y2="180" stroke="currentColor" stroke-width="3"/>
+  <g class="acento" stroke-width="2">
+    <line x1="130" y1="30" x2="130" y2="176" marker-end="url(#m32-fl)"/>
+    <line x1="150" y1="30" x2="150" y2="176" marker-end="url(#m32-fl)"/>
+    <line x1="170" y1="30" x2="170" y2="176" marker-end="url(#m32-fl)"/>
+    <line x1="190" y1="30" x2="190" y2="176" marker-end="url(#m32-fl)"/>
+    <line x1="210" y1="30" x2="210" y2="176" marker-end="url(#m32-fl)"/>
+  </g>
+  <line x1="130" y1="195" x2="210" y2="195" stroke="currentColor" stroke-width="1.5"/>
+  <text x="170" y="212" text-anchor="middle" class="texto-tenue">ancho w</text>
+  <text x="170" y="20" text-anchor="middle">luz perpendicular (θ = 0)</text>
+  <!-- inclinada -->
+  <line x1="380" y1="180" x2="690" y2="180" stroke="currentColor" stroke-width="3"/>
+  <g class="acento" stroke-width="2">
+    <line x1="430" y1="40" x2="484" y2="176" marker-end="url(#m32-fl)"/>
+    <line x1="451.5" y1="40" x2="505.5" y2="176" marker-end="url(#m32-fl)"/>
+    <line x1="473" y1="40" x2="527" y2="176" marker-end="url(#m32-fl)"/>
+    <line x1="494.5" y1="40" x2="548.5" y2="176" marker-end="url(#m32-fl)"/>
+    <line x1="516" y1="40" x2="570" y2="176" marker-end="url(#m32-fl)"/>
+  </g>
+  <line x1="484" y1="195" x2="570" y2="195" stroke="currentColor" stroke-width="1.5"/>
+  <text x="527" y="212" text-anchor="middle" class="texto-tenue">ancho w / cos θ</text>
+  <line x1="640" y1="180" x2="640" y2="110" stroke="currentColor" stroke-dasharray="4 4"/>
+  <text x="648" y="112" class="texto-tenue">N</text>
+  <text x="535" y="20" text-anchor="middle">el mismo haz, inclinado un ángulo θ</text>
+</svg>
+
+<p>Un haz de luz de ancho $w$ que cae perpendicular ilumina un trozo de ancho $w$. Si cae inclinado un ángulo $\theta$ respecto a la normal, el mismo haz (la misma energía) se reparte sobre un trozo de ancho $w/\cos\theta$: la energía por unidad de superficie se multiplica por $\cos\theta$. Es la <strong>ley del coseno de Lambert</strong>, y por eso los días de invierno, con el sol bajo, calientan menos. Si $\hat N$ es la normal de la superficie (unitaria, perpendicular a ella, hacia fuera) y $\hat L$ la dirección <em>hacia</em> la luz (unitaria), ese coseno es un producto punto:</p>
+$$\text{brillo difuso} = \max(\hat N\cdot \hat L,\; 0)$$
+<p>El <code>max</code> recorta los valores negativos: si la luz llega por detrás de la superficie, el coseno es negativo, pero la luz no «resta»: esa cara no recibe luz. En el shader siguiente, cada píxel de la esfera calcula su normal y su dirección hacia la luz, que sigue al ratón. Mueve el ratón por encima.</p>
+
+<div class="glsl-playground" data-titulo="Una esfera iluminada con Lambert" data-altura="380" data-apilado
+     data-uniforms='{"u_ambiente":{"tipo":"float","min":0,"max":0.4,"valor":0.06,"etiqueta":"luz ambiente"},"u_normalizar":{"tipo":"bool","valor":true,"etiqueta":"normalizar L"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_ambiente;
+uniform bool u_normalizar;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  vec3 color = vec3(0.07, 0.08, 0.10);            // fondo
+
+  float R = 0.8;                                  // radio de la esfera
+  float d2 = dot(p, p);                           // distancia² al centro (sin raíz)
+  if (d2 < R * R) {
+    // El punto de la esfera que se ve en este píxel: x² + y² + z² = R², con z hacia nosotros
+    vec3 P = vec3(p, sqrt(R * R - d2));
+    vec3 N = P / R;                               // normal: del centro al punto, ya unitaria
+    vec3 luz = vec3(m, 1.5);                      // la luz: donde el ratón, delante de la esfera
+    vec3 L = luz - P;                             // del punto hacia la luz (destino − origen)
+    if (u_normalizar) L = normalize(L);
+    float difusa = max(dot(N, L), 0.0);           // Lambert: el coseno, recortado a 0
+    color = vec3(1.0, 0.72, 0.35) * (u_ambiente + difusa);
+  }
+  if (length(p - m) < 0.03) color = vec3(1.0);    // dónde está la luz
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Tres detalles del código. La normal de una esfera centrada en el origen es el propio punto dividido por el radio: el vector del centro al punto es perpendicular a la superficie. La <code>z</code> del punto sale de despejarla en la ecuación de la esfera, $z = \sqrt{R^2 - x^2 - y^2}$, positiva porque vemos la mitad que mira hacia nosotros. Y la luz está en <code>(m, 1.5)</code>: a la altura del ratón, pero delante de la esfera. Ahora desactiva <strong>normalizar L</strong>.</p>
+
+<div class="callout bestiario" data-id="m3-luz-sin-normalizar" data-titulo="La iluminación sale quemada o cambia con la distancia">
+  <p><strong>Síntoma:</strong> una superficie iluminada sale demasiado brillante, «quemada» en blanco, o su brillo cambia al alejar la luz aunque la dirección no cambie. A veces la iluminación se ve facetada o con manchas en una malla que debería ser suave.</p>
+  <p><strong>Causa:</strong> $\hat N \cdot \hat L$ solo es un coseno si <strong>los dos</strong> vectores son unitarios. <code>luz - P</code> mide la distancia a la luz, así que el producto punto sale multiplicado por esa distancia y pasa de 1. El segundo caso es muy frecuente cuando la normal llega interpolada desde los vértices (un <em>varying</em>, <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>), como en el cubo iluminado de <a href="../05-webgl/06-3d-cubo.html">5.6</a>: ya no mide 1, porque la media de dos vectores unitarios es más corta que ellos.</p>
+  <p><strong>Solución:</strong> <code>normalize()</code> los dos vectores justo antes del producto punto, también la normal interpolada en el fragment shader. Si quieres que la luz se atenúe con la distancia, hazlo aparte y a propósito (dividiendo por la distancia al cuadrado, por ejemplo), no por accidente.</p>
+</div>
+
+<div class="callout hack" data-titulo="Half-Lambert">
+  <p>Con Lambert puro, todo lo que no mira a la luz es negro (o el color ambiente), y las formas se pierden en la sombra. Valve popularizó con la saga <em>Half-Life</em> un truco que no es físico pero queda bien: remapear el coseno de $[-1, 1]$ a $[0, 1]$ con <code>0.5 * dot(N, L) + 0.5</code> (y elevarlo al cuadrado para recuperar contraste). La cara oculta deja de ser negra y el volumen se lee en toda la esfera. Pruébalo en el shader cambiando la línea de <code>difusa</code>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En un shader calculas <code>float luz = dot(N, L);</code> con <code>N</code> y <code>L</code> unitarios, y en un píxel sale <code>-0.5</code>. ¿Qué significa y qué haces?</p>
+  <ul>
+    <li data-correcta>La luz llega por detrás de la superficie (a 120° de la normal): recortas a 0 con <code>max(luz, 0.0)</code><div class="explicacion">Correcto: coseno −0.5 ↔ 120°. Esa cara no ve la luz. Sin el <code>max</code>, el valor negativo restaría del resto de la iluminación y dejaría la zona más oscura que la propia luz ambiente.</div></li>
+    <li>El píxel recibe «media luz»: se usa tal cual<div class="explicacion">Media luz sería +0.5 (60°). El signo negativo no es «menos luz» sino «luz por detrás»: usarlo tal cual oscurece por debajo de la luz ambiente, algo que no existe físicamente.</div></li>
+    <li>Hay un error: el producto punto de dos vectores unitarios no puede ser negativo<div class="explicacion">Sí puede: es el coseno del ángulo, y va de −1 (opuestos) a 1 (iguales). Lo que no puede es salir de ese intervalo; si sale, alguno de los dos no era unitario.</div></li>
+    <li>Usas <code>abs(luz)</code>: la cara de atrás también debe recibir luz<div class="explicacion">Eso ilumina las caras traseras como si fueran delanteras. Se hace a propósito en superficies finas de dos caras (hojas, papel), pero no es el comportamiento normal.</div></li>
+  </ul>
+</div>
+
+<h2>Reflexión: de dónde sale reflect()</h2>
+<p>Una pelota que choca con una pared, un rayo de luz en un espejo, un reflejo en el agua: todos necesitan la dirección reflejada $\vec r$ de una dirección de llegada $\vec d$ en una superficie de normal unitaria $\hat n$. La ley es que el ángulo de salida es igual al de entrada. Con la descomposición de la proyección se escribe sin un solo ángulo:</p>
+<ol>
+  <li>Parte $\vec d$ en su componente a lo largo de la normal y la perpendicular a ella: $\vec d = \vec d_{\parallel} + \vec d_{\perp}$, con $\vec d_{\parallel} = (\vec d\cdot\hat n)\,\hat n$.</li>
+  <li>En el rebote, la parte tangente a la superficie ($\vec d_{\perp}$) sigue igual, y la parte normal se da la vuelta: $\vec r = \vec d_{\perp} - \vec d_{\parallel}$.</li>
+  <li>Sustituye $\vec d_{\perp} = \vec d - \vec d_{\parallel}$: $\vec r = \vec d - \vec d_{\parallel} - \vec d_{\parallel}$, es decir,</li>
+</ol>
+$$\vec r = \vec d - 2\,(\vec d\cdot\hat n)\,\hat n$$
+<p>Es exactamente la definición de <code>reflect(I, N)</code> en GLSL: <code>I - 2.0 * dot(N, I) * N</code>. Y la especificación añade una frase que conviene leer despacio: «N must already be normalized in order to achieve the desired result». La función no normaliza por ti. Arrastra en la demo la dirección de llegada (<strong>D</strong>) y la normal del espejo (<strong>N</strong>), y activa la casilla para ver qué pasa si la normal no mide 1.</p>
+
+<div class="demo" id="demo-reflect">
+  <div class="demo-lienzo"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="callout bestiario" data-id="m3-reflect-sin-normalizar" data-titulo="El rebote sale con un ángulo absurdo o gana velocidad">
+  <p><strong>Síntoma:</strong> la pelota rebota en direcciones raras, sale más rápido de lo que llegó o se «cuela» por la pared; un reflejo en un shader apunta hacia donde no debe.</p>
+  <p><strong>Causa:</strong> <code>reflect</code> (o tu versión en JavaScript) recibió una normal que no es unitaria. Con $|\vec n| = 2$, el término $2(\vec d\cdot\vec n)\vec n$ se multiplica por 4 en lugar de por 1. En nuestra prueba en la GPU, reflejar $(0.707, -0.707, 0)$ en un suelo con normal $(0, 2, 0)$ dio $(0.707, 4.95, 0)$ en vez de $(0.707, 0.707, 0)$.</p>
+  <p><strong>Solución:</strong> normaliza la normal antes de reflejar. Si la normal viene de una arista (<code>perp(B - A)</code>) o de una interpolación, casi seguro que no mide 1.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.2.2 — Una pelota en una caja inclinada</h3>
+  <p>Una pelota rebota dentro de un hexágono. Cada pared es un segmento con su normal hacia dentro; en cada frame medimos la distancia de la pelota a cada pared con un producto punto y, si la ha atravesado, la sacamos y reflejamos su velocidad. Todo lo de esta lección, en treinta líneas.</p>
+  <div class="js-playground" data-titulo="Rebotes con reflect" data-altura="300" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+
+// Hexágono (en coordenadas de pantalla). Recorremos los vértices en orden.
+const R = Math.min(W, H) * 0.45, cx = W / 2, cy = H / 2;
+const verts = [];
+for (let i = 0; i < 6; i++) {
+  const a = i * Math.PI / 3 + 0.3;
+  verts.push({ x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) });
+}
+// Cada pared: un punto A y su normal unitaria hacia DENTRO
+const paredes = verts.map((A, i) => {
+  const B = verts[(i + 1) % 6];
+  const ex = B.x - A.x, ey = B.y - A.y, l = Math.hypot(ex, ey);
+  let n = { x: -ey / l, y: ex / l };                       // perpendicular a la arista, unitaria
+  if ((cx - A.x) * n.x + (cy - A.y) * n.y < 0) n = { x: -n.x, y: -n.y };  // que apunte al centro
+  return { A, n };
+});
+
+const bola = { x: cx, y: cy, vx: 260, vy: -170, r: 10 };
+
+function paso(dt) {
+  bola.x += bola.vx * dt; bola.y += bola.vy * dt;
+  for (const { A, n } of paredes) {
+    const dist = (bola.x - A.x) * n.x + (bola.y - A.y) * n.y;   // distancia con signo a la pared
+    const penetra = bola.r - dist;
+    const vn = bola.vx * n.x + bola.vy * n.y;                    // velocidad a lo largo de la normal
+    if (penetra > 0 && vn < 0) {                                  // la toca y va hacia ella
+      bola.x += n.x * penetra; bola.y += n.y * penetra;           // sacarla de la pared
+      bola.vx -= 2 * vn * n.x; bola.vy -= 2 * vn * n.y;           // r = d − 2(d·n)n
+    }
+  }
+}
+
+let previo = null;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min(0.03, (ms - previo) / 1000);
+  previo = ms;
+  paso(dt);
+  ctx.fillStyle = 'rgba(14,16,20,0.3)'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#8791a5'; ctx.lineWidth = 2; ctx.beginPath();
+  verts.forEach((v, i) => (i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y)));
+  ctx.closePath(); ctx.stroke();
+  ctx.fillStyle = '#8b7bff'; ctx.beginPath(); ctx.arc(bola.x, bola.y, bola.r, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+console.log('rapidez inicial:', Math.hypot(bola.vx, bola.vy).toFixed(2));
+setTimeout(() => console.log('rapidez tras 3 s de rebotes:', Math.hypot(bola.vx, bola.vy).toFixed(2)), 3000);
+</script>
+  </div>
+  <p>Las piezas:</p>
+  <ul>
+    <li><strong>La normal de cada pared</strong> es la arista girada 90°: si la arista es $(e_x, e_y)$, el vector $(-e_y, e_x)$ es perpendicular (su producto punto con la arista es $-e_x e_y + e_y e_x = 0$). Hay dos perpendiculares posibles, una a cada lado; elegimos la que apunta hacia el centro comprobando el signo de un producto punto. Y la dividimos por la longitud de la arista para que sea unitaria, porque la usaremos para reflejar.</li>
+    <li><strong>La distancia con signo</strong> de la pelota a la pared es la proyección de <code>bola − A</code> sobre la normal. Si es menor que el radio, la pelota ha entrado en la pared.</li>
+    <li><strong>La condición <code>vn &lt; 0</code></strong> evita un error clásico: si la pelota está dentro de la pared pero ya se aleja (porque rebotó en el frame anterior y aún no ha salido), no hay que reflejarla otra vez; si lo hiciéramos, volvería hacia la pared y quedaría atrapada vibrando.</li>
+    <li><strong>El reflejo</strong> es la fórmula derivada arriba, escrita por componentes. La consola comprueba que la rapidez no cambia: reflejar con una normal unitaria conserva la longitud del vector.</li>
+  </ul>
+</section>
+
+<h2>El producto cruz en 3D</h2>
+<p>El producto punto toma dos vectores y devuelve un número. El producto cruz (o <strong>producto vectorial</strong>) toma dos vectores de 3D y devuelve <strong>otro vector</strong>, perpendicular a los dos:</p>
+$$\vec a\times\vec b = \big(a_y b_z - a_z b_y,\;\; a_z b_x - a_x b_z,\;\; a_x b_y - a_y b_x\big)$$
+<p>Un truco para recordarlo: cada componente usa las <em>otras</em> dos, en orden cíclico. La x usa y, z; la y usa z, x; la z usa x, y; y en cada una se resta el producto «cruzado». En GLSL es <code>cross(a, b)</code> y <strong>solo existe para <code>vec3</code></strong>: <code>cross(vec2, vec2)</code> no compila («no matching overloaded function found»).</p>
+
+<h3>Sus tres propiedades, comprobadas</h3>
+<ol>
+  <li><strong>Es perpendicular a los dos.</strong> Calcula $\vec a\cdot(\vec a\times\vec b) = a_x(a_y b_z - a_z b_y) + a_y(a_z b_x - a_x b_z) + a_z(a_x b_y - a_y b_x)$. Reparte y verás que los seis términos se anulan por parejas: vale 0. Igual con $\vec b$.</li>
+  <li><strong>Su longitud es el área del paralelogramo</strong> que forman $\vec a$ y $\vec b$. Hay una identidad (de Lagrange) que se comprueba desarrollando los dos lados: $|\vec a\times\vec b|^2 = |\vec a|^2|\vec b|^2 - (\vec a\cdot\vec b)^2$. Sustituye el producto punto por su forma geométrica: $|\vec a|^2|\vec b|^2(1 - \cos^2\theta) = |\vec a|^2|\vec b|^2\sin^2\theta$. Así que $|\vec a\times\vec b| = |\vec a||\vec b|\sin\theta$: base por altura del paralelogramo. Es 0 si los vectores son paralelos (no hay paralelogramo, y tampoco una perpendicular única).</li>
+  <li><strong>Es anticonmutativo</strong>: $\vec b\times\vec a = -(\vec a\times\vec b)$. Intercambiar los vectores cambia el signo de cada componente (mira la fórmula: cada término es un producto cruzado que cambia de signo). El orden importa.</li>
+</ol>
+<p>De las dos direcciones perpendiculares posibles, ¿cuál elige? La de la <strong>regla de la mano derecha</strong>: con la mano derecha, el índice apuntando a lo largo de $\vec a$ y el dedo corazón a lo largo de $\vec b$, el pulgar apunta a $\vec a \times \vec b$. Con los ejes: $\hat x \times \hat y = \hat z$, $\hat y \times \hat z = \hat x$, $\hat z\times\hat x = \hat y$.</p>
+
+<p>En la demo, <strong>a</strong> y <strong>b</strong> se arrastran por el suelo (el plano $xy$) y el deslizador levanta <strong>b</strong> fuera de él. Fíjate en cómo $\vec a\times\vec b$ (verde) se mantiene perpendicular al paralelogramo, mide lo que su área y se da la vuelta si intercambias los vectores.</p>
+
+<div class="demo" id="demo-cruz">
+  <div class="demo-lienzo" style="height:360px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<h2>La «cruz 2D»: orientación y lados de una recta</h2>
+<p>Mira la demo con <strong>b</strong> en el suelo (altura 0): si $a_z = b_z = 0$, la fórmula da</p>
+$$\vec a\times\vec b = (0,\;0,\; a_x b_y - a_y b_x)$$
+<p>Todo el resultado está en la z. A ese número se le llama <strong>producto cruz 2D</strong> (o <em>perp-dot</em>, porque es el producto punto de $\vec a$ girado 90° con $\vec b$):</p>
+$$\operatorname{cruz}(\vec a, \vec b) = a_x b_y - a_y b_x = |\vec a||\vec b|\sin\theta$$
+<p>Aquí $\theta$ es el ángulo <strong>con signo</strong> que hay que girar para ir de $\vec a$ a $\vec b$. Por tanto, en un sistema con la y hacia arriba:</p>
+<ul>
+  <li>$\operatorname{cruz}(\vec a, \vec b) > 0$: $\vec b$ está <strong>a la izquierda</strong> de $\vec a$ (girar de $\vec a$ a $\vec b$ es antihorario).</li>
+  <li>$\operatorname{cruz}(\vec a, \vec b) &lt; 0$: $\vec b$ está a la derecha (giro horario).</li>
+  <li>$\operatorname{cruz}(\vec a, \vec b) = 0$: son paralelos (o alguno es nulo).</li>
+</ul>
+<p>Aplicado a puntos: para saber de qué lado de la recta que va de $A$ a $B$ está un punto $P$, calcula $\operatorname{cruz}(B - A,\; P - A)$. Y su valor absoluto es el área del paralelogramo, así que <strong>la mitad es el área del triángulo $ABP$</strong>, con signo: positiva si $A \to B \to P$ gira en sentido antihorario.</p>
+
+<div class="demo" id="demo-lado">
+  <div class="demo-lienzo"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="callout hack" data-titulo="El ángulo con signo, sin acos">
+  <p>Punto y cruz son las dos «coordenadas» del ángulo: $\vec a\cdot\vec b = |\vec a||\vec b|\cos\theta$ y $\operatorname{cruz}(\vec a,\vec b) = |\vec a||\vec b|\sin\theta$. Así que <code>Math.atan2(cruz(a, b), punto(a, b))</code> (en GLSL, <code>atan(cruz, punto)</code>) da el ángulo de $\vec a$ a $\vec b$ con signo, entre −π y π, sin normalizar, sin <code>acos</code> y sin NaN. Es la forma robusta de saber cuánto y hacia qué lado tiene que girar una torreta para apuntar a su objetivo. <code>atan2</code> se explica a fondo en <a href="03-trigonometria.html">3.3</a>.</p>
+</div>
+
+<div class="callout bestiario" data-id="m3-winding-pantalla" data-titulo="Izquierda y derecha salen al revés en Canvas">
+  <p><strong>Síntoma:</strong> el test de «de qué lado de la recta» funciona en el papel pero en Canvas 2D da el lado contrario; los polígonos que deberían ser antihorarios salen horarios; un personaje que debería girar a la izquierda gira a la derecha.</p>
+  <p><strong>Causa:</strong> la fórmula del producto cruz no cambia, pero en coordenadas de pantalla la y crece hacia abajo, y eso refleja el dibujo como en un espejo. Un giro que en números es «antihorario» (cruz positiva) se <em>ve</em> horario en pantalla. Pasa también con los ángulos: <code>ctx.rotate(0.5)</code> gira en sentido horario en pantalla.</p>
+  <p><strong>Solución:</strong> no mezcles convenciones. Decide en qué sistema trabajas (en Canvas, casi siempre en el de pantalla) e interpreta el signo en ese sistema: con la y hacia abajo, cruz positiva significa «a la derecha, visto en pantalla». Si portas código de un libro o de un shader (y hacia arriba), invierte la interpretación o convierte las coordenadas primero.</p>
+</div>
+
+<h2>¿Está el punto dentro del triángulo?</h2>
+<p>Un triángulo $ABC$ recorrido en sentido antihorario deja su interior <strong>a la izquierda</strong> de cada una de sus tres aristas. Así que un punto $P$ está dentro si está a la izquierda de $A\to B$, de $B\to C$ y de $C\to A$. Esas tres pruebas se llaman <strong>funciones de arista</strong>:</p>
+$$E_{AB}(P) = \operatorname{cruz}(B - A,\,P - A), \quad E_{BC}(P) = \operatorname{cruz}(C - B,\,P - B), \quad E_{CA}(P) = \operatorname{cruz}(A - C,\,P - C)$$
+<p>$P$ está dentro si las tres tienen el mismo signo: todas positivas si el triángulo es antihorario, todas negativas si es horario. Si una vale 0, $P$ está justo sobre esa arista.</p>
+<p>Esto no es una curiosidad: <strong>es lo que hace el hardware de la GPU</strong> para decidir qué píxeles cubre cada triángulo. El rasterizador evalúa las tres funciones de arista en el centro de cada píxel candidato y lanza el fragment shader solo donde las tres dan el signo correcto. Las funciones de arista son lineales en $x$ e $y$, así que al pasar de un píxel al vecino basta con sumar una constante, y se pueden evaluar para muchos píxeles a la vez. En la lección <a href="../04-gpu/03-gpu-de-juguete.html">4.3</a> escribirás un rasterizador de juguete en Python con exactamente esta idea.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.2.3 — Un rasterizador en un fragment shader</h3>
+  <p>Vamos a simular un rasterizador con «píxeles gordos»: el lienzo se divide en celdas de <code>u_celda</code> píxeles, y cada celda se pinta si <strong>su centro</strong> pasa las tres funciones de arista. Las aristas verdaderas se dibujan encima en blanco. El vértice C sigue al ratón. Activa <strong>solo antihorario</strong> y cruza C al otro lado de la recta AB.</p>
+  <div class="glsl-playground" data-titulo="Funciones de arista" data-altura="360" data-apilado
+       data-uniforms='{"u_celda":{"tipo":"float","min":1,"max":40,"valor":18,"etiqueta":"tamaño de píxel"},"u_soloAntihorario":{"tipo":"bool","valor":false,"etiqueta":"solo antihorario"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_celda;
+uniform bool u_soloAntihorario;
+out vec4 fragColor;
+
+float cruz(vec2 u, vec2 v) { return u.x * v.y - u.y * v.x; }
+// > 0 si p está a la IZQUIERDA de la arista que va de a a b (con y hacia arriba)
+float arista(vec2 a, vec2 b, vec2 p) { return cruz(b - a, p - a); }
+vec2 centradas(vec2 px) { return (2.0 * px - u_resolution) / u_resolution.y; }
+// Distancia de p al SEGMENTO ab: el punto dice "cuánto a lo largo", la cruz "cuánto de lado"
+float distSegmento(vec2 a, vec2 b, vec2 p) {
+  vec2 ab = b - a;
+  float t = dot(p - a, ab) / dot(ab, ab);         // proyección: 0 en a, 1 en b
+  if (t < 0.0) return length(p - a);
+  if (t > 1.0) return length(p - b);
+  return abs(cruz(ab, p - a)) / length(ab);       // área / base = altura
+}
+
+void main() {
+  vec2 A = vec2(-1.1, -0.85), B = vec2(0.9, -0.8);
+  vec2 C = centradas(u_mouse);
+
+  // Centro de la celda ("píxel gordo") a la que pertenece este píxel
+  vec2 celda = (floor(gl_FragCoord.xy / u_celda) + 0.5) * u_celda;
+  vec2 q = centradas(celda);
+  float e0 = arista(A, B, q), e1 = arista(B, C, q), e2 = arista(C, A, q);
+  bool antihorario = e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0;
+  bool horario     = e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0;
+  bool dentro = u_soloAntihorario ? antihorario : (antihorario || horario);
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  if (dentro) color = antihorario ? vec3(0.55, 0.48, 1.0) : vec3(1.0, 0.45, 0.55);
+
+  // Las aristas de verdad, finas, calculadas en el píxel real
+  vec2 p = centradas(gl_FragCoord.xy);
+  float d = min(distSegmento(A, B, p), min(distSegmento(B, C, p), distSegmento(C, A, p)));
+  if (d < 2.0 / u_resolution.y) color = mix(color, vec3(1.0), 0.6);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <p>Qué está pasando:</p>
+  <ol>
+    <li><strong>El centro de la celda.</strong> <code>floor(gl_FragCoord.xy / u_celda)</code> es el índice de la celda y, sumando 0.5 y multiplicando por el tamaño, obtenemos su centro en píxeles. Todos los píxeles de una celda calculan el mismo centro, así que toman la misma decisión: parece un píxel enorme. Con tamaño 1 tienes un rasterizador «de verdad».</li>
+    <li><strong>Las tres funciones de arista</strong> se evalúan en ese centro. Violeta = las tres positivas (antihorario), rosa = las tres negativas (horario). Mueve el ratón por debajo de la recta AB y el triángulo cambia de color: ha cambiado su orientación.</li>
+    <li><strong>Solo antihorario</strong> acepta únicamente el primer caso. Es lo que hace la GPU con el <em>face culling</em> activado: descarta los triángulos que llegan en el sentido contrario al acordado, que son los que miran hacia atrás (lección <a href="../05-webgl/06-3d-cubo.html">5.6</a>).</li>
+    <li><strong>Las líneas blancas</strong> son los píxeles a menos de un píxel de alguna arista (una línea de unos 2 píxeles de ancho), y la función <code>distSegmento</code> usa los dos productos de la lección a la vez. El producto punto (una proyección) dice <em>cuánto a lo largo</em> del segmento cae el píxel: si la proyección se sale por un extremo, la distancia es al vértice. El producto cruz dice <em>cuánto de lado</em>: $|\operatorname{cruz}(B - A, P - A)|$ es el área del paralelogramo, y dividida por la base $|B - A|$ da la altura, que es la distancia a la recta. Fíjate en que las celdas pintadas no coinciden con el borde verdadero: una celda se pinta entera si su centro está dentro, aunque el triángulo solo la roce. Eso es el <em>aliasing</em>, los dientes de sierra de los bordes.</li>
+  </ol>
+</section>
+
+<div class="callout senior" data-titulo="¿Y los píxeles que caen justo en una arista?">
+  <p>Dos triángulos que comparten una arista no deben pintar dos veces los píxeles de esa arista (se notaría con transparencias) ni dejar huecos entre ellos. Si un centro de píxel cae <em>exactamente</em> sobre la arista, una función vale 0 y los dos triángulos lo reclamarían. Las GPU resuelven el empate con una regla fija, la <strong>top-left rule</strong> de Direct3D (OpenGL solo exige una regla equivalente): un píxel sobre una arista pertenece al triángulo solo si es una arista «superior» o «izquierda». Ojo: «superior» se define con la y hacia abajo, como en Direct3D; con la y hacia arriba de este módulo (y de GL), la misma regla dice «izquierda o inferior», que es lo que medimos en la GPU en <a href="../04-gpu/02-pipeline-grafico.html#los-pixeles-justo-sobre-una-arista">4.2</a>. En el shader de arriba usamos <code>&gt;= 0</code>, así que ambos lados se lo quedarían. Para hacer las cuentas exactas, el hardware además no trabaja en float: convierte las posiciones a <strong>coma fija</strong> (enteros con unos pocos bits de subpíxel), donde la comparación con 0 es exacta.</p>
+</div>
+
+<h3>Coordenadas baricéntricas</h3>
+<p>Las funciones de arista dan más que un sí o un no. Divide cada una por el doble del área del triángulo, $E_{AB}(C)$ (que es la función de arista de $AB$ evaluada en el vértice opuesto):</p>
+$$\lambda_C = \frac{E_{AB}(P)}{E_{AB}(C)}, \qquad \lambda_A = \frac{E_{BC}(P)}{E_{BC}(A)}, \qquad \lambda_B = \frac{E_{CA}(P)}{E_{CA}(B)}$$
+<p>Cada $\lambda$ es la fracción del área total que ocupa el subtriángulo opuesto a ese vértice. Valen 1 en su vértice y 0 en la arista de enfrente, suman 1 en todo el triángulo y cumplen $P = \lambda_A A + \lambda_B B + \lambda_C C$: son los <strong>pesos de una combinación afín</strong> de los tres vértices, la versión con tres puntos del <code>lerp</code> de la lección <a href="01-vectores.html">3.1</a>. Con ellos, la GPU mezcla cualquier valor que definas en los vértices (un color, una coordenada de textura, una normal) para cada píxel del interior. Eso es exactamente un <em>varying</em>, y lo verás en <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>. Lo programarás tú en el ejercicio 3.2.4.</p>
+
+<div class="quiz">
+  <p class="pregunta">Con la y hacia arriba, <code>cruz(B − A, P − A) &lt; 0</code>. ¿Dónde está P?</p>
+  <ul>
+    <li>A la izquierda de la recta que va de A a B<div class="explicacion">Sería el caso positivo: para ir de la dirección de la recta a la dirección de P hay que girar en sentido antihorario.</div></li>
+    <li data-correcta>A la derecha de la recta que va de A a B<div class="explicacion">Signo negativo = giro horario de <code>B − A</code> a <code>P − A</code> = P a la derecha. (En pantalla, con la y hacia abajo, lo verías a la izquierda: es el bicho de la caja de arriba.)</div></li>
+    <li>Sobre la recta, porque el producto cruz de dos vectores en el plano siempre apunta fuera del plano<div class="explicacion">El producto cruz 3D apunta fuera del plano, sí, pero su componente z tiene signo, y ese signo es lo que distingue los dos lados. Sobre la recta, el valor sería exactamente 0.</div></li>
+  </ul>
+</div>
+
+<h2>La normal de un triángulo</h2>
+<p>Un triángulo en 3D define un plano, y su normal es perpendicular a dos cualesquiera de sus aristas. El producto cruz la da directamente:</p>
+$$\vec n = (B - A)\times(C - A), \qquad \hat n = \frac{\vec n}{|\vec n|}$$
+<p>El orden importa (anticonmutatividad): con los vértices en sentido antihorario vistos desde un lado, $\vec n$ apunta hacia ese lado; si los recorres al revés, apunta al contrario. Por eso los formatos de mallas 3D acuerdan un orden (casi siempre antihorario visto desde fuera): la orientación de los vértices codifica hacia dónde mira la cara. Y como $|\vec n|$ es el doble del área del triángulo, hay un truco clásico: para calcular la normal suave de un vértice compartido por varios triángulos, suma sus $\vec n$ <em>sin normalizar</em> y normaliza al final; así cada cara pesa en proporción a su área.</p>
+
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Normal de un triángulo en GLSL">
+vec3 normalTriangulo(vec3 a, vec3 b, vec3 c) {
+  return normalize(cross(b - a, c - a));   // antihorario visto desde donde apunta
+}
+</script>
+
+<h2>Lateralidad: sistemas de mano derecha y de mano izquierda</h2>
+<p>En 2D solo hay una forma de poner los ejes (salvo reflejarlos). En 3D, con la x a la derecha y la y hacia arriba, la z puede apuntar <strong>hacia ti</strong> o <strong>hacia dentro de la pantalla</strong>. El primero es un sistema de <strong>mano derecha</strong> (la regla de la mano derecha da $\hat x\times\hat y = \hat z$ hacia ti); el segundo, de <strong>mano izquierda</strong>.</p>
+
+<svg class="diagrama" viewBox="0 0 560 200" width="560" role="img" aria-label="Sistema de mano derecha con z hacia el observador y de mano izquierda con z hacia dentro">
+  <defs>
+    <marker id="m32-fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <g transform="translate(90,120)">
+    <path d="M0 0 L90 0" stroke="currentColor" stroke-width="2.5" marker-end="url(#m32-fl2)"/>
+    <path d="M0 0 L0 -90" stroke="currentColor" stroke-width="2.5" marker-end="url(#m32-fl2)"/>
+    <path d="M0 0 L-50 45" class="acento" stroke-width="2.5" marker-end="url(#m32-fl2)"/>
+    <text x="96" y="5">x</text><text x="-5" y="-96">y</text><text x="-68" y="60" style="fill:var(--accent)">z (hacia ti)</text>
+    <text x="40" y="75" text-anchor="middle" style="font-weight:700">Mano derecha</text>
+    <text x="40" y="93" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">OpenGL: objeto, mundo, vista</text>
+  </g>
+  <g transform="translate(380,120)">
+    <path d="M0 0 L90 0" stroke="currentColor" stroke-width="2.5" marker-end="url(#m32-fl2)"/>
+    <path d="M0 0 L0 -90" stroke="currentColor" stroke-width="2.5" marker-end="url(#m32-fl2)"/>
+    <path d="M0 0 L50 -45" class="acento2" stroke-width="2.5" stroke-dasharray="5 4" marker-end="url(#m32-fl2)"/>
+    <text x="96" y="5">x</text><text x="-5" y="-96">y</text><text x="56" y="-50" style="fill:var(--accent-2)">z (hacia dentro)</text>
+    <text x="40" y="75" text-anchor="middle" style="font-weight:700">Mano izquierda</text>
+    <text x="40" y="93" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">NDC de OpenGL, Direct3D clásico</text>
+  </g>
+</svg>
+
+<p>La fórmula del producto cruz es la misma en los dos: el álgebra no sabe de manos. Lo que cambia es el <em>dibujo</em>: en un sistema de mano izquierda, el resultado se ve siguiendo la regla de la mano izquierda. OpenGL y WebGL usan por convención un sistema de mano derecha para los espacios de objeto, mundo y cámara, con la cámara mirando hacia $-z$. Pero el espacio NDC que viste en <a href="01-vectores.html">3.1</a> es de mano izquierda: la $z$ crece hacia dentro de la pantalla, porque la matriz de proyección da la vuelta al eje z para que «más lejos» sea «más profundidad». Direct3D ha usado tradicionalmente mano izquierda en todas partes. Todo esto se aclara en <a href="06-espacios-coordenadas.html">3.6</a>; por ahora quédate con que la «lateralidad» es una convención del dibujo, y que mezclar datos de sistemas con distinta lateralidad invierte normales y orientaciones.</p>
+
+<div class="callout senior">
+  <p>Cuando importas un modelo 3D de otro programa y sale «del revés» (se ven las caras de dentro, o la iluminación parece invertida), casi siempre es un problema de lateralidad o de orden de vértices: al reflejar un eje (por ejemplo, invertir la z para pasar de mano izquierda a derecha) se invierte también la orientación de todos los triángulos, y las caras delanteras pasan a ser traseras. La solución no es «arreglar» las normales a ojo: si al reflejar el eje transformas las normales igual que las posiciones, ya salen bien, y lo que falta es invertir también el orden de los vértices de cada triángulo (o cambiar <code>gl.frontFace</code>), porque un reflejo cambia el sentido de giro de todas las caras.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 3.2.1 — Proyectar y deslizar</h3>
+  <p>Implementa <code>proyectar(v, n)</code> (la componente de <code>v</code> a lo largo de la dirección unitaria <code>n</code>) y <code>deslizar(v, n)</code>, que quita a una velocidad su componente contra una pared de normal <code>n</code>, para que el personaje resbale a lo largo de ella en lugar de detenerse en seco. Las pruebas deben salir con ✓.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.2.1" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+const punto = (a, b) => a.x * b.x + a.y * b.y;
+
+function proyectar(v, n) {
+  // TODO: componente de v a lo largo de n (n es unitario). Devuelve un vector.
+  return { x: 0, y: 0 };
+}
+function deslizar(v, n) {
+  // TODO: v sin su componente a lo largo de n
+  return { x: 0, y: 0 };
+}
+
+// --- pruebas ---
+const iguales = (a, b) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
+function comprobar(nombre, obtenido, esperado) {
+  console.log((iguales(obtenido, esperado) ? '✓ ' : '✗ ') + nombre + ' → ' + JSON.stringify(obtenido) + (iguales(obtenido, esperado) ? '' : '   (esperaba ' + JSON.stringify(esperado) + ')'));
+}
+const suelo = { x: 0, y: 1 };                       // normal de un suelo horizontal
+const rampa = { x: -Math.SQRT1_2, y: Math.SQRT1_2 }; // normal de una rampa a 45°
+comprobar('proyectar (3, -4) sobre el suelo', proyectar({ x: 3, y: -4 }, suelo), { x: 0, y: -4 });
+comprobar('deslizar (3, -4) por el suelo', deslizar({ x: 3, y: -4 }, suelo), { x: 3, y: 0 });
+comprobar('deslizar (2, 0) contra la rampa', deslizar({ x: 2, y: 0 }, rampa), { x: 1, y: 1 });
+comprobar('deslizar algo que ya es tangente', deslizar({ x: 5, y: 0 }, suelo), { x: 5, y: 0 });
+</script>
+<script type="text/x-js" data-solucion>
+const punto = (a, b) => a.x * b.x + a.y * b.y;
+
+function proyectar(v, n) {
+  const k = punto(v, n);                 // longitud con signo de la sombra (n unitario)
+  return { x: k * n.x, y: k * n.y };     // la sombra como vector
+}
+function deslizar(v, n) {
+  const p = proyectar(v, n);
+  return { x: v.x - p.x, y: v.y - p.y }; // lo que queda: la parte tangente
+}
+
+const iguales = (a, b) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
+function comprobar(nombre, obtenido, esperado) {
+  console.log((iguales(obtenido, esperado) ? '✓ ' : '✗ ') + nombre + ' → ' + JSON.stringify(obtenido) + (iguales(obtenido, esperado) ? '' : '   (esperaba ' + JSON.stringify(esperado) + ')'));
+}
+const suelo = { x: 0, y: 1 };
+const rampa = { x: -Math.SQRT1_2, y: Math.SQRT1_2 };
+comprobar('proyectar (3, -4) sobre el suelo', proyectar({ x: 3, y: -4 }, suelo), { x: 0, y: -4 });
+comprobar('deslizar (3, -4) por el suelo', deslizar({ x: 3, y: -4 }, suelo), { x: 3, y: 0 });
+comprobar('deslizar (2, 0) contra la rampa', deslizar({ x: 2, y: 0 }, rampa), { x: 1, y: 1 });
+comprobar('deslizar algo que ya es tangente', deslizar({ x: 5, y: 0 }, suelo), { x: 5, y: 0 });
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Con <code>n</code> unitario, la longitud con signo de la sombra es <code>punto(v, n)</code>. Para convertirla en vector, multiplícala por <code>n</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>v = parte a lo largo de n + parte perpendicular</code>. Deslizar es quedarse solo con la segunda.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>proyectar</code> es $(\vec v\cdot\hat n)\,\hat n$: el producto punto da cuánto de <code>v</code> va en la dirección de la normal (negativo si va contra ella) y multiplicar por <code>n</code> lo convierte en vector. <code>deslizar</code> es $\vec v - (\vec v\cdot\hat n)\,\hat n$: el resto de la descomposición, la parte tangente a la pared.</p>
+    <p>Compara con la reflexión: $\vec r = \vec v - 2(\vec v\cdot\hat n)\hat n$. Deslizar quita la componente normal una vez (la anula); reflejar la quita dos veces (la invierte). Un término intermedio, $\vec v - (1 + e)(\vec v\cdot\hat n)\hat n$ con $e$ entre 0 y 1, es un rebote que pierde energía: $e$ es el <em>coeficiente de restitución</em>, la fracción de la velocidad normal que conserva el rebote (1, elástico; 0, se queda pegado y desliza). En la prueba de la rampa, fíjate en que la velocidad resultante <code>(1, 1)</code> es más corta que la original: al deslizar se pierde la parte que empujaba contra la pared.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.2.2 — El brillo especular de Phong</h3>
+  <p>Las superficies brillantes (plástico, metal pulido) muestran un reflejo concentrado de la luz: el <em>brillo especular</em>. El modelo de Phong lo calcula reflejando la luz en la superficie y comparando el reflejo con la dirección hacia el observador: cuanto más se parecen, más brillo. Añade a la esfera un brillo blanco con <code>reflect</code>, sabiendo que el observador mira desde <code>V = vec3(0.0, 0.0, 1.0)</code> y usando un exponente de 40.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.2.2" data-altura="340" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  float R = 0.8, d2 = dot(p, p);
+  if (d2 < R * R) {
+    vec3 P = vec3(p, sqrt(R * R - d2));
+    vec3 N = P / R;
+    vec3 L = normalize(vec3(m, 1.5) - P);
+    vec3 V = vec3(0.0, 0.0, 1.0);                 // hacia el observador
+    float difusa = max(dot(N, L), 0.0);
+    // TODO: brillo especular con reflect()
+    color = vec3(0.2, 0.45, 1.0) * (0.06 + difusa);
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  float R = 0.8, d2 = dot(p, p);
+  if (d2 < R * R) {
+    vec3 P = vec3(p, sqrt(R * R - d2));
+    vec3 N = P / R;
+    vec3 L = normalize(vec3(m, 1.5) - P);
+    vec3 V = vec3(0.0, 0.0, 1.0);
+    float difusa = max(dot(N, L), 0.0);
+    // reflect espera la dirección de LLEGADA de la luz: de la luz hacia el punto, -L
+    vec3 Rf = reflect(-L, N);
+    // pow con base >= 0: el max va ANTES (pow de un negativo es indefinido, ver 3.4)
+    float especular = pow(max(dot(Rf, V), 0.0), 40.0);
+    color = vec3(0.2, 0.45, 1.0) * (0.06 + difusa) + vec3(1.0) * especular;
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>L</code> apunta del punto <em>hacia</em> la luz. <code>reflect(I, N)</code> espera la dirección en la que <em>llega</em> el rayo, que es la contraria.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El brillo es <code>pow(max(dot(R, V), 0.0), 40.0)</code>: un coseno elevado a una potencia alta solo es grande cuando el ángulo es muy pequeño, lo que concentra el brillo en una mancha.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El rayo de luz viaja de la luz al punto, en la dirección $-\hat L$. Reflejado en la superficie sale en $\vec r = \operatorname{reflect}(-\hat L, \hat N)$. Si ese rayo reflejado viaja hacia el ojo, vemos el reflejo: la intensidad es $\max(\vec r\cdot\hat V, 0)^{40}$. El exponente controla el tamaño de la mancha: con 40, el coseno tiene que estar muy cerca de 1 para que su potencia no sea casi 0, así que la mancha es pequeña (superficie pulida); con 5 sería grande y difusa.</p>
+    <p>Dos detalles de senior. El <code>max</code> va <em>dentro</em> del <code>pow</code>: la especificación de GLSL dice que <code>pow(x, y)</code> con <code>x &lt; 0</code> es indefinido, y en la lección <a href="04-funciones-forma.html">3.4</a> verás que en la práctica da NaN, 0 o el valor «correcto» según cómo lo compile cada GPU. Y no hace falta normalizar <code>Rf</code>: reflejar un vector unitario en una normal unitaria conserva la longitud. Una variante muy usada, Blinn-Phong, compara la normal con el vector «a medio camino» <code>normalize(L + V)</code>; es más barata cuando la luz y el ojo están lejos y se comporta mejor en ángulos rasantes.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.2.3 — ¿Horario o antihorario?</h3>
+  <p>Escribe <code>areaConSigno(poligono)</code>, el área con signo de un polígono cerrado (positiva si sus vértices van en sentido antihorario con la y hacia arriba), y úsala para decidir la orientación. Pista de partida: un polígono se puede partir en triángulos desde un punto cualquiera (por ejemplo, el origen), y el área con signo de cada triángulo sale de un producto cruz.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.2.3" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+const cruz = (a, b) => a.x * b.y - a.y * b.x;
+
+function areaConSigno(pol) {
+  // TODO: suma, para cada arista (pol[i] → pol[i+1]), el área con signo
+  // del triángulo (origen, pol[i], pol[i+1]). No olvides la arista que cierra.
+  return 0;
+}
+const orientacion = (pol) => areaConSigno(pol) > 0 ? 'antihorario' : areaConSigno(pol) < 0 ? 'horario' : 'degenerado';
+
+// --- pruebas ---
+const cuadrado = [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 2 }, { x: 0, y: 2 }];
+const lejos = cuadrado.map((p) => ({ x: p.x + 100, y: p.y - 50 }));
+const flecha = [{ x: 0, y: 0 }, { x: 4, y: 2 }, { x: 0, y: 4 }, { x: 1, y: 2 }];   // no convexo
+console.log('cuadrado:', areaConSigno(cuadrado), orientacion(cuadrado), '(esperado: 4, antihorario)');
+console.log('al revés:', areaConSigno([...cuadrado].reverse()), orientacion([...cuadrado].reverse()), '(esperado: -4, horario)');
+console.log('trasladado:', areaConSigno(lejos), '(esperado: 4: no depende del origen)');
+console.log('flecha no convexa:', areaConSigno(flecha), '(esperado: 6)');
+</script>
+<script type="text/x-js" data-solucion>
+const cruz = (a, b) => a.x * b.y - a.y * b.x;
+
+function areaConSigno(pol) {
+  let s = 0;
+  for (let i = 0; i < pol.length; i++) {
+    const a = pol[i], b = pol[(i + 1) % pol.length];   // % cierra el polígono
+    s += cruz(a, b);          // doble del área con signo del triángulo (origen, a, b)
+  }
+  return s / 2;
+}
+const orientacion = (pol) => areaConSigno(pol) > 0 ? 'antihorario' : areaConSigno(pol) < 0 ? 'horario' : 'degenerado';
+
+const cuadrado = [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 2 }, { x: 0, y: 2 }];
+const lejos = cuadrado.map((p) => ({ x: p.x + 100, y: p.y - 50 }));
+const flecha = [{ x: 0, y: 0 }, { x: 4, y: 2 }, { x: 0, y: 4 }, { x: 1, y: 2 }];
+console.log('cuadrado:', areaConSigno(cuadrado), orientacion(cuadrado), '(esperado: 4, antihorario)');
+console.log('al revés:', areaConSigno([...cuadrado].reverse()), orientacion([...cuadrado].reverse()), '(esperado: -4, horario)');
+console.log('trasladado:', areaConSigno(lejos), '(esperado: 4: no depende del origen)');
+console.log('flecha no convexa:', areaConSigno(flecha), '(esperado: 6)');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El área con signo del triángulo (origen, $a$, $b$) es $\tfrac12\operatorname{cruz}(a - O, b - O) = \tfrac12\operatorname{cruz}(a, b)$ si el origen es $O = (0,0)$.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Recorre las aristas con <code>b = pol[(i + 1) % pol.length]</code>: el operador <code>%</code> hace que la última arista vuelva al primer vértice.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Es la <strong>fórmula del zapatero</strong> (<em>shoelace formula</em>): $A = \tfrac12\sum_i \operatorname{cruz}(P_i, P_{i+1})$. Cada término es el área con signo del triángulo que forman el origen y una arista. Las partes de esos triángulos que quedan fuera del polígono aparecen dos veces con signos opuestos y se cancelan; lo que sobrevive es exactamente el área del polígono, con el signo de su orientación. Por eso funciona con polígonos no convexos (la flecha) y el resultado no depende de dónde esté el origen (el cuadrado trasladado), aunque cada término por separado sí dependa.</p>
+    <p>Esta función tiene un uso práctico inmediato: antes de dibujar o triangular un polígono que te llega de fuera (un SVG, un editor), comprueba su orientación y dale la vuelta si no es la que esperas. Y recuerda el bicho de la lección: en coordenadas de pantalla, «positivo» se ve como horario.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 3.2.4 — Interpolar colores como una GPU</h3>
+  <p>Parte del rasterizador del ejemplo 3.2.3 (con píxeles de tamaño 1). Calcula las coordenadas baricéntricas de cada píxel y úsalas para mezclar tres colores: rojo en A, verde en B y azul en C. El resultado debe ser el famoso «triángulo arcoíris», el <em>hola mundo</em> de los gráficos 3D, con los colores puros en los vértices. Debe funcionar en las dos orientaciones.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.2.4" data-altura="340" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+
+float cruz(vec2 u, vec2 v) { return u.x * v.y - u.y * v.x; }
+float arista(vec2 a, vec2 b, vec2 p) { return cruz(b - a, p - a); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 A = vec2(-1.1, -0.85), B = vec2(0.9, -0.8);
+  vec2 C = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+
+  float eAB = arista(A, B, p), eBC = arista(B, C, p), eCA = arista(C, A, p);
+  bool dentro = (eAB >= 0.0 && eBC >= 0.0 && eCA >= 0.0) || (eAB <= 0.0 && eBC <= 0.0 && eCA <= 0.0);
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  if (dentro) {
+    // TODO: coordenadas baricéntricas y mezcla de rojo (A), verde (B) y azul (C)
+    color = vec3(0.8);
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+
+float cruz(vec2 u, vec2 v) { return u.x * v.y - u.y * v.x; }
+float arista(vec2 a, vec2 b, vec2 p) { return cruz(b - a, p - a); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 A = vec2(-1.1, -0.85), B = vec2(0.9, -0.8);
+  vec2 C = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+
+  float eAB = arista(A, B, p), eBC = arista(B, C, p), eCA = arista(C, A, p);
+  bool dentro = (eAB >= 0.0 && eBC >= 0.0 && eCA >= 0.0) || (eAB <= 0.0 && eBC <= 0.0 && eCA <= 0.0);
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  float area2 = arista(A, B, C);             // doble del área con signo del triángulo
+  if (dentro && abs(area2) > 1e-6) {         // triángulo degenerado: nada que pintar
+    // Cada peso es el subtriángulo OPUESTO a su vértice, dividido por el total.
+    // Al dividir por area2 (con su signo), el signo de la orientación se cancela.
+    float lA = eBC / area2;
+    float lB = eCA / area2;
+    float lC = eAB / area2;                  // lA + lB + lC = 1
+    color = lA * vec3(1.0, 0.0, 0.0) + lB * vec3(0.0, 1.0, 0.0) + lC * vec3(0.0, 0.0, 1.0);
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El peso de A es el área del triángulo $PBC$ entre el área de $ABC$. Las dos áreas (con signo, y dobles, pero el 2 se cancela) son funciones de arista: <code>arista(B, C, p)</code> y <code>arista(A, B, C)</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si divides por el área con su signo, no necesitas <code>abs</code>: cuando el triángulo es horario, numerador y denominador son negativos a la vez y el cociente vuelve a ser positivo. Cuidado con el caso degenerado (C sobre la recta AB): el área es 0.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada coordenada baricéntrica es el cociente entre el área del subtriángulo opuesto al vértice y el área total: $\lambda_A = E_{BC}(P) / E_{AB}(C)$. Aquí usamos que la función de arista de $BC$ evaluada en $A$ vale lo mismo que la de $AB$ evaluada en $C$: las dos son el doble del área con signo de $ABC$ (recorrer los vértices empezando por otro no cambia el sentido de giro). En el vértice A, $E_{BC}$ es el área entera y $\lambda_A = 1$; en la arista BC, $E_{BC} = 0$ y $\lambda_A = 0$. Entre medias varía linealmente: por eso el degradado es perfectamente suave.</p>
+    <p>Con los tres pesos, el color es la combinación afín de los tres colores. Esto es literalmente lo que hace la GPU con cada <em>varying</em> (lección <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>), con un añadido para el 3D que verás en <a href="06-espacios-coordenadas.html">3.6</a>: en perspectiva, la interpolación lineal en pantalla no es correcta, y la GPU corrige los pesos dividiendo por la profundidad («interpolación con corrección de perspectiva»). Fíjate además en la guarda: si C cae sobre la recta AB, el área es 0 y dividiríamos por cero: NaN, que en pantalla sale como píxeles negros (<a href="07-precision.html">3.7</a>).</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><strong>Producto punto</strong>: $\vec a\cdot\vec b = a_x b_x + a_y b_y (+ a_z b_z) = |\vec a||\vec b|\cos\theta$ (se deduce del teorema del coseno). Su signo dice si el ángulo es agudo, recto u obtuso; con vectores unitarios, es el coseno.</li>
+    <li><strong>Proyección</strong>: $(\vec b\cdot\hat a)\,\hat a$. Todo vector se parte en «a lo largo de» más «perpendicular a». La distancia con signo de un punto a una recta es $(P - A)\cdot\hat n$.</li>
+    <li>Para comparar ángulos, compara cosenos. Si usas <code>acos</code>, recorta antes con <code>clamp</code>: el redondeo puede dar 1.0000001 y NaN.</li>
+    <li><strong>Lambert</strong>: brillo difuso = $\max(\hat N\cdot\hat L, 0)$, porque un haz inclinado se reparte en más superficie. <strong>Normaliza N y L</strong> justo antes.</li>
+    <li><strong>Reflexión</strong>: $\vec r = \vec d - 2(\vec d\cdot\hat n)\hat n$, que es <code>reflect(I, N)</code>; la normal debe ser unitaria.</li>
+    <li><strong>Producto cruz 3D</strong>: perpendicular a los dos, longitud = área del paralelogramo, anticonmutativo, dirección según la mano derecha. Solo existe para <code>vec3</code> en GLSL.</li>
+    <li><strong>Cruz 2D</strong> $a_x b_y - a_y b_x$: signo = orientación (izquierda/derecha, antihorario/horario; al revés en pantalla con la y hacia abajo); la mitad = área del triángulo con signo. <code>atan(cruz, punto)</code> da el ángulo con signo.</li>
+    <li><strong>Funciones de arista</strong>: un punto está dentro de un triángulo si las tres tienen el mismo signo. Es como rasteriza la GPU; divididas por el área, son las <strong>coordenadas baricéntricas</strong> con las que se interpolan los varyings.</li>
+    <li>La normal de un triángulo es $(B - A)\times(C - A)$ y su sentido depende del orden de los vértices. La lateralidad (mano derecha o izquierda) es una convención del dibujo: OpenGL usa mano derecha en objeto/mundo/vista y mano izquierda en NDC.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://www.3blue1brown.com/lessons/dot-products">3Blue1Brown — Dot products and duality</a> y <a href="https://www.3blue1brown.com/lessons/cross-products">Cross products</a>: la intuición geométrica, animada.</li>
+  <li><a href="https://www.scratchapixel.com/lessons/3d-basic-rendering/rasterization-practical-implementation/rasterization-stage.html">Scratchapixel — The rasterization stage</a>: funciones de arista, regla top-left y coordenadas baricéntricas, con código.</li>
+  <li><a href="https://fgiesen.wordpress.com/2013/02/06/the-barycentric-conspirac/">Fabian Giesen — The barycentric conspiracy</a> y su serie sobre rasterización con aritmética entera.</li>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">Especificación de GLSL ES 3.00</a>, sección 8.5 (funciones geométricas: <code>dot</code>, <code>cross</code>, <code>reflect</code>, <code>faceforward</code>).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m3.js"></script>
+<script src="recursos/demos-02.js"></script>
+</body>
+</html>

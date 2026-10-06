@@ -1,0 +1,1374 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.6 · 3D: matrices, profundidad y el cubo que gira — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/3d-cubo">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>3D: matrices, profundidad y el cubo que gira</h1>
+  <p class="resumen">El «hola mundo» del 3D: un cubo texturizado e iluminado que gira y que puedes orbitar con el ratón. Para llegar a él juntamos todo lo anterior y añadimos tres piezas nuevas: las matrices de modelo, vista y proyección, el búfer de profundidad y la iluminación difusa con la matriz normal.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: 5.5, 3.5, 3.6, 3.2</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Construirás la malla de un cubo y entenderás por qué necesita 24 vértices y no 8.</li>
+      <li>Llevarás cada vértice a la pantalla con las matrices de modelo, vista y proyección, subidas con <code>uniformMatrix4fv</code>, y mantendrás la proporción al redimensionar.</li>
+      <li>Usarás el búfer de profundidad (<code>DEPTH_TEST</code>, <code>depthFunc</code>, el atributo <code>depth</code>) sabiendo cuándo hay que borrarlo… y cuándo el navegador lo borra por ti.</li>
+      <li>Activarás el <em>face culling</em> y diagnosticarás los errores de winding.</li>
+      <li>Iluminarás con el modelo de Lambert, transformando las normales con la matriz normal, y montarás una cámara orbital con el ratón.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Del plano al espacio</h2>
+<p>Todo lo que hemos dibujado hasta ahora era plano: la <code>z</code> valía 0 y la <code>w</code> valía 1. Para dibujar en 3D no hace falta ninguna API nueva: los vértices ganan una coordenada, el vertex shader los multiplica por matrices, y WebGL resuelve con el búfer de profundidad qué superficie tapa a cuál. Las matemáticas ya las conoces: las transformaciones de <a href="../03-matematicas/05-matrices.html">3.5</a>, el recorrido de modelo a pantalla de <a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a> y el producto punto de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>. Aquí las convertimos en llamadas de WebGL, y conocemos los tres comportamientos raros clásicos del 3D: el objeto que se ve «del revés», las caras que desaparecen y la luz que miente.</p>
+
+<h2>La malla del cubo: 24 vértices, no 8</h2>
+<p>Un cubo tiene 8 esquinas, pero su malla tiene <strong>24 vértices</strong>. La razón es que, para WebGL, un vértice no es un punto del espacio: es la combinación completa de todos sus atributos. Cada esquina pertenece a tres caras, y en cada cara necesita una <strong>normal</strong> distinta (la dirección perpendicular a esa cara, que usaremos para la luz) y unas <strong>coordenadas de textura</strong> distintas (cada cara tiene su propia imagen). Tres combinaciones distintas son tres vértices distintos: 8 esquinas × 3 caras = 24 vértices, 4 por cara. Con índices (5.3), 6 caras × 2 triángulos × 3 = 36 índices.</p>
+<table>
+  <thead><tr><th></th><th>8 vértices compartidos</th><th>24 vértices (4 por cara)</th></tr></thead>
+  <tbody>
+    <tr><td>Normales</td><td>Una por esquina, promediada: el cubo se ilumina como si fuera redondo.</td><td>Una por cara: aristas vivas, cada cara con su tono.</td></tr>
+    <tr><td>Coordenadas de textura</td><td>Imposible que las 6 caras muestren la imagen entera.</td><td>Cada cara, de (0, 0) a (1, 1).</td></tr>
+    <tr><td>Memoria (8 floats por vértice)</td><td>256 bytes</td><td>768 bytes</td></tr>
+  </tbody>
+</table>
+<p>La regla general: un vértice se puede compartir entre triángulos solo si comparte <em>todos</em> sus atributos. En superficies suaves (una esfera) se comparten; en aristas vivas o costuras de textura, se duplican.</p>
+
+<p>Escribir los 24 vértices a mano es la forma más rápida de equivocarse en un signo. Mejor generarlos: para cada cara, su normal <code>n</code> y dos ejes <code>u</code> (derecha) y <code>v</code> (arriba) sobre la cara, elegidos de modo que <code>u × v = n</code>. Así, recorrer las esquinas en el orden (−u−v), (+u−v), (+u+v), (−u+v) gira en sentido antihorario visto desde fuera, que es la cara delantera (5.3).</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function crearCubo() {
+  const caras = [ // [normal, u (derecha), v (arriba)], con u × v = normal
+    [[ 1, 0, 0], [ 0, 0, -1], [0, 1,  0]],
+    [[-1, 0, 0], [ 0, 0,  1], [0, 1,  0]],
+    [[ 0, 1, 0], [ 1, 0,  0], [0, 0, -1]],
+    [[ 0, -1, 0], [ 1, 0,  0], [0, 0,  1]],
+    [[ 0, 0, 1], [ 1, 0,  0], [0, 1,  0]],
+    [[ 0, 0, -1], [-1, 0,  0], [0, 1,  0]],
+  ];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(
+        0.5 * (n[0] + su * u[0] + sv * v[0]),
+        0.5 * (n[1] + su * u[1] + sv * v[1]),
+        0.5 * (n[2] + su * u[2] + sv * v[2]),
+        n[0], n[1], n[2],
+        (su + 1) / 2, (sv + 1) / 2);
+    }
+    const b = k * 4;
+    indices.push(b, b + 1, b + 2,   b, b + 2, b + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+</script>
+<ol>
+  <li data-l="2-9">Las seis caras. Por ejemplo, la cara +Z: normal (0, 0, 1), derecha +x y arriba +y, como la verías de frente. Comprueba cualquiera con la regla de la mano derecha: <code>u × v</code> debe dar <code>n</code>.</li>
+  <li data-l="12">Las cuatro esquinas de la cara, en orden antihorario visto desde fuera.</li>
+  <li data-l="14-16">Posición: el centro de la cara (<code>n</code>) más o menos medio lado en cada eje de la cara. Todo multiplicado por 0,5: un cubo de lado 1 centrado en el origen.</li>
+  <li data-l="17">La normal de la cara, igual en sus cuatro vértices.</li>
+  <li data-l="18">Coordenadas de textura: de (0, 0) abajo a la izquierda a (1, 1) arriba a la derecha de cada cara.</li>
+  <li data-l="20-21">Dos triángulos por cara, los dos antihorarios. 8 floats por vértice (32 bytes de stride) y 36 índices en total.</li>
+</ol>
+</div>
+
+<h2>Modelo, vista y proyección</h2>
+<p>En <a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a> viste el recorrido de un vértice: del espacio del objeto al mundo (matriz de <strong>modelo</strong>), del mundo al espacio de la cámara (matriz de <strong>vista</strong>) y de la cámara al clip space (matriz de <strong>proyección</strong>), donde la división por <code>w</code> produce la perspectiva. En el vertex shader es una línea:</p>
+$$\text{gl\_Position} = P \cdot V \cdot M \cdot \begin{pmatrix} x \\ y \\ z \\ 1 \end{pmatrix}$$
+<p>Se lee de derecha a izquierda: primero el modelo, luego la vista, al final la proyección. En JavaScript las construimos con <code>mat4</code> de GLKit (arrays de 16 floats por columnas, 5.4) y las subimos con <code>uniformMatrix4fv</code>:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const aspecto = gl.drawingBufferWidth / gl.drawingBufferHeight;
+const proyeccion = mat4.perspectiva(Math.PI / 3, aspecto, 0.1, 100);
+const vista = mat4.mirarA([0, 1.2, 3], [0, 0, 0], [0, 1, 0]);
+const modelo = mat4.producto(mat4.rotacionY(t), mat4.rotacionX(t * 0.7));
+
+gl.uniformMatrix4fv(loc.proyeccion, false, proyeccion);
+gl.uniformMatrix4fv(loc.vista, false, vista);
+gl.uniformMatrix4fv(loc.modelo, false, modelo);
+</script>
+<ol>
+  <li data-l="1">La proporción del búfer <em>real</em>. Si cambia el tamaño del canvas y no la actualizas, el cubo se estira (el problema del anillo de 5.1, ahora resuelto donde toca).</li>
+  <li data-l="2"><code>perspectiva(fovY, aspecto, cerca, lejos)</code>: campo de visión vertical de 60° (en radianes), la proporción, y los planos de recorte cercano y lejano. Solo se ve lo que está entre 0,1 y 100 unidades de la cámara.</li>
+  <li data-l="3"><code>mirarA(ojo, centro, arriba)</code>: la cámara está en (0, 1.2, 3), mira al origen y considera «arriba» el eje +y. Es la inversa de colocar la cámara en el mundo.</li>
+  <li data-l="4">El objeto gira sobre Y y sobre X según el tiempo. <code>producto(A, B)</code> es A × B: se aplica primero B.</li>
+  <li data-l="6-8">Tres matrices, tres uniforms <code>mat4</code>, <code>transpose = false</code> porque ya van por columnas.</li>
+</ol>
+</div>
+
+<div class="callout senior" data-titulo="¿Multiplicar en la CPU o en la GPU?">
+  <p>Escrito así, el vertex shader hace tres productos matriz × vector por vértice. Con 24 vértices da igual; con un millón, sobra trabajo, porque <code>P · V · M</code> es la misma matriz para todos los vértices del objeto. Por eso muchos motores multiplican una vez por objeto en JavaScript y suben la matriz combinada (<code>u_mvp</code>), y aparte la de modelo, que la iluminación necesita. Es la regla de 5.4 aplicada a matrices: lo que es igual para todo el dibujo se calcula una vez, fuera del shader.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Quieres que el cubo gire sobre sí mismo y, además, esté desplazado 2 unidades a la derecha. ¿Qué matriz de modelo es la correcta?</p>
+  <ul>
+    <li><code>mat4.producto(mat4.rotacionY(t), mat4.traslacion(2, 0, 0))</code><div class="explicacion">Se aplica primero la traslación y después la rotación: el cubo, ya desplazado, gira alrededor del origen del mundo y describe un círculo de radio 2, como una luna.</div></li>
+    <li data-correcta><code>mat4.producto(mat4.traslacion(2, 0, 0), mat4.rotacionY(t))</code><div class="explicacion">Correcto: primero gira en su sitio (alrededor de su propio centro, que está en el origen) y después se desplaza. El orden de lectura es de derecha a izquierda.</div></li>
+    <li>Da igual el orden: la multiplicación de matrices es conmutativa.<div class="explicacion">No lo es, y esta es la demostración más famosa. Lo viste en <a href="../03-matematicas/05-matrices.html">3.5</a>.</div></li>
+  </ul>
+</div>
+
+<h2>El búfer de profundidad</h2>
+<p>Dibuja el cubo con lo que sabemos y verás algo raro: según el ángulo, parece que ves su interior, o que las caras de atrás tapan a las de delante. La GPU dibuja los triángulos en el orden en que llegan, y cada uno pinta encima de lo anterior, esté más cerca o más lejos. Para que lo cercano tape a lo lejano hace falta el <strong>búfer de profundidad</strong> (<em>z-buffer</em>, <em>depth buffer</em>): una segunda imagen, del mismo tamaño que la de color, que guarda en cada píxel la profundidad del fragmento más cercano dibujado hasta ahora.</p>
+<ul>
+  <li><code>gl.enable(gl.DEPTH_TEST)</code> activa la comparación. Está desactivada por defecto.</li>
+  <li>Para cada fragmento, la GPU compara su profundidad (la <code>z</code> tras la división por <code>w</code>, llevada a 0…1) con la guardada, usando <code>gl.depthFunc</code> (por defecto <code>gl.LESS</code>: pasa si está más cerca). Si pasa, escribe su color y su profundidad; si no, se descarta.</li>
+  <li><code>gl.clear(gl.DEPTH_BUFFER_BIT)</code> rellena la profundidad con el valor de <code>gl.clearDepth</code> (por defecto 1, lo más lejano), para que el primer fragmento de cada píxel siempre pase. Se combina con el borrado de color: <code>gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)</code>.</li>
+  <li><code>gl.depthMask(false)</code> sigue comparando pero deja de escribir la profundidad (lo usaremos con los objetos transparentes en 5.7).</li>
+</ul>
+<p>Todos estos valores por defecto los comprobamos: <code>DEPTH_FUNC</code> = <code>LESS</code>, <code>DEPTH_CLEAR_VALUE</code> = 1, <code>DEPTH_WRITEMASK</code> = <code>true</code>. Y el búfer tiene que existir: el atributo <code>depth</code> de <code>getContext</code> vale <code>true</code> por defecto (con 24 bits en la GPU de pruebas). Si creas el contexto con <code>depth: false</code>, <code>DEPTH_BITS</code> vale 0 y <code>enable(gl.DEPTH_TEST)</code> no hace nada: <code>isEnabled</code> dice que está activado, pero el último triángulo dibujado siempre gana.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.6.1 — El cubo que gira, con sus interruptores</h3>
+  <p>El cubo completo: malla generada, tres matrices, profundidad y culling. Las casillas te dejan desactivar cada pieza en vivo; prueba cada una y mira qué pasa. La textura es el damero de <code>Texturas</code>, creado con <code>GLKit.crearTextura</code> (5.5), y cada cara está teñida con un color distinto para distinguirlas.</p>
+  <div class="js-playground" data-titulo="Cubo: MVP, profundidad y culling" data-altura="340" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label><input type="checkbox" id="depth" checked> DEPTH_TEST</label>
+  <label><input type="checkbox" id="cull" checked> CULL_FACE</label>
+  <label><input type="checkbox" id="cw"> frontFace(CW)</label>
+  <label><input type="checkbox" id="aspecto" checked> actualizar aspecto</label>
+</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 16px; flex-wrap: wrap; padding: 8px 12px; font: 13px ui-monospace, monospace; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+uniform mat4 u_modelo, u_vista, u_proyeccion;
+out vec2 v_uv;
+flat out vec3 v_tinte;
+void main() {
+  v_uv = a_uv;
+  v_tinte = 0.6 + 0.4 * a_normal;                   // un color por cara, a partir de su normal
+  gl_Position = u_proyeccion * u_vista * u_modelo * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+flat in vec3 v_tinte;
+out vec4 color;
+void main() { color = vec4(texture(u_tex, v_uv).rgb * v_tinte, 1.0); }`);
+
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]),
+                 n[0], n[1], n[2], (su + 1) / 2, (sv + 1) / 2);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);                                // 32 bytes por vértice
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);   // se guarda en el VAO
+const textura = GLKit.crearTextura(gl, Texturas.crear('damero', 256), { mipmaps: true });
+
+const loc = {};
+for (const n of ['u_modelo', 'u_vista', 'u_proyeccion', 'u_tex']) loc[n] = gl.getUniformLocation(programa, n);
+const casilla = (id) => document.getElementById(id).checked;
+const ASPECTO_FIJO = 1;                                        // el de un canvas cuadrado
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  casilla('depth') ? gl.enable(gl.DEPTH_TEST) : gl.disable(gl.DEPTH_TEST);
+  casilla('cull') ? gl.enable(gl.CULL_FACE) : gl.disable(gl.CULL_FACE);
+  gl.frontFace(casilla('cw') ? gl.CW : gl.CCW);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  const aspecto = casilla('aspecto') ? gl.drawingBufferWidth / gl.drawingBufferHeight : ASPECTO_FIJO;
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(loc.u_proyeccion, false, mat4.perspectiva(Math.PI / 3, aspecto, 0.1, 100));
+  gl.uniformMatrix4fv(loc.u_vista, false, mat4.mirarA([0, 1.2, 2.6], [0, 0, 0], [0, 1, 0]));
+  gl.uniformMatrix4fv(loc.u_modelo, false, mat4.producto(mat4.rotacionY(t * 0.8), mat4.rotacionX(t * 0.5)));
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, textura);
+  gl.uniform1i(loc.u_tex, 0);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Qué observar en cada interruptor:</p>
+  <ul>
+    <li><strong>Sin <code>DEPTH_TEST</code> pero con culling</strong>, el cubo se ve bien. ¡Sorpresa! En un objeto convexo, el culling ya elimina todas las caras traseras, y las delanteras nunca se solapan entre sí. Desactiva los dos y aparece el caos: las caras traseras se pintan encima de las delanteras según el orden de los índices.</li>
+    <li><strong>Sin culling, con profundidad</strong>: se ve igual, pero la GPU procesa el doble de fragmentos (las caras traseras se rasterizan y luego pierden el test de profundidad).</li>
+    <li><strong><code>frontFace(CW)</code></strong> declara delanteras las caras horarias: el culling elimina ahora las de delante y ves el interior del cubo, las caras del fondo por dentro.</li>
+    <li><strong>Sin actualizar el aspecto</strong>, la proyección supone un canvas cuadrado y el cubo sale ensanchado en un canvas apaisado.</li>
+  </ul>
+</section>
+
+<div class="callout bestiario" data-id="m5-cubo-del-reves" data-titulo="El objeto se ve «del revés» o las caras de atrás tapan a las de delante">
+  <p><strong>Síntoma:</strong> un objeto 3D parece transparente o vuelto del revés; al girar, caras que deberían estar ocultas aparecen por delante.</p>
+  <p><strong>Causa:</strong> no hay test de profundidad: <code>DEPTH_TEST</code> sin activar, o activado en un contexto (o un framebuffer, 5.8) que no tiene búfer de profundidad, como uno creado con <code>depth: false</code>. Sin él, gana el último triángulo dibujado.</p>
+  <p><strong>Solución:</strong> <code>gl.enable(gl.DEPTH_TEST)</code>, <code>gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)</code> en cada frame, y comprueba <code>gl.getParameter(gl.DEPTH_BITS)</code> si sospechas que no hay búfer. Recuerda que el culling puede ocultar el problema en objetos convexos y hacerlo aparecer en cuanto añadas un segundo objeto.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Una librería crea el contexto con <code>getContext('webgl2', { depth: false })</code> para ahorrar memoria. Tú activas <code>gl.enable(gl.DEPTH_TEST)</code> y borras con <code>DEPTH_BUFFER_BIT</code>. ¿Qué ves al dibujar dos cubos que se solapan?</p>
+  <ul>
+    <li>Lo correcto: el test de profundidad está activado.<div class="explicacion"><code>isEnabled(gl.DEPTH_TEST)</code> dirá <code>true</code>, pero no hay búfer contra el que comparar: <code>DEPTH_BITS</code> vale 0.</div></li>
+    <li data-correcta>El cubo dibujado en segundo lugar tapa al primero, esté delante o detrás.<div class="explicacion">Correcto: sin búfer de profundidad el test siempre pasa, como si no existiera (comprobado). Y como <code>getContext</code> no se puede repetir con otros atributos (5.1), la solución es crear el contexto con <code>depth: true</code> desde el principio, o dibujar en un framebuffer con su propio búfer de profundidad (5.8).</div></li>
+    <li>Nada: <code>INVALID_OPERATION</code> por activar un test sin búfer.<div class="explicacion">No hay ningún error: activar el test es legal, simplemente no tiene efecto.</div></li>
+  </ul>
+</div>
+
+<h3>¿Hace falta borrar la profundidad en cada frame?</h3>
+<p>La respuesta de manual es «sí, siempre», y es la que debes seguir. Pero la realidad tiene un matiz que confunde mucho, así que lo comprobamos. Recuerda de <a href="01-contexto.html">5.1</a> que, con <code>preserveDrawingBuffer: false</code>, el navegador borra el búfer de dibujo tras presentarlo… y eso incluye la profundidad. Resultado medido:</p>
+<table>
+  <thead><tr><th>Situación (frame 1 dibuja un cuadrado cerca; frame 2 borra solo el color y dibuja otro detrás)</th><th>¿Se ve el segundo?</th></tr></thead>
+  <tbody>
+    <tr><td>Canvas normal (<code>preserveDrawingBuffer: false</code>)</td><td>Sí: el navegador ya había borrado la profundidad</td></tr>
+    <tr><td>Canvas con <code>preserveDrawingBuffer: true</code></td><td>No: la profundidad del frame anterior lo tapa</td></tr>
+    <tr><td>Dos pasadas en el mismo frame, sin borrar la profundidad entre ellas</td><td>No</td></tr>
+  </tbody>
+</table>
+<p>Así que olvidar el borrado de profundidad en el canvas «funciona» por accidente… hasta que dibujas en un framebuffer propio (5.8), activas <code>preserveDrawingBuffer</code>, dibujas varias vistas en un frame o el navegador cambia de estrategia. Entonces aparecen los síntomas de golpe, lejos del error.</p>
+
+<div class="callout bestiario" data-id="m5-profundidad-sin-borrar" data-titulo="Manchas, huecos y objetos que desaparecen al moverse">
+  <p><strong>Síntoma:</strong> un objeto en movimiento deja manchas o se va «comiendo»: aparecen huecos por donde pasó antes, o un objeto nuevo no se ve aunque debería estar delante del fondo. A veces solo ocurre al dibujar en un framebuffer, o solo en una de las vistas de una pantalla dividida.</p>
+  <p><strong>Causa:</strong> la profundidad no se borra entre frames (o entre pasadas). El búfer conserva la profundidad más cercana de todo lo dibujado antes, y los fragmentos nuevos que están más lejos que ese «fantasma» pierden el test. Con el canvas normal el navegador la borra tras presentar y el error se esconde; con <code>preserveDrawingBuffer: true</code>, con varias pasadas por frame o en un framebuffer propio, sale a la luz.</p>
+  <p><strong>Solución:</strong> <code>gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)</code> al principio de cada frame y de cada pasada, sin excepciones. Y si borras con scissor (5.1), recuerda que el scissor también limita el borrado de la profundidad.</p>
+</div>
+
+<h2>Face culling y winding</h2>
+<p>En un objeto cerrado, la mitad de los triángulos mira hacia otro lado. El <strong>culling</strong> los descarta antes de rasterizarlos, usando el sentido de giro en pantalla que vimos en <a href="03-buffers-atributos.html">5.3</a>: un triángulo que tiene sus vértices en sentido antihorario visto desde fuera se verá horario cuando esté de espaldas a la cámara.</p>
+<ul>
+  <li><code>gl.enable(gl.CULL_FACE)</code> lo activa (desactivado por defecto).</li>
+  <li><code>gl.cullFace(gl.BACK)</code> (por defecto) descarta las caras traseras; también existen <code>FRONT</code> y <code>FRONT_AND_BACK</code>.</li>
+  <li><code>gl.frontFace(gl.CCW)</code> (por defecto) dice que las delanteras son las antihorarias.</li>
+</ul>
+<p>El culling ahorra la mitad del trabajo de rasterizado de un objeto cerrado y además protege frente a errores de profundidad en objetos convexos. El precio: exige que <em>todas</em> las caras estén bien orientadas. Una sola cara con los índices en el orden contrario desaparece, y a través del hueco se ve el fondo (o, sin profundidad, el interior).</p>
+
+<div class="callout bestiario" data-id="m5-cara-invisible" data-titulo="Falta una cara del objeto (o se ve el interior)">
+  <p><strong>Síntoma:</strong> con el culling activado, alguna cara del modelo no aparece, o un objeto se ve «vaciado», como si miraras sus caras interiores.</p>
+  <p><strong>Causa:</strong> winding incorrecto. Esa cara tiene sus vértices (o sus índices) en sentido horario visto desde fuera, así que el culling la trata como trasera. Si le pasa a <em>todas</em> las caras, se descartan las de delante y ves el interior: el modelo está entero al revés, o alguien puso <code>frontFace(gl.CW)</code>. También ocurre al aplicar una escala negativa (un espejo, <code>escala(-1, 1, 1)</code>), que invierte el sentido de giro de todos los triángulos (el comportamiento raro <a href="../04-gpu/02-pipeline-grafico.html#m4-escala-negativa">de la escala negativa</a>, en 4.2).</p>
+  <p><strong>Solución:</strong> desactiva el culling y pinta las caras con <code>gl_FrontFacing</code> (5.3): las rojas son las mal orientadas. Intercambia dos índices de cada triángulo de esa cara. Para objetos reflejados con escala negativa, cambia <code>frontFace</code> mientras los dibujas.</p>
+</div>
+
+<h2>Luz: el modelo de Lambert</h2>
+<p>El cubo teñido de antes se ve plano: cada cara tiene un color fijo, gire como gire. Para que parezca un objeto iluminado, cada cara tiene que ser más o menos clara según lo directamente que le llegue la luz. El modelo más sencillo, y la base de todos los demás, es el de <strong>Lambert</strong> (reflexión difusa): una superficie recibe luz en proporción al coseno del ángulo entre su normal <code>N</code> y la dirección hacia la luz <code>L</code>, que para vectores unitarios es su producto punto (<a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>):</p>
+$$\text{difusa} = \max(N \cdot L,\; 0)$$
+<p>El <code>max</code> recorta a 0 las superficies que dan la espalda a la luz (el producto punto sería negativo). Como en la realidad nada queda completamente negro, se suma un término <em>ambiente</em> constante: <code>color = base × (ambiente + (1 − ambiente) × difusa)</code>.</p>
+
+<h3>La matriz normal</h3>
+<p>Las normales llegan en el espacio del objeto; la luz la definimos en el espacio del mundo. Hay que girar las normales con el objeto. La tentación es multiplicarlas por la matriz de modelo (su parte 3×3), y funciona… mientras la escala sea uniforme. Con una escala no uniforme (estirar en x y aplastar en y), las normales transformadas así dejan de ser perpendiculares a la superficie. La matriz correcta es la <strong>inversa traspuesta</strong> de la parte 3×3 del modelo, la llamada <em>matriz normal</em>:</p>
+$$N_{\text{mundo}} = \left(M_{3\times3}^{-1}\right)^{T} N_{\text{objeto}}$$
+<p>¿Por qué? Una normal no es un vector de posición, sino la dirección perpendicular a los vectores tangentes de la superficie. Si estiras la superficie en x, sus tangentes se estiran en x… y para seguir siendo perpendicular a ellas, la normal tiene que <em>encogerse</em> en x, justo lo contrario. La inversa hace ese «lo contrario» y la traspuesta lo coloca en el lugar adecuado (la demostración: si <code>T</code> es tangente, <code>N·T = 0</code> debe seguir valiendo tras transformar <code>T</code> por <code>M</code>, y eso fuerza <code>N' = (M⁻¹)ᵀN</code>). <code>mat4.normal(m)</code> de GLKit la calcula y devuelve una <code>mat3</code> de 9 floats para <code>uniformMatrix3fv</code>. Con rotaciones y escalas uniformes, la matriz normal y la de modelo apuntan en la misma dirección, y por eso el error pasa desapercibido hasta el día en que alguien escala un objeto.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.6.2 — La luz que miente</h3>
+  <p>Dos esferas idénticas, aplastadas con <code>escala(1.25, 0.3, 0.8)</code> e inclinadas, se balancean y reciben la misma luz direccional (desde arriba a la izquierda y un poco por delante). La izquierda transforma las normales con la matriz de modelo; la derecha, con la matriz normal. La malla es una esfera UV generada con índices, en la que posición y normal coinciden.</p>
+  <div class="js-playground" data-titulo="Matriz de modelo frente a matriz normal" data-altura="300" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="rotulos"><span>normales × modelo (mal)</span><span>normales × matriz normal (bien)</span></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.rotulos { display: flex; justify-content: space-around; padding: 6px; font: 12px ui-monospace, monospace; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_modelo, u_vista, u_proyeccion;
+uniform mat3 u_normal;
+out vec3 v_normal;
+void main() {
+  v_normal = u_normal * a_normal;
+  gl_Position = u_proyeccion * u_vista * u_modelo * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec3 u_dirLuz;           // hacia la luz, en el mundo, unitario
+in vec3 v_normal;
+out vec4 color;
+void main() {
+  vec3 n = normalize(v_normal);  // interpolar acorta los vectores: hay que renormalizar
+  float difusa = max(dot(n, u_dirLuz), 0.0);
+  color = vec4(vec3(1.0, 0.72, 0.29) * (0.15 + 0.85 * difusa), 1.0);
+}`);
+
+function crearEsfera(nLong, nLat) {
+  const datos = [], indices = [];
+  for (let j = 0; j <= nLat; j++) {
+    const theta = j / nLat * Math.PI;                  // de 0 (polo norte) a π (polo sur)
+    for (let i = 0; i <= nLong; i++) {
+      const phi = i / nLong * Math.PI * 2;
+      const x = Math.sin(theta) * Math.cos(phi), y = Math.cos(theta), z = Math.sin(theta) * Math.sin(phi);
+      datos.push(x, y, z, x, y, z);                    // en una esfera unidad, normal = posición
+    }
+  }
+  for (let j = 0; j < nLat; j++) for (let i = 0; i < nLong; i++) {
+    const a = j * (nLong + 1) + i, b = a + nLong + 1;
+    indices.push(a, a + 1, b,   b, a + 1, b + 1);      // antihorarios vistos desde fuera
+  }
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const esfera = crearEsfera(48, 24);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, esfera.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, esfera.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+
+const loc = {};
+for (const n of ['u_modelo', 'u_vista', 'u_proyeccion', 'u_normal', 'u_dirLuz']) loc[n] = gl.getUniformLocation(programa, n);
+const dirLuz = vec3.normalizar([-0.5, 0.8, 0.3]);
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(loc.u_proyeccion, false, mat4.perspectiva(Math.PI / 4, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100));
+  gl.uniformMatrix4fv(loc.u_vista, false, mat4.mirarA([0, 0, 6], [0, 0, 0], [0, 1, 0]));
+  gl.uniform3fv(loc.u_dirLuz, dirLuz);
+  gl.bindVertexArray(vao);
+  for (const [x, bien] of [[-1.6, false], [1.6, true]]) {
+    const modelo = mat4.producto(mat4.traslacion(x, 0, 0), mat4.rotacionZ(0.5 + 0.2 * Math.sin(t * 0.8)), mat4.escala(1.25, 0.3, 0.8));
+    const matNormal = bien
+      ? mat4.normal(modelo)                                                   // inversa traspuesta
+      : new Float32Array([modelo[0], modelo[1], modelo[2], modelo[4], modelo[5], modelo[6], modelo[8], modelo[9], modelo[10]]);
+    gl.uniformMatrix4fv(loc.u_modelo, false, modelo);
+    gl.uniformMatrix3fv(loc.u_normal, false, matNormal);
+    gl.drawElements(gl.TRIANGLES, esfera.indices.length, gl.UNSIGNED_SHORT, 0);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Mira la zona iluminada: en la esfera derecha, toda la cara de arriba, que mira hacia la luz, está iluminada, como corresponde a una forma aplastada. La izquierda queda casi entera en penumbra: al transformar las normales con la misma escala que la forma, se han inclinado hacia las puntas (el eje largo) en lugar de hacia arriba (el eje aplastado), justo lo contrario de lo que les pasa a las normales de verdad. Otro detalle del fragment shader: <code>normalize(v_normal)</code>. Aunque las normales de los vértices sean unitarias, su interpolación lineal no lo es (el punto medio entre dos vectores unitarios es más corto), y un producto punto con un vector corto da una luz más débil de la debida.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-matriz-normal" data-titulo="Tras escalar un objeto, la iluminación sale mal">
+  <p><strong>Síntoma:</strong> un objeto se ilumina bien hasta que alguien le aplica una escala distinta en cada eje; entonces las zonas iluminadas no corresponden a su forma, la luz parece venir de otra dirección o el objeto se ve más oscuro o más claro de lo normal.</p>
+  <p><strong>Causa:</strong> las normales se transforman con la matriz de modelo en lugar de con su inversa traspuesta. Con escalas no uniformes, eso las deja no perpendiculares a la superficie (y sin normalizar, más cortas o largas de lo debido).</p>
+  <p><strong>Solución:</strong> pasa la matriz normal (<code>mat4.normal(modelo)</code>, una <code>mat3</code>) y <code>normalize</code> en el fragment shader. Si solo usas rotaciones, traslaciones y escalas uniformes, <code>mat3(u_modelo)</code> da la misma dirección, pero no tientes a la suerte: calcularla cuesta una inversa por objeto y por frame, nada.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu objeto usa <code>mat4.escala(2, 2, 2)</code> (escala uniforme) y transformas las normales con <code>mat3(u_modelo)</code>, sin normalizar en el shader. ¿Qué pasa con la luz?</p>
+  <ul>
+    <li>Nada: con escala uniforme la dirección es correcta.<div class="explicacion">La dirección sí es correcta… pero la longitud no: las normales salen el doble de largas.</div></li>
+    <li data-correcta>La dirección es correcta, pero las normales miden 2 y la difusa sale el doble de intensa (y satura).<div class="explicacion">Correcto. <code>dot(N, L)</code> con <code>|N| = 2</code> llega a 2. Por eso se normaliza siempre en el fragment shader, aunque la matriz sea la buena: además de arreglar la escala, compensa el acortamiento de la interpolación.</div></li>
+    <li>El objeto sale negro, porque la escala invierte las normales.<div class="explicacion">Solo una escala negativa invierte normales (y el winding). Una escala positiva cambia su longitud, no su sentido.</div></li>
+  </ul>
+</div>
+
+<h2>Una cámara orbital con el ratón</h2>
+<p>La cámara orbital es el control estándar para inspeccionar un objeto: arrastrar gira la cámara alrededor de un punto y la rueda acerca o aleja. Se guarda en coordenadas esféricas (ángulo horizontal <code>yaw</code>, ángulo vertical <code>pitch</code>, distancia <code>r</code>, como las polares de <a href="../03-matematicas/03-trigonometria.html">3.3</a> con una dimensión más) y en cada frame se convierte en la posición del ojo para <code>mat4.mirarA</code>:</p>
+$$\text{ojo} = \text{centro} + r\,(\cos\text{pitch}\,\sin\text{yaw},\;\sin\text{pitch},\;\cos\text{pitch}\,\cos\text{yaw})$$
+
+<div class="callout nota" id="m5-camara-polo">
+  <p><strong>No dejes que la cámara llegue al polo.</strong> Con <code>pitch</code> = 90°, la mirada es paralela al vector «arriba» (0, 1, 0), el producto vectorial con el que <code>mirarA</code> calcula el eje x de la cámara vale cero y la escena desaparece (o gira como loca) justo al mirar desde arriba. Es el comportamiento raro <a href="../03-matematicas/06-espacios-coordenadas.html#m3-lookat-degenerado">«La cámara que mira recto hacia abajo no ve nada»</a> de 3.6, con el mismo experimento (<code>mat4.mirarA([0, 5, 0], [0, 0, 0], [0, 1, 0])</code> aplasta la escena en un punto). En una cámara orbital, la solución es limitar el <code>pitch</code> a un poco menos de ±90° (±89°, o ±1,55 rad), como hace el ejemplo siguiente.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.6.3 — El cubo completo: textura, luz y cámara orbital</h3>
+  <p>Todo junto. Arrastra sobre el lienzo para orbitar y usa la rueda para acercarte. La luz está fija en el mundo, así que al orbitar ves cómo las caras iluminadas y las sombreadas cambian de posición en pantalla.</p>
+  <div class="js-playground" data-titulo="Cubo iluminado con cámara orbital" data-altura="340" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info">arrastra para orbitar · rueda para acercar</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; cursor: grab; touch-action: none; }
+canvas:active { cursor: grabbing; }
+#info { font: 12px ui-monospace, monospace; color: #b4bccb; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+uniform mat4 u_modelo, u_vista, u_proyeccion;
+uniform mat3 u_normal;
+out vec3 v_normal;
+out vec2 v_uv;
+void main() {
+  v_normal = u_normal * a_normal;
+  v_uv = a_uv;
+  gl_Position = u_proyeccion * u_vista * u_modelo * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+uniform vec3 u_dirLuz;
+in vec3 v_normal;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  vec3 n = normalize(v_normal);
+  float difusa = max(dot(n, u_dirLuz), 0.0);
+  color = vec4(texture(u_tex, v_uv).rgb * (0.2 + 0.8 * difusa), 1.0);
+}`);
+
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]),
+                 n[0], n[1], n[2], (su + 1) / 2, (sv + 1) / 2);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const textura = GLKit.crearTextura(gl, Texturas.crear('ladrillos', 512), { mipmaps: true });
+
+const loc = {};
+for (const n of ['u_modelo', 'u_vista', 'u_proyeccion', 'u_normal', 'u_tex', 'u_dirLuz']) loc[n] = gl.getUniformLocation(programa, n);
+
+// Cámara orbital en coordenadas esféricas
+const camara = { yaw: 0.6, pitch: 0.45, r: 3.2 };
+const LIMITE = 1.55;                                     // un poco menos de π/2
+let arrastrando = null;
+canvas.addEventListener('pointerdown', (e) => { arrastrando = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', (e) => {
+  if (!arrastrando) return;
+  camara.yaw -= (e.clientX - arrastrando.x) * 0.01;
+  camara.pitch = Math.max(-LIMITE, Math.min(LIMITE, camara.pitch + (e.clientY - arrastrando.y) * 0.01));
+  arrastrando = { x: e.clientX, y: e.clientY };
+});
+canvas.addEventListener('pointerup', () => { arrastrando = null; });
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();                                    // que la página no haga scroll
+  camara.r = Math.max(1.5, Math.min(10, camara.r * Math.exp(e.deltaY * 0.001)));
+}, { passive: false });
+
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+const dirLuz = vec3.normalizar([0.5, 0.8, 0.3]);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const cp = Math.cos(camara.pitch);
+  const ojo = [camara.r * cp * Math.sin(camara.yaw), camara.r * Math.sin(camara.pitch), camara.r * cp * Math.cos(camara.yaw)];
+  const modelo = mat4.rotacionY(t * 0.3);
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(loc.u_proyeccion, false, mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100));
+  gl.uniformMatrix4fv(loc.u_vista, false, mat4.mirarA(ojo, [0, 0, 0], [0, 1, 0]));
+  gl.uniformMatrix4fv(loc.u_modelo, false, modelo);
+  gl.uniformMatrix3fv(loc.u_normal, false, mat4.normal(modelo));
+  gl.uniform3fv(loc.u_dirLuz, dirLuz);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, textura);
+  gl.uniform1i(loc.u_tex, 0);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Tres detalles del control: <code>setPointerCapture</code> hace que el lienzo siga recibiendo los movimientos aunque el puntero salga de él mientras arrastras; la rueda multiplica la distancia por <code>exp(deltaY × k)</code>, así que el zoom se siente igual de cerca que de lejos (sumar una cantidad fija haría que cerca fuese demasiado brusco); y el escuchador de <code>wheel</code> se registra con <code>passive: false</code> porque llama a <code>preventDefault</code> para que la página no haga scroll mientras haces zoom (con los escuchadores pasivos por defecto de Chrome, ese <code>preventDefault</code> se ignoraría). <code>touch-action: none</code> en el CSS hace lo mismo con los gestos táctiles (<a href="../01-web/04-js-dom-eventos.html">1.4</a>).</p>
+</section>
+
+<div class="callout senior" data-titulo="Precisión de la profundidad: por qué 'cerca' no debe ser 0,0001">
+  <p>El búfer de profundidad tiene 24 bits, y la proyección en perspectiva no reparte su precisión por igual: la mayor parte se concentra muy cerca del plano cercano. En términos prácticos, la precisión en la distancia <em>d</em> empeora aproximadamente con <em>d² / cerca</em> (la derivación y la tabla, en <a href="../03-matematicas/06-espacios-coordenadas.html#la-profundidad-no-es-lineal">3.6</a>). Con <code>cerca = 0.0001</code>, objetos a unas decenas de unidades que están a milímetros uno de otro reciben la misma profundidad y se pelean píxel a píxel: el <em>z-fighting</em>, un parpadeo en franjas cuando dos superficies casi coinciden. La regla: el plano cercano tan lejos como te permita la escena (0,1 para una escena de metros), y el lejano no más lejos de lo necesario.</p>
+</div>
+
+<div class="callout hack" data-titulo="Calcomanías sin parpadeo: polygonOffset">
+  <p>Hay un caso de <em>z-fighting</em> que ninguna elección de planos arregla: dos superficies <em>exactamente</em> coplanarias, como una calcomanía, una marca en el suelo o el contorno de una cara. Aunque estén en el mismo plano, sus triángulos son distintos y la profundidad de cada píxel se redondea de forma distinta, así que unas veces gana una y otras la otra. Lo comprobamos con una calcomanía girada sobre un suelo: de sus 10 045 píxeles solo se vieron 8507 (con <code>depthFunc(gl.LEQUAL)</code>, 9721), con franjas del suelo atravesándola. La solución es desplazar ligeramente su profundidad hacia la cámara solo mientras se dibuja: <code>gl.enable(gl.POLYGON_OFFSET_FILL)</code> y <code>gl.polygonOffset(-1, -1)</code> (un desplazamiento proporcional a la inclinación de la superficie y otro fijo, en unidades mínimas de profundidad; negativos, hacia la cámara). Con eso se vieron los 10 045. Desactívalo después con <code>gl.disable(gl.POLYGON_OFFSET_FILL)</code>.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.6.1 — El cubo transparente</h3>
+  <p>Este cubo gira, pero parece hueco: según el momento, se ven caras que deberían estar detrás. Arréglalo con dos cambios.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.6.1" data-altura="280" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_mvp;
+flat out vec3 v_color;
+void main() { v_color = 0.55 + 0.45 * a_normal; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+flat in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const mvp = mat4.producto(
+    mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([0, 1, 2.6], [0, 0, 0], [0, 1, 0]),
+    mat4.rotacionY(t * 0.8), mat4.rotacionX(t * 0.5));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_mvp;
+flat out vec3 v_color;
+void main() { v_color = 0.55 + 0.45 * a_normal; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+flat in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+gl.enable(gl.DEPTH_TEST);                                    // 1) comparar profundidades
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);      // 2) y empezar cada frame con la profundidad a 1
+  const mvp = mat4.producto(
+    mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([0, 1, 2.6], [0, 0, 0], [0, 1, 0]),
+    mat4.rotacionY(t * 0.8), mat4.rotacionX(t * 0.5));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>¿Quién decide qué fragmento tapa a cuál? ¿Está activado? ¿Y se borra cada frame?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Sin <code>DEPTH_TEST</code>, cada cara pinta encima de las anteriores en el orden de los índices, y cuando una cara trasera va después de una delantera, la tapa. La solución activa el test de profundidad una vez y añade <code>DEPTH_BUFFER_BIT</code> al borrado de cada frame. En este canvas, olvidar el segundo cambio no se notaría (el navegador borra la profundidad al presentar, como vimos), pero ponerlo es lo correcto: el día que este código dibuje en un framebuffer, lo agradecerás. Una alternativa que también «arregla» un cubo solo es el culling; con dos objetos, no bastaría.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.6.2 — El cubo estirado</h3>
+  <p>El cubo sale ensanchado en este canvas apaisado, y la deformación cambia si cambias el tamaño de la ventana. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.6.2" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_mvp;
+flat out vec3 v_color;
+void main() { v_color = 0.55 + 0.45 * a_normal; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+flat in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+// La proyección, calculada una vez al arrancar
+const proyeccion = mat4.perspectiva(Math.PI / 3, canvas.width / canvas.height, 0.1, 100);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const mvp = mat4.producto(proyeccion, mat4.mirarA([0, 1, 2.6], [0, 0, 0], [0, 1, 0]),
+    mat4.rotacionY(t * 0.8), mat4.rotacionX(t * 0.5));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_mvp;
+flat out vec3 v_color;
+void main() { v_color = 0.55 + 0.45 * a_normal; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+flat in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  // La proporción del búfer REAL, recalculada en cada frame (puede cambiar)
+  const aspecto = gl.drawingBufferWidth / gl.drawingBufferHeight;
+  const mvp = mat4.producto(mat4.perspectiva(Math.PI / 3, aspecto, 0.1, 100),
+    mat4.mirarA([0, 1, 2.6], [0, 0, 0], [0, 1, 0]),
+    mat4.rotacionY(t * 0.8), mat4.rotacionX(t * 0.5));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Cuánto valían <code>canvas.width</code> y <code>canvas.height</code> cuando se calculó la proyección? (Pista de la pista: todavía no se había llamado a <code>ajustarTamaño</code>.)</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La proyección tiene que usar la proporción del búfer actual, y el búfer puede cambiar de tamaño en cualquier frame.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La proyección se calculó con el tamaño por defecto del canvas, 300×150 (aspecto 2), antes del primer <code>ajustarTamaño</code>, y nunca se actualizó. La perspectiva «comprime» la x por el aspecto que le dices; si no coincide con el del búfer, el cubo se deforma, y la deformación cambia con cada redimensionado. La solución recalcula la proyección en cada frame con <code>drawingBufferWidth / drawingBufferHeight</code> (cuesta nada; si quieres afinar, solo cuando <code>ajustarTamaño</code> devuelve <code>true</code>). Es la misma familia de errores que el viewport olvidado de 5.1: todo lo que depende del tamaño se actualiza cuando el tamaño cambia.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.6.3 — Una cara que falta</h3>
+  <p>Este cubo tiene los vértices escritos a mano y el culling activado. Al girar, se ve que falta una cara y, a través del hueco, el fondo. Encuéntrala y arréglala tocando solo los índices. Pista gratis: desactiva el culling y usa <code>gl_FrontFacing</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.6.3" data-altura="280" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+uniform mat4 u_mvp;
+out vec3 v_pos;
+void main() { v_pos = a_posicion; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_pos;
+out vec4 color;
+void main() { color = vec4(0.55 + 0.9 * v_pos, 1.0); }`);
+
+// 8 esquinas (aquí no necesitamos normales ni UV por cara)
+const esquinas = new Float32Array([
+  -0.5, -0.5, -0.5,   0.5, -0.5, -0.5,   0.5, 0.5, -0.5,   -0.5, 0.5, -0.5,   // 0-3: cara de atrás (z = −0.5)
+  -0.5, -0.5,  0.5,   0.5, -0.5,  0.5,   0.5, 0.5,  0.5,   -0.5, 0.5,  0.5,   // 4-7: cara de delante (z = +0.5)
+]);
+const indices = new Uint16Array([
+  4, 5, 6,  4, 6, 7,     // delante  (+z)
+  1, 0, 3,  1, 3, 2,     // atrás    (−z)
+  5, 2, 1,  5, 6, 2,     // derecha  (+x)
+  0, 4, 7,  0, 7, 3,     // izquierda (−x)
+  7, 6, 2,  7, 2, 3,     // arriba   (+y)
+  0, 1, 5,  0, 5, 4,     // abajo    (−y)
+]);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, esquinas);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+GLKit.crearBuffer(gl, indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const mvp = mat4.producto(mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([0, 1.2, 2.6], [0, 0, 0], [0, 1, 0]), mat4.rotacionY(t * 0.7), mat4.rotacionX(0.4));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+uniform mat4 u_mvp;
+out vec3 v_pos;
+void main() { v_pos = a_posicion; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_pos;
+out vec4 color;
+void main() { color = vec4(0.55 + 0.9 * v_pos, 1.0); }`);
+
+const esquinas = new Float32Array([
+  -0.5, -0.5, -0.5,   0.5, -0.5, -0.5,   0.5, 0.5, -0.5,   -0.5, 0.5, -0.5,
+  -0.5, -0.5,  0.5,   0.5, -0.5,  0.5,   0.5, 0.5,  0.5,   -0.5, 0.5,  0.5,
+]);
+const indices = new Uint16Array([
+  4, 5, 6,  4, 6, 7,     // delante  (+z)
+  1, 0, 3,  1, 3, 2,     // atrás    (−z)
+  5, 1, 2,  5, 2, 6,     // derecha  (+x): antes 5,2,1 y 5,6,2, en sentido horario visto desde fuera
+  0, 4, 7,  0, 7, 3,     // izquierda (−x)
+  7, 6, 2,  7, 2, 3,     // arriba   (+y)
+  0, 1, 5,  0, 5, 4,     // abajo    (−y)
+]);
+// Comprobación: (v1 − v0) × (v2 − v0) debe apuntar hacia fuera de la cara
+const P = (i) => [esquinas[i * 3], esquinas[i * 3 + 1], esquinas[i * 3 + 2]];
+const normalDe = (a, b, c) => vec3.cruz(vec3.restar(P(b), P(a)), vec3.restar(P(c), P(a)));
+console.log('normal del primer triángulo de la cara derecha:', normalDe(5, 1, 2));
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, esquinas);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+GLKit.crearBuffer(gl, indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const mvp = mat4.producto(mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([0, 1.2, 2.6], [0, 0, 0], [0, 1, 0]), mat4.rotacionY(t * 0.7), mat4.rotacionX(0.4));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Desactiva el culling y cambia el color de salida por <code>gl_FrontFacing ? vec4(0.3, 0.9, 0.5, 1.0) : vec4(1.0, 0.2, 0.3, 1.0)</code>. La cara roja es la culpable.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para cada triángulo sospechoso, calcula el producto vectorial <code>(v1 − v0) × (v2 − v0)</code> de sus vértices en orden: si apunta hacia dentro del cubo, el triángulo está en sentido horario visto desde fuera. <code>vec3.cruz</code> y <code>vec3.restar</code> de GLKit te ahorran las cuentas.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La cara derecha (+x) tiene sus dos triángulos al revés: <code>5, 2, 1</code> y <code>5, 6, 2</code>. Con los vértices 5 = (0.5, −0.5, 0.5), 2 = (0.5, 0.5, −0.5) y 1 = (0.5, −0.5, −0.5), el producto <code>(v2 − v5) × (v1 − v5)</code> vale (−1, 0, 0): apunta hacia <em>dentro</em> del cubo, así que el triángulo gira en sentido horario visto desde fuera y el culling lo descarta. Invirtiendo el orden (<code>5, 1, 2</code> y <code>5, 2, 6</code>) la normal pasa a ser (1, 0, 0), hacia fuera. Este cálculo es exactamente el que hace la GPU para decidir si una cara es delantera, solo que en pantalla, con el signo del área del triángulo proyectado. Con la función <code>crearCubo</code> de la lección, la regla <code>u × v = n</code> te garantiza de entrada caras bien orientadas.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.6.4 — La luz que miente (arréglalo tú)</h3>
+  <p>Una esfera aplastada iluminada por una luz desde arriba. El shader transforma las normales con la parte 3×3 de la matriz de modelo y la zona iluminada no corresponde a la forma. Arréglalo pasando la matriz normal con un nuevo uniform <code>mat3 u_normal</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.6.4" data-altura="280" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_modelo, u_vp;
+out vec3 v_normal;
+void main() {
+  v_normal = mat3(u_modelo) * a_normal;
+  gl_Position = u_vp * u_modelo * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec3 u_dirLuz;
+in vec3 v_normal;
+out vec4 color;
+void main() {
+  float difusa = max(dot(normalize(v_normal), u_dirLuz), 0.0);
+  color = vec4(vec3(0.25, 0.82, 0.91) * (0.15 + 0.85 * difusa), 1.0);
+}`);
+function crearEsfera(nLong, nLat) {
+  const datos = [], indices = [];
+  for (let j = 0; j <= nLat; j++) for (let i = 0; i <= nLong; i++) {
+    const th = j / nLat * Math.PI, ph = i / nLong * Math.PI * 2;
+    const x = Math.sin(th) * Math.cos(ph), y = Math.cos(th), z = Math.sin(th) * Math.sin(ph);
+    datos.push(x, y, z, x, y, z);
+  }
+  for (let j = 0; j < nLat; j++) for (let i = 0; i < nLong; i++) {
+    const a = j * (nLong + 1) + i, b = a + nLong + 1;
+    indices.push(a, a + 1, b, b, a + 1, b + 1);
+  }
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const esfera = crearEsfera(48, 24);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, esfera.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, esfera.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const loc = {};
+for (const n of ['u_modelo', 'u_vp', 'u_dirLuz']) loc[n] = gl.getUniformLocation(programa, n);
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const vp = mat4.producto(mat4.perspectiva(Math.PI / 4, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([0, 0, 5], [0, 0, 0], [0, 1, 0]));
+  const modelo = mat4.producto(mat4.rotacionZ(0.5 * Math.sin(t)), mat4.escala(1.6, 0.5, 1.0));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(loc.u_vp, false, vp);
+  gl.uniformMatrix4fv(loc.u_modelo, false, modelo);
+  gl.uniform3fv(loc.u_dirLuz, vec3.normalizar([0.2, 1, 0.4]));
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, esfera.indices.length, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_modelo, u_vp;
+uniform mat3 u_normal;                   // inversa traspuesta de la parte 3×3 del modelo
+out vec3 v_normal;
+void main() {
+  v_normal = u_normal * a_normal;
+  gl_Position = u_vp * u_modelo * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec3 u_dirLuz;
+in vec3 v_normal;
+out vec4 color;
+void main() {
+  float difusa = max(dot(normalize(v_normal), u_dirLuz), 0.0);
+  color = vec4(vec3(0.25, 0.82, 0.91) * (0.15 + 0.85 * difusa), 1.0);
+}`);
+function crearEsfera(nLong, nLat) {
+  const datos = [], indices = [];
+  for (let j = 0; j <= nLat; j++) for (let i = 0; i <= nLong; i++) {
+    const th = j / nLat * Math.PI, ph = i / nLong * Math.PI * 2;
+    const x = Math.sin(th) * Math.cos(ph), y = Math.cos(th), z = Math.sin(th) * Math.sin(ph);
+    datos.push(x, y, z, x, y, z);
+  }
+  for (let j = 0; j < nLat; j++) for (let i = 0; i < nLong; i++) {
+    const a = j * (nLong + 1) + i, b = a + nLong + 1;
+    indices.push(a, a + 1, b, b, a + 1, b + 1);
+  }
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const esfera = crearEsfera(48, 24);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, esfera.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, esfera.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const loc = {};
+for (const n of ['u_modelo', 'u_vp', 'u_dirLuz', 'u_normal']) loc[n] = gl.getUniformLocation(programa, n);
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const vp = mat4.producto(mat4.perspectiva(Math.PI / 4, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([0, 0, 5], [0, 0, 0], [0, 1, 0]));
+  const modelo = mat4.producto(mat4.rotacionZ(0.5 * Math.sin(t)), mat4.escala(1.6, 0.5, 1.0));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(loc.u_vp, false, vp);
+  gl.uniformMatrix4fv(loc.u_modelo, false, modelo);
+  gl.uniformMatrix3fv(loc.u_normal, false, mat4.normal(modelo));   // 9 floats, por columnas
+  gl.uniform3fv(loc.u_dirLuz, vec3.normalizar([0.2, 1, 0.4]));
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, esfera.indices.length, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Tres cambios: declarar <code>uniform mat3 u_normal</code> y usarlo en lugar de <code>mat3(u_modelo)</code>; pedir su location; y subir <code>mat4.normal(modelo)</code> con <code>uniformMatrix3fv</code> en cada frame.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La escala (1.6, 0.5, 1) aplasta la esfera en y. Sus normales, transformadas con la misma escala, se aplastan también: en los lados del elipsoide apuntan demasiado hacia fuera en x y demasiado poco en y, así que el lateral aparece más oscuro y la cumbre iluminada, demasiado estrecha. La matriz normal hace lo contrario (estira en y, encoge en x) y deja las normales perpendiculares a la superficie aplastada. <code>mat4.normal</code> devuelve una <code>mat3</code> por columnas lista para <code>uniformMatrix3fv</code>. Se recalcula en cada frame porque el modelo cambia.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.6.5 — Las manchas</h3>
+  <p>Este cubo se dibuja en un canvas con <code>preserveDrawingBuffer: true</code> (imagina que lo necesitamos para hacer capturas, como en 5.1) y, al girar, se va «comiendo» y deja manchas. Arréglalo sin quitar el atributo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.6.5" data-altura="280" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_mvp;
+flat out vec3 v_color;
+void main() { v_color = 0.55 + 0.45 * a_normal; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+flat in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+gl.enable(gl.DEPTH_TEST);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const mvp = mat4.producto(mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([0, 1, 2.6], [0, 0, 0], [0, 1, 0]),
+    mat4.traslacion(0.7 * Math.sin(t), 0, 0), mat4.rotacionY(t * 0.8), mat4.rotacionX(t * 0.5));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_mvp;
+flat out vec3 v_color;
+void main() { v_color = 0.55 + 0.45 * a_normal; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+flat in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+gl.enable(gl.DEPTH_TEST);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);   // con el búfer preservado, nadie más la borra
+  const mvp = mat4.producto(mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([0, 1, 2.6], [0, 0, 0], [0, 1, 0]),
+    mat4.traslacion(0.7 * Math.sin(t), 0, 0), mat4.rotacionY(t * 0.8), mat4.rotacionX(t * 0.5));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.bindVertexArray(vao);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>¿Qué búferes se borran en cada frame? Con <code>preserveDrawingBuffer: true</code>, ¿quién borra el resto?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Solo se borra el color. Con <code>preserveDrawingBuffer: true</code>, el navegador ya no borra el búfer tras presentarlo, así que la profundidad de todos los frames anteriores se acumula: en cada píxel queda la profundidad más cercana que el cubo haya tenido nunca allí. Los fragmentos nuevos que están más lejos que ese fantasma pierden el test y no se pintan, y como el color sí se borró, aparecen huecos del color del fondo. Añadir <code>DEPTH_BUFFER_BIT</code> al <code>clear</code> lo arregla. Es el bestiario <a href="#m5-profundidad-sin-borrar">de las manchas</a>: en un canvas normal habría funcionado por accidente.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.6.6 — Tres cubos y la cámara</h3>
+  <p>Partiendo del ejemplo 5.6.3, dibuja <strong>tres</strong> cubos en fila (en x = −1,5, 0 y 1,5), cada uno girando a una velocidad distinta y el del centro con escala no uniforme (1, 1,6, 1), todos con la luz correcta. La cámara orbital debe seguir funcionando. Aquí el código de partida ya trae la malla, el programa y la cámara; te falta el bucle de dibujo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.6.6" data-altura="320" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_modelo, u_vista, u_proyeccion;
+uniform mat3 u_normal;
+out vec3 v_normal;
+void main() { v_normal = u_normal * a_normal; gl_Position = u_proyeccion * u_vista * u_modelo * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec3 u_dirLuz;
+uniform vec3 u_color;
+in vec3 v_normal;
+out vec4 color;
+void main() { color = vec4(u_color * (0.2 + 0.8 * max(dot(normalize(v_normal), u_dirLuz), 0.0)), 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const loc = {};
+for (const n of ['u_modelo', 'u_vista', 'u_proyeccion', 'u_normal', 'u_dirLuz', 'u_color']) loc[n] = gl.getUniformLocation(programa, n);
+
+const camara = { yaw: 0.4, pitch: 0.35, r: 5 };
+let arrastrando = null;
+canvas.addEventListener('pointerdown', (e) => { arrastrando = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', (e) => {
+  if (!arrastrando) return;
+  camara.yaw -= (e.clientX - arrastrando.x) * 0.01;
+  camara.pitch = Math.max(-1.55, Math.min(1.55, camara.pitch + (e.clientY - arrastrando.y) * 0.01));
+  arrastrando = { x: e.clientX, y: e.clientY };
+});
+canvas.addEventListener('pointerup', () => { arrastrando = null; });
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  // TODO: proyección, vista (desde la cámara orbital), luz, y los tres cubos
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_modelo, u_vista, u_proyeccion;
+uniform mat3 u_normal;
+out vec3 v_normal;
+void main() { v_normal = u_normal * a_normal; gl_Position = u_proyeccion * u_vista * u_modelo * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec3 u_dirLuz;
+uniform vec3 u_color;
+in vec3 v_normal;
+out vec4 color;
+void main() { color = vec4(u_color * (0.2 + 0.8 * max(dot(normalize(v_normal), u_dirLuz), 0.0)), 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const loc = {};
+for (const n of ['u_modelo', 'u_vista', 'u_proyeccion', 'u_normal', 'u_dirLuz', 'u_color']) loc[n] = gl.getUniformLocation(programa, n);
+
+const camara = { yaw: 0.4, pitch: 0.35, r: 5 };
+let arrastrando = null;
+canvas.addEventListener('pointerdown', (e) => { arrastrando = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', (e) => {
+  if (!arrastrando) return;
+  camara.yaw -= (e.clientX - arrastrando.x) * 0.01;
+  camara.pitch = Math.max(-1.55, Math.min(1.55, camara.pitch + (e.clientY - arrastrando.y) * 0.01));
+  arrastrando = { x: e.clientX, y: e.clientY };
+});
+canvas.addEventListener('pointerup', () => { arrastrando = null; });
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+const cubos = [
+  { x: -1.5, giro: 0.5, escala: [1, 1, 1], color: [1.0, 0.42, 0.48] },
+  { x: 0.0, giro: -0.9, escala: [1, 1.6, 1], color: [0.25, 0.82, 0.91] },
+  { x: 1.5, giro: 1.4, escala: [1, 1, 1], color: [0.55, 0.48, 1.0] },
+];
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const cp = Math.cos(camara.pitch);
+  const ojo = [camara.r * cp * Math.sin(camara.yaw), camara.r * Math.sin(camara.pitch), camara.r * cp * Math.cos(camara.yaw)];
+  gl.useProgram(programa);
+  // Lo común a los tres cubos: una vez por frame
+  gl.uniformMatrix4fv(loc.u_proyeccion, false, mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100));
+  gl.uniformMatrix4fv(loc.u_vista, false, mat4.mirarA(ojo, [0, 0, 0], [0, 1, 0]));
+  gl.uniform3fv(loc.u_dirLuz, vec3.normalizar([0.5, 0.8, 0.3]));
+  gl.bindVertexArray(vao);
+  // Lo propio de cada cubo: antes de su dibujo
+  for (const c of cubos) {
+    const modelo = mat4.producto(mat4.traslacion(c.x, 0, 0), mat4.rotacionY(t * c.giro), mat4.escala(...c.escala));
+    gl.uniformMatrix4fv(loc.u_modelo, false, modelo);
+    gl.uniformMatrix3fv(loc.u_normal, false, mat4.normal(modelo));
+    gl.uniform3fv(loc.u_color, c.color);
+    gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La posición del ojo sale de la cámara orbital con la fórmula de la sección; proyección, vista y luz se asignan una vez por frame.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para cada cubo: <code>modelo = traslación × rotación × escala</code>, y con él <code>u_modelo</code>, <code>u_normal</code> y <code>u_color</code> antes de su <code>drawElements</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Es el patrón de 5.4 en 3D: lo común (proyección, vista, luz, VAO) una vez por frame; lo de cada objeto (modelo, matriz normal, color) antes de su dibujo. El orden traslación × rotación × escala hace que cada cubo se escale y gire sobre su propio centro antes de colocarse en su sitio. Para el cubo central, estirado en y, la matriz normal y la parte 3×3 del modelo darían aquí la misma dirección: sus caras están alineadas con los ejes de la escala, así que escalar su normal solo cambia la longitud, y <code>normalize</code> lo corrige. Pero en cuanto la malla sea curva, o la escala se aplique después de una rotación, la diferencia aparece: usa siempre la matriz normal y no dependas de la casualidad. Con tres cubos ya no basta el culling para ocultar lo que está detrás: sin <code>DEPTH_TEST</code>, al orbitar, un cubo lejano podría pintarse sobre uno cercano.</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Un vértice es la combinación de todos sus atributos: un cubo con normales y UV por cara tiene 24 vértices (4 por cara) y 36 índices. Genera la malla con la regla <code>u × v = n</code> para que todas las caras sean antihorarias vistas desde fuera.</li>
+    <li><code>gl_Position = P · V · M · posición</code>. <code>mat4.perspectiva(fovY, aspecto, cerca, lejos)</code> con el aspecto del búfer actual (si no, cubo estirado), <code>mat4.mirarA(ojo, centro, arriba)</code>, y el modelo como traslación × rotación × escala. Todo con <code>uniformMatrix4fv(loc, false, m)</code>.</li>
+    <li>Profundidad: <code>enable(DEPTH_TEST)</code>, <code>depthFunc(LESS)</code> por defecto, <code>clear(COLOR | DEPTH)</code> cada frame y cada pasada. Sin búfer de profundidad (<code>depth: false</code>), el test no hace nada. Con el canvas normal el navegador borra la profundidad tras presentar y el olvido se esconde; con <code>preserveDrawingBuffer</code>, varias pasadas o un FBO, aparecen las manchas.</li>
+    <li>Culling: <code>enable(CULL_FACE)</code>, <code>cullFace(BACK)</code> y <code>frontFace(CCW)</code> por defecto. Una cara con winding al revés desaparece; <code>gl_FrontFacing</code> la delata. Las escalas negativas invierten el winding.</li>
+    <li>Lambert: <code>max(dot(N, L), 0)</code> más un término ambiente. Normales con la matriz normal (<code>mat4.normal</code>, inversa traspuesta, <code>uniformMatrix3fv</code>) y <code>normalize</code> en el fragment shader.</li>
+    <li>Cámara orbital: yaw, pitch y distancia; <code>pitch</code> limitado a menos de ±90° o <code>mirarA</code> degenera; zoom multiplicativo; <code>setPointerCapture</code> y <code>wheel</code> no pasivo.</li>
+    <li>El plano cercano tan lejos como se pueda: la precisión de la profundidad se concentra cerca de él.</li>
+  </ul>
+</div>
+
+<p>En <a href="07-blending.html">5.7</a> añadimos lo que el búfer de profundidad no sabe resolver: la transparencia. Mezclas de color, alfa premultiplicado, por qué el orden de dibujo importa y cómo se compone el canvas con el resto de la página.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-3d-perspective.html">WebGL2 Fundamentals: 3D Perspective</a> y <a href="https://webgl2fundamentals.org/webgl/lessons/webgl-3d-lighting-directional.html">Directional Lighting</a>, que llegan a lo mismo por otro camino.</li>
+  <li><a href="https://www.lighthouse3d.com/tutorials/glsl-12-tutorial/the-normal-matrix/">Lighthouse3D: The Normal Matrix</a>, la deducción completa de la inversa traspuesta.</li>
+  <li><a href="https://developer.nvidia.com/content/depth-precision-visualized">NVIDIA: Depth Precision Visualized</a>, con gráficos de cómo se reparte la precisión de la profundidad.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

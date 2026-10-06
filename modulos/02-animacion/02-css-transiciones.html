@@ -1,0 +1,1018 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.2 · Transiciones y keyframes CSS — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m2.css">
+</head>
+<body data-leccion="02-animacion/css-transiciones">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 2 · Animación con CSS y JavaScript</p>
+  <h1>Transiciones y keyframes CSS</h1>
+  <p class="resumen">CSS puede animar por ti: declaras el punto de partida, el de llegada y la forma del camino, y el navegador ejecuta el bucle, muchas veces en el compositor. Aquí verás las dos herramientas, <code>transition</code> y <code>@keyframes</code>, con todas sus reglas, sus eventos y sus trampas.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: 1.2, 2.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Escribirás transiciones controlando propiedad, duración, retardo y función de tiempo, y sabrás exactamente cuándo arrancan (y por qué a veces no).</li>
+      <li>Entenderás <code>cubic-bezier()</code> geométricamente y diseñarás tus propias curvas, incluidos rebotes; usarás <code>steps()</code> y <code>linear()</code>.</li>
+      <li>Dominarás <code>@keyframes</code> y cada propiedad <code>animation-*</code>, incluido el retardo negativo para «posicionar» una animación.</li>
+      <li>Escucharás <code>transitionend</code> y <code>animationend</code> sin caer en sus trampas.</li>
+      <li>Resolverás los clásicos «imposibles»: animar desde <code>display: none</code>, hasta <code>height: auto</code> y custom properties; y respetarás <code>prefers-reduced-motion</code>.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Animar sin escribir el bucle</h2>
+<p>En la lección anterior viste que una animación es una sucesión de frames. Si la escribes en JavaScript, tú calculas el valor de cada frame. Con CSS, en cambio, <strong>declaras</strong>: «esta propiedad, cuando cambie, que vaya de su valor viejo al nuevo en 300 ms siguiendo esta curva». El navegador se encarga del resto: calcula el valor intermedio en cada frame (lo que se llama <em>interpolar</em>) y, si la propiedad lo permite, entrega la animación entera al compositor (<a href="01-pipeline-render.html">2.1</a>).</p>
+<p>Hay dos herramientas:</p>
+<ul>
+  <li><strong><code>transition</code></strong> anima el paso de un estado a otro cuando un valor cambia (al pasar el ratón, al añadir una clase…). Solo conoce el origen y el destino.</li>
+  <li><strong><code>@keyframes</code> + <code>animation</code></strong> reproduce una secuencia de fotogramas clave que tú defines, sin necesidad de que nada cambie: al aparecer el elemento, en bucle, con retardo…</li>
+</ul>
+<p>Las dos comparten el concepto central de esta lección: la <strong>función de tiempo</strong>, que decide cómo se reparte el recorrido a lo largo de la duración.</p>
+
+<h2><code>transition</code>: de un estado a otro</h2>
+<p>Una transición tiene cuatro ingredientes, cada uno con su propiedad:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Propiedad</th><th>Qué controla</th><th>Valor inicial</th></tr></thead>
+  <tbody>
+    <tr><td><code>transition-property</code></td><td>Qué propiedades se animan (<code>all</code>, <code>none</code> o una lista)</td><td><code>all</code></td></tr>
+    <tr><td><code>transition-duration</code></td><td>Cuánto dura (s o ms)</td><td><code>0s</code></td></tr>
+    <tr><td><code>transition-timing-function</code></td><td>La forma del camino (la función de tiempo)</td><td><code>ease</code></td></tr>
+    <tr><td><code>transition-delay</code></td><td>Cuánto espera antes de empezar (puede ser negativo)</td><td><code>0s</code></td></tr>
+  </tbody>
+</table>
+<p>Fíjate en que el valor inicial de <code>transition-property</code> es <code>all</code>, pero la duración es <code>0s</code>: por defecto «todo se anima en cero segundos», es decir, nada se anima. Y fíjate en la función por defecto: <code>ease</code>, no <code>linear</code>.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.2.1 — Anatomía de la transición de un botón</h3>
+  <p>Un botón que se eleva al pasar el ratón, con el fondo cambiando algo más despacio:</p>
+  <div class="anotado" data-lang="css">
+<script type="text/plain">
+.boton {
+  background-color: #5b46e8;
+  transition: transform 150ms ease-out,
+              background-color 300ms linear 50ms;
+}
+.boton:hover {
+  transform: translateY(-3px);
+  background-color: #8b7bff;
+}
+.boton:active {
+  transform: translateY(0) scale(0.97);
+  transition-duration: 60ms;
+}
+</script>
+<ol>
+  <li data-l="3-4">El shorthand <code>transition</code> admite una lista separada por comas: una transición por propiedad. Dentro de cada una, el orden de las palabras da igual <em>salvo</em> en los tiempos: <strong>el primer tiempo es la duración y el segundo, el retardo</strong>. Aquí el fondo espera 50 ms y luego tarda 300 ms.</li>
+  <li data-l="6-9">El estado final. Al entrar el ratón, los valores calculados de <code>transform</code> y <code>background-color</code> cambian, y como ambas propiedades tienen transición, se animan. Al salir el ratón, vuelven con las mismas transiciones: la transición que se usa es la del estado <em>de destino</em>.</li>
+  <li data-l="10-13">Al pulsar, el estado de destino es <code>:active</code>, que redefine solo la duración: <code>transition-duration: 60ms</code> se aplica a las dos entradas de la lista. Por eso el «hundimiento» es casi instantáneo y la recuperación al soltar usa los 150 ms del estado <code>:hover</code>.</li>
+</ol>
+</div>
+  <p>Lo medimos para no dar nada por supuesto: <code>transition: opacity 1s .5s</code> se descompone en propiedad <code>opacity</code>, duración <code>1s</code> y retardo <code>0.5s</code>; y <code>transition: 200ms</code> a secas equivale a <code>all 0.2s ease</code>.</p>
+  <p>Dos reglas más de las listas, también comprobadas: si una lista es más corta que la de propiedades, <strong>se repite</strong> (con <code>transition-property: opacity, transform, color</code> y <code>transition-duration: 1s, 2s</code>, las duraciones reales fueron 1 s, 2 s y 1 s), y si una propiedad aparece dos veces, <strong>gana la última</strong> (con <code>transition: all 1s, opacity 3s</code>, la opacidad tardó 3 s y el resto 1 s).</p>
+</section>
+
+<p>Prueba tú. El CSS de este playground se vuelve a aplicar mientras escribes: cambia duraciones y curvas y pasa el ratón por los botones.</p>
+<div class="js-playground" data-titulo="Transiciones de botón (edita el CSS)" data-altura="300" data-pestaña="css" data-autorun data-consola="no" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="fila">
+  <button class="boton">Pasa por aquí</button>
+  <button class="boton lento">Yo voy lento</button>
+</div>
+</script>
+<script type="text/x-css">
+body { display: grid; place-items: center; height: 100%; font: 15px system-ui, sans-serif; }
+.fila { display: flex; gap: 20px; }
+.boton {
+  padding: 14px 22px; border: 0; border-radius: 10px;
+  color: white; font: inherit; font-weight: 600; cursor: pointer;
+  background-color: #5b46e8;
+  box-shadow: 0 2px 4px rgba(0,0,0,.4);
+  transition: transform 150ms ease-out,
+              box-shadow 150ms ease-out,
+              background-color 300ms linear 50ms;
+}
+.boton:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 20px rgba(0,0,0,.45);
+  background-color: #8b7bff;
+}
+.boton:active { transform: translateY(0) scale(0.97); transition-duration: 60ms; }
+.lento { transition-duration: 1.5s; }
+</script>
+</div>
+
+<div class="callout cuidado">
+  <p><code>transition: all</code> es cómodo y peligroso. Anima propiedades que no pensabas animar (el color al cambiar el tema, el <code>padding</code> de un <code>:hover</code>, la altura de un contenedor…) y algunas de ellas disparan layout en cada frame (<a href="01-pipeline-render.html">2.1</a>). Lista siempre las propiedades que quieres animar.</p>
+</div>
+
+<h3>¿Cuándo arranca una transición?</h3>
+<p>La regla exacta: cuando el navegador recalcula los estilos de un elemento y el <strong>valor calculado</strong> de una propiedad con transición es distinto del que tenía <strong>en el cálculo anterior</strong>, arranca una transición del valor viejo al nuevo. No importa el motivo del cambio: una pseudoclase (<code>:hover</code>), una clase que añades desde JavaScript, un estilo inline o una media query.</p>
+<p>La trampa está en «en el cálculo anterior». Un elemento recién creado no tiene cálculo anterior: su primer estilo es ya el final, así que no hay nada desde lo que transicionar. Este es el bug más repetido de las transiciones:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  const aviso = document.createElement('div');
+  aviso.className = 'aviso';          // .aviso { opacity: 0; transition: opacity .5s }
+  document.body.appendChild(aviso);
+  aviso.classList.add('visible');     // .aviso.visible { opacity: 1 }  → ¡aparece de golpe!
+</script>
+<p>Entre el <code>appendChild</code> y el <code>classList.add</code> el navegador no ha calculado ningún estilo, así que cuando por fin lo calcula (al final de la tarea, en el siguiente frame) el elemento ya tiene <code>.visible</code>. Comprobamos qué técnicas funcionan de verdad, cada una lanzada desde una tarea independiente con la página en reposo:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Entre insertar y añadir la clase…</th><th>¿Transición?</th><th>Por qué</th></tr></thead>
+  <tbody>
+    <tr><td>nada (misma tarea)</td><td class="m2-si">no</td><td>No hubo cálculo de estilo intermedio.</td></tr>
+    <tr><td>una microtarea (<code>queueMicrotask</code>, <code>await</code>)</td><td class="m2-si">no</td><td>Las microtareas corren antes de renderizar.</td></tr>
+    <tr><td><code>setTimeout(…, 0)</code></td><td class="m2-si">no (en nuestra prueba)</td><td>Suele ejecutarse antes del siguiente frame. Es una carrera: a veces funcionará y a veces no.</td></tr>
+    <tr><td>un <code>requestAnimationFrame</code></td><td class="m2-si">no</td><td>Los callbacks de rAF se ejecutan <em>antes</em> del cálculo de estilos de ese frame.</td></tr>
+    <tr><td>dos <code>requestAnimationFrame</code> anidados</td><td class="m2-no">sí</td><td>Entre el primero y el segundo hubo un frame completo con su cálculo de estilos.</td></tr>
+    <tr><td><code>el.offsetWidth</code></td><td class="m2-no">sí</td><td>Fuerza estilo y layout en el acto (<a href="01-pipeline-render.html">2.1</a>).</td></tr>
+    <tr><td><code>getComputedStyle(el)</code> sin leer nada</td><td class="m2-si">no</td><td>Devuelve un objeto vivo: no calcula hasta que lees una propiedad.</td></tr>
+    <tr><td><code>getComputedStyle(el).opacity</code></td><td class="m2-no">sí</td><td>Leer una propiedad fuerza el cálculo de estilo (sin layout).</td></tr>
+    <tr><td><code>@starting-style</code> en el CSS</td><td class="m2-no">sí</td><td>Le da al elemento un «estilo anterior» explícito (lo vemos más abajo).</td></tr>
+  </tbody>
+</table>
+
+<div class="js-playground" data-titulo="Insertar y transicionar: qué funciona" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="botones">
+  <button id="b1">Sin nada</button>
+  <button id="b2">+ offsetWidth</button>
+  <button id="b3">+ un rAF</button>
+  <button id="b4">+ doble rAF</button>
+  <button id="b5">@starting-style</button>
+</div>
+<div id="zona"></div>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 13px system-ui, sans-serif; }
+.botones { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+button { padding: 6px 10px; font: inherit; cursor: pointer; }
+.ficha {
+  padding: 8px 12px; margin-bottom: 6px; border-radius: 6px;
+  background: #1f2430; color: #e4e7ee; border-left: 4px solid #8b7bff;
+  opacity: 0; transform: translateX(-40px);
+  transition: opacity .8s ease-out, transform .8s ease-out;
+}
+.ficha.visible { opacity: 1; transform: none; }
+@starting-style {
+  .ficha.con-starting.visible { opacity: 0; transform: translateX(-40px); }
+}
+</script>
+<script type="text/x-js">
+const zona = document.getElementById('zona');
+function nueva(texto) {
+  const d = document.createElement('div');
+  d.className = 'ficha';
+  d.textContent = texto + ' · ' + new Date().toLocaleTimeString();
+  zona.prepend(d);
+  return d;
+}
+document.getElementById('b1').onclick = () => { const d = nueva('sin nada'); d.classList.add('visible'); };
+document.getElementById('b2').onclick = () => { const d = nueva('+ offsetWidth'); d.offsetWidth; d.classList.add('visible'); };
+document.getElementById('b3').onclick = () => { const d = nueva('+ un rAF'); requestAnimationFrame(() => d.classList.add('visible')); };
+document.getElementById('b4').onclick = () => {
+  const d = nueva('+ doble rAF');
+  requestAnimationFrame(() => requestAnimationFrame(() => d.classList.add('visible')));
+};
+document.getElementById('b5').onclick = () => { const d = nueva('@starting-style'); d.classList.add('con-starting', 'visible'); };
+</script>
+</div>
+
+<div class="callout bestiario" data-id="m2-transicion-no-arranca" data-titulo="La transición no se ejecuta al insertar un elemento">
+  <p><strong>Síntoma:</strong> un elemento que creas desde JavaScript aparece de golpe, aunque tiene <code>transition</code> y le añades la clase del estado final justo después de insertarlo. Si pruebas la misma clase en un elemento que ya existía, sí se anima.</p>
+  <p><strong>Causa:</strong> una transición compara el valor calculado actual con el del cálculo de estilo <em>anterior</em>. Un elemento recién insertado no tiene cálculo anterior: su primer estilo ya incluye la clase final. Ni una microtarea ni un único <code>requestAnimationFrame</code> lo arreglan (el callback de rAF corre antes del cálculo de estilos de ese frame), y <code>setTimeout(…, 0)</code> funciona solo a veces.</p>
+  <p><strong>Solución:</strong> en CSS moderno, <code>@starting-style</code> con el estado inicial. En JavaScript, fuerza un cálculo de estilo antes de añadir la clase leyendo una propiedad (<code>getComputedStyle(el).opacity</code> o <code>el.offsetWidth</code>) o espera dos frames con dos <code>requestAnimationFrame</code> anidados. O anímalo con <code>el.animate()</code> (lección <a href="../02-animacion/07-waapi-flip.html">2.7</a>), que no depende del estilo anterior.</p>
+</div>
+
+<div class="callout senior" data-titulo="interrumpir una transición: la vuelta es más corta">
+  <p>Si una transición de 1 s va por el 30 % y el valor vuelve al original (el ratón sale antes de tiempo), ¿cuánto tarda la vuelta? Si tardara 1 s entero, el elemento volvería muy despacio: recorre en 1 s lo que ida recorrió en 0,3 s. Por eso la especificación define un <em>reversing shortening factor</em>: la transición de vuelta dura en proporción a lo recorrido. Lo medimos con <code>el.getAnimations()</code>: tras interrumpir al 30 % una transición lineal de 1000 ms, la de vuelta duraba 300 ms. Solo se aplica cuando se vuelve exactamente al valor de partida; si el nuevo destino es otro, la transición nueva dura lo que diga <code>transition-duration</code>, completa, y parte del valor actual con la velocidad inicial de su propia curva, sin conservar la que llevaba el elemento: el movimiento pega un frenazo o un acelerón visible. Ese problema de las interrupciones es el motivo de ser de los muelles de la lección <a href="05-fisica-muelles.html">2.5</a>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué hace <code>transition: opacity 400ms 100ms, transform 200ms</code>?</p>
+  <ul>
+    <li>La opacidad dura 100 ms y espera 400 ms; el transform dura 200 ms.<div class="explicacion">Al revés: el primer tiempo de cada entrada es siempre la duración y el segundo, el retardo.</div></li>
+    <li>Todas las propiedades duran 400 ms porque es la primera duración.<div class="explicacion">No: las listas se emparejan por posición. La repetición solo ocurre cuando una lista (por ejemplo <code>transition-duration</code> escrita aparte) es más corta que la de propiedades.</div></li>
+    <li data-correcta>La opacidad espera 100 ms y dura 400 ms; el transform dura 200 ms sin esperar.<div class="explicacion">Correcto. Cada entrada de la lista es independiente, con su propia duración, función y retardo; la función por defecto de ambas es <code>ease</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Funciones de tiempo: la forma del camino</h2>
+<p>Una función de tiempo recibe el <strong>progreso del tiempo</strong> $x \in [0, 1]$ (0 al empezar, 1 al terminar) y devuelve el <strong>progreso del valor</strong> $y$. Con $y = x$ (<code>linear</code>), a la mitad del tiempo estás a mitad de camino. Con una curva que empieza plana, al principio el valor apenas avanza (arranque suave) y luego acelera. La pendiente de la curva en cada punto es la <strong>velocidad</strong> relativa en ese instante.</p>
+
+<h3>cubic-bezier, geométricamente</h3>
+<p>Las palabras clave <code>ease</code>, <code>ease-in</code>, <code>ease-out</code> y <code>ease-in-out</code> son abreviaturas de curvas de Bézier cúbicas. Una curva de Bézier cúbica se define con cuatro puntos: empieza en $P_0$, termina en $P_3$ y es «atraída» por $P_1$ y $P_2$, que no suele tocar. Su fórmula, para un parámetro $s \in [0, 1]$, es:</p>
+$$B(s) = (1-s)^3 P_0 + 3(1-s)^2 s\, P_1 + 3(1-s) s^2 P_2 + s^3 P_3$$
+<p>En CSS, $P_0 = (0, 0)$ y $P_3 = (1, 1)$ están fijos, y <code>cubic-bezier(x1, y1, x2, y2)</code> te deja elegir $P_1 = (x_1, y_1)$ y $P_2 = (x_2, y_2)$. Cada coordenada es un polinomio cúbico en $s$:</p>
+$$x(s) = 3(1-s)^2 s\, x_1 + 3(1-s)s^2 x_2 + s^3, \qquad y(s) = 3(1-s)^2 s\, y_1 + 3(1-s)s^2 y_2 + s^3$$
+<p>Atención al detalle que casi todo el mundo pasa por alto: <strong>$s$ no es el tiempo</strong>. El tiempo es $x$. Para saber el valor en un instante $x$, primero hay que encontrar el $s$ que cumple $x(s) = x$ (resolviendo una ecuación cúbica, normalmente con Newton-Raphson) y después calcular $y(s)$. Por eso existen dos reglas:</p>
+<ul>
+  <li><strong>$x_1$ y $x_2$ tienen que estar en $[0, 1]$.</strong> Así $x(s)$ es creciente y a cada instante le corresponde un único valor. Si no, la «función» podría devolver dos valores para el mismo instante. Lo comprobamos: <code>cubic-bezier(1.3, 0, 0.6, 1)</code> es inválido y el navegador descarta la declaración entera (el elemento se quedó con la función que tenía antes).</li>
+  <li><strong>$y_1$ e $y_2$ pueden valer lo que quieras.</strong> Si se salen de $[0, 1]$, la curva también se sale: el valor pasa del destino y vuelve (<em>overshoot</em>, rebote) o retrocede antes de arrancar (<em>anticipación</em>).</li>
+</ul>
+
+<table class="m2-medidas">
+  <thead><tr><th>Palabra clave</th><th>Equivale a</th><th>Carácter</th></tr></thead>
+  <tbody>
+    <tr><td><code>linear</code></td><td><code>cubic-bezier(0, 0, 1, 1)</code></td><td>Velocidad constante: mecánico.</td></tr>
+    <tr><td><code>ease</code> (por defecto)</td><td><code>cubic-bezier(0.25, 0.1, 0.25, 1)</code></td><td>Arranca rápido y frena largo.</td></tr>
+    <tr><td><code>ease-in</code></td><td><code>cubic-bezier(0.42, 0, 1, 1)</code></td><td>Arranca lento y termina rápido: para lo que sale de escena.</td></tr>
+    <tr><td><code>ease-out</code></td><td><code>cubic-bezier(0, 0, 0.58, 1)</code></td><td>Arranca rápido y frena: para lo que entra o responde a una acción.</td></tr>
+    <tr><td><code>ease-in-out</code></td><td><code>cubic-bezier(0.42, 0, 0.58, 1)</code></td><td>Simétrico: para lo que va de un sitio a otro dentro de la escena.</td></tr>
+  </tbody>
+</table>
+<p>Verificamos estas equivalencias muestreando las palabras clave del navegador y comparándolas con nuestra propia implementación de <code>cubic-bezier</code>: coinciden con un error máximo de 6·10⁻⁷.</p>
+
+<p>Arrastra $P_1$ y $P_2$. La caja de arriba a la derecha es un elemento real animado por el navegador con <code>element.animate()</code> y tu curva (<code>easing: 'cubic-bezier(…)'</code>); el punto que recorre la curva lee el tiempo de esa misma animación, así que lo que ves en la gráfica es exactamente lo que hace CSS.</p>
+
+<div class="demo" id="demo-bezier">
+  <div class="demo-lienzo" style="height:380px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">cubic-bezier(…)</div>
+</div>
+
+<p>Tres cosas que puedes descubrir con el editor:</p>
+<ul>
+  <li><strong>La pendiente inicial la marca el segmento $P_0 \to P_1$</strong> y la final, el segmento $P_2 \to P_3$: si $P_1$ está sobre el eje horizontal, el movimiento arranca con velocidad nula; si está muy arriba, arranca disparado.</li>
+  <li><strong>Con $y_2 &gt; 1$ la caja se pasa y vuelve</strong>; con $y_1 &lt; 0$ retrocede antes de salir.</li>
+  <li><strong>El rebote tiene un límite:</strong> una cúbica solo puede pasarse una vez. Para un rebote con varias oscilaciones necesitas <code>@keyframes</code>, la función <code>linear()</code> o, mejor, física de verdad (<a href="05-fisica-muelles.html">2.5</a>).</li>
+</ul>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function cubicBezier(x1, y1, x2, y2) {
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const X  = (s) => ((ax * s + bx) * s + cx) * s;
+  const Y  = (s) => ((ay * s + by) * s + cy) * s;
+  const dX = (s) => (3 * ax * s + 2 * bx) * s + cx;
+  function resolver(x) {
+    let s = x;
+    for (let i = 0; i < 8; i++) {
+      const error = X(s) - x;
+      if (Math.abs(error) < 1e-7) return s;
+      const d = dX(s);
+      if (Math.abs(d) < 1e-6) break;
+      s -= error / d;
+    }
+    let lo = 0, hi = 1;
+    s = x;
+    while (hi - lo > 1e-7) { if (X(s) < x) lo = s; else hi = s; s = (lo + hi) / 2; }
+    return s;
+  }
+  return (x) => x <= 0 ? 0 : x >= 1 ? 1 : Y(resolver(x));
+}
+</script>
+<ol>
+  <li data-l="2-3">Desarrollamos <code>x(s)</code> e <code>y(s)</code> como polinomios <code>a·s³ + b·s² + c·s</code> (el término constante es 0 porque P0 = (0, 0)). Los coeficientes salen de agrupar la fórmula de Bernstein; así cada evaluación cuesta tres multiplicaciones.</li>
+  <li data-l="4-6">Evaluación con el esquema de Horner: <code>((a·s + b)·s + c)·s</code>. <code>dX</code> es la derivada <code>x′(s) = 3a·s² + 2b·s + c</code>, que necesita Newton-Raphson.</li>
+  <li data-l="8-14">Newton-Raphson: partimos de <code>s = x</code> (buena primera aproximación, porque la curva no se aleja mucho de la diagonal) y corregimos con <code>s ← s − (x(s) − x) / x′(s)</code>. Suele converger en 2 o 3 pasos.</li>
+  <li data-l="13">Si la derivada es casi 0 (curvas con tramos casi verticales), Newton dividiría entre casi cero y saltaría lejos: abandonamos.</li>
+  <li data-l="16-19">Plan B infalible: bisección. Como <code>x(s)</code> es creciente en [0, 1] (gracias a la regla x1, x2 ∈ [0, 1]), partir el intervalo por la mitad siempre converge.</li>
+  <li data-l="21">Fuera de [0, 1] devolvemos los extremos. Con el tiempo ya convertido en <code>s</code>, el resultado es <code>y(s)</code>, que sí puede salirse de [0, 1].</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.2.2 — Diseñar una entrada con rebote</h3>
+  <p>Queremos que un aviso entre desde abajo 200 px y «se pase» un poco antes de asentarse. Partimos de la curva <code>cubic-bezier(0.34, 1.56, 0.64, 1)</code>.</p>
+  <p><strong>Paso 1: ¿cuánto se pasa?</strong> Muestreamos la curva con la función de arriba: el máximo es $y \approx 1{,}098$ en $x \approx 0{,}57$. Es decir, al 57 % del tiempo el aviso ha recorrido un 9,8 % de más: $0{,}098 \times 200 \approx 20$ px de rebote.</p>
+  <p><strong>Paso 2: ¿por qué pasa?</strong> $y_1 = 1{,}56$ tira de la curva hacia arriba muy pronto: el arranque es rapidísimo (el segmento $P_0 \to P_1$ es casi vertical) y la curva sobrepasa $y = 1$ antes de que $P_2 = (0{,}64, 1)$ la haga volver con pendiente horizontal. Un final con pendiente cero significa que llega a su sitio frenando suavemente.</p>
+  <p><strong>Paso 3: ¿en qué propiedad lo aplicamos?</strong> En <code>transform: translateY()</code>: el rebote se ve. Si lo aplicaras a <code>opacity</code> no verías nada, porque la opacidad se recorta a $[0, 1]$: lo comprobamos con una curva que rebasaba un 11 %: la opacidad llegó a 1 y se quedó ahí, mientras un <code>translateX</code> de 100 px con la misma curva llegó a 110,8 px. Con propiedades como <code>width</code> o <code>padding</code>, que no admiten negativos, una anticipación por debajo de 0 también se recorta.</p>
+  <script type="text/plain" class="codigo" data-lang="css">
+    .aviso         { transform: translateY(200px); transition: transform 500ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+    .aviso.visible { transform: translateY(0); }
+  </script>
+  <p><strong>Conclusión:</strong> los rebotes van bien en entradas y en respuestas a gestos; en salidas, no (nadie quiere ver un cuadro de diálogo que se va «rebotando»). Para salir, <code>ease-in</code> o una curva parecida.</p>
+</section>
+
+<h3><code>steps()</code>: saltos en vez de curvas</h3>
+<p><code>steps(n, posición)</code> divide la duración en <em>n</em> intervalos iguales y mantiene el valor constante dentro de cada uno. La posición dice dónde está el salto de cada intervalo. Estos son los valores reales que devolvió Chrome para una opacidad de 0 a 1 en 1000 ms (muestreados con <code>currentTime</code>):</p>
+<table class="m2-medidas">
+  <thead><tr><th>Función</th><th class="num">0 ms</th><th class="num">249</th><th class="num">250</th><th class="num">500</th><th class="num">750</th><th class="num">999</th><th class="num">1000</th></tr></thead>
+  <tbody>
+    <tr><td><code>steps(4)</code> = <code>steps(4, jump-end)</code></td><td class="num">0</td><td class="num">0</td><td class="num">0,25</td><td class="num">0,5</td><td class="num">0,75</td><td class="num">0,75</td><td class="num">1</td></tr>
+    <tr><td><code>steps(4, jump-start)</code></td><td class="num">0,25</td><td class="num">0,25</td><td class="num">0,5</td><td class="num">0,75</td><td class="num">1</td><td class="num">1</td><td class="num">1</td></tr>
+    <tr><td><code>steps(4, jump-none)</code></td><td class="num">0</td><td class="num">0</td><td class="num">0,333</td><td class="num">0,667</td><td class="num">1</td><td class="num">1</td><td class="num">1</td></tr>
+    <tr><td><code>steps(4, jump-both)</code></td><td class="num">0,2</td><td class="num">0,2</td><td class="num">0,4</td><td class="num">0,6</td><td class="num">0,8</td><td class="num">0,8</td><td class="num">1</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><strong><code>jump-end</code></strong> (el valor por defecto; también <code>end</code>): el salto al final de cada intervalo. El valor final (1) solo aparece en el último instante, y si no tienes <code>fill</code> hacia delante, ni lo ves.</li>
+  <li><strong><code>jump-start</code></strong> (o <code>start</code>): salta al empezar cada intervalo. El valor inicial nunca se ve; ya en el instante 0 vale 0,25.</li>
+  <li><strong><code>jump-none</code></strong>: ni salto al principio ni al final; <em>n</em> niveles que incluyen los dos extremos (0, ⅓, ⅔, 1). Es el que quieres para una hoja de sprites de 4 fotogramas en la que el primero y el último deben verse.</li>
+  <li><strong><code>jump-both</code></strong>: saltos en los dos extremos: <em>n</em> + 1 niveles (0,2 … 1), con 0 invisible.</li>
+  <li><code>step-start</code> = <code>steps(1, jump-start)</code> (salta al principio) y <code>step-end</code> = <code>steps(1, jump-end)</code> (salta al final). Este último es perfecto para un cursor que parpadea.</li>
+</ul>
+
+<h3><code>linear()</code> con varios puntos, en una línea</h3>
+<p>La función <code>linear()</code> admite una lista de puntos por los que pasa la curva, unidos por segmentos rectos: <code>linear(0, 0.25 75%, 1)</code> significa «vale 0 al principio, 0,25 al 75 % del tiempo y 1 al final». Lo medimos: a 375 ms (de 1000) valía 0,125; a 750 ms, 0,25; a 875 ms, 0,625. Con suficientes puntos, <code>linear()</code> aproxima cualquier curva, incluidos rebotes y muelles con varias oscilaciones; hay generadores en línea que convierten una función JavaScript en su <code>linear()</code>. La contrapartida: la curva está congelada en el CSS y no reacciona a interrupciones.</p>
+
+<div class="quiz">
+  <p class="pregunta">¿Cuál de estas funciones de tiempo es inválida?</p>
+  <ul>
+    <li data-correcta><code>cubic-bezier(1.2, 0, 0.5, 1)</code><div class="explicacion">Inválida: $x_1 = 1{,}2$. Las $x$ representan el tiempo y deben estar en $[0,1]$ para que la curva sea una función (un único valor por instante). El navegador ignora la declaración completa.</div></li>
+    <li><code>cubic-bezier(0.3, 1.6, 0.6, 1)</code><div class="explicacion">Es válida: $y_1 = 1{,}6$ se sale de $[0,1]$, pero las coordenadas $y$ son libres. Produce un rebote de algo más del 10 %.</div></li>
+    <li><code>steps(3, jump-none)</code><div class="explicacion">Válida: tres niveles (0, 0,5 y 1) que incluyen los dos extremos.</div></li>
+  </ul>
+</div>
+
+<h2><code>@keyframes</code> y las propiedades <code>animation-*</code></h2>
+<p>Una transición necesita que algo cambie. Una animación con <code>@keyframes</code> no: describe una secuencia completa de fotogramas clave y se reproduce en cuanto el elemento tiene <code>animation-name</code> con una duración mayor que cero.</p>
+
+<div class="anotado" data-lang="css">
+<script type="text/plain">
+@keyframes latido {
+  0%, 100% { transform: scale(1); }
+  30%      { transform: scale(1.15);
+             animation-timing-function: ease-in; }
+  60%      { transform: scale(0.98); }
+}
+.corazon {
+  animation-name: latido;
+  animation-duration: 1.2s;
+  animation-timing-function: ease-out;
+  animation-delay: 0s;
+  animation-iteration-count: infinite;
+  animation-direction: normal;
+  animation-fill-mode: none;
+  animation-play-state: running;
+}
+</script>
+<ol>
+  <li data-l="1">Un nombre global para la secuencia. Si hay dos <code>@keyframes</code> con el mismo nombre, gana el último (no se mezclan).</li>
+  <li data-l="2">Los selectores son porcentajes de la duración; <code>from</code> = <code>0%</code> y <code>to</code> = <code>100%</code>. Puedes agrupar varios con comas.</li>
+  <li data-l="3-4">Detalle de senior: <code>animation-timing-function</code> dentro de un fotograma clave se aplica al <strong>tramo que empieza en ese fotograma</strong> (aquí, de 30 % a 60 %). La función de tiempo nunca se aplica a la animación completa: se aplica tramo a tramo, entre fotogramas clave consecutivos. Lo verificamos con un tramo <code>steps(2)</code> seguido de uno lineal.</li>
+  <li data-l="8-9">La duración de <em>una</em> iteración.</li>
+  <li data-l="10">La función de tiempo por defecto para cada tramo (la del fotograma la sustituye en su tramo).</li>
+  <li data-l="11">Retardo antes de la primera iteración. Negativo = empezar «ya avanzada» (enseguida verás el truco).</li>
+  <li data-l="12">Número de iteraciones: un número (¡admite decimales! con <code>2.5</code> termina a mitad de la tercera), o <code>infinite</code>.</li>
+  <li data-l="13"><code>normal</code>, <code>reverse</code> (cada iteración al revés), <code>alternate</code> (ida, vuelta, ida…) o <code>alternate-reverse</code>. Con <code>alternate</code>, la función de tiempo también se invierte en las iteraciones de vuelta: un <code>ease-in</code> de ida se ve como <code>ease-out</code> de vuelta.</li>
+  <li data-l="14">Qué valor tiene el elemento <em>fuera</em> del intervalo activo (antes de empezar o después de terminar). Lo explica el diagrama de abajo.</li>
+  <li data-l="15"><code>paused</code> congela la animación donde esté; <code>running</code> la reanuda desde ahí, sin saltos.</li>
+</ol>
+</div>
+
+<p>Si falta el fotograma <code>from</code> o <code>to</code>, el navegador usa como extremo el valor que tendría el elemento sin la animación (el llamado valor subyacente). Lo comprobamos: con <code>margin-left: 50px</code> y una animación que solo define <code>to { margin-left: 150px }</code>, al 0 % valía 50 px y al 50 %, 100 px. Es muy útil para animar «desde donde esté».</p>
+
+<h3><code>animation-fill-mode</code>, visualmente</h3>
+<p>Una animación tiene tres fases: antes (durante el retardo), activa (las iteraciones) y después. Por defecto (<code>none</code>) la animación solo afecta a la fase activa; fuera de ella el elemento muestra su valor normal. En el diagrama, el valor del elemento sin animación está a media altura y la animación va de abajo (0 %) a arriba (100 %):</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Diagrama de animation-fill-mode: none, forwards, backwards y both">
+  <g class="tenue" stroke-dasharray="3 4">
+    <line x1="220" y1="20" x2="220" y2="215"/><line x1="400" y1="20" x2="400" y2="215"/><line x1="580" y1="20" x2="580" y2="215"/>
+  </g>
+  <text x="170" y="236" text-anchor="middle" class="texto-tenue">retardo</text>
+  <text x="310" y="236" text-anchor="middle" class="texto-tenue">iteración 1</text>
+  <text x="490" y="236" text-anchor="middle" class="texto-tenue">iteración 2</text>
+  <text x="660" y="236" text-anchor="middle" class="texto-tenue">después del final</text>
+  <path d="M120 220 L740 220" stroke="currentColor" stroke-width="1.2"/>
+  <!-- none -->
+  <text x="10" y="50" style="font-weight:700">none</text>
+  <path d="M120 38 L220 38" class="tenue" stroke-width="2.5" stroke-dasharray="5 4"/>
+  <path d="M220 51 L400 25 M400 51 L580 25" class="acento" stroke-width="2.5"/>
+  <path d="M580 38 L740 38" class="tenue" stroke-width="2.5" stroke-dasharray="5 4"/>
+  <!-- forwards -->
+  <text x="10" y="100" style="font-weight:700">forwards</text>
+  <path d="M120 88 L220 88" class="tenue" stroke-width="2.5" stroke-dasharray="5 4"/>
+  <path d="M220 101 L400 75 M400 101 L580 75 L740 75" class="acento" stroke-width="2.5"/>
+  <!-- backwards -->
+  <text x="10" y="150" style="font-weight:700">backwards</text>
+  <path d="M120 151 L220 151 L400 125 M400 151 L580 125" class="acento" stroke-width="2.5"/>
+  <path d="M580 138 L740 138" class="tenue" stroke-width="2.5" stroke-dasharray="5 4"/>
+  <!-- both -->
+  <text x="10" y="200" style="font-weight:700">both</text>
+  <path d="M120 201 L220 201 L400 175 M400 201 L580 175 L740 175" class="acento" stroke-width="2.5"/>
+  <text x="740" y="30" class="texto-tenue" style="font-size:11px" text-anchor="end">valor normal (sin animación)</text>
+</svg>
+<ul>
+  <li><strong><code>forwards</code></strong>: al terminar, se queda con el valor del último fotograma que se reprodujo (cuidado con <code>alternate</code>: con 2 iteraciones, el último fotograma es el de 0 %; lo medimos). Con <code>animation-iteration-count: 2.5</code> se queda a mitad de camino.</li>
+  <li><strong><code>backwards</code></strong>: durante el retardo ya muestra el primer fotograma. Sin él, un elemento que debe «aparecer» tras 500 ms de retardo se ve con su estilo normal durante esos 500 ms y luego salta al 0 % de la animación. Es el parpadeo típico de las animaciones de entrada escalonadas.</li>
+  <li><strong><code>both</code></strong>: las dos cosas. Es la opción que casi siempre quieres en animaciones de entrada con retardo.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m2-animacion-no-reinicia" data-titulo="La animación CSS no se repite al volver a añadir la clase">
+  <p><strong>Síntoma:</strong> quitas y vuelves a poner la clase que tiene la animación (<code>el.classList.remove('sacudir'); el.classList.add('sacudir')</code>) para repetirla, y no pasa nada: la animación sigue donde estaba o no vuelve a empezar.</p>
+  <p><strong>Causa:</strong> igual que con las transiciones, el navegador solo ve los estilos cuando los calcula. Si quitas y pones la clase en la misma tarea, en el siguiente cálculo <code>animation-name</code> es el mismo que antes y la animación no se reinicia. Lo medimos: tras quitar y poner la clase, <code>currentTime</code> seguía en 400 ms; con un <code>el.offsetWidth</code> entre medias, volvió a 0.</p>
+  <p><strong>Solución:</strong> fuerza un cálculo de estilo entre quitar y poner (<code>el.offsetWidth</code>), escucha <code>animationend</code> para quitar la clase al terminar, o mejor, reinicia el objeto animación directamente: <code>el.getAnimations()[0].currentTime = 0</code>, o anímalo con <code>el.animate()</code> (lección <a href="../02-animacion/07-waapi-flip.html">2.7</a>).</p>
+</div>
+
+<h3>El truco del retardo negativo</h3>
+<p>Un <code>animation-delay</code> negativo no espera: empieza la animación como si hubiera arrancado hace ese tiempo. Con <code>animation-delay: -0.25s</code> en una animación de 1 s, el primer frame que ves ya está en el 25 %. Parece una curiosidad, pero es un recurso potentísimo.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.2.3 — Tres puntos de carga ya en marcha, y una animación que controlas con un deslizador</h3>
+  <p><strong>Paso 1: el escalonado clásico.</strong> Tres puntos que pulsan uno detrás de otro. La forma ingenua es darles retardos de 0, 0,2 y 0,4 s. El problema: durante los primeros 0,4 s los puntos 2 y 3 están quietos, y al cargar la página se nota. Con retardos <strong>negativos</strong> (−0,4, −0,2 y 0 s), los tres están ya en marcha desde el primer frame, con el mismo desfase.</p>
+  <p><strong>Paso 2: posicionar una animación a mano.</strong> Si una animación está en pausa (<code>animation-play-state: paused</code>), el retardo negativo decide en qué punto se congela. Y si el retardo sale de una custom property, puedes moverlo desde JavaScript con una sola línea: <code>animation-delay: calc(var(--p) * -1s)</code>, con <code>--p</code> entre 0 y 1 y una duración de 1 s. Lo comprobamos: con <code>--p</code> = 0,25 el elemento estaba al 25 % del recorrido, con 0,9 al 90 %, y seguía ahí 300 ms después.</p>
+  <p><strong>Paso 3: el resultado.</strong> Mueve el deslizador: estás «rebobinando» una animación CSS con varios fotogramas clave, sin calcular nada en JavaScript.</p>
+<div class="js-playground" data-titulo="Retardo negativo: escalonado y scrubbing" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="puntos"><span></span><span></span><span></span></div>
+<label>progreso <input id="p" type="range" min="0" max="1" step="0.001" value="0.3"> <output id="salida">0.30</output></label>
+<div class="escena"><div class="bola"></div></div>
+</script>
+<script type="text/x-css">
+body { padding: 14px; font: 13px system-ui, sans-serif; color: #b4bccb; }
+/* 1) tres puntos ya desfasados desde el primer frame */
+.puntos { display: flex; gap: 8px; margin-bottom: 16px; }
+.puntos span { width: 14px; height: 14px; border-radius: 50%; background: #8b7bff;
+  animation: pulso 1.2s ease-in-out infinite; }
+.puntos span:nth-child(1) { animation-delay: -0.4s; }
+.puntos span:nth-child(2) { animation-delay: -0.2s; }
+.puntos span:nth-child(3) { animation-delay: 0s; }
+@keyframes pulso { 0%, 100% { transform: scale(0.6); opacity: .4; } 50% { transform: scale(1); opacity: 1; } }
+
+/* 2) animación congelada y posicionada por --p */
+.escena { position: relative; height: 150px; margin-top: 10px; border: 1px dashed #3a4256; border-radius: 8px; }
+.bola { position: absolute; left: 0; top: 0; width: 26px; height: 26px; border-radius: 50%; background: #3fd0e8;
+  animation: recorrido 1s linear paused;
+  animation-delay: calc(var(--p, 0) * -1s); }
+@keyframes recorrido {
+  0%   { transform: translate(10px, 110px); }
+  30%  { transform: translate(120px, 10px) scale(1.3); }
+  60%  { transform: translate(230px, 110px) rotate(180deg); }
+  100% { transform: translate(calc(100vw - 70px), 60px); background: #ff6bb5; }
+}
+</script>
+<script type="text/x-js">
+const p = document.getElementById('p');
+const salida = document.getElementById('salida');
+function aplicar() {
+  document.body.style.setProperty('--p', p.value);   // CSS hace el resto
+  salida.textContent = (+p.value).toFixed(2);
+}
+p.addEventListener('input', aplicar);
+aplicar();
+</script>
+</div>
+  <p><strong>Conclusión:</strong> un retardo negativo convierte una animación CSS en una función del progreso que puedes consultar en cualquier punto. Es la base de las animaciones controladas por scroll hechas «a mano» antes de que existieran las <em>scroll-driven animations</em>, y lo que hace por dentro la propiedad <code>currentTime</code> de la Web Animations API (<a href="07-waapi-flip.html">2.7</a>).</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Un elemento tiene <code>opacity: 1</code> y <code>animation: aparecer 400ms ease-out 1s</code>, con <code>@keyframes aparecer { from { opacity: 0 } }</code>. ¿Qué se ve al cargar la página?</p>
+  <ul>
+    <li>El elemento invisible durante 1 s y luego aparece suavemente.<div class="explicacion">Eso pasaría con <code>animation-fill-mode: backwards</code> (o <code>both</code>). Sin él, durante el retardo la animación no se aplica.</div></li>
+    <li data-correcta>El elemento visible durante 1 s, desaparece de golpe y luego aparece suavemente.<div class="explicacion">Exacto: con <code>fill-mode: none</code>, durante el retardo se ve el valor normal (<code>opacity: 1</code>); al empezar la fase activa salta al 0 % del fotograma (opacidad 0) y anima hacia el valor subyacente (1). Arreglo: <code>animation-fill-mode: backwards</code>.</div></li>
+    <li>No se anima: falta el fotograma <code>to</code>.<div class="explicacion">No hace falta: el fotograma que falta se completa con el valor subyacente del elemento (aquí, 1).</div></li>
+  </ul>
+</div>
+
+<h2>Eventos: saber cuándo termina</h2>
+<p>Las transiciones disparan cuatro eventos en el elemento: <code>transitionrun</code> (se ha creado, aunque esté en su retardo), <code>transitionstart</code> (termina el retardo y empieza a moverse), <code>transitionend</code> (termina) y <code>transitioncancel</code> (se interrumpe). Las animaciones, <code>animationstart</code>, <code>animationiteration</code>, <code>animationend</code> y <code>animationcancel</code>. Parecen sencillos. Tienen cuatro trampas, y las cuatro las comprobamos:</p>
+<ol>
+  <li><strong>Se disparan una vez por propiedad</strong>, y con el nombre de la propiedad <em>larga</em>. Una transición de <code>padding</code> dispara cuatro <code>transitionend</code>: <code>padding-top</code>, <code>padding-right</code>, <code>padding-bottom</code> y <code>padding-left</code>. Si en el manejador haces algo «al terminar», lo harás cuatro veces.</li>
+  <li><strong>Burbujean.</strong> Si un hijo tiene su propia transición, su <code>transitionend</code> llega al padre. <code>e.target</code> te dice de quién es.</li>
+  <li><strong>Si la transición se interrumpe, no hay <code>transitionend</code></strong>: hay <code>transitioncancel</code>. Ocurre al cambiar el valor antes de terminar, al quitar la propiedad de <code>transition-property</code> o si el elemento pasa a <code>display: none</code> (lo medimos: solo llegó <code>transitioncancel</code>). Si tu código espera a <code>transitionend</code> para continuar, puede quedarse esperando para siempre.</li>
+  <li><strong>Una animación infinita nunca dispara <code>animationend</code></strong>, y <code>animationiteration</code> salta <em>entre</em> iteraciones, no al final de la última. Y con duración 0 no hay transición ni eventos: medimos que <code>transition-duration: 0s</code> no disparaba ningún evento y <code>0.01ms</code> sí.</li>
+</ol>
+
+<div class="js-playground" data-titulo="Registro de eventos de transición" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="alternar">Alternar .on</button>
+<button id="interrumpir">Alternar e interrumpir a los 200 ms</button>
+<div class="padre" id="padre">padre (transición de padding)
+  <div class="hijo" id="hijo">hijo (transform)</div>
+</div>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 13px system-ui, sans-serif; color: #e4e7ee; }
+button { padding: 6px 10px; font: inherit; margin: 0 4px 8px 0; cursor: pointer; }
+.padre { padding: 10px; background: #1f2430; border-radius: 8px; transition: padding 600ms ease; }
+.padre.on { padding: 26px; }
+.hijo { width: 130px; margin-top: 6px; padding: 6px; border-radius: 6px; background: #8b7bff; color: #0e1014;
+  transition: transform 400ms ease; }
+.padre.on .hijo { transform: translateX(120px); }
+</script>
+<script type="text/x-js">
+const padre = document.getElementById('padre');
+const t0 = performance.now();
+for (const tipo of ['transitionrun', 'transitionstart', 'transitionend', 'transitioncancel']) {
+  padre.addEventListener(tipo, (e) => {
+    const ms = (performance.now() - t0).toFixed(0).padStart(5);
+    console.log(`${ms} ms  ${tipo.padEnd(16)} ${e.propertyName.padEnd(15)} target=${e.target.id}`);
+  });
+}
+document.getElementById('alternar').onclick = () => padre.classList.toggle('on');
+document.getElementById('interrumpir').onclick = () => {
+  padre.classList.toggle('on');
+  setTimeout(() => padre.classList.toggle('on'), 200);
+};
+setTimeout(() => padre.classList.add('on'), 300);   // una vez al empezar, para ver el registro
+</script>
+</div>
+
+<p>La forma robusta de «esperar a que termine» filtra por elemento y propiedad y trata también la cancelación. Y si solo te interesa saber cuándo han terminado <em>todas</em> las animaciones de un elemento, hay un atajo excelente: cada transición y animación CSS es también un objeto <code>Animation</code> de la Web Animations API, con una promesa <code>finished</code>:</p>
+<script type="text/plain" class="codigo" data-lang="js" data-lineas>
+  // Espera a que TODAS las transiciones/animaciones actuales de 'el' terminen
+  await Promise.all(el.getAnimations().map((a) => a.finished));
+</script>
+<div class="callout senior" data-titulo="las animaciones CSS también son objetos">
+  <p>Cada transición y cada animación CSS en curso existe también como objeto de la Web Animations API. <code>document.getAnimations()</code> (o <code>el.getAnimations()</code>) las devuelve como <code>CSSTransition</code> y <code>CSSAnimation</code>: lo comprobamos, y una transición de <code>opacity</code> y una <code>@keyframes</code> llamada <code>gira</code> aparecieron con esos tipos y con sus propiedades <code>transitionProperty</code> y <code>animationName</code>. Desde JavaScript puedes pausarlas, moverlas en el tiempo con <code>currentTime</code>, cambiar su velocidad o cancelarlas sin tocar el CSS. Es el puente entre esta lección y la <a href="07-waapi-flip.html">2.7</a>.</p>
+</div>
+
+<p>Ojo con un detalle: si una de esas animaciones se cancela, su promesa <code>finished</code> se <em>rechaza</em> (con un <code>AbortError</code>), y <code>Promise.all</code> con ella. Lo veremos a fondo en <a href="07-waapi-flip.html">2.7</a>; en el ejercicio 2.2.5 escribirás la versión con eventos.</p>
+
+<div class="callout bestiario" data-id="m2-transitionend-varias-veces" data-titulo="transitionend se dispara varias veces (o ninguna)">
+  <p><strong>Síntoma:</strong> el código que pusiste en <code>transitionend</code> se ejecuta dos, cuatro o cinco veces; o, al revés, a veces no se ejecuta nunca y la interfaz se queda a medias.</p>
+  <p><strong>Causa:</strong> <code>transitionend</code> se dispara una vez por cada propiedad larga que termina (un <code>padding</code> son cuatro), burbujea desde los hijos que también tienen transiciones, y no se dispara si la transición se interrumpe (llega <code>transitioncancel</code>), si el elemento pasa a <code>display: none</code> o si la duración es 0.</p>
+  <p><strong>Solución:</strong> filtra con <code>e.target === el &amp;&amp; e.propertyName === 'transform'</code>, escucha también <code>transitioncancel</code>, usa <code>{ once: true }</code> solo si ya filtras dentro, y añade un plan B con un temporizador. O espera a <code>Promise.all(el.getAnimations().map(a =&gt; a.finished))</code> manejando el rechazo.</p>
+</div>
+
+<h2>Los «imposibles» de CSS, y cómo se hacen hoy</h2>
+
+<div class="callout senior" data-titulo="cómo interpola el navegador cada propiedad">
+  <p>La especificación asigna a cada propiedad un <em>tipo de animación</em>. La mayoría se interpolan <strong>por valor calculado</strong>: números, longitudes, porcentajes, ángulos, colores, sombras, transformaciones. Otras son <strong>discretas</strong>: no hay valores intermedios y el valor salta del inicial al final <em>a mitad</em> de la animación (lo medimos con <code>display: block → flex</code>: <code>block</code> hasta el 49 %, <code>flex</code> desde el 51 %). Y hay casos especiales que conviene conocer, todos comprobados:</p>
+  <ul>
+    <li><code>visibility</code> es discreta pero «favorece» a <code>visible</code>: de <code>visible</code> a <code>hidden</code> sigue visible hasta el último instante, y de <code>hidden</code> a <code>visible</code> se vuelve visible nada más empezar. Por eso el truco clásico de combinar <code>opacity</code> y <code>visibility</code> en la misma transición hace fundidos de salida limpios.</li>
+    <li><code>display</code> hacia o desde <code>none</code> se comporta igual: el valor distinto de <code>none</code> se mantiene durante toda la animación.</li>
+    <li>Los colores sRGB se interpolan componente a componente en sRGB: de rojo a azul, la mitad es <code>rgb(128, 0, 128)</code>. En <a href="04-interpolacion-easing.html">2.4</a> verás por qué esa mitad es más oscura de lo que esperarías.</li>
+  </ul>
+</div>
+
+<h3>Aparecer desde <code>display: none</code></h3>
+<p><code>display</code> es una propiedad <em>discreta</em>: no hay valores intermedios entre <code>none</code> y <code>block</code>. Tradicionalmente, cuando cambiaba <code>display</code> no había transición posible de nada: el elemento pasaba de no existir en el layout a existir, sin «estilo anterior» del que partir (igual que un elemento recién insertado). Medimos que una transición de <code>opacity</code> no arrancaba al pasar de <code>display: none</code> a <code>block</code>. Hoy hay dos piezas que lo resuelven:</p>
+<ul>
+  <li><strong><code>@starting-style</code></strong>: define el estilo «de antes» para el primer cálculo de estilo de un elemento (al insertarlo o al salir de <code>display: none</code>). Así la transición tiene origen.</li>
+  <li><strong><code>transition-behavior: allow-discrete</code></strong> (o la palabra <code>allow-discrete</code> en el shorthand): permite que las propiedades discretas participen en la transición. Una propiedad discreta cambia de golpe a mitad de la transición, salvo cuando uno de los dos valores es <code>display: none</code>: entonces el navegador mantiene el valor visible durante toda la transición. Lo medimos al ocultar: a los 200 ms (de 400) el elemento seguía en <code>display: block</code> con la opacidad a medias, y al final pasó a <code>none</code>.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.2.4 — Un aviso que entra y sale desde <code>display: none</code></h3>
+<div class="js-playground" data-titulo="display: none con @starting-style y allow-discrete" data-altura="300" data-fondo="oscuro" data-pestaña="css">
+<script type="text/x-html">
+<button id="t">Mostrar / ocultar</button>
+<div class="aviso" id="aviso">Guardado ✓</div>
+</script>
+<script type="text/x-css">
+body { padding: 14px; font: 14px system-ui, sans-serif; }
+button { padding: 6px 12px; font: inherit; cursor: pointer; }
+.aviso {
+  display: none;                          /* oculto: fuera del layout */
+  margin-top: 14px; padding: 12px 16px; width: max-content;
+  border-radius: 8px; background: #3ecf8e; color: #0e1014; font-weight: 600;
+  opacity: 0; transform: translateY(12px);
+  transition: opacity .35s ease-out, transform .35s ease-out,
+              display .35s allow-discrete;       /* display también "transiciona" */
+}
+.aviso.abierto {
+  display: block;
+  opacity: 1; transform: none;
+}
+@starting-style {                         /* de dónde parte al salir de display:none */
+  .aviso.abierto { opacity: 0; transform: translateY(12px); }
+}
+</script>
+<script type="text/x-js">
+const aviso = document.getElementById('aviso');
+document.getElementById('t').onclick = () => aviso.classList.toggle('abierto');
+setTimeout(() => aviso.classList.add('abierto'), 400);
+</script>
+</div>
+  <p><strong>Al abrir:</strong> se añade <code>.abierto</code>, así que <code>display</code> pasa a <code>block</code> y el elemento necesita estilo por primera vez desde que estaba oculto. Para ese primer cálculo, <code>@starting-style</code> dice que partía de opacidad 0 y 12 px abajo: la transición tiene origen y se anima.</p>
+  <p><strong>Al cerrar:</strong> <code>display</code> vuelve a <code>none</code>, pero como <code>display</code> está en la lista con <code>allow-discrete</code> y uno de los valores es <code>none</code>, el elemento sigue en <code>display: block</code> durante los 350 ms. La opacidad y el desplazamiento se animan, y solo al final desaparece del layout.</p>
+  <p><strong>Si falta una pieza:</strong> sin <code>@starting-style</code>, aparece de golpe (pero se desvanece al cerrar). Sin <code>allow-discrete</code>, aparece suave (gracias a <code>@starting-style</code>) pero desaparece de golpe. Pruébalo borrando cada parte. Para <code>&lt;dialog&gt;</code> y <code>popover</code>, que viven en la <em>top layer</em>, hay que añadir también <code>overlay</code> a la lista con <code>allow-discrete</code>.</p>
+</section>
+
+<h3>Animar hasta <code>height: auto</code></h3>
+<p>Una transición necesita dos valores interpolables, y <code>auto</code> no es un número: el navegador no sabe interpolar entre <code>0</code> y «lo que mida el contenido». Lo medimos: <code>height: 0 → auto</code> no crea transición. El truco viejo de animar <code>max-height</code> hasta un valor enorme funciona mal (la duración se reparte sobre el valor enorme, así que el cierre empieza con un retardo aparente). Dos soluciones buenas:</p>
+<ul>
+  <li><strong>Grid con <code>fr</code></strong> (funciona en todos los navegadores modernos): un contenedor <code>display: grid</code> cuya única fila pasa de <code>grid-template-rows: 0fr</code> a <code>1fr</code>. Las <code>fr</code> sí se interpolan, y <code>1fr</code> hace que la fila mida lo que su contenido. El hijo necesita <code>overflow: hidden</code>, que hace dos cosas: recorta el contenido y anula el «tamaño mínimo automático» de los elementos de grid, que les impide encogerse por debajo de su contenido. Comprobado: con <code>overflow: hidden</code>, el hijo de una fila <code>0fr</code> medía 0 px; sin él, 36 px (lo que medía su texto). Y crea transición.</li>
+  <li><strong><code>interpolate-size: allow-keywords</code></strong>: le da permiso al navegador para interpolar hacia y desde palabras clave de tamaño como <code>auto</code> o <code>fit-content</code>. Se suele poner en <code>:root</code> para toda la página. En nuestro Chrome 154 funcionó (también la función relacionada <code>calc-size()</code>); en navegadores que aún no lo soportan, la altura simplemente cambia sin animarse, así que es una mejora progresiva segura.</li>
+</ul>
+
+<h3>Transformaciones que no giran</h3>
+<p>Para interpolar <code>transform</code>, el navegador compara las dos listas de funciones. Si tienen las mismas funciones en el mismo orden, interpola cada argumento por separado: <code>rotate(0deg)</code> → <code>rotate(360deg)</code> da una vuelta completa (medimos 90° al 25 %, 180° al 50 %). <code>none</code> también vale, porque se trata como la lista equivalente con valores neutros. Pero si las listas no encajan, el navegador convierte cada extremo en una matriz y las interpola descomponiéndolas; y en una matriz, 360° es igual que 0°.</p>
+
+<div class="callout bestiario" data-id="m2-rotate-360-no-gira" data-titulo="Un rotate(360deg) que no gira">
+  <p><strong>Síntoma:</strong> una transición o animación a <code>rotate(360deg)</code> (o <code>1turn</code>) no gira nada, o gira de forma extraña; con 180° el giro va en el sentido que no esperabas.</p>
+  <p><strong>Causa:</strong> las listas de funciones de los dos extremos no coinciden en tipo y orden (por ejemplo, <code>rotate(0deg) translateX(10px)</code> frente a <code>translateX(10px) rotate(360deg)</code>, o un extremo escrito como <code>matrix(…)</code>). Entonces se interpolan como matrices, y una matriz no distingue 0° de 360°. Lo comprobamos: en ese caso el elemento no rotaba en ningún instante de la animación.</p>
+  <p><strong>Solución:</strong> escribe las dos listas con las mismas funciones en el mismo orden (<code>translateX(10px) rotate(0deg)</code> → <code>translateX(10px) rotate(360deg)</code>) o usa la propiedad independiente <code>rotate: 360deg</code>, que se interpola sola.</p>
+</div>
+
+<h3>Custom properties que saltan</h3>
+<p>Para el navegador, una custom property sin registrar (<code>--angulo: 0deg</code>) es solo un trozo de texto: no sabe que es un ángulo, así que no puede interpolarla. Lo medimos: en una transición, una custom property sin registrar no animaba nada (cambiaba al instante); en <code>@keyframes</code>, saltaba de un valor al otro justo a mitad (0 px hasta el 49 %, 100 px desde el 51 %), el comportamiento de las propiedades discretas. La solución es registrarla con <code>@property</code>, diciendo su tipo:</p>
+<script type="text/plain" class="codigo" data-lang="css">
+  @property --angulo {
+    syntax: '<angle>';      /* el tipo: <length>, <number>, <color>, <percentage>… */
+    inherits: false;         /* obligatorio: ¿la heredan los hijos? */
+    initial-value: 0deg;     /* obligatorio (salvo con syntax '*') */
+  }
+</script>
+
+<div class="callout hack">
+  <p>Registrar custom properties abre una puerta enorme: puedes animar cosas que CSS no sabe animar por sí mismo, como el ángulo de un <code>conic-gradient</code> (un borde que gira), las paradas de color de un degradado o un número que usas dentro de un <code>calc()</code> en varias propiedades a la vez. Animas la variable y cada propiedad que la usa se recalcula en cada frame. Eso sí: cualquier propiedad que dependa de la variable se anima en el hilo principal, no en el compositor.</p>
+</div>
+
+<h3>Movimiento reducido</h3>
+<p>Algunas personas sufren mareos, náuseas o migrañas con ciertas animaciones (sobre todo movimientos grandes, zoom, parallax y giros): son trastornos vestibulares. Los sistemas operativos tienen un ajuste de «reducir movimiento», y CSS lo expone como media query. Lo comprobamos emulando la preferencia en Chrome: la regla de la media query se aplicó y <code>matchMedia</code> devolvió <code>true</code>.</p>
+<script type="text/plain" class="codigo" data-lang="css">
+  .panel { transition: transform .4s ease-out, opacity .4s; }
+  @media (prefers-reduced-motion: reduce) {
+    .panel { transition: opacity .4s; }      /* sin desplazamiento: solo fundido */
+    .fondo-parallax { animation: none; }
+  }
+</script>
+<script type="text/plain" class="codigo" data-lang="js">
+  const reducir = matchMedia('(prefers-reduced-motion: reduce)');
+  if (reducir.matches) { /* elige una animación más sobria */ }
+  reducir.addEventListener('change', (e) => { /* el usuario cambió el ajuste */ });
+</script>
+<p>«Reducir» no es «eliminar»: un fundido suave suele estar bien, y la animación que comunica algo (un cambio de estado) debería mantenerse de forma más sutil. Circula por internet un fragmento que pone todas las duraciones a <code>0.01ms !important</code>. Si lo usas, fíjate en que es <code>0.01ms</code> y no <code>0s</code> a propósito: con duración 0 no hay transición ni eventos, y el JavaScript que espera a <code>transitionend</code> se quedaría colgado (lo medimos arriba).</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 2.2.1 — Adiós a <code>transition: all</code></h3>
+  <p>La tarjeta usa <code>transition: all .5s</code>, y al pasar el ratón también se anima el <code>padding</code> (layout en cada frame). Reescribe la transición para que: <code>transform</code> dure 200 ms con <code>ease-out</code>; <code>box-shadow</code> dure 200 ms; <code>background-color</code> dure 300 ms lineal con 100 ms de retardo; y el <code>padding</code> cambie sin animarse. El CSS se aplica mientras escribes.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.2.1" data-altura="300" data-pestaña="css" data-autorun data-consola="no" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="tarjeta">Tarjeta<br><small>pasa el ratón</small></div>
+</script>
+<script type="text/x-css">
+body { display: grid; place-items: center; height: 100%; font: 15px system-ui, sans-serif; }
+.tarjeta {
+  padding: 20px 28px; border-radius: 12px; color: #e4e7ee;
+  background-color: #1f2430; box-shadow: 0 2px 6px rgba(0,0,0,.5);
+  transition: all .5s;
+}
+.tarjeta:hover {
+  padding: 24px 32px;
+  transform: translateY(-6px) rotate(-1deg);
+  box-shadow: 0 16px 30px rgba(0,0,0,.6);
+  background-color: #2b2f55;
+}
+</script>
+<script type="text/x-css" data-solucion>
+body { display: grid; place-items: center; height: 100%; font: 15px system-ui, sans-serif; }
+.tarjeta {
+  padding: 20px 28px; border-radius: 12px; color: #e4e7ee;
+  background-color: #1f2430; box-shadow: 0 2px 6px rgba(0,0,0,.5);
+  /* solo lo que queremos animar; padding no está en la lista → cambia al instante */
+  transition: transform 200ms ease-out,
+              box-shadow 200ms,
+              background-color 300ms linear 100ms;
+}
+.tarjeta:hover {
+  padding: 24px 32px;
+  transform: translateY(-6px) rotate(-1deg);
+  box-shadow: 0 16px 30px rgba(0,0,0,.6);
+  background-color: #2b2f55;
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Una entrada por propiedad, separadas por comas: <code>propiedad duración [función] [retardo]</code>. Lo que no esté en la lista no se anima.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La lista <code>transform 200ms ease-out, box-shadow 200ms, background-color 300ms linear 100ms</code> define tres transiciones independientes. <code>box-shadow</code> no dice función, así que usa <code>ease</code>. En la del fondo, <code>300ms</code> es la duración y <code>100ms</code> el retardo, por su orden. Como <code>padding</code> no aparece, su cambio es instantáneo: la tarjeta crece un poco de golpe al entrar el ratón (si prefieres que no cambie de tamaño, quita el <code>padding</code> del <code>:hover</code> y usa <code>scale</code> en el <code>transform</code>). La sombra sí repinta en cada frame durante 200 ms; si quisieras una elevación 100 % de compositor, podrías poner la sombra grande en un pseudoelemento y animar su <code>opacity</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.2.2 — Máquina de escribir con <code>steps()</code></h3>
+  <p>El texto se revela ensanchando su caja (durante el primer 80 % de cada vuelta; el resto del tiempo se queda entero), pero con <code>linear</code> las letras aparecen cortadas a medias. Haz que aparezcan <strong>de una en una, enteras</strong>, y añade un cursor (el borde derecho) que parpadee con saltos secos, sin fundido.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.2.2" data-altura="300" data-pestaña="css" data-autorun data-consola="no" data-fondo="oscuro">
+<script type="text/x-html">
+<p class="maquina">Hola, mundo animado</p>
+</script>
+<script type="text/x-css">
+body { display: grid; place-items: center; height: 100%; }
+.maquina {
+  font: 28px ui-monospace, Menlo, monospace; color: #e4e7ee;
+  white-space: nowrap; overflow: hidden;
+  width: 19ch;                      /* 19 caracteres */
+  border-right: 3px solid #8b7bff;
+  animation: escribir 3s linear infinite;
+}
+/* 0 % → 80 %: se escribe; 80 % → 100 %: el texto completo, en reposo */
+@keyframes escribir { 0% { width: 0; } 80%, 100% { width: 19ch; } }
+</script>
+<script type="text/x-css" data-solucion>
+body { display: grid; place-items: center; height: 100%; }
+.maquina {
+  font: 28px ui-monospace, Menlo, monospace; color: #e4e7ee;
+  white-space: nowrap; overflow: hidden;
+  width: 19ch;                      /* 19 caracteres */
+  border-right: 3px solid #8b7bff;
+  /* 19 saltos, uno por carácter; el cursor parpadea con step-end */
+  animation: escribir 3s steps(19) infinite,
+             parpadeo 0.8s step-end infinite;
+}
+/* 0 % → 80 %: se escribe; 80 % → 100 %: el texto completo, en reposo */
+@keyframes escribir { 0% { width: 0; } 80%, 100% { width: 19ch; } }
+@keyframes parpadeo { 50% { border-color: transparent; } }
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En una fuente monoespaciada todos los caracteres miden lo mismo, 1<code>ch</code>. «Hola, mundo animado» tiene 19 caracteres (cuenta la coma y los espacios). ¿Cuántos pasos necesitas?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Puedes poner dos animaciones separadas por comas en <code>animation</code>. Para el cursor, un fotograma al 50 % con <code>border-color: transparent</code> y una función de tiempo que no interpole.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>steps(19)</code> (es decir, <code>jump-end</code>) se aplica al tramo entre fotogramas clave que empieza en 0 %: lo divide en 19 intervalos (los 2,4 s que hay hasta el 80 % de 3 s) y mantiene el ancho constante en cada uno: 0, 1ch, 2ch… 18ch, y salta a 19ch al llegar al 80 %. Como cada <code>ch</code> es exactamente un carácter en una fuente monoespaciada, nunca se ve una letra cortada. El tramo del 80 % al 100 % es un descanso con el texto entero.</p>
+    <p>¿Por qué ese descanso? Lo comprobamos: con solo <code>from { width: 0 }</code> y <code>steps(19)</code> en un bucle infinito, el ancho máximo que se llega a ver es 18ch, así que <strong>la última letra no aparecía nunca</strong>. <code>jump-end</code> solo alcanza el valor final en el instante exacto en que termina la iteración, y en ese mismo instante la siguiente iteración ya vuelve a empezar en 0. Con <code>jump-start</code> pasaría lo contrario: el primer paso ya enseña una letra en el instante 0 y el estado «vacío» no se vería. Regla general: si un bucle con <code>steps()</code> tiene que enseñar el primer y el último estado, deja un tramo de reposo o usa <code>jump-none</code>.</p>
+    <p>El cursor usa <code>step-end</code> (= <code>steps(1, jump-end)</code>) en cada tramo de <code>parpadeo</code>: de 0 a 50 % mantiene el color del borde y salta a transparente al llegar al 50 %; de 50 a 100 %, transparente, y salta de nuevo al final. Resultado: encendido-apagado sin fundido, como un cursor de verdad. Con <code>linear</code> verías un pulso suave.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.2.3 — Un acordeón que se anima hasta <code>height: auto</code></h3>
+  <p>Al pulsar cada pregunta, su respuesta se abre, pero lo hace de golpe porque <code>height</code> va de <code>0</code> a <code>auto</code>. Cambia <strong>solo el CSS</strong> para que abra y cierre suavemente (0,3 s) midiendo lo que mida el contenido.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.2.3" data-altura="320" data-pestaña="css" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="item"><button>¿Qué es una transición?</button>
+  <div class="respuesta"><div class="dentro"><p>Una interpolación automática entre el valor viejo y el nuevo de una propiedad cuando su valor calculado cambia.</p></div></div></div>
+<div class="item"><button>¿Por qué no se anima auto?</button>
+  <div class="respuesta"><div class="dentro"><p>Porque auto no es un número: el navegador no sabe qué valores hay entre 0 y «lo que mida el contenido». Este párrafo es más largo a propósito, para que veas que la altura se adapta a lo que haya dentro sin fijar ningún valor a mano.</p></div></div></div>
+<div class="item"><button>¿Y con grid?</button>
+  <div class="respuesta"><div class="dentro"><p>Las fracciones fr sí se interpolan.</p></div></div></div>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font: 14px system-ui, sans-serif; color: #e4e7ee; }
+.item { border-bottom: 1px solid #2a3040; }
+.item button { width: 100%; text-align: left; padding: 10px; font: inherit; font-weight: 600;
+  background: none; color: inherit; border: 0; cursor: pointer; }
+.respuesta { height: 0; overflow: hidden; transition: height .3s ease; }
+.item.abierto .respuesta { height: auto; }
+.dentro p { margin: 0; padding: 0 10px 12px; color: #b4bccb; }
+</script>
+<script type="text/x-css" data-solucion>
+body { padding: 12px; font: 14px system-ui, sans-serif; color: #e4e7ee; }
+.item { border-bottom: 1px solid #2a3040; }
+.item button { width: 100%; text-align: left; padding: 10px; font: inherit; font-weight: 600;
+  background: none; color: inherit; border: 0; cursor: pointer; }
+/* la respuesta es una rejilla de UNA fila que pasa de 0fr a 1fr */
+.respuesta { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .3s ease; }
+.item.abierto .respuesta { grid-template-rows: 1fr; }
+/* el hijo de la rejilla debe poder encogerse por debajo de su contenido
+   y recortar lo que no quepa; SIN padding propio (lo tiene el párrafo) */
+.dentro { overflow: hidden; min-height: 0; }
+.dentro p { margin: 0; padding: 0 10px 12px; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+document.querySelectorAll('.item button').forEach((b) => {
+  b.addEventListener('click', () => b.parentElement.classList.toggle('abierto'));
+});
+document.querySelector('.item').classList.add('abierto');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Convierte <code>.respuesta</code> en <code>display: grid</code> con una sola fila y anima <code>grid-template-rows</code> entre <code>0fr</code> y <code>1fr</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si la fila no llega a 0 o el texto sigue viéndose, al hijo (<code>.dentro</code>) le falta <code>overflow: hidden</code>: por defecto, un elemento de grid no se encoge por debajo de su contenido.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>grid-template-rows: 0fr</code> → <code>1fr</code> sí es interpolable: el navegador anima la fracción de 0 a 1, y <code>1fr</code> en una rejilla sin altura fija significa «lo que mida el contenido». El hijo necesita <code>overflow: hidden</code>: recorta lo que no cabe y, además, anula el tamaño mínimo automático de los elementos de grid (<code>min-height: auto</code> equivale a «lo que mida el contenido» solo cuando <code>overflow</code> es <code>visible</code>). La solución añade también <code>min-height: 0</code>, que aquí es redundante pero deja clara la intención y te protege si algún día quitas el <code>overflow</code>.</p>
+    <p>El padding vertical es una trampa: si se lo pones a <code>.dentro</code> (el hijo directo de la rejilla), ese padding sigue ocupando sitio aunque la fila mida 0, porque una caja nunca mide menos que su padding. Por eso el padding va en el párrafo de dentro: forma parte del contenido que <code>.dentro</code> recorta. Alternativa en Chrome reciente: deja <code>height: 0 → auto</code> y añade <code>interpolate-size: allow-keywords</code> a <code>:root</code>. Recuerda que <code>grid-template-rows</code> hace layout en cada frame: para un acordeón está bien, para cien a la vez no.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 2.2.4 — Un borde que gira (con <code>@property</code>)</h3>
+  <p>El borde de la tarjeta es un <code>conic-gradient</code> cuyo ángulo sale de <code>--angulo</code>, y una animación lo lleva de 0deg a 360deg. Ahora mismo no gira: la variable cambia de golpe a mitad de cada vuelta y el borde se queda como estaba. Haz que gire suavemente y, para quien tenga activado «reducir movimiento», que el borde quede quieto.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.2.4" data-altura="300" data-pestaña="css" data-autorun data-consola="no" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="tarjeta">Borde con conic-gradient</div>
+</script>
+<script type="text/x-css">
+body { display: grid; place-items: center; height: 100%; font: 16px system-ui, sans-serif; }
+.tarjeta {
+  --angulo: 0deg;
+  padding: 36px 44px; border-radius: 14px; color: #e4e7ee;
+  border: 4px solid transparent;
+  background:
+    linear-gradient(#181c24, #181c24) padding-box,
+    conic-gradient(from var(--angulo), #8b7bff, #3fd0e8, #ff6bb5, #8b7bff) border-box;
+  animation: girar 3s linear infinite;
+}
+@keyframes girar { to { --angulo: 360deg; } }
+</script>
+<script type="text/x-css" data-solucion>
+/* 1) registrar la variable: ahora el navegador sabe que es un ángulo */
+@property --angulo {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+body { display: grid; place-items: center; height: 100%; font: 16px system-ui, sans-serif; }
+.tarjeta {
+  padding: 36px 44px; border-radius: 14px; color: #e4e7ee;
+  border: 4px solid transparent;
+  background:
+    linear-gradient(#181c24, #181c24) padding-box,
+    conic-gradient(from var(--angulo), #8b7bff, #3fd0e8, #ff6bb5, #8b7bff) border-box;
+  animation: girar 3s linear infinite;
+}
+@keyframes girar { to { --angulo: 360deg; } }
+/* 2) respetar la preferencia del usuario */
+@media (prefers-reduced-motion: reduce) {
+  .tarjeta { animation: none; }
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El navegador no sabe que <code>--angulo</code> es un ángulo. ¿Cómo se lo dices? (Mira el bloque <code>@property</code> de la sección anterior.)</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con la variable registrada, el <code>--angulo: 0deg</code> de <code>.tarjeta</code> sobra: ya tiene <code>initial-value</code>. Para el movimiento reducido, una media query que quite la animación.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Sin registrar, <code>--angulo</code> es texto y la animación es discreta: cambia de <code>0deg</code> a <code>360deg</code> justo a la mitad, y como un cono girado 360° es idéntico al original, ni siquiera se nota el salto: el borde parece quieto. Con <code>@property</code> y <code>syntax: '&lt;angle&gt;'</code>, el navegador interpola el ángulo frame a frame, recalcula el <code>conic-gradient</code> y el borde gira.</p>
+    <p>Dos detalles de senior: la animación de una custom property se ejecuta en el hilo principal (el degradado se repinta en cada frame), así que no abuses de ella en elementos grandes; y el truco de las dos capas de fondo (<code>padding-box</code> opaco encima de <code>border-box</code> con el degradado) es lo que permite un borde degradado con esquinas redondeadas, algo que <code>border-image</code> no respeta.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.2.5 — Esperar al final de una transición, bien hecho</h3>
+  <p>Escribe <code>esperarTransicion(el, propiedad, margen)</code>, que devuelva una promesa que se resuelve <strong>una sola vez</strong> cuando termine (o se cancele) la transición de <code>propiedad</code> <strong>del propio</strong> <code>el</code>, con un temporizador de seguridad de <code>margen</code> ms. Al pulsar el botón, la consola debe mostrar un único «terminó transform», aunque el elemento anime también <code>padding</code> y su hijo tenga otra transición.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.2.5" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="go">Mover</button>
+<div class="caja" id="caja">caja<div class="hijo">hijo</div></div>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font: 13px system-ui, sans-serif; color: #0e1014; }
+button { padding: 6px 12px; font: inherit; margin-bottom: 10px; }
+.caja { width: 120px; padding: 10px; background: #8b7bff; border-radius: 8px;
+  transition: transform .6s ease, padding .3s ease; }
+.caja.lejos { transform: translateX(160px); padding: 16px; }
+.hijo { margin-top: 6px; background: #3fd0e8; transition: opacity .4s; }
+.caja.lejos .hijo { opacity: .5; }
+</script>
+<script type="text/x-js">
+function esperarTransicion(el, propiedad, margen = 1000) {
+  return new Promise((resolver) => {
+    // Versión ingenua: se dispara por padding (×4), por el hijo… y por transform
+    el.addEventListener('transitionend', () => resolver());
+  });
+}
+
+const caja = document.getElementById('caja');
+document.getElementById('go').onclick = async () => {
+  caja.classList.toggle('lejos');
+  await esperarTransicion(caja, 'transform');
+  console.log('terminó transform');
+};
+</script>
+<script type="text/x-js" data-solucion>
+function esperarTransicion(el, propiedad, margen = 1000) {
+  return new Promise((resolver) => {
+    let hecho = false;
+    const terminar = (motivo) => {
+      if (hecho) return;
+      hecho = true;
+      el.removeEventListener('transitionend', alEvento);
+      el.removeEventListener('transitioncancel', alEvento);
+      clearTimeout(reloj);
+      resolver(motivo);
+    };
+    function alEvento(e) {
+      if (e.target !== el || e.propertyName !== propiedad) return;   // hijos y otras propiedades fuera
+      terminar(e.type);                                                 // 'transitionend' o 'transitioncancel'
+    }
+    el.addEventListener('transitionend', alEvento);
+    el.addEventListener('transitioncancel', alEvento);
+    // plan B: duración + retardo actuales + margen (por si no hay transición en absoluto)
+    const cs = getComputedStyle(el);
+    const seg = (v) => Math.max(...v.split(',').map((x) => parseFloat(x) * (x.includes('ms') ? 1 : 1000)));
+    const reloj = setTimeout(() => terminar('temporizador'), seg(cs.transitionDuration) + seg(cs.transitionDelay) + margen);
+  });
+}
+
+const caja = document.getElementById('caja');
+document.getElementById('go').onclick = async () => {
+  caja.classList.toggle('lejos');
+  const motivo = await esperarTransicion(caja, 'transform');
+  console.log('terminó transform (' + motivo + ')');
+};
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En el manejador, descarta los eventos cuyo <code>e.target</code> no sea <code>el</code> o cuyo <code>e.propertyName</code> no sea la propiedad pedida.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Una promesa solo se resuelve una vez, pero los manejadores siguen registrados y se acumulan en cada clic: quítalos al terminar. Y escucha también <code>transitioncancel</code>, o el <code>await</code> puede quedarse colgado si el usuario pulsa dos veces seguidas.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La versión ingenua «funciona» porque una promesa ignora las resoluciones posteriores a la primera, pero se resuelve con el primer evento que llegue, que es el del <code>padding</code> (0,3 s) o el del hijo, no el del <code>transform</code> (0,6 s); y además cada clic deja un manejador más colgado del elemento.</p>
+    <p>La solución filtra por <code>e.target === el</code> (descarta lo que burbujea desde el hijo) y por <code>e.propertyName</code> (descarta las cuatro de <code>padding-*</code>), resuelve también con <code>transitioncancel</code> (si pulsas dos veces, la primera transición se cancela: sin esto, el primer <code>await</code> esperaría para siempre), quita los manejadores al terminar y tiene un temporizador de seguridad calculado con la duración y el retardo reales (<code>getComputedStyle</code> devuelve las listas en segundos, por ejemplo <code>"0.6s, 0.3s"</code>). Así también funciona si la transición no llega a crearse (por ejemplo, con <code>prefers-reduced-motion</code> y duración 0).</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><code>transition</code> anima el cambio de valor calculado de una propiedad; <code>@keyframes</code> reproduce una secuencia sin necesitar cambios. En el shorthand, el primer tiempo es la duración y el segundo el retardo; las listas se emparejan por posición y se repiten si son cortas.</li>
+    <li>Una transición necesita un estilo anterior: los elementos recién insertados o que salen de <code>display: none</code> no lo tienen. Arreglos: <code>@starting-style</code>, leer una propiedad calculada, doble rAF.</li>
+    <li>La función de tiempo convierte progreso del tiempo en progreso del valor, tramo a tramo. En <code>cubic-bezier</code>, las $x$ deben estar en $[0,1]$; las $y$ pueden salirse (rebote, anticipación). <code>steps()</code> salta (cuidado con <code>jump-start</code>/<code>jump-end</code>) y <code>linear()</code> admite varios puntos.</li>
+    <li><code>animation-fill-mode: both</code> para entradas con retardo; el retardo negativo posiciona una animación (y, en pausa, la convierte en una función del progreso).</li>
+    <li><code>transitionend</code> llega una vez por propiedad larga, burbujea y no llega si se interrumpe: filtra y escucha <code>transitioncancel</code>.</li>
+    <li><code>display: none</code> → <code>@starting-style</code> + <code>allow-discrete</code>; <code>height: auto</code> → <code>grid-template-rows: 0fr/1fr</code> o <code>interpolate-size</code>; custom properties → <code>@property</code>; listas de <code>transform</code> distintas → interpolación de matrices. Y respeta <code>prefers-reduced-motion</code>.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_transitions/Using_CSS_transitions">Using CSS transitions</a> y <a href="https://developer.mozilla.org/en-US/docs/Web/CSS/easing-function">&lt;easing-function&gt;</a> en MDN.</li>
+  <li><a href="https://www.w3.org/TR/css-easing-1/">CSS Easing Functions Level 1</a>: la especificación de <code>cubic-bezier()</code>, <code>steps()</code> y <code>linear()</code>.</li>
+  <li><a href="https://developer.chrome.com/blog/entry-exit-animations">Four new CSS features for smooth entry and exit animations</a> (Chrome): <code>@starting-style</code>, <code>allow-discrete</code> y <code>overlay</code>.</li>
+  <li><a href="https://cubic-bezier.com/">cubic-bezier.com</a>: el editor clásico de curvas, para comparar con el tuyo.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m2.js"></script>
+<script>
+Curso.alListo(() => {
+  /* ---------- Editor de cubic-bezier ---------- */
+  const raiz = document.getElementById("demo-bezier");
+  const lienzo = raiz.querySelector(".demo-lienzo");
+  const info = raiz.querySelector(".demo-info");
+  const ctrls = raiz.querySelector(".demo-controles");
+  const X0 = 1.5, LARGO = 1.6, Y_CSS = 0.78, Y_LIN = 0.3;   // pistas de la derecha (unidades del plano)
+  let dur = 1400, anim = null, repetir = true, esperando = 0, largoPx = 0;
+  const caja = document.createElement("div");
+  caja.className = "m2-bezier-caja";
+  lienzo.appendChild(caja);
+  const r2 = (v) => String(Math.round(v * 100) / 100);
+  const cadena = (q) => "cubic-bezier(" + r2(q.p1.x) + ", " + r2(q.p1.y) + ", " + r2(q.p2.x) + ", " + r2(q.p2.y) + ")";
+  function extremos(f) {
+    let mn = 0, mx = 1;
+    for (let i = 0; i <= 400; i++) { const y = f(i / 400); if (y < mn) mn = y; if (y > mx) mx = y; }
+    return [mn, mx];
+  }
+  function escribirInfo() {
+    const q = pl.puntos, f = M2.cubicBezier(q.p1.x, q.p1.y, q.p2.x, q.p2.y);
+    const [mn, mx] = extremos(f);
+    let extra = "";
+    if (mx > 1.0005) extra += " · se pasa del destino un " + ((mx - 1) * 100).toFixed(1) + " %";
+    if (mn < -0.0005) extra += " · retrocede un " + (-mn * 100).toFixed(1) + " % antes de salir";
+    info.textContent = "transition-timing-function: " + cadena(q) + ";" + extra;
+  }
+  function reproducir() {
+    clearTimeout(esperando);
+    if (anim) anim.cancel();
+    const q = pl.puntos;
+    anim = caja.animate([{ transform: "translateX(0px)" }, { transform: "translateX(" + largoPx + "px)" }],
+      { duration: dur, easing: cadena(q), fill: "forwards" });
+    anim.finished.then(() => { if (repetir) esperando = setTimeout(reproducir, 700); }, () => {});
+  }
+  const pl = Curso.plano(lienzo, {
+    x: [-0.28, 3.28], centroY: 0.5, animar: true, numeros: false, paso: 0.25,
+    puntos: {
+      p1: { x: 0.25, y: 0.1, etiqueta: "P1", color: "acento" },
+      p2: { x: 0.25, y: 1, etiqueta: "P2", color: "acento2" },
+    },
+    restringir(n, q) { q.x = Math.min(1, Math.max(0, q.x)); q.y = Math.min(1.9, Math.max(-0.9, q.y)); },
+    alCambiar() { escribirInfo(); },
+    dibujar(p, q) {
+      const f = M2.cubicBezier(q.p1.x, q.p1.y, q.p2.x, q.p2.y);
+      // cuadrado unidad, diagonal y asas
+      p.poligono([[0, 0], [1, 0], [1, 1], [0, 1]], { color: "borde", grosor: 1 });
+      p.linea([0, 0], [1, 1], { color: "tenue", discontinua: [3, 5] });
+      p.linea([0, 0], q.p1, { color: "acento", grosor: 1.5 });
+      p.linea([1, 1], q.p2, { color: "acento2", grosor: 1.5 });
+      p.parametrica((s) => f.X(s), (s) => f.Y(s), 0, 1, { color: "amarillo", grosor: 3, muestras: 160 });
+      p.punto([0, 0], { etiqueta: "P0", color: "texto" });
+      p.punto([1, 1], { etiqueta: "P3", color: "texto" });
+      p.texto([0.5, -0.1], "x = progreso del tiempo →", { color: "tenue", alinear: "center", tam: 12 });
+      p.texto([-0.25, 1.24], "↑ y = progreso del valor", { color: "tenue", tam: 12 });
+      // pistas de la derecha
+      p.linea([X0, Y_CSS], [X0 + LARGO, Y_CSS], { color: "borde", grosor: 2 });
+      p.linea([X0, Y_LIN], [X0 + LARGO, Y_LIN], { color: "borde", grosor: 2 });
+      p.texto([X0, Y_CSS + 0.13], "CSS real: element.animate() con tu curva", { color: "texto2", tam: 12 });
+      p.texto([X0, Y_LIN + 0.13], "linear, como referencia", { color: "texto2", tam: 12 });
+      // colocar la caja DOM sobre su pista
+      const [px, py] = p.aPantalla([X0, Y_CSS]);
+      caja.style.left = (px - 11) + "px"; caja.style.top = (py - 11) + "px";
+      const L = LARGO * p.escala();
+      if (Math.abs(L - largoPx) > 1) { largoPx = L; reproducir(); }
+      // progreso del tiempo leído de la animación real
+      let u = 0;
+      if (anim && anim.currentTime != null) u = Math.min(1, Math.max(0, anim.currentTime / dur));
+      p.circulo([X0 + LARGO * u, Y_LIN], 0.045, { relleno: "tenue", color: null });
+      const y = f(u);
+      p.linea([u, -0.02], [u, y], { color: "amarillo", discontinua: [2, 3], grosor: 1 });
+      p.linea([0, y], [u, y], { color: "amarillo", discontinua: [2, 3], grosor: 1 });
+      p.circulo([u, y], 0.03, { relleno: "amarillo", color: null });
+    },
+  });
+  pl.lienzo.canvas.addEventListener("pointerup", () => reproducir());
+  Curso.selector(ctrls, {
+    etiqueta: "curva",
+    opciones: [["0.25,0.1,0.25,1", "ease"], ["0,0,1,1", "linear"], ["0.42,0,1,1", "ease-in"], ["0,0,0.58,1", "ease-out"],
+      ["0.42,0,0.58,1", "ease-in-out"], ["0.34,1.56,0.64,1", "rebote al final"], ["0.36,0,0.66,-0.56", "anticipación al salir"],
+      ["0.68,-0.6,0.32,1.6", "anticipación y rebote"]],
+    valor: "0.25,0.1,0.25,1",
+    alCambiar(v) {
+      const [a, b, c, d] = v.split(",").map(Number);
+      Object.assign(pl.puntos.p1, { x: a, y: b }); Object.assign(pl.puntos.p2, { x: c, y: d });
+      escribirInfo(); reproducir();
+    },
+  });
+  Curso.control(ctrls, { etiqueta: "duración", min: 300, max: 3000, paso: 50, valor: dur, formato: (v) => v + " ms", alCambiar: (v) => { dur = v; } });
+  Curso.boton(ctrls, "▶ Reproducir", () => reproducir(), true);
+  Curso.casilla(ctrls, { etiqueta: "repetir", valor: true, alCambiar: (v) => { repetir = v; if (v) reproducir(); } });
+  escribirInfo();
+});
+</script>
+</body>
+</html>

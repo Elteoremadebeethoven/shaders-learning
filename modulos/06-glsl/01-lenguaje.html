@@ -1,0 +1,1240 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.1 · GLSL ES 3.00: el lenguaje — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/a-estilos.css">
+</head>
+<body data-leccion="06-glsl/lenguaje">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>GLSL ES 3.00: el lenguaje</h1>
+  <p class="resumen">Hasta ahora has escrito GLSL por imitación. Esta lección es el lenguaje completo: sus tipos, sus reglas estrictas (y por qué existen), cómo leer los mensajes del compilador, qué pasa cuando la especificación dice «indefinido» y qué hace de verdad Chrome con tu código antes de que llegue a la GPU.</p>
+  <div class="meta"><span class="chip">⏱ 120 min</span><span class="chip">Requisitos: 3.1, 3.4, 3.7, 5.2</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Escribirás shaders sin errores de tipos: literales, conversiones, constructores, swizzles y operadores, sabiendo qué hace cada uno componente a componente.</li>
+      <li>Sabrás qué significan exactamente los calificadores (<code>precision</code>, <code>const</code>, <code>uniform</code>, <code>in</code>/<code>out</code>, <code>layout</code>, <code>flat</code>, y <code>in</code>/<code>out</code>/<code>inout</code> en funciones).</li>
+      <li>Leerás los mensajes del compilador de Chrome como quien lee un idioma conocido.</li>
+      <li>Conocerás los comportamientos indefinidos, lo que tu GPU hace con ellos, y cómo ANGLE reescribe tu shader para que la web sea segura.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Un lenguaje pequeño, estricto y paralelo</h2>
+<p>GLSL (<em>OpenGL Shading Language</em>) parece C: llaves, punto y coma, <code>for</code>, <code>if</code>, funciones con tipos. La versión de WebGL2 es <strong>GLSL ES 3.00</strong> (la <em>ES</em> es de <em>Embedded Systems</em>: la variante de OpenGL ES, pensada para móviles). Pero el parecido con C engaña en tres direcciones a la vez:</p>
+<ul>
+  <li><strong>Es más pequeño.</strong> No hay punteros, ni memoria dinámica, ni cadenas de texto, ni recursión, ni <code>printf</code>, ni biblioteca estándar más allá de las funciones matemáticas y de texturas. Ya lo comprobaste en <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>: todo el espacio que usa un shader se conoce al compilar.</li>
+  <li><strong>Es más estricto.</strong> No convierte tipos por su cuenta: <code>float x = 1;</code> no compila. Parece una manía, pero es una decisión de diseño: en una GPU, una conversión escondida es una instrucción escondida que se ejecuta millones de veces por frame, y una ambigüedad de tipos es un sitio donde dos fabricantes podrían interpretar tu código de forma distinta.</li>
+  <li><strong>Se ejecuta en paralelo sin que lo escribas.</strong> No hay hilos, ni bucles sobre los píxeles: escribes el cálculo de <em>un</em> píxel y la GPU lo ejecuta para todos a la vez. Cómo se piensa así lo verás en <a href="02-pensar-en-paralelo.html">6.2</a>; aquí nos ocupamos de las palabras y la gramática.</li>
+</ul>
+<p>Empecemos con el mapa. Este es un fragment shader completo con casi todas las piezas del lenguaje; cada nota dice qué es y en qué sección de esta lección se explica a fondo.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+#version 300 es
+precision highp float;
+
+uniform vec2  u_resolution;
+uniform float u_time;
+in  vec2 v_uv;
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+
+float anillo(float r, float rad, float g) {
+  float d = abs(r - rad);
+  return 1.0 - smoothstep(0.0, g, d);
+}
+
+void main() {
+  vec2 p = 2.0 * v_uv - 1.0;
+  p.x *= u_resolution.x / u_resolution.y;
+  float r = length(p);
+  float v = atan(p.y, p.x) / TAU + 0.5;
+  vec3 color = vec3(v, 0.4, 1.0 - v);
+  float rad = 0.6 + 0.1 * sin(u_time);
+  color *= anillo(r, rad, 0.05);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<ol>
+  <li data-l="1">La versión del lenguaje. Tiene que ser <strong>la primera línea</strong> del texto: sección «La primera línea».</li>
+  <li data-l="2">La precisión por defecto de los <code>float</code>. En el fragment shader es obligatoria: sección «Precisión».</li>
+  <li data-l="4-5">Uniforms: valores de solo lectura que pone JavaScript, iguales para todo el dibujo (<a href="../04-gpu/05-uniforms-varyings.html">4.5</a>). Sección «Calificadores».</li>
+  <li data-l="6">Un varying de entrada (<code>in</code>): llega interpolado desde el vertex shader. En los editores del curso, <code>v_uv</code> va de 0 a 1 en todo el lienzo.</li>
+  <li data-l="7">La salida: el color de este píxel. Un <code>out vec4</code> con el nombre que quieras (<code>gl_FragColor</code> ya no existe en GLSL ES 3.00).</li>
+  <li data-l="9"><code>const</code>: una constante de compilación. El compilador la sustituye por su valor.</li>
+  <li data-l="11-14">Una función propia: tipos explícitos en parámetros y retorno, definida antes de usarse, con una variable local. Sección «Funciones».</li>
+  <li data-l="16">El punto de entrada: <code>void main()</code>, sin parámetros y sin valor de retorno.</li>
+  <li data-l="17">Operadores con un vector y un escalar: <code>2.0 * v_uv - 1.0</code> multiplica y resta en cada componente, y lleva el intervalo 0..1 a −1..1. Sección «Operadores».</li>
+  <li data-l="18"><code>p.x</code> es un <em>swizzle</em>, aquí como destino de <code>*=</code>: solo se escala la x, para corregir el aspecto del lienzo (lo verás a fondo en <a href="02-pensar-en-paralelo.html">6.2</a>). Sección «Swizzles».</li>
+  <li data-l="20"><code>atan</code> de dos argumentos devuelve un ángulo en $(-\pi, \pi]$ (<a href="../03-matematicas/03-trigonometria.html">3.3</a>); dividido por $2\pi$ y desplazado, <code>v</code> va de 0 a 1: el ángulo en vueltas.</li>
+  <li data-l="21">Un constructor: tres floats forman un <code>vec3</code>. Sección «Constructores».</li>
+  <li data-l="23"><code>*=</code> con un escalar: todas las componentes a la vez.</li>
+  <li data-l="24">Otro constructor: un <code>vec3</code> y un <code>float</code> forman el <code>vec4</code> de salida.</li>
+</ol>
+</div>
+
+<p>Y esto es lo que <strong>no</strong> tiene, para que no lo busques:</p>
+<table>
+  <thead><tr><th>Lo que esperarías de C o JavaScript</th><th>En GLSL ES 3.00</th></tr></thead>
+  <tbody>
+    <tr><td>Conversión automática <code>int</code> → <code>float</code></td><td>No existe. Siempre explícita: <code>float(i)</code>.</td></tr>
+    <tr><td>Recursión</td><td>Error: <code>Recursive function call in the following call chain: f</code>.</td></tr>
+    <tr><td><code>double</code>, <code>char</code>, cadenas, punteros</td><td>No existen. <code>double</code> es palabra reservada: <code>'double' : Illegal use of reserved word</code>.</td></tr>
+    <tr><td>Arrays de tamaño variable</td><td>No. El tamaño es una constante de compilación.</td></tr>
+    <tr><td>Arrays de arrays (<code>float a[2][2]</code>)</td><td>No en 3.00: <code>arrays of arrays supported in GLSL ES 3.10 and above only</code>.</td></tr>
+    <tr><td><code>%</code> con floats</td><td>No: usa <code>mod()</code> (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>).</td></tr>
+    <tr><td><code>goto</code>, excepciones, <code>printf</code></td><td>No. Se depura pintando valores (<a href="02-pensar-en-paralelo.html">6.2</a>).</td></tr>
+    <tr><td>Letras con tilde o eñe en los nombres</td><td>No: los identificadores son ASCII (sección «Nombres»).</td></tr>
+  </tbody>
+</table>
+
+<div class="callout porque">
+  <p>¿Por qué un lenguaje tan estricto? Porque tu shader no lo compila una sola herramienta, sino el driver de cada GPU del mundo (o, en la web, ANGLE seguido del compilador de Metal, Direct3D o Vulkan). Cuantas menos reglas implícitas, menos sitios donde dos compiladores pueden discrepar. Y porque en un programa que se ejecuta 20 millones de veces por segundo, cualquier trabajo invisible (una conversión, una comprobación) se multiplica por 20 millones.</p>
+</div>
+
+<h2>La primera línea: <code>#version 300 es</code></h2>
+<p>La directiva <code>#version 300 es</code> le dice al compilador qué lenguaje vas a hablar. La especificación de GLSL ES 3.00 exige que esté en la <strong>primera línea</strong> del texto. Medimos en Chrome qué se tolera y qué no:</p>
+<table>
+  <thead><tr><th>Lo que hay antes de <code>#version</code></th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td>Nada</td><td>✓ Correcto.</td></tr>
+    <tr><td>Espacios en la misma línea (<code>&nbsp;&nbsp;#version 300 es</code>)</td><td>✓ Compila: una directiva puede ir precedida de espacios.</td></tr>
+    <tr><td>Una línea vacía</td><td>✗ <code>ERROR: 0:2: '\n' : #version directive must occur on the first line of the shader</code></td></tr>
+    <tr><td>Una línea de comentario</td><td>✗ El mismo error, en la línea 2.</td></tr>
+    <tr><td>Otra directiva <code>#version</code></td><td>✗ <code>#version directive must occur before anything else, except for comments and white space</code></td></tr>
+  </tbody>
+</table>
+<p>Cuando la directiva falla, el compilador no se detiene: sigue compilando como <strong>GLSL ES 1.00</strong>, el lenguaje de WebGL1, y por eso el primer error suele ir seguido de otros absurdos como <code>'out' : storage qualifier supported in GLSL ES 3.00 and above only</code>. El error real es siempre el primero. (El <code>'\n'</code> del primer mensaje es un salto de línea de verdad, el carácter que el compilador encontró donde esperaba la directiva; por eso el editor muestra ese mensaje partido en dos líneas.) Pruébalo: este editor tiene un comentario inocente encima de <code>#version</code>. Lee los dos errores, mueve el comentario debajo de la directiva y observa cómo desaparecen los dos a la vez.</p>
+
+<div class="glsl-playground" data-titulo="Un comentario en mal sitio" data-altura="200" data-error-esperado>
+<script type="x-shader/x-fragment">
+// Mi primer shader del módulo 6
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  fragColor = vec4(gl_FragCoord.xy / u_resolution, 0.5, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+// Mi primer shader del módulo 6 (los comentarios, después de #version)
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  fragColor = vec4(gl_FragCoord.xy / u_resolution, 0.5, 1.0);
+}
+</script>
+</div>
+
+<p>Si ya sufriste este error al escribir shaders en plantillas de JavaScript, es el bicho <a href="../05-webgl/02-primer-triangulo.html#m5-version-primera-linea">«#version directive must occur on the first line»</a> de la lección 5.2: la plantilla empezaba con un salto de línea. Otras versiones que quizá encuentres en código ajeno:</p>
+<ul>
+  <li><code>#version 100</code> o ninguna directiva: GLSL ES 1.00. WebGL2 lo acepta (un programa entero en 1.00 funciona), pero no puedes mezclar un vertex shader 1.00 con un fragment shader 3.00: el enlace falla con <code>Fragment shader version does not match other shader versions</code>. Traducir de 1.00 a 3.00 es el tema de <a href="10-codigo-ajeno.html">6.10</a>.</li>
+  <li><code>#version 310 es</code> (OpenGL ES 3.1, con compute shaders): <code>unsupported shader version 310</code>. WebGL2 se queda en 3.00.</li>
+  <li><code>#version 330</code> o <code>450</code> (OpenGL de escritorio): <code>invalid version directive</code>. Los tutoriales de OpenGL de escritorio usan otro dialecto.</li>
+</ul>
+
+<h2>Nombres y palabras reservadas</h2>
+<p>Los identificadores (nombres de variables, funciones y structs) siguen la regla de C: letras, dígitos y <code>_</code>, sin empezar por dígito. Pero con cuatro restricciones que no están en JavaScript:</p>
+<ul>
+  <li><strong>Solo ASCII.</strong> Nada de tildes ni eñes, ni siquiera en un curso en español. Los comentarios sí pueden llevarlas.</li>
+  <li><strong>Nada que empiece por <code>gl_</code></strong>: <code>'gl_x' : reserved built-in name</code>. Ese prefijo es del sistema.</li>
+  <li><strong>Evita los dos guiones bajos seguidos</strong> (<code>a__b</code>): están <em>reservados</em> (GLSL ES 3.00, §3.8). La especificación no exige que sea un error, pero Chrome los rechaza (medido): <code>identifiers containing two consecutive underscores (__) are reserved as possible future keywords</code>. Otros compiladores pueden aceptarlos; no los uses.</li>
+  <li><strong>Hay muchas palabras reservadas</strong> para el futuro, que no puedes usar aunque hoy no hagan nada: <code>input</code>, <code>output</code>, <code>double</code>, <code>goto</code>, <code>class</code>, <code>template</code>, <code>filter</code>, <code>sample</code>, <code>active</code>… Y los nombres de funciones built-in no se pueden redefinir: <code>float sin(float x)</code> da <code>Name of a built-in function cannot be redeclared as function</code>. Declarar una variable local llamada <code>length</code> sí compila, pero oculta la función: después, <code>length(v)</code> falla con <code>'length' : function name expected</code>.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m6a-enie-identificador" data-titulo="«syntax error» con un '?' en una línea que parece perfecta">
+  <p><strong>Síntoma:</strong> el compilador protesta con <code>ERROR: 0:12: '?' : syntax error</code> en una línea sin ninguna interrogación, por ejemplo <code>float tamaño = 1.0;</code> o <code>vec3 colorPequeño;</code>.</p>
+  <p><strong>Causa:</strong> GLSL solo admite letras ASCII en los identificadores. La <code>ñ</code> o una vocal con tilde no son caracteres válidos del lenguaje; el preprocesador los sustituye por un marcador de error, que el mensaje muestra como <code>?</code>.</p>
+  <p><strong>Solución:</strong> nombres sin tildes ni eñes: <code>tamano</code>, <code>grosor</code>, <code>anio</code>. Es la convención del curso en todo el código GLSL; en los comentarios puedes escribir en español con normalidad.</p>
+</div>
+
+<h2>Precisión: la declaración obligatoria</h2>
+<p>Ya sabes por <a href="../03-matematicas/07-precision.html">3.7</a> qué significan <code>highp</code>, <code>mediump</code> y <code>lowp</code> en bits, y por qué hay bugs que solo aparecen en teléfonos. Aquí nos ocupa la gramática: dónde se escriben y qué pasa si no las escribes.</p>
+<p>Hay dos formas de dar precisión. La <strong>declaración por defecto</strong>, <code>precision highp float;</code>, fija la precisión de todos los <code>float</code> (y <code>vec</code>, <code>mat</code>) que se declaren después en ese ámbito sin precisión propia. Y el <strong>calificador por variable</strong>, que manda sobre la declaración por defecto: <code>mediump float brillo;</code>, <code>highp vec2 uv;</code>, también en parámetros y tipos de retorno (<code>mediump float f(highp float x)</code>). La declaración por defecto se puede repetir dentro de una función para cambiarla solo allí.</p>
+<p>Cada tipo de shader trae sus propias precisiones por defecto, y ahí está la trampa:</p>
+<table>
+  <thead><tr><th>Tipo</th><th>Vertex shader</th><th>Fragment shader</th></tr></thead>
+  <tbody>
+    <tr><td><code>float</code> (y vectores y matrices)</td><td><code>highp</code></td><td><strong>ninguna</strong>: hay que declararla</td></tr>
+    <tr><td><code>int</code>, <code>uint</code></td><td><code>highp</code></td><td><code>mediump</code></td></tr>
+    <tr><td><code>sampler2D</code>, <code>samplerCube</code></td><td><code>lowp</code></td><td><code>lowp</code></td></tr>
+    <tr><td><code>sampler3D</code>, <code>sampler2DArray</code>, <code>sampler2DShadow</code>, <code>isampler*</code>, <code>usampler*</code>…</td><td><strong>ninguna</strong></td><td><strong>ninguna</strong></td></tr>
+  </tbody>
+</table>
+<p>Sin la línea de precisión, el fragment shader falla en cuanto declaras un <code>float</code>: <code>ERROR: 0:2: '' : No precision specified for (float)</code>. Lo curioso es que el error solo salta si <em>hace falta</em>: un shader cuyos floats llevan todos su calificador (<code>out mediump vec4 fragColor;</code>) compila sin la declaración (lo comprobamos). Y los samplers de la última fila fallan en los dos tipos de shader aunque tengas <code>precision highp float;</code>, porque esa línea no dice nada de ellos: <code>'sampler3D' : No precision specified</code>. La solución es otra declaración: <code>precision highp sampler3D;</code>.</p>
+
+<div class="callout senior" data-titulo="lowp en un sampler no es lo que parece">
+  <p>La precisión de un sampler no es la precisión de la textura: <code>lowp sampler2D</code> puede leer perfectamente una textura de floats de 32 bits. Lo que califica es la precisión con la que se maneja el valor que devuelve <code>texture()</code>, en las GPU que distinguen precisiones. En el escritorio no cambia nada: en el Chrome de nuestras pruebas, <code>getShaderPrecisionFormat</code> devuelve float32 completo y enteros de 32 bits para los tres calificadores, en los dos tipos de shader. Y ANGLE, al traducir a Metal, tira todas las precisiones: cada <code>float</code> se convierte en un <code>float</code> de 32 bits (lo verás al final de la lección). Por eso los errores de precisión nunca aparecen en tu portátil y sí en un móvil: allí <code>mediump</code> es un float16 de verdad, e <code>int</code> en <code>mediump</code> solo garantiza el rango $(-2^{15}, 2^{15})$: un contador que pasa de 32 767 puede desbordarse.</p>
+</div>
+
+<p>Dos consecuencias prácticas. La primera: si un uniform aparece en los dos shaders, su precisión tiene que coincidir, y el enlace falla si no (es el bicho <a href="../04-gpu/05-uniforms-varyings.html#m4-precision-uniform">«Precisions of uniform 'u_x' differ between VERTEX and FRAGMENT shaders»</a> de 4.5: un <code>uniform float u_time;</code> es <code>highp</code> en el vertex shader y lo que diga tu declaración en el fragment). La segunda: en este curso escribimos siempre <code>precision highp float;</code> en el fragment shader. En GLSL ES 3.00, a diferencia de 1.00, <code>highp</code> está garantizado en los fragment shaders.</p>
+
+<h2>Tipos: lo que hay</h2>
+<p>Todos los tipos de GLSL ES 3.00 en una tabla. Los números son de 32 bits (en <code>highp</code>): <code>int</code> en complemento a dos, <code>float</code> IEEE 754 (<a href="../03-matematicas/07-precision.html">3.7</a>).</p>
+<table>
+  <thead><tr><th>Familia</th><th>Tipos</th><th>Notas</th></tr></thead>
+  <tbody>
+    <tr><td>Escalares</td><td><code>bool</code>, <code>int</code>, <code>uint</code>, <code>float</code></td><td><code>bool</code> no es un número: <code>true + 1.0</code> no compila.</td></tr>
+    <tr><td>Vectores</td><td><code>vec2 vec3 vec4</code> (float), <code>ivec2…</code> (int), <code>uvec2…</code> (uint), <code>bvec2…</code> (bool)</td><td>Tipos nativos: la GPU opera con 4 componentes en una instrucción.</td></tr>
+    <tr><td>Matrices</td><td><code>mat2 mat3 mat4</code> y <code>matCxF</code>: <code>mat2x3</code>, <code>mat3x4</code>…</td><td>Solo de float. <code>mat3x2</code> = 3 <strong>columnas</strong> × 2 filas (al revés que en matemáticas, <a href="../03-matematicas/05-matrices.html">3.5</a>).</td></tr>
+    <tr><td>Samplers (opacos)</td><td><code>sampler2D sampler3D samplerCube sampler2DArray</code>, sus versiones <code>isampler</code>/<code>usampler</code> y <code>…Shadow</code></td><td>Un «mango» a una unidad de textura (<a href="../05-webgl/05-texturas.html">5.5</a>). Solo pueden ser uniforms o parámetros de función.</td></tr>
+    <tr><td>Compuestos</td><td>structs y arrays de una dimensión</td><td>Sección «Arrays y structs».</td></tr>
+    <tr><td>Sin valor</td><td><code>void</code></td><td>Solo como tipo de retorno.</td></tr>
+  </tbody>
+</table>
+<p>Los samplers son <strong>opacos</strong>: no son números, no se pueden copiar, asignar ni crear. Una variable local <code>sampler2D s = u_tex;</code> da tres errores a la vez (<code>sampler2Ds must be uniform</code>, <code>Invalid operation for variables with an opaque type</code>…). Lo que sí puedes es pasarlos a una función: <code>vec4 leer(sampler2D s, vec2 uv)</code> compila y funciona. El valor del uniform de un sampler es el número de una unidad de textura, y lo pone JavaScript con <code>uniform1i</code> (el bicho <a href="../05-webgl/05-texturas.html#m5-sampler-unidad">«Dos texturas y el shader lee la misma dos veces (o ninguna)»</a> viene de ahí).</p>
+
+<h2>Literales y conversiones: el error número 1</h2>
+<p>Un literal es un valor escrito tal cual en el código, y su tipo lo decide cómo lo escribes. Esta es la regla que más errores produce en GLSL, así que vamos con calma:</p>
+<table>
+  <thead><tr><th>Escribes</th><th>Tipo</th><th>Valor</th></tr></thead>
+  <tbody>
+    <tr><td><code>1</code></td><td><code>int</code></td><td>1</td></tr>
+    <tr><td><code>1u</code></td><td><code>uint</code></td><td>1</td></tr>
+    <tr><td><code>1.0</code>, <code>1.</code>, <code>1.0f</code>, <code>1e0</code></td><td><code>float</code></td><td>1 (el sufijo <code>f</code> es legal en GLSL ES 3.00; en 1.00, no)</td></tr>
+    <tr><td><code>.5</code>, <code>5e-1</code></td><td><code>float</code></td><td>0.5</td></tr>
+    <tr><td><code>0x1F</code></td><td><code>int</code></td><td>31 (hexadecimal)</td></tr>
+    <tr><td><code>010</code></td><td><code>int</code></td><td><strong>8</strong>: un cero delante significa <strong>octal</strong>, como en C. <code>09</code> ni siquiera compila: <code>'09' : invalid number</code>.</td></tr>
+    <tr><td><code>true</code>, <code>false</code></td><td><code>bool</code></td><td>—</td></tr>
+  </tbody>
+</table>
+<p>Y ahora la regla de oro: <strong>GLSL ES no convierte tipos implícitamente, nunca</strong>. Ni al asignar, ni al operar, ni al pasar argumentos a funciones. Estos son los mensajes reales de Chrome para los cinco casos que verás mil veces:</p>
+<table>
+  <thead><tr><th>Código</th><th>Mensaje del compilador</th></tr></thead>
+  <tbody>
+    <tr><td><code>float x = 1;</code></td><td><code>'=' : cannot convert from 'const int' to 'highp float'</code></td></tr>
+    <tr><td><code>float x = 1.0 + 1;</code></td><td><code>'+' : wrong operand types - no operation '+' exists that takes a left-hand operand of type 'const float' and a right operand of type 'const int' (or there is no acceptable conversion)</code></td></tr>
+    <tr><td><code>int i = 2; float x = i;</code></td><td><code>'=' : cannot convert from 'mediump int' to 'highp float'</code></td></tr>
+    <tr><td><code>int i = 1; if (i) …</code></td><td><code>'' : boolean expression expected</code></td></tr>
+    <tr><td><code>float h(float x)</code> llamada como <code>h(1)</code></td><td><code>'h' : no matching overloaded function found</code></td></tr>
+  </tbody>
+</table>
+<p>Aprende a leerlos: <code>const int</code> es «un literal entero», <code>mediump int</code> te recuerda de paso que los <code>int</code> del fragment shader son <code>mediump</code> por defecto, y <code>no matching overloaded function found</code> significa «no hay ninguna versión de esa función que acepte exactamente esos tipos».</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.1.1 — Dos errores de tipos, leídos y corregidos</h3>
+<p>Este shader quiere dibujar un disco blanco de radio 0.25 (en unidades de <code>uv</code>) en el centro del lienzo. No compila. Antes de pulsar «Ver solución», lee el panel rojo y trata de adivinar qué hay que cambiar en cada línea.</p>
+
+<div class="glsl-playground" data-titulo="El error número 1" data-altura="280" data-error-esperado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float radio = 1;
+  float d = length(uv - 0.5) * 2;
+  vec3 color = vec3(step(d, radio * 0.5));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float radio = 1.0;                  // un float se escribe con punto
+  float d = length(uv - 0.5) * 2.0;   // float * float
+  vec3 color = vec3(step(d, radio * 0.5));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Paso a paso:</p>
+<ol>
+  <li><code>ERROR: 0:8: '=' : cannot convert from 'const int' to 'highp float'</code>. Línea 8, operador <code>=</code>: a la izquierda hay un <code>highp float</code> (la variable <code>radio</code>, <code>highp</code> por nuestra declaración de precisión) y a la derecha un <code>const int</code> (el literal <code>1</code>). La corrección es escribir el literal como float: <code>1.0</code>.</li>
+  <li><code>ERROR: 0:9: '*' : wrong operand types - no operation '*' exists that takes a left-hand operand of type 'highp float' and a right operand of type 'const int'</code>. Línea 9, operador <code>*</code>: <code>length(…)</code> devuelve un <code>float</code> y <code>2</code> es un <code>int</code>. No hay una versión de <code>*</code> para esa pareja de tipos, y GLSL no busca conversiones: <code>2.0</code>.</li>
+  <li>Las demás líneas son correctas. <code>uv - 0.5</code> compila porque existe <code>vec2 - float</code>: resta el escalar a cada componente (sección «Operadores»). Y <code>vec3(step(…))</code> es un constructor con un solo escalar, que se replica en las tres componentes.</li>
+</ol>
+<p>Con los dos arreglos, el shader compila… y aparece una elipse, no un círculo, porque <code>uv</code> estira cada eje por su lado. Ese no es un error del compilador, sino de modelo mental, y es el tema estrella de <a href="02-pensar-en-paralelo.html">6.2</a>.</p>
+</section>
+
+<h3>Conversiones explícitas</h3>
+<p>Para cambiar de tipo se usa el nombre del tipo como función: <code>float(i)</code>, <code>int(x)</code>, <code>uint(i)</code>, <code>bool(x)</code>. Cada conversión tiene sus reglas, que medimos una a una (en Chrome sobre un Apple M1, con valores que el compilador no conocía):</p>
+<table>
+  <thead><tr><th>Conversión</th><th>Regla</th><th>Ejemplos medidos</th></tr></thead>
+  <tbody>
+    <tr><td><code>float</code> → <code>int</code></td><td>Trunca hacia el cero (quita los decimales)</td><td><code>int(2.7)</code> = 2, <code>int(-2.7)</code> = <strong>−2</strong>, <code>int(-0.5)</code> = 0</td></tr>
+    <tr><td><code>float</code> fuera de rango → <code>int</code></td><td>Indefinido</td><td><code>int(3e9)</code> = 2 147 483 520; <code>int(-3e9)</code> = −2 147 483 648 (ANGLE satura, ver al final)</td></tr>
+    <tr><td><code>float</code> negativo → <code>uint</code></td><td>Indefinido</td><td><code>uint(-1.0)</code> = 0</td></tr>
+    <tr><td><code>int</code> ↔ <code>uint</code></td><td>Conserva el patrón de bits</td><td><code>uint(-7)</code> = 4 294 967 289; <code>int(4294967295u)</code> = −1</td></tr>
+    <tr><td>número → <code>bool</code></td><td>0 → <code>false</code>; cualquier otro → <code>true</code></td><td><code>bool(0.5)</code> = true</td></tr>
+    <tr><td><code>bool</code> → número</td><td><code>false</code> → 0, <code>true</code> → 1</td><td><code>float(true)</code> = 1.0</td></tr>
+  </tbody>
+</table>
+<p>El truncamiento hacia el cero de <code>int()</code> es la razón por la que en <a href="../03-matematicas/04-funciones-forma.html">3.4</a> numerabas celdas con <code>floor</code> y no con <code>int</code>: <code>int(-0.7)</code> e <code>int(0.7)</code> dan los dos 0, y la celda del origen sale el doble de ancha.</p>
+
+<div class="callout senior" data-titulo="Un literal entero que no cabe… a veces sí">
+  <p>La especificación dice que un literal entero es un error solo si su <em>patrón de bits</em> no cabe en 32 bits. Así que <code>int i = 3000000000;</code> compila sin un solo aviso y vale <strong>−1 294 967 296</strong>: 3 000 000 000 cabe en 32 bits como número sin signo, y esos mismos bits leídos como <code>int</code> con signo son ese número negativo. <code>int i = 5000000000;</code>, que ya no cabe en 32 bits, sí da error: <code>'5000000000' : Integer overflow</code>. Si trabajas con constantes grandes (semillas de hash, máscaras de bits), escríbelas como <code>uint</code> con el sufijo <code>u</code> o en hexadecimal, y no habrá sorpresas.</p>
+</div>
+
+<h3 id="division-entera">La división entera, el bug silencioso</h3>
+<p>Los errores de tipos no pueden llegar a la GPU: el compilador los para. El peligroso es el que compila. Entre enteros, <code>/</code> es la <strong>división entera</strong>: <code>1 / 2</code> vale 0, <code>7 / 2</code> vale 3. Con un operando negativo hay que andarse con cuidado: en el M1 medimos <code>-7 / 2</code> = −3 (trunca hacia el cero, como C), pero la especificación de GLSL ES 3.00 deja <strong>indefinido</strong> el redondeo de la división entera cuando algún operando es negativo (su apartado 12.33, «Rounding of Integer Division», resuelve que «the rounding mode is undefined for this version of the specification», igual que <code>%</code> con negativos). Otra GPU podría dar −4, así que no construyas nada sobre ello.</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.1.2 — Ocho bandas y una división entera</h3>
+<p>Este shader quiere pintar ocho bandas de gris de 0 a 1, y el cálculo parece impecable. Compila sin avisos. ¿Por qué sale casi todo negro?</p>
+
+<div class="glsl-playground" data-titulo="Ocho bandas… o no" data-altura="160" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  int banda = int(uv.x * 8.0);        // 0, 1, 2, ..., 7
+  float gris = float(banda / 7);      // ¿de 0 a 1 en ocho pasos?
+  fragColor = vec4(vec3(gris), 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  int banda = int(uv.x * 8.0);        // 0, 1, 2, ..., 7
+  float gris = float(banda) / 7.0;    // primero a float, después dividir
+  fragColor = vec4(vec3(gris), 1.0);
+}
+</script>
+</div>
+
+<p>Sigamos a un píxel de la cuarta banda, con <code>uv.x = 0.4</code>:</p>
+<ol>
+  <li><code>uv.x * 8.0</code> = 3.2, e <code>int(3.2)</code> trunca a 3: <code>banda = 3</code>. Hasta aquí, bien.</li>
+  <li><code>banda / 7</code> tiene dos operandos <code>int</code>, así que es una división entera: 3 / 7 = 0. Lo mismo para las bandas 0 a 6; solo la banda 7 da 7 / 7 = 1.</li>
+  <li><code>float(0)</code> = 0.0. La conversión llega tarde: convierte un resultado que ya se había truncado.</li>
+</ol>
+<p>La corrección es convertir <strong>antes</strong> de dividir: <code>float(banda) / 7.0</code> (el botón «Ver solución» la carga). Pasa el ratón por las bandas y lee en la barra el valor exacto de cada una: 0, 0.141, 0.286… (múltiplos de 1/7, redondeados al byte más cercano al escribirse en pantalla: 0.141 es 36/255).</p>
+</section>
+
+<div class="callout bestiario" data-id="m6a-division-entera" data-titulo="Todo sale negro (o de un solo color) aunque la fórmula es correcta">
+  <p><strong>Síntoma:</strong> un degradado, una animación por pasos o un índice normalizado se queda clavado en 0 (negro) y solo cambia en el último valor; o una proporción entre dos contadores sale siempre 0 o 1.</p>
+  <p><strong>Causa:</strong> la división se hace entre dos <code>int</code> (o dos <code>uint</code>) y trunca: <code>i / n</code> vale 0 para todo <code>i &lt; n</code>. Envolverla después en <code>float(…)</code> no la arregla. Es especialmente traicionero con variables como <code>u_frame</code>, que es <code>int</code>.</p>
+  <p><strong>Solución:</strong> convierte los operandos antes de dividir: <code>float(i) / float(n)</code>. Si ves un <code>float(a / b)</code> con enteros dentro, desconfía siempre.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En un fragment shader, <code>int a = 7; int b = 2;</code>. ¿Cuánto vale <code>float(a / b) + float(a) / float(b)</code>?</p>
+  <ul>
+    <li>7.0<div class="explicacion">Sería así si las dos divisiones dieran 3.5. La primera se hace entre enteros y trunca a 3 antes de convertir.</div></li>
+    <li data-correcta>6.5<div class="explicacion">Correcto: <code>a / b</code> es una división entera, 3, que <code>float()</code> convierte en 3.0; la segunda se hace en float, 3.5. Total, 6.5.</div></li>
+    <li>No compila: no se puede sumar el resultado de <code>float()</code> con otro <code>float</code><div class="explicacion">Sí se puede: <code>float(…)</code> devuelve un <code>float</code> normal. Lo que no se puede es mezclar <code>int</code> y <code>float</code> en una misma operación sin convertir.</div></li>
+  </ul>
+</div>
+
+<h2>Constructores</h2>
+<p>Un constructor es el nombre de un tipo usado como función para fabricar un valor. Son la navaja suiza de GLSL y siguen unas reglas muy concretas. Para los vectores:</p>
+<ul>
+  <li><strong>Un solo escalar se replica</strong> en todas las componentes: <code>vec3(0.5)</code> es (0.5, 0.5, 0.5).</li>
+  <li><strong>Varios argumentos se consumen en orden</strong>, componente a componente, mezclando escalares y vectores: <code>vec4(uv, 0.0, 1.0)</code>, <code>vec3(0.2, v2)</code>, <code>vec4(v3, 1.0)</code>.</li>
+  <li><strong>Los constructores sí convierten tipos.</strong> Es la única excepción a la regla de oro: <code>vec4(1, 0, 0, 1)</code> compila (cada <code>int</code> se convierte a <code>float</code>) y <code>ivec2(uv * 10.0)</code> trunca cada componente.</li>
+  <li><strong>Un vector más grande se recorta</strong> si es el único argumento: <code>vec2(v4)</code> se queda con <code>.xy</code>.</li>
+  <li><strong>Faltar es un error</strong> (<code>vec3(1.0, 2.0)</code>: <code>not enough data provided for construction</code>) y <strong>sobrar un argumento entero, también</strong> (<code>vec2(1.0, 2.0, 3.0)</code> o <code>vec2(v3, 1.0)</code>: <code>too many arguments</code>). Pero el último argumento puede consumirse a medias: <code>vec4(v3, v3)</code> compila y usa solo la <code>x</code> del segundo.</li>
+</ul>
+<p>Para las matrices, la regla maestra ya la conoces de <a href="../03-matematicas/05-matrices.html">3.5</a>: <strong>se rellenan por columnas</strong>. Estos son los casos, todos medidos en la GPU:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+mat2 a = mat2(1.0, 2.0, 3.0, 4.0);
+mat2 b = mat2(vec4(1.0, 2.0, 3.0, 4.0));
+mat2 c = mat2(2.0);
+mat3 d = mat3(M4);
+mat4 e = mat4(a);
+float f = a[1][0];
+vec2 g = a * vec2(1.0, 0.0);
+vec2 h = vec2(1.0, 0.0) * a;
+</script>
+<ol>
+  <li data-l="1">Columnas (1, 2) y (3, 4). Aunque lo leas «en fila», el primer par es la primera columna.</li>
+  <li data-l="2">Lo mismo a partir de un <code>vec4</code>: sus componentes se reparten por columnas.</li>
+  <li data-l="3">Un solo escalar rellena la <strong>diagonal</strong> y deja ceros fuera: (2, 0) y (0, 2). Por eso <code>mat4(1.0)</code> es la identidad, y no una matriz llena de unos.</li>
+  <li data-l="4">Una matriz grande dentro de una pequeña: se queda con la esquina superior izquierda. Con <code>M4</code> relleno por columnas del 1 al 16, <code>d[0]</code> es (1, 2, 3) y <code>d[2].z</code> es 11.</li>
+  <li data-l="5">Una matriz pequeña dentro de una grande: la esquina superior izquierda es <code>a</code> y el resto se rellena <strong>como la identidad</strong> (unos en la diagonal, ceros fuera): <code>e[2][2]</code> = <code>e[3][3]</code> = 1.</li>
+  <li data-l="6"><code>a[i]</code> es la columna <code>i</code> y <code>a[i][j]</code> la fila <code>j</code> de esa columna: 3.</li>
+  <li data-l="7">Matriz por vector columna: (1, 2), la primera columna.</li>
+  <li data-l="8">Vector a la izquierda: se trata como vector fila y sale (1, 3), la primera fila. Compila sin avisar: <code>v * M</code> es <code>transpose(M) * v</code>.</li>
+</ol>
+</div>
+
+<p>Los arrays y los structs también tienen constructores (<code>float[3](0.1, 0.5, 0.9)</code>, <code>Luz(vec3(1.0), 2.0)</code>); los verás en su sección.</p>
+
+<div class="quiz">
+  <p class="pregunta">Tienes <code>vec3 c = vec3(0.2, 0.4, 0.6);</code>. ¿Cuál de estas líneas <strong>no</strong> compila?</p>
+  <ul>
+    <li><code>vec4 a = vec4(c, c);</code><div class="explicacion">Compila: el último argumento puede consumirse a medias. <code>a</code> vale (0.2, 0.4, 0.6, 0.2).</div></li>
+    <li><code>vec2 b = vec2(c);</code><div class="explicacion">Compila: un único vector más grande se recorta. <code>b</code> vale (0.2, 0.4).</div></li>
+    <li data-correcta><code>vec2 d = vec2(c, 1.0);</code><div class="explicacion">Exacto: <code>c</code> ya llena el <code>vec2</code> y el <code>1.0</code> sobra entero: <code>too many arguments</code>. Recortar solo se permite con un único argumento, o consumiendo a medias el último.</div></li>
+    <li><code>vec4 e = vec4(1, 0, 0, 1);</code><div class="explicacion">Compila: los constructores son la única construcción de GLSL que convierte tipos. Cada <code>int</code> se convierte en <code>float</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Swizzles</h2>
+<p>Las componentes de un vector se leen con <code>.x .y .z .w</code>, o con dos juegos de alias exactamente equivalentes: <code>.r .g .b .a</code> (colores) y <code>.s .t .p .q</code> (coordenadas de textura). Un <strong>swizzle</strong> pide varias a la vez, en cualquier orden y repitiéndolas: <code>v.yx</code>, <code>c.bgr</code>, <code>p.xxx</code>. El resultado es un vector nuevo del tamaño pedido. Las reglas, con el mensaje que da Chrome al romper cada una:</p>
+<table>
+  <thead><tr><th>Regla</th><th>Error si la rompes</th></tr></thead>
+  <tbody>
+    <tr><td>No se mezclan juegos: <code>v.xg</code></td><td><code>'xg' : illegal - vector component fields not from the same set</code></td></tr>
+    <tr><td>No se piden componentes que no existen: <code>v2.xyz</code></td><td><code>'xyz' : vector field selection out of range</code></td></tr>
+    <tr><td>Como mucho cuatro: <code>v.xyzwx</code></td><td><code>'xyzwx' : illegal vector field selection</code></td></tr>
+    <tr><td>A la izquierda del <code>=</code>, sin repetir: <code>v.xx = …</code></td><td><code>l-value of swizzle cannot have duplicate components</code></td></tr>
+    <tr><td>Solo sobre vectores: <code>f.xxx</code> con <code>f</code> float</td><td><code>field selection requires structure, vector, or interface block on left hand side</code></td></tr>
+  </tbody>
+</table>
+<p>Sí compilan cosas que sorprenden: un swizzle sobre un constructor (<code>vec4(1.0).xxxx</code>), un swizzle como destino de una asignación (<code>color.rb = color.br;</code> intercambia rojo y azul) o de un operador compuesto (<code>p.xy *= 2.0;</code>). Y el acceso por índice, <code>v[i]</code>, admite un índice calculado en tiempo de ejecución. Este editor usa un <code>switch</code> para dividir el lienzo en seis franjas, cada una con un swizzle distinto del mismo color naranja. Antes de mirar, predice el color de cada franja; después, comprueba los valores con el ratón.</p>
+
+<div class="glsl-playground" data-titulo="Seis swizzles del mismo naranja" data-altura="170" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec4 base = vec4(0.95, 0.55, 0.15, 1.0);    // naranja (r, g, b, a)
+  vec3 c;
+  switch (int(uv.x * 6.0)) {                   // seis franjas: 0..5
+    case 0:  c = base.rgb;            break;   // tal cual
+    case 1:  c = base.bgr;            break;   // canales al revés
+    case 2:  c = base.ggg;            break;   // gris con el verde
+    case 3:  c = vec3(base.r);        break;   // gris con el rojo
+    case 4:  c = base.brg;            break;   // rotar los canales
+    default: c = vec3(uv.y, base.yx); break;   // mezclado con uv
+  }
+  fragColor = vec4(c, 1.0);
+}
+</script>
+</div>
+
+<div class="callout hack">
+  <p>Tres swizzles que usarás constantemente. <strong>Girar 90°</strong> un vector 2D sin trigonometría: <code>vec2(-p.y, p.x)</code> (antihorario). <strong>Difundir</strong> un escalar: <code>vec3(v)</code> o, si ya tienes un vector, <code>c.rrr</code> para ver un canal como gris. Y <strong>reordenar</strong> datos que llegan empaquetados: si una textura guarda BGRA, <code>texture(t, uv).bgra</code> la devuelve en RGBA sin coste, porque en casi todas las GPU los swizzles son gratis (el hardware lee los registros en el orden que le pidas). (WebGL2 no ofrece formatos BGRA: el caso real es un buffer de bytes propio, subido a mano, cuyos canales llegan en ese orden.)</p>
+</div>
+
+<h2>Operadores</h2>
+<p>Los operadores aritméticos (<code>+ - * /</code>) trabajan <strong>componente a componente</strong> entre vectores del mismo tamaño, y un escalar se aplica a todas las componentes: <code>vec2(2.0, 3.0) * vec2(4.0, 5.0)</code> es (8, 15) y <code>uv - 0.5</code> resta 0.5 a cada una (<a href="../03-matematicas/01-vectores.html">3.1</a>). Mezclar tamaños no compila: <code>vec2 * vec3</code> da <code>wrong operand types</code>. Con matrices la cosa cambia, y aquí conviene afinar:</p>
+<table>
+  <thead><tr><th>Expresión</th><th>Qué calcula</th><th>Medido</th></tr></thead>
+  <tbody>
+    <tr><td><code>M * v</code></td><td>Producto matriz-vector (álgebra lineal)</td><td>la combinación de las columnas</td></tr>
+    <tr><td><code>v * M</code></td><td><code>transpose(M) * v</code></td><td>error silencioso si esperabas <code>M * v</code></td></tr>
+    <tr><td><code>A * B</code></td><td>Producto de matrices (álgebra lineal)</td><td>—</td></tr>
+    <tr><td><code>matrixCompMult(A, B)</code></td><td>Producto componente a componente</td><td><code>A * mat2(2.0)</code> y <code>matrixCompMult(A, mat2(2.0))</code> dan cosas distintas</td></tr>
+    <tr><td><code>A / B</code>, <code>A + B</code>, <code>A - B</code></td><td>Componente a componente</td><td><code>mat2(4.0, 4.0, 4.0, 4.0) / mat2(1.0, 2.0, 4.0, 8.0)</code> = columnas (4, 2) y (1, 0.5)</td></tr>
+    <tr><td><code>A + 1.0</code></td><td>Suma el escalar a <strong>todas</strong> las componentes</td><td><code>mat2(1.0) + 1.0</code> = columnas (2, 1) y (1, 2): la identidad deja de serlo</td></tr>
+    <tr><td><code>A == B</code></td><td>Un único <code>bool</code>: ¿todas iguales?</td><td>—</td></tr>
+  </tbody>
+</table>
+<p>La asimetría es deliberada: <code>*</code> entre matrices es el producto del álgebra lineal porque es lo que necesitas para encadenar transformaciones; todo lo demás es componente a componente.</p>
+
+<h3>Comparaciones y vectores de bool</h3>
+<p><code>&lt; &lt;= &gt; &gt;=</code> solo existen entre escalares: <code>a &lt; vec2(2.0)</code> da <code>comparison operator only defined for scalars</code>. Para comparar vectores hay funciones que devuelven un vector de <code>bool</code>: <code>lessThan</code>, <code>lessThanEqual</code>, <code>greaterThan</code>, <code>greaterThanEqual</code>, <code>equal</code>, <code>notEqual</code>. Un <code>bvec</code> no vale como condición (<code>if (lessThan(a, b))</code> da <code>boolean expression expected</code>): hay que reducirlo con <code>any()</code> (alguna componente) o <code>all()</code> (todas). En cambio, <code>==</code> y <code>!=</code> sí aceptan vectores, matrices, structs y arrays, y devuelven un solo <code>bool</code>. Un truco relacionado: <code>mix(a, b, bvec3(true, false, true))</code> no interpola, <strong>elige</strong> componente a componente (medido: <code>mix(vec3(1, 2, 3), vec3(10, 20, 30), bvec3(true, false, true))</code> = (10, 2, 30)).</p>
+
+<h3>Enteros y bits</h3>
+<p>Con <code>int</code> y <code>uint</code> tienes además <code>%</code> (resto), y los operadores de bits <code>&amp; | ^ ~ &lt;&lt; &gt;&gt;</code>, que no existen para floats. Tres detalles medidos:</p>
+<ul>
+  <li><strong>El desbordamiento está definido</strong> en sumas, restas y productos: se queda con los 32 bits bajos. <code>2147483647 + 1</code> = −2 147 483 648 y <code>0u - 1u</code> = 4 294 967 295. Es lo que permite hashes de enteros como el PCG de <a href="../03-matematicas/07-precision.html">3.7</a>.</li>
+  <li><strong>No se mezclan <code>int</code> y <code>uint</code></strong> en <code>&amp;</code>, <code>|</code>, <code>+</code>…: <code>no operation '&amp;' exists that takes a left-hand operand of type 'mediump int' and a right operand of type 'mediump uint'</code>. Los desplazamientos sí: <code>i &lt;&lt; 1u</code> compila.</li>
+  <li><strong>Indefinidos</strong>: <code>%</code> con operandos negativos (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>), el redondeo de <code>/</code> con operandos negativos (<a href="#division-entera">arriba</a>), dividir por cero y desplazar 32 bits o más, o un número negativo de bits. En la sección «Comportamientos indefinidos» verás qué hace Chrome con cada uno.</li>
+</ul>
+
+<h3>Lógicos, ternario y el resto</h3>
+<p><code>&amp;&amp;</code>, <code>||</code> y <code>^^</code> (o exclusivo lógico, que JavaScript no tiene) solo aceptan <code>bool</code> escalares. <code>&amp;&amp;</code> y <code>||</code> <strong>cortocircuitan</strong> (si el primer operando decide, el segundo no se evalúa; lo comprobamos con una función con efecto secundario), y el ternario <code>c ? a : b</code> evalúa solo la rama elegida, pero exige que las dos ramas tengan el mismo tipo: <code>true ? 1.0 : 0</code> da <code>mismatching ternary operator operand types</code>. <code>++</code> y <code>--</code> funcionan también con vectores (suman 1 a cada componente), y existe el operador coma, como en C.</p>
+
+<div class="quiz">
+  <p class="pregunta">Con <code>mat2 m = mat2(1.0, 2.0, 3.0, 4.0);</code>, ¿qué valen <code>m * vec2(0.0, 1.0)</code> y <code>vec2(0.0, 1.0) * m</code>?</p>
+  <ul>
+    <li>Los dos (3.0, 4.0)<div class="explicacion">El primero sí: la segunda columna. Pero con el vector a la izquierda, GLSL multiplica por la traspuesta.</div></li>
+    <li data-correcta>(3.0, 4.0) y (2.0, 4.0)<div class="explicacion">Correcto. <code>m * (0, 1)</code> es la segunda columna, (3, 4). <code>(0, 1) * m</code> es la segunda fila: los segundos elementos de cada columna, (2, 4).</div></li>
+    <li>(2.0, 4.0) y (3.0, 4.0)<div class="explicacion">Al revés: los constructores rellenan por columnas, así que la primera columna es (1, 2) y la segunda (3, 4).</div></li>
+    <li>El segundo no compila: no se puede multiplicar un vector por una matriz<div class="explicacion">Compila sin avisar, y ese es el peligro: <code>v * M</code> es legal y equivale a <code>transpose(M) * v</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Calificadores de variables</h2>
+<p>Antes del tipo de una variable global puede ir un calificador de almacenamiento, que dice de dónde viene y quién puede escribirla. En un fragment shader:</p>
+<table>
+  <thead><tr><th>Calificador</th><th>Significado</th><th>Reglas y errores reales</th></tr></thead>
+  <tbody>
+    <tr><td>(ninguno)</td><td>Variable normal: global o local, de lectura y escritura</td><td>Una global solo se inicializa con una <em>expresión constante</em>: <code>float g = u_a * 2.0;</code> da <code>global variable initializers must be constant expressions</code>. Sin inicializar, su valor es indefinido (en WebGL, 0: lo verás al final).</td></tr>
+    <tr><td><code>const</code></td><td>Constante de compilación</td><td>Obligatorio inicializarla (<code>variables with qualifier 'const' must be initialized</code>) con una expresión constante, que puede incluir funciones built-in: <code>const float K = sin(1.0) * 2.0;</code> compila. Con un uniform: <code>assigning non-constant to 'const highp float'</code>.</td></tr>
+    <tr><td><code>uniform</code></td><td>Lo pone JavaScript; igual para todo el dibujo</td><td>Solo lectura: <code>l-value required (can't modify a uniform "u")</code>. Y no admite valor inicial en GLSL ES (en OpenGL de escritorio sí): <code>uniform float u = 1.0;</code> da <code>cannot initialize this type of qualifier</code>.</td></tr>
+    <tr><td><code>in</code></td><td>Varying que llega del vertex shader, interpolado</td><td>Solo lectura: <code>l-value required (can't modify an input "v_uv")</code>.</td></tr>
+    <tr><td><code>out</code></td><td>Salida del fragment shader (el color)</td><td>Con varias salidas, cada una necesita <code>layout(location = n)</code>: <code>must explicitly specify all locations when using multiple fragment outputs</code>.</td></tr>
+  </tbody>
+</table>
+<p>Y hay calificadores que se combinan con <code>in</code>/<code>out</code>:</p>
+<ul>
+  <li><code>layout(location = n)</code> fija la ranura de un atributo del vertex shader (<a href="../05-webgl/02-primer-triangulo.html">5.2</a>) o de una salida del fragment shader, a qué búfer de color va cuando hay varios (<a href="../05-webgl/08-framebuffers.html">5.8</a>).</li>
+  <li><code>smooth</code> (por defecto) interpola el varying con corrección de perspectiva, <code>flat</code> no interpola: todo el triángulo recibe el valor de un vértice (<a href="../04-gpu/05-uniforms-varyings.html">4.5</a>). Los varyings enteros tienen que ser <code>flat</code>: un <code>in int v_id;</code> sin él da <code>must use 'flat' interpolation here</code>, porque interpolar un entero no tiene sentido. Existe también <code>centroid</code>, que solo importa con antialiasing multimuestra.</li>
+  <li><code>invariant</code> obliga a que una salida se calcule exactamente igual en dos programas distintos que usan el mismo código (útil para que dos pasadas de dibujo produzcan la misma profundidad al bit). No lo necesitarás en este curso.</li>
+</ul>
+<p>Una salida <code>out</code> no tiene por qué ser <code>vec4</code>: <code>out vec3</code> y <code>out float</code> compilan. Pero las componentes que no escribes quedan indefinidas: en una textura RGBA de 8 bits, un <code>out float</code> que escribía 0.5 dejó el rojo en 128 y basura en los demás canales (255, 19 y 21, medido). En los editores del curso no importa, porque el alfa se ignora; en tus programas, escribe siempre un <code>vec4</code> completo.</p>
+
+<h2>Funciones</h2>
+<p>Una función se declara como en C, con tipos explícitos: <code>float anillo(float r, float radio)</code>. Las reglas que la distinguen de JavaScript:</p>
+<ul>
+  <li><strong>Se definen antes de usarse</strong>, o se declara antes un <strong>prototipo</strong> (<code>float g(float x);</code>) y se define después. Si llamas a una función que el compilador aún no ha visto: <code>'g' : no matching overloaded function found</code>.</li>
+  <li><strong>Sobrecarga por tipos de los parámetros</strong>: puedes tener <code>float h(float x)</code> y <code>float h(vec2 x)</code>, como las funciones built-in, que existen para <code>float</code>, <code>vec2</code>, <code>vec3</code> y <code>vec4</code>. Pero no dos versiones que solo se diferencien en el tipo de retorno: <code>function must have the same return type in all of its declarations</code>.</li>
+  <li><strong>Sin recursión</strong>, directa o indirecta: el compilador inserta cada función en el lugar de la llamada (no hay pila de llamadas por píxel).</li>
+  <li><strong>No se anidan</strong>: una función dentro de otra es un <code>syntax error</code>. Y <code>main</code> no puede recibir parámetros (<code>function cannot take any parameter(s)</code>) ni devolver nada (<code>main function cannot return a value</code>).</li>
+</ul>
+
+<h3>Parámetros <code>in</code>, <code>out</code> e <code>inout</code>: copiar, no apuntar</h3>
+<p>Aquí está la parte más fina. En GLSL no hay referencias ni punteros. Los parámetros se pasan siempre <strong>por copia</strong>, y el calificador dice en qué dirección:</p>
+<ul>
+  <li><code>in</code> (por defecto): al llamar, se copia el argumento en el parámetro (<em>copy-in</em>). Dentro puedes modificarlo, pero modificas la copia. Con <code>const in</code> el compilador te impide modificarlo (<code>can't modify a const "x"</code>).</li>
+  <li><code>out</code>: al volver, se copia el parámetro en el argumento (<em>copy-out</em>). Al entrar, el parámetro <strong>no</strong> recibe el valor del argumento: empieza indefinido. El argumento tiene que ser algo asignable: <code>f(0.5)</code> da <code>Constant value cannot be passed for 'out' or 'inout' parameters</code>.</li>
+  <li><code>inout</code>: las dos copias, al entrar y al salir.</li>
+</ul>
+<section class="ejemplo">
+<h3>Ejemplo 6.1.3 — <code>out</code> no es <code>inout</code></h3>
+<p>Las dos funciones de este editor son idénticas salvo por el calificador del parámetro, y las dos variables empiezan valiendo 0.3. ¿Qué gris sale en cada mitad?</p>
+
+<div class="glsl-playground" data-titulo="out no es inout" data-altura="170" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void sumarMitadOut(out float v)     { v = v + 0.5; }   // ¿qué v?
+void sumarMitadInout(inout float v) { v = v + 0.5; }
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float a = 0.3, b = 0.3;
+  sumarMitadOut(a);      // izquierda
+  sumarMitadInout(b);    // derecha
+  float gris = uv.x < 0.5 ? a : b;
+  fragColor = vec4(vec3(gris), 1.0);
+}
+</script>
+</div>
+
+<ol>
+  <li><code>sumarMitadInout(b)</code>: al entrar se copia <code>b</code> (0.3) en <code>v</code>; la función calcula 0.3 + 0.5; al salir se copia 0.8 en <code>b</code>. La mitad derecha es un gris claro, 0.8 (204 en la barra).</li>
+  <li><code>sumarMitadOut(a)</code>: al entrar <strong>no</strong> se copia nada. <code>v</code> empieza con un valor indefinido que en Chrome es 0, porque ANGLE inicializa a cero todas las variables (lo verás al final de la lección). La función calcula 0 + 0.5, y al salir copia 0.5 en <code>a</code>, pisando el 0.3. La mitad izquierda es un gris medio, 0.5 (128).</li>
+  <li>En otra plataforma, el <code>out</code> podría empezar con basura y la mitad izquierda saldría de cualquier color. Un parámetro <code>out</code> es una casilla de respuesta vacía, no una variable que puedas leer y modificar.</li>
+</ol>
+</section>
+
+<div class="callout bestiario" data-id="m6a-out-a-cero" data-titulo="Una función «olvida» el valor que tenía la variable">
+  <p><strong>Síntoma:</strong> una función que debería modificar una variable (acumular un color, sumar una capa, avanzar un contador) la deja con un valor que no depende de lo que valía antes; en Chrome, como si hubiera empezado en 0.</p>
+  <p><strong>Causa:</strong> el parámetro es <code>out</code> y se lee antes de escribirlo. <code>out</code> solo copia hacia fuera: al entrar, el parámetro vale lo que sea (en WebGL, 0).</p>
+  <p><strong>Solución:</strong> si la función necesita el valor de entrada, el parámetro es <code>inout</code>. Usa <code>out</code> solo para resultados que la función escribe siempre, en todos los caminos, antes de leerlos.</p>
+</div>
+
+<div class="callout senior" data-titulo="Copy-in/copy-out tiene consecuencias">
+  <p>Que los parámetros sean copias tiene tres efectos que un programador de C no espera. <strong>Alias</strong>: si llamas a <code>f(x, x)</code> con dos parámetros <code>inout</code>, dentro hay dos copias independientes, y al salir las dos se copian en <code>x</code>. El orden de esas copias no está definido; en nuestra GPU ganó el primer parámetro (<code>a = 1.0; b = 2.0;</code> dejó <code>x</code> en 1.0), en otra podría ganar el segundo. <strong>Copias caras</strong>: un array se pasa entero por valor. Una función que recibe un <code>float[64]</code> copia 64 floats en cada llamada (aunque el compilador, al insertar la función en su sitio, suele eliminar las copias innecesarias). <strong>Instantánea de entrada</strong>: en <code>g(inout float a, float b)</code> llamada como <code>g(x, x)</code>, si la función cambia <code>a</code>, <code>b</code> sigue valiendo el <code>x</code> original, porque se copió al entrar (medido).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tienes <code>void normalizar(out vec2 v) { v = v / length(v); }</code> y lo llamas con <code>vec2 d = vec2(3.0, 4.0); normalizar(d);</code>. ¿Qué vale <code>d</code> en Chrome?</p>
+  <ul>
+    <li>(0.6, 0.8)<div class="explicacion">Es lo que querías, y lo que obtendrías con <code>inout</code>. Con <code>out</code>, <code>v</code> no recibe (3, 4) al entrar.</div></li>
+    <li data-correcta>Algo indefinido: en Chrome, <code>v</code> empieza en (0, 0), y dividir cero entre cero da NaN o lo que decida el compilador<div class="explicacion">Correcto. El parámetro <code>out</code> empieza indefinido (ANGLE lo pone a cero), <code>length((0, 0))</code> es 0, y dividir por cero es indefinido: en nuestra GPU, <code>d</code> acaba valiendo (0, 0) (lo medimos), y otro compilador podría dar NaN. La corrección es <code>inout vec2 v</code>, o mejor, una función que devuelva el resultado.</div></li>
+    <li>(3.0, 4.0): una función no puede modificar sus argumentos<div class="explicacion">Sí puede, con <code>out</code> o <code>inout</code>, que copian el valor final del parámetro al argumento al volver.</div></li>
+  </ul>
+</div>
+
+<h2>Control de flujo</h2>
+<p><code>if</code>/<code>else</code>, <code>for</code>, <code>while</code>, <code>do</code>/<code>while</code>, <code>break</code>, <code>continue</code> y <code>return</code> funcionan como en C. Las diferencias:</p>
+<ul>
+  <li><strong>La condición es un <code>bool</code></strong>, nunca un número: <code>if (i)</code> da <code>boolean expression expected</code>.</li>
+  <li><strong>Los bucles no tienen restricciones</strong> en GLSL ES 3.00: el número de vueltas puede depender de un uniform o de un valor calculado, y <code>while (true)</code> con <code>break</code> es legal. En GLSL ES 1.00 no era así (solo <code>for</code> con límites constantes), y por eso verás código antiguo con bucles de 100 vueltas y un <code>break</code> dentro (<a href="10-codigo-ajeno.html">6.10</a>). La variable declarada en el <code>for</code> solo existe dentro del bucle.</li>
+  <li><strong><code>switch</code></strong>: el selector tiene que ser un entero escalar (<code>int</code> o <code>uint</code>), y cada <code>case</code>, una constante (<code>case label must be a scalar integer</code>, <code>case label must be constant</code>). Sin <code>break</code>, la ejecución cae al siguiente caso, como en C. Una rareza: la última etiqueta necesita al menos una sentencia (<code>no statement between the last case label and the end of the switch statement</code>), aunque un <code>switch</code> vacío sí compila.</li>
+  <li><strong><code>discard</code></strong> (solo en fragment shaders: en el vertex da <code>discard supported in fragment shaders only</code>) descarta el fragmento: no se escribe nada en el framebuffer. Funciona también dentro de una función llamada desde <code>main</code>. No es gratis (<a href="../04-gpu/02-pipeline-grafico.html#m4-discard-lento">puede desactivar optimizaciones</a>), y en <a href="../05-webgl/07-blending.html#discard-frente-a-alfa">5.7</a> lo comparaste con la transparencia. En este módulo casi no lo usarás: en un shader de pantalla completa las formas no se recortan, se pintan con máscaras y <code>mix</code> (<a href="02-pensar-en-paralelo.html">6.2</a>, <a href="03-formas-sdf.html">6.3</a>).</li>
+</ul>
+<p>Dos avisos que vienen del hardware y no del lenguaje: un <code>if</code> cuyos píxeles vecinos toman caminos distintos obliga a ejecutar las dos ramas (la divergencia de <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>), y un bucle que tarda demasiado hace que el sistema operativo reinicie la GPU y tu contexto WebGL se pierda (<a href="../05-webgl/01-contexto.html">5.1</a>).</p>
+
+<h2>Arrays y structs</h2>
+<p>Un array tiene un tamaño fijo, conocido al compilar: <code>float pesos[5];</code> o <code>const int N = 5; float pesos[N];</code>. Un tamaño que depende de un uniform no compila (<code>array size must be a constant integer expression</code>). Se construyen con la sintaxis de constructor, y el tamaño se puede omitir si lo da el inicializador:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+const vec3 PALETA[3] = vec3[3](vec3(1.0, 0.3, 0.3), vec3(0.3, 1.0, 0.4), vec3(0.3, 0.5, 1.0));
+float pesos[] = float[](0.25, 0.5, 0.25);   // tamaño 3, deducido
+int n = pesos.length();                      // 3: un método de los arrays (no de los vectores)
+float copia[3] = pesos;                      // los arrays se asignan enteros...
+bool iguales = (copia == pesos);             // ...y se comparan enteros
+</script>
+<p>Tres cosas que no puedes hacer: arrays de arrays (llegan en GLSL ES 3.10), un array sin tamaño (<code>float a[];</code>: <code>implicitly sized arrays only allowed for tessellation shaders…</code>) y <code>.length()</code> sobre un vector (<code>length can only be called on arrays</code>; para su tamaño, lo sabes por el tipo).</p>
+
+<h3>Índices constantes y dinámicos</h3>
+<p>Un índice <strong>constante</strong> fuera de rango es un error de compilación: <code>a[3]</code> en un array de 3 da <code>array index out of range</code>. Un índice <strong>dinámico</strong> (calculado al ejecutar) fuera de rango es un comportamiento indefinido: en OpenGL nativo puede leer memoria ajena o colgar la GPU. En WebGL eso sería un agujero de seguridad, así que ANGLE <strong>recorta</strong> el índice al rango válido. Compruébalo: el deslizador cambia el índice con el que se lee una paleta de cuatro colores; la franja de abajo muestra el elegido. Llévalo por debajo de 0 y por encima de 3.</p>
+
+<div class="glsl-playground" data-titulo="Un índice fuera de rango" data-altura="170" data-apilado data-uniforms='{"u_indice":{"tipo":"int","min":-3,"max":7,"valor":1,"etiqueta":"índice"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_indice;      // deslizador: de -3 a 7
+out vec4 fragColor;
+
+const vec3 PALETA[4] = vec3[4](
+  vec3(0.93, 0.33, 0.36), vec3(0.40, 0.82, 0.48),
+  vec3(0.33, 0.55, 0.96), vec3(0.97, 0.78, 0.30));
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 c;
+  if (uv.y > 0.5) c = PALETA[int(uv.x * 4.0)];   // arriba: la paleta
+  else            c = PALETA[u_indice];           // abajo: la elegida
+  fragColor = vec4(c, 1.0);
+}
+</script>
+</div>
+
+<p>Con índices de 4 a 7 se ve el amarillo (el último, <code>PALETA[3]</code>); con negativos, el rojo (<code>PALETA[0]</code>). Nadie te avisa: el shader funciona, pero lo que hace no es lo que escribiste. Y en otro navegador la protección podría ser distinta (devolver 0, por ejemplo), así que la regla es no depender de ella: recorta tú el índice (<code>clamp(i, 0, 3)</code>) o haz que el cálculo no pueda salirse.</p>
+
+<div class="callout senior" data-titulo="Lo que cuesta un índice dinámico">
+  <p>Las GPU guardan las variables locales en registros, y los registros no se pueden indexar con un número calculado al ejecutar: <code>r[i]</code> no es una instrucción de la GPU. Cuando indexas un array local con un valor dinámico, el compilador tiene dos salidas. Si el array es pequeño, lo convierte en una cadena de comparaciones y selecciones (<code>i == 0 ? a0 : i == 1 ? a1 : …</code>), que cuesta instrucciones pero no memoria. Si es grande, lo saca de los registros a memoria local (<em>scratch</em> o <em>spill</em>), mucho más lenta. Los uniforms indexados no tienen ese problema: viven en un buffer de memoria. La receta: arrays locales pequeños o índices constantes en bucles que el compilador pueda desenrollar. Y un aviso para el código antiguo: en GLSL ES 1.00, indexar arrays con un valor dinámico en el fragment shader ni siquiera estaba garantizado (<a href="10-codigo-ajeno.html">6.10</a>).</p>
+</div>
+
+<h3>Structs</h3>
+<p>Un struct agrupa campos con nombre. Se declara, se construye con sus campos en orden y se accede con el punto. Pueden anidarse, contener arrays y compararse con <code>==</code>; incluso pueden declararse dentro de una función. Todo esto compila y funciona (medido):</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+struct Luz {
+  vec3 color;
+  float intensidad;
+};
+struct Escena {
+  Luz luces[2];
+  int n;
+};
+
+Luz sol = Luz(vec3(1.0, 0.9, 0.7), 2.0);              // constructor: campos en orden
+Escena e = Escena(Luz[2](sol, Luz(vec3(0.0), 1.0)), 2);
+vec3 aporte = e.luces[0].color * e.luces[0].intensidad;
+</script>
+<p>Los structs son muy útiles para devolver varios valores de una función sin parámetros <code>out</code> (una función puede devolver un struct), y como uniforms (un <code>uniform Luz u_luz;</code> se rellena campo a campo desde JavaScript: <code>getUniformLocation(p, "u_luz.color")</code>, <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>).</p>
+
+<h2>Variables built-in y el catálogo de funciones</h2>
+<p>El sistema te da variables ya declaradas. En un fragment shader:</p>
+<table>
+  <thead><tr><th>Variable</th><th>Tipo</th><th>Qué contiene</th></tr></thead>
+  <tbody>
+    <tr><td><code>gl_FragCoord</code></td><td><code>vec4</code> (entrada)</td><td><code>.xy</code>: posición del píxel en la ventana, en su centro (0.5, 1.5…), origen abajo a la izquierda. <code>.z</code>: su profundidad (0.5 para un triángulo en z = 0). <code>.w</code>: $1/w_{clip}$ (1 sin perspectiva). A fondo en <a href="02-pensar-en-paralelo.html">6.2</a>.</td></tr>
+    <tr><td><code>gl_FrontFacing</code></td><td><code>bool</code> (entrada)</td><td>Si el triángulo se ve de frente (<a href="../05-webgl/06-3d-cubo.html">5.6</a>).</td></tr>
+    <tr><td><code>gl_PointCoord</code></td><td><code>vec2</code> (entrada)</td><td>Coordenada dentro de un punto (<code>gl.POINTS</code>), de 0 a 1.</td></tr>
+    <tr><td><code>gl_FragDepth</code></td><td><code>float</code> (salida)</td><td>Si la escribes, sustituye a la profundidad calculada (y desactiva optimizaciones, <a href="../04-gpu/02-pipeline-grafico.html">4.2</a>).</td></tr>
+  </tbody>
+</table>
+<p>En el vertex shader, las suyas: <code>gl_Position</code> y <code>gl_PointSize</code> (salidas), <code>gl_VertexID</code> y <code>gl_InstanceID</code> (entradas enteras). Y en los dos, constantes con los límites de la implementación, como <code>gl_MaxDrawBuffers</code> o <code>gl_MaxTextureImageUnits</code>: la especificación solo garantiza unos mínimos (4 y 16), y en nuestra máquina valen 8 y 16.</p>
+<p>Las funciones built-in son el resto del lenguaje. Existen para <code>float</code> y para todos los tamaños de vector (se aplican componente a componente), y la mayoría las has usado ya. Este es el mapa; la referencia completa, con firmas y trampas, está en la <a href="../08-anexos/02-chuleta-glsl.html">chuleta de GLSL (A.2)</a>:</p>
+<table>
+  <thead><tr><th>Grupo</th><th>Funciones</th><th>Dónde se explican</th></tr></thead>
+  <tbody>
+    <tr><td>Trigonometría</td><td><code>radians degrees sin cos tan asin acos atan</code> (de 1 y 2 argumentos) <code>sinh cosh tanh asinh acosh atanh</code></td><td><a href="../03-matematicas/03-trigonometria.html">3.3</a></td></tr>
+    <tr><td>Exponenciales</td><td><code>pow exp log exp2 log2 sqrt inversesqrt</code></td><td><a href="../03-matematicas/04-funciones-forma.html">3.4</a></td></tr>
+    <tr><td>Comunes</td><td><code>abs sign floor ceil trunc round roundEven fract mod modf min max clamp mix step smoothstep isnan isinf</code></td><td><a href="../03-matematicas/04-funciones-forma.html">3.4</a>, <a href="../03-matematicas/07-precision.html">3.7</a></td></tr>
+    <tr><td>Bits de un float</td><td><code>floatBitsToInt floatBitsToUint intBitsToFloat uintBitsToFloat</code></td><td><a href="../03-matematicas/07-precision.html">3.7</a></td></tr>
+    <tr><td>Empaquetado</td><td><code>packSnorm2x16 unpackSnorm2x16 packUnorm2x16 unpackUnorm2x16 packHalf2x16 unpackHalf2x16</code></td><td>A.2</td></tr>
+    <tr><td>Geométricas</td><td><code>length distance dot cross normalize faceforward reflect refract</code></td><td><a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a></td></tr>
+    <tr><td>Matrices</td><td><code>matrixCompMult outerProduct transpose determinant inverse</code></td><td><a href="../03-matematicas/05-matrices.html">3.5</a> y esta lección</td></tr>
+    <tr><td>Comparación de vectores</td><td><code>lessThan lessThanEqual greaterThan greaterThanEqual equal notEqual any all not</code></td><td>esta lección</td></tr>
+    <tr><td>Texturas</td><td><code>texture textureLod textureOffset texelFetch textureSize textureGrad textureProj</code>…</td><td><a href="../05-webgl/05-texturas.html">5.5</a>, <a href="08-texturas-efectos.html">6.8</a></td></tr>
+    <tr><td>Derivadas (solo fragment)</td><td><code>dFdx dFdy fwidth</code></td><td><a href="02-pensar-en-paralelo.html">6.2</a> (quads y <code>dFdx</code>), <a href="03-formas-sdf.html">6.3</a> (<code>fwidth</code>)</td></tr>
+  </tbody>
+</table>
+<p>Dos que merecen un apunte porque se confunden con otras: <code>modf(x, out i)</code> devuelve la parte decimal <strong>con el signo de x</strong> (<code>modf(-2.7)</code> da −0.7 y deja −2 en <code>i</code>), mientras que <code>fract(-2.7)</code> es 0.3. Y <code>roundEven</code> es el redondeo con empates al par (2.5 → 2) que <code>round</code> no garantiza (en nuestra GPU, <code>round(2.5)</code> = 3).</p>
+
+<h2>Comportamientos indefinidos</h2>
+<p>La especificación de GLSL declara <strong>indefinidas</strong> muchas operaciones: el resultado puede ser cualquier cosa, y distinto en cada GPU, en cada driver e incluso entre dos shaders parecidos. Ya conoces las más famosas de <a href="../03-matematicas/04-funciones-forma.html">3.4</a> (<code>pow</code> con base negativa, <code>smoothstep</code> con los bordes al revés) y de <a href="../03-matematicas/07-precision.html">3.7</a> (los NaN y la optimización <em>fast math</em>, que cambia al añadir <code>isnan</code>). Aquí está el catálogo completo, medido en Chrome sobre un Apple M1. La columna «con isnan» es el mismo shader con una línea <code>if (isnan(…))</code> que nunca se cumple (compilado por primera vez: enseguida verás por qué importa), y la última es el mismo cálculo con todos los valores constantes, que el compilador resuelve al compilar:</p>
+<table>
+  <thead><tr><th>Operación</th><th>Normal</th><th>Con isnan en el shader</th><th>Todo constante (plegado)</th></tr></thead>
+  <tbody>
+    <tr><td><code>1.0 / 0.0</code></td><td>+∞</td><td>+∞</td><td>+∞ y aviso <code>Divide by zero during constant folding</code></td></tr>
+    <tr><td><code>x / x</code> con <code>x = 0</code> (el mismo valor)</td><td><strong>1</strong> (el compilador simplifica <code>x / x</code> a 1)</td><td>NaN</td><td>—</td></tr>
+    <tr><td><code>a / b</code> con <code>a = b = 0</code> (dos uniforms distintos)</td><td>NaN</td><td>NaN</td><td>—</td></tr>
+    <tr><td><code>sqrt(-2.0)</code></td><td>NaN</td><td>NaN</td><td><strong>0</strong> y aviso</td></tr>
+    <tr><td><code>pow(-2.0, 2.0)</code></td><td>4</td><td>NaN</td><td>0 y aviso (<a href="../03-matematicas/04-funciones-forma.html#m3-pow-negativo">3.4</a>)</td></tr>
+    <tr><td><code>log(0.0)</code></td><td>−∞</td><td>−∞</td><td>—</td></tr>
+    <tr><td><code>normalize(vec2(0.0))</code></td><td>NaN</td><td>NaN</td><td>(0, 0) y aviso</td></tr>
+    <tr><td><code>asin(1.5)</code>, <code>acos(-1.5)</code></td><td>NaN</td><td>NaN</td><td>0 y aviso</td></tr>
+    <tr><td><code>atan(0.0, 0.0)</code></td><td>NaN</td><td><strong>0</strong></td><td>0 y aviso</td></tr>
+    <tr><td><code>mod(1.0, 0.0)</code></td><td>NaN</td><td>NaN</td><td>NaN, sin aviso</td></tr>
+    <tr><td><code>clamp(1.5, 1.0, 0.0)</code> (mín &gt; máx)</td><td>0</td><td>0</td><td>—</td></tr>
+    <tr><td><code>int</code>: <code>7 / 0</code></td><td><strong>7</strong></td><td>7</td><td>2 147 483 647 y aviso</td></tr>
+    <tr><td><code>int</code>: <code>1 &lt;&lt; 32</code></td><td><strong>1</strong></td><td>1</td><td>0 y aviso <code>Undefined shift</code></td></tr>
+    <tr><td><code>int(3e9)</code></td><td>2 147 483 520</td><td>2 147 483 520</td><td>—</td></tr>
+    <tr><td>variable sin inicializar</td><td>0</td><td>0</td><td>—</td></tr>
+    <tr><td><code>a[5]</code> en un <code>float a[4]</code> (índice dinámico)</td><td><code>a[3]</code></td><td><code>a[3]</code></td><td>error de compilación</td></tr>
+  </tbody>
+</table>
+<p>Tres lecciones salen de esta tabla. La primera: <strong>la misma operación da resultados distintos según el contexto</strong>, incluso en la misma GPU: <code>sqrt(-2.0)</code> es NaN al ejecutar y 0 al plegarse, <code>1 &lt;&lt; 32</code> es 1 o 0. La segunda: los avisos del compilador (en amarillo en los editores del curso: «compilado con avisos») son oro; <code>operation result is undefined for the values passed in</code> te está diciendo que has escrito algo que no significa nada. La tercera, la más importante, se entiende al final de la lección: las filas de enteros, arrays y variables sin inicializar dan siempre lo mismo en Chrome porque ANGLE las <em>protege</em>; las de floats dependen de la GPU que haya debajo.</p>
+<p>No te fíes de nuestra tabla: mide la tuya. Este programa compila cada operación en un shader diminuto, la dibuja en un píxel de una textura de floats de 32 bits y lee el valor exacto con <code>readPixels</code> (los resultados enteros se convierten a float para poder leerlos). Ejecútalo en otro ordenador, en un móvil o en otro navegador, y compara. Fíjate en el comentario que lleva la línea del <code>isnan</code>: un número distinto en cada ejecución. Sin él, el experimento solo funcionaría la primera vez: lo comprobamos en el M1 quitándolo, y al pulsar ▶ por segunda vez (o al abrir la lección en otra pestaña) la columna «con isnan» salía igual que la normal (<code>x / x</code> daba 1, <code>pow</code> daba 4 y <code>atan(0, 0)</code>, NaN), porque Chrome reutilizaba los programas que ya había compilado. Con un texto nuevo en cada ejecución, la caché nunca acierta (la historia completa, en <a href="06-ruido.html#m6b-hash-fastmath">6.6</a>).</p>
+
+<div class="js-playground" data-titulo="Mide lo indefinido en tu GPU" data-altura="120" data-consola-altura="430" data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:14px 16px;font:14px monospace;color:#8791a5">La tabla sale en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+if (!gl.getExtension('EXT_color_buffer_float')) console.warn('Sin EXT_color_buffer_float: no puedo leer floats.');
+const VS = `#version 300 es
+void main() {   // un triángulo que cubre el píxel, sin buffers (4.5)
+  gl_Position = vec4(vec2(gl_VertexID & 1, gl_VertexID >> 1) * 4.0 - 1.0, 0.0, 1.0);
+}`;
+function shader(tipo, src) {
+  const s = gl.createShader(tipo);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+// Destino: una textura de 1×1 con floats de 32 bits
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, 1, 1);
+gl.bindFramebuffer(gl.FRAMEBUFFER, gl.createFramebuffer());
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+gl.viewport(0, 0, 1, 1);
+gl.bindVertexArray(gl.createVertexArray());
+
+function medir(previo, expr, conIsnan) {
+  const fs = `#version 300 es
+precision highp float;
+uniform vec4 u;     // (1, 0, -2, 1.5): valores que el compilador no conoce
+out vec4 o;
+void main() {
+  ${previo}
+  o = vec4(${expr}, 0.0, 0.0, 1.0);
+  ${conIsnan ? 'if (isnan(u.w)) o = vec4(7.0);   // nunca se cumple; ejecución ' + EJECUCION : ''}
+}`;
+  const p = gl.createProgram();
+  gl.attachShader(p, shader(gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  gl.useProgram(p);
+  gl.uniform4f(gl.getUniformLocation(p, 'u'), 1, 0, -2, 1.5);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const px = new Float32Array(4);
+  gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, px);
+  gl.deleteProgram(p);
+  return px[0];
+}
+const casos = [
+  ['1.0 / 0.0',            '', 'u.x / u.y'],
+  ['x / x, x = 0',         '', 'u.y / u.y'],
+  ['a / b, a = b = 0',     '', 'u.y / (u.y * u.x * 0.0)'],
+  ['sqrt(-2.0)',           '', 'sqrt(u.z)'],
+  ['pow(-2.0, 2.0)',       '', 'pow(u.z, 2.0)'],
+  ['pow(-2.0, 1.5)',       '', 'pow(u.z, u.w)'],
+  ['log(0.0)',             '', 'log(u.y)'],
+  ['normalize(vec2(0)).x', '', 'normalize(vec2(u.y)).x'],
+  ['asin(-2.0)',           '', 'asin(u.z)'],
+  ['atan(0.0, 0.0)',       '', 'atan(u.y, u.y)'],
+  ['mod(1.0, 0.0)',        '', 'mod(u.x, u.y)'],
+  ['clamp(1.5, 1.0, 0.0)', '', 'clamp(u.w, u.x, u.y)'],
+  ['int: 7 / 0',           'int a = 7 * int(u.x), b = int(u.y);', 'float(a / b)'],
+  ['int: 1 << 32',         'int s = 32 * int(u.x);', 'float(1 << s)'],
+  ['int(3e9)',             '', 'float(int(3e9 * u.x))'],
+  ['int: máximo + 1',      'int m = 2147483647;', 'float(m + int(u.x))'],
+  ['sin inicializar',      'float x;', 'x'],
+  ['a[5] con float a[4]',  'float a[4] = float[](10.0, 20.0, 30.0, 40.0); int i = 5 * int(u.x);', 'a[i]'],
+];
+// Un texto distinto en cada ejecución: si no, Chrome sacaría de su caché el programa
+// con isnan ya compilado con fast math y la columna «con isnan» no cambiaría (6.6).
+const EJECUCION = Date.now() + '-' + Math.random();
+const fmt = (v) => Number.isNaN(v) ? 'NaN' : !Number.isFinite(v) ? (v > 0 ? '+Infinity' : '-Infinity') : String(+v.toPrecision(10));
+console.log('operación'.padEnd(24) + 'normal'.padEnd(14) + 'con isnan');
+for (const [nombre, previo, expr] of casos) {
+  console.log(nombre.padEnd(24) + fmt(medir(previo, expr, false)).padEnd(14) + fmt(medir(previo, expr, true)));
+}
+</script>
+</div>
+
+<div class="callout bestiario" data-id="m6a-indefinido-portabilidad" data-titulo="En mi ordenador se ve bien y en otro sale negro, con manchas o distinto">
+  <p><strong>Síntoma:</strong> un shader que has probado a fondo se ve diferente en otro equipo, en otro navegador o en un móvil: una zona negra, un píxel raro en el centro de una forma, un patrón que cambia. A veces cambia en tu propia máquina al tocar una línea que no tiene nada que ver.</p>
+  <p><strong>Causa:</strong> el shader depende de un comportamiento indefinido que en tu GPU daba un resultado aceptable: <code>atan(0.0, 0.0)</code> en el centro exacto, <code>pow</code> o <code>sqrt</code> de un negativo, una división por una distancia que llega a 0, un <code>normalize</code> del vector nulo, un <code>smoothstep</code> con los bordes al revés, un índice que se sale. Cada compilador, y cada nivel de optimización, resuelve lo indefinido a su manera.</p>
+  <p><strong>Solución:</strong> elimina la operación indefinida en lugar de confiar en su resultado: <code>max(x, 0.0)</code> antes de <code>sqrt</code> y <code>pow</code>, <code>max(d, 1e-6)</code> antes de dividir, <code>clamp</code> antes de <code>asin</code>/<code>acos</code> y de indexar, bordes de <code>smoothstep</code> en orden. Lee los avisos amarillos del compilador. Y prueba en al menos dos GPU distintas (un portátil y un móvil) antes de dar un efecto por terminado.</p>
+</div>
+
+<h2>El preprocesador</h2>
+<p>Antes de compilar, el texto pasa por un preprocesador como el de C. Trabaja con texto, no con tipos: sustituye, incluye y excluye líneas. Sus directivas empiezan por <code>#</code> y ocupan una línea entera (una barra invertida al final de la línea la continúa en la siguiente).</p>
+<table>
+  <thead><tr><th>Directiva</th><th>Para qué</th></tr></thead>
+  <tbody>
+    <tr><td><code>#define N 8</code>, <code>#define CUAD(x) ((x) * (x))</code>, <code>#undef N</code></td><td>Macros sin y con parámetros. Redefinir una macro con otro contenido da <code>macro redefined</code> (con el mismo, se tolera).</td></tr>
+    <tr><td><code>#if</code>, <code>#ifdef</code>, <code>#ifndef</code>, <code>#elif</code>, <code>#else</code>, <code>#endif</code>, <code>defined(X)</code></td><td>Compilación condicional, con expresiones enteras.</td></tr>
+    <tr><td><code>#error texto</code></td><td>Detiene la compilación con tu mensaje: <code>ERROR: 0:6: '' : N no puede ser mayor que 2</code>.</td></tr>
+    <tr><td><code>#line n</code></td><td>Cambia la numeración: la línea siguiente pasa a ser la <code>n</code>.</td></tr>
+    <tr><td><code>#pragma …</code></td><td>Indicaciones al compilador (<code>optimize(off)</code>, <code>debug(on)</code>); las desconocidas dan un aviso, <code>unrecognized pragma</code>.</td></tr>
+    <tr><td><code>#extension nombre : enable</code></td><td>Activa una extensión del lenguaje. Si no existe: aviso con <code>enable</code>, error con <code>require</code>. En 3.00 casi no se usa (las derivadas, que en 1.00 eran una extensión, ya son del núcleo).</td></tr>
+    <tr><td><code>__LINE__</code>, <code>__FILE__</code>, <code>__VERSION__</code>, <code>GL_ES</code></td><td>Macros predefinidas: la línea actual, el número de cadena de código (siempre 0 en WebGL), 300 y 1.</td></tr>
+  </tbody>
+</table>
+<p>Tres diferencias con el de C que se pagan caras. No existen los operadores <code>#</code> (convertir en texto) ni <code>##</code> (pegar símbolos): <code>#define CAT(a,b) a##b</code> da <code>'#' : invalid character</code> al usarse. Los nombres que empiezan por <code>GL_</code> están reservados (<code>'GL_HOLA' : macro name is reserved</code>). Y en un <code>#if</code>, un nombre que no está definido es un <strong>error</strong> (<code>'NO_DEFINIDA' : unexpected token after conditional expression</code>), no un 0 como en C; tampoco se admiten floats (<code>#if K > 1.0</code> falla).</p>
+
+<h3>La trampa clásica: macros sin paréntesis</h3>
+<p>Una macro no es una función: el preprocesador pega el texto de los argumentos tal cual. Si defines <code>#define CUAD(x) x * x</code>, entonces <code>CUAD(t + 0.1) / 2.0</code> se convierte en <code>t + 0.1 * t + 0.1 / 2.0</code>. Míralo: el graficador tiene las dos macros definidas en sus funciones auxiliares, y la segunda curva (<code>f2</code>) debería ser la misma parábola que la primera.</p>
+
+<div class="graficador" data-x="-0.2,1.2" data-y="-0.1,1.1" data-titulo="Dos macros «iguales»" data-fijo>
+<script type="text/x-exprs">
+CUAD_BIEN(x + 0.1) / 2.0
+CUAD(x + 0.1) / 2.0
+</script>
+<script type="text/x-glsl">
+#define CUAD(x) x * x
+#define CUAD_BIEN(x) ((x) * (x))
+</script>
+</div>
+
+<p>La versión sin paréntesis ni siquiera es una parábola: <code>t + 0.1t + 0.05</code> es una recta de pendiente 1.1. Por eso las macros con parámetros se escriben con cada argumento entre paréntesis y el resultado completo entre paréntesis. Y queda un segundo problema que ni los paréntesis arreglan: <code>CUAD(f(x))</code> llama a <code>f</code> dos veces. Cuando puedas, usa una función; GLSL tiene sobrecarga, así que casi siempre puedes.</p>
+
+<div class="callout bestiario" data-id="m6a-macro-parentesis" data-titulo="Una macro da un resultado absurdo, pero solo con algunos argumentos">
+  <p><strong>Síntoma:</strong> una macro funciona con <code>CUAD(x)</code> y da valores disparatados con <code>CUAD(x + 1.0)</code> o dentro de una expresión mayor (<code>CUAD(x) / 2.0</code>).</p>
+  <p><strong>Causa:</strong> el preprocesador sustituye texto, sin respetar la precedencia de los operadores. Sin paréntesis, los operadores del argumento y los de alrededor se mezclan con los de la macro.</p>
+  <p><strong>Solución:</strong> paréntesis alrededor de cada parámetro y de toda la expresión: <code>#define CUAD(x) ((x) * (x))</code>. Mejor aún, una función (<code>float cuad(float x)</code> y sus sobrecargas para vectores): el compilador la insertará igual y sin sorpresas.</p>
+</div>
+
+<div class="callout hack" data-titulo="#line para que los errores apunten a tu archivo">
+  <p>Es habitual construir shaders pegando trozos en JavaScript: una cabecera común con <code>#version</code>, la precisión y los uniforms, y después el cuerpo de cada efecto. El problema: los errores del compilador llevan el número de línea del texto completo, desplazado tantas líneas como tenga la cabecera. La solución es una línea: <code>const fuente = cabecera + '\n#line 1\n' + cuerpo;</code>. A partir de ahí, la numeración vuelve a empezar y un error en la línea 3 del cuerpo se informa como <code>0:3</code> (comprobado). Es exactamente el problema que resuelve el editor del modo Shadertoy del curso, que resta las líneas de su cabecera al mostrar los errores (<a href="10-codigo-ajeno.html">6.10</a>).</p>
+</div>
+
+<p>Otros usos legítimos del preprocesador: <strong>interruptores de depuración</strong> (<code>#define DEPURAR</code> arriba, y bloques <code>#ifdef DEPURAR … #endif</code> que pintan valores intermedios), <strong>constantes de configuración</strong> que tienen que ser de compilación (el tamaño de un array o las vueltas de un bucle que quieres que se desenrolle), <strong>desactivar un bloque entero</strong> con <code>#if 0 … #endif</code> (más seguro que un comentario <code>/* */</code>, que no se puede anidar) y <strong>variantes de un mismo shader</strong> que JavaScript genera anteponiendo <code>#define</code> distintos a la misma fuente.</p>
+
+<div class="quiz">
+  <p class="pregunta">Con <code>#define DOBLE(x) x + x</code>, ¿cuánto vale <code>DOBLE(1.0) * 3.0</code>?</p>
+  <ul>
+    <li>6.0<div class="explicacion">Es lo que haría una función. El preprocesador pega el texto: <code>1.0 + 1.0 * 3.0</code>.</div></li>
+    <li data-correcta>4.0<div class="explicacion">Correcto: la expansión es <code>1.0 + 1.0 * 3.0</code>, y la multiplicación va antes que la suma. Con <code>#define DOBLE(x) ((x) + (x))</code> daría 6.0.</div></li>
+    <li>No compila: las macros no pueden usarse dentro de expresiones<div class="explicacion">Sí pueden: la macro se sustituye por su texto antes de compilar, y el resultado es una expresión normal.</div></li>
+  </ul>
+</div>
+
+<h2>Lo que hace el compilador con tu código</h2>
+<p>Entre tu texto y la GPU hay un compilador optimizador agresivo. Cuatro transformaciones explican casi todas las sorpresas:</p>
+<ul>
+  <li><strong>Eliminación de código muerto.</strong> El compilador trabaja hacia atrás desde las salidas: lo que no contribuye a <code>fragColor</code> (o a <code>gl_Position</code>) desaparece. Si un uniform o un atributo solo se usaba en código muerto, queda <em>inactivo</em>: <code>getUniformLocation</code> devuelve <code>null</code> y <code>getAttribLocation</code>, −1. Es el origen de los bichos <a href="../04-gpu/05-uniforms-varyings.html#m4-uniform-silencioso">«Cambio un uniform y no pasa nada (ni error, ni aviso)»</a> y <a href="../05-webgl/02-primer-triangulo.html#m5-atributo-menos-uno">«getAttribLocation devuelve −1»</a>. En los editores del curso lo puedes provocar: si comentas la única línea que usa un uniform con deslizador, el deslizador sigue ahí, pero ya no hace nada.</li>
+  <li><strong>Plegado de constantes.</strong> Todo lo que puede calcularse al compilar se calcula al compilar, con la aritmética del compilador y no con la de la GPU. De ahí la última columna de la tabla de indefinidos y el <a href="../03-matematicas/04-funciones-forma.html#m3-smoothstep-invertido">smoothstep invertido que da 0</a> de 3.4.</li>
+  <li><strong>Inserción de funciones (<em>inlining</em>).</strong> Las llamadas desaparecen: el cuerpo de cada función se copia donde se llama. Por eso no hay recursión, y por eso dividir el código en funciones pequeñas no cuesta nada.</li>
+  <li><strong>Matemáticas rápidas (<em>fast math</em>).</strong> El compilador supone que no hay NaN ni infinitos y reordena y simplifica operaciones: <code>x / x</code> se vuelve 1, <code>pow(x, 2.0)</code> se vuelve <code>x * x</code>. En Chrome sobre Metal, basta un <code>isnan</code> para que se desactive en todo el shader (<a href="../03-matematicas/07-precision.html#m3-isnan-heisenbug">3.7</a>)… pero solo cuando el navegador compila ese texto por primera vez: si vuelve a recibir exactamente el mismo código (al recargar, en otra pestaña o en otra visita), lo saca de su caché de programas, y lo que sale de ahí se comporta como compilado <em>con</em> fast math. Los editores y el graficador del curso añaden a los shaders con <code>isnan</code> un comentario distinto en cada compilación para que el efecto se vea siempre; en tu propia página no cuentes con él (<a href="06-ruido.html#m6b-hash-fastmath">6.6</a>).</li>
+</ul>
+
+<h2>ANGLE: el shader que se ejecuta de verdad</h2>
+<p>En <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a> viste que Chrome no entrega tu GLSL a la GPU: ANGLE lo traduce al lenguaje nativo del sistema (MSL en un Mac, HLSL en Windows, SPIR-V con Vulkan). Allí miraste un vertex shader, y en <a href="../05-webgl/10-depuracion.html">5.10</a> usaste la traducción como herramienta de depuración (los prefijos de los nombres, las salidas puestas a cero). Ahora, con todo lo que sabes del lenguaje, vamos a leer la traducción de un fragment shader escrito a propósito con las situaciones de esta lección: una precisión <code>mediump</code>, un uniform que no se usa, una variable sin inicializar, una división entera, un <code>discard</code> y un índice dinámico:</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="El shader original (GLSL ES 3.00)">
+#version 300 es
+precision mediump float;
+uniform vec2 u_resolution;
+uniform float u_sinUso;          // declarado y nunca usado
+uniform int u_i;
+out vec4 fragColor;
+float tabla[4] = float[](0.1, 0.4, 0.7, 1.0);
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float x;                        // sin inicializar
+  int k = u_i / 2;                // división entera
+  if (uv.x > 0.9) discard;
+  x = tabla[k];                   // índice dinámico
+  fragColor = vec4(uv, x, 1.0);
+}
+</script>
+<p>Y esto es lo que ANGLE generó en nuestro Mac (fragmentos reales, con saltos de línea añadidos y los parámetros de la función abreviados como <code>o</code>, <code>u</code> y <code>g</code> para que quepan):</p>
+
+<div class="anotado" data-lang="text">
+<script type="text/plain">
+struct ANGLE_UserUniforms {
+  int _uu_i;
+  metal::float2 _uu_resolution;
+};
+
+Z ANGLE_safeDivisor(Z x, Z y) {
+  return metal::select(y, Z(1),
+                       (y == Z(0)) | ...);
+}
+int ANGLE_int_clamp(int v, int mn, int mx)
+  {...}
+
+void ANGLE__0_main(... o, ... u, ... g) {
+  ANGLE_initGlobals(g);
+  o._ufragColor = metal::float4(0.0f, 0.0f,
+                                0.0f, 0.0f);
+  metal::float2 _uuv =
+      (g.ANGLE_flippedFragCoord.xy
+       / u._uu_resolution);
+  float _ux = 0.0f;
+  int _uk = ANGLE_div(u._uu_i, 2);
+  bool ANGLE_sbe1 = (_uuv.x > 0.899999976f);
+  if (ANGLE_sbe1) {
+    metal::discard_fragment();
+  } else {}
+  _ux = g._utabla[ANGLE_int_clamp(_uk, 0, 3)];
+  o._ufragColor = ANGLE_sbd2(_uuv, _ux, 1.0f);
+}
+</script>
+<ol>
+  <li data-l="1-4">Los uniforms activos, en un struct que Metal lee de un buffer. <code>u_sinUso</code> <strong>no está</strong>: el compilador lo eliminó (y la lista de uniforms activos del programa solo tiene dos). Todos tus nombres llevan el prefijo <code>_u</code> para no chocar con palabras de MSL.</li>
+  <li data-l="6-9">La división entera segura: si el divisor es 0 (o el caso <code>INT_MIN / -1</code>, que desborda), se sustituye por 1. Por eso en Chrome <code>7 / 0</code> da 7. Hay primas hermanas para los desplazamientos (el número de bits se recorta con <code>&amp; 31</code>: <code>1 &lt;&lt; 32</code> es <code>1 &lt;&lt; 0</code>) y para convertir floats en enteros (con saturación: de ahí el 2 147 483 520).</li>
+  <li data-l="10-11">El recorte de índices que viste con la paleta.</li>
+  <li data-l="13-14">Tu <code>main</code> se convierte en una función normal. Las variables globales con inicializador (<code>tabla</code>) se inicializan al principio de cada ejecución.</li>
+  <li data-l="15-16">La salida se pone a cero antes de tu código. Si un camino no escribe <code>fragColor</code>, el píxel sale (0, 0, 0, 0) en lugar de basura de otro programa.</li>
+  <li data-l="17-19"><code>gl_FragCoord</code> no llega tal cual: Metal pone el origen de la ventana arriba y GL abajo, así que ANGLE le da la vuelta antes de dártelo (con un uniform interno que dice si hay que voltear). Tú siempre ves la convención de GL. Y fíjate en la precisión: ni rastro del <code>mediump</code>, todo es <code>float</code> de 32 bits.</li>
+  <li data-l="20">Tu <code>float x;</code> sin inicializar: ANGLE le pone <code>= 0.0f</code>. Es la razón de todos los «0» de la tabla de indefinidos.</li>
+  <li data-l="21">Tu <code>u_i / 2</code>, pasado por la división segura.</li>
+  <li data-l="22">La comparación, con el 0.9 tal como es de verdad en float32: 0.899999976.</li>
+  <li data-l="23-25"><code>discard</code> es <code>discard_fragment()</code> de Metal.</li>
+  <li data-l="26"><code>tabla[k]</code> con el índice recortado entre 0 y 3.</li>
+</ol>
+</div>
+
+<p>Esta es la conclusión de fondo: <strong>Chrome, a través de ANGLE, convierte en deterministas los comportamientos indefinidos que serían un riesgo de seguridad</strong> (leer memoria fuera de un array, leer basura de una variable sin inicializar o de una salida sin escribir, colgar la GPU con una división entera por cero), aunque le cueste instrucciones extra. Los que solo producen números raros (NaN, infinitos, <code>pow</code> de negativos) se los deja a la GPU. Puedes hacer el experimento en tu navegador; en Windows verás HLSL en lugar de MSL, con protecciones parecidas escritas de otra forma:</p>
+
+<div class="js-playground" data-titulo="Lo que ANGLE hace con tu fragment shader" data-altura="110" data-consola-altura="360" data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:14px 16px;font:14px monospace;color:#8791a5">El código traducido sale en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+const ext = gl.getExtension('WEBGL_debug_shaders');
+if (!ext) {
+  console.warn('Este navegador no expone WEBGL_debug_shaders (Firefox la reserva para páginas privilegiadas).');
+} else {
+  const fuente = `#version 300 es
+precision mediump float;
+uniform vec2 u_resolution;
+uniform float u_sinUso;
+uniform int u_i;
+out vec4 fragColor;
+float tabla[4] = float[](0.1, 0.4, 0.7, 1.0);
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float x;
+  int k = u_i / 2;
+  if (uv.x > 0.9) discard;
+  x = tabla[k];
+  fragColor = vec4(uv, x, 1.0);
+}`;
+  const fs = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fs, fuente);
+  gl.compileShader(fs);
+  const t = ext.getTranslatedShaderSource(fs);
+  console.log('Tu shader: ' + fuente.length + ' caracteres. El traducido: ' + t.length + '.');
+  // Buscamos dos trozos: el struct de uniforms y tu main traducido (nombres de la traducción a Metal)
+  const trozo = (inicio) => {
+    const i = t.indexOf(inicio);
+    return i < 0 ? null : t.slice(i, t.indexOf('\n}', i) + 2);
+  };
+  const uniforms = trozo('struct ANGLE_UserUniforms'), main = trozo('void ANGLE__0_main');
+  if (uniforms && main) { console.log(uniforms); console.log(main); }
+  else console.log(t.slice(0, 3000) + '\n…');   // otra API: enseñamos el principio
+}
+</script>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.1.1 — Siete errores</h3>
+  <p>Este shader no compila: tiene siete errores de los que has visto en la lección. Corrígelos <strong>sin cambiar lo que pretendía hacer</strong> el autor: seis bandas verticales cuyo brillo crece de izquierda a derecha, en un tono anaranjado (con el verde a la mitad del rojo); las bandas de índice impar (la segunda, la cuarta y la sexta) con rayas horizontales; el rojo y el azul intercambiados al final (así que el tono acaba siendo azulado), y una onda horizontal clara que se desplaza. Lee cada mensaje, busca su línea y arréglala; si un arreglo hace aparecer un error nuevo, es normal: el compilador a veces no ve un error hasta que arreglas el anterior.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.1.1" data-altura="300" data-apilado data-error-esperado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float bandas = 6;
+  float i = floor(uv.x * bandas);
+  float gris = i / (bandas - 1);
+  vec3 color = vec3(gris, gris * 0.5);
+  float rayas = step(0.5, fract(uv.y * 24.0));
+  if (int(i) % 2) color *= 0.5 + 0.5 * rayas;
+  color.rz = color.zr;
+  float onda = sin(uv.x * 20 + u_time * 3.0);
+  float dist = abs(uv.y - 0.5 - 0.1 * onda);
+  color += 0.3 * (1.0 - smoothstep(0.0, 0.02, dist));
+  fragColor = color;
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float bandas = 6.0;                              // 1) literal float
+  float i = floor(uv.x * bandas);
+  float gris = i / (bandas - 1.0);                 // 2) float - float
+  vec3 color = vec3(gris, gris * 0.5, 0.0);        // 3) tres componentes
+  float rayas = step(0.5, fract(uv.y * 24.0));
+  if (int(i) % 2 == 1) color *= 0.5 + 0.5 * rayas; // 4) condición bool
+  color.rb = color.br;                             // 5) un solo juego de letras
+  float onda = sin(uv.x * 20.0 + u_time * 3.0);    // 6) float * float
+  float dist = abs(uv.y - 0.5 - 0.1 * onda);
+  color += 0.3 * (1.0 - smoothstep(0.0, 0.02, dist));
+  fragColor = vec4(color, 1.0);                    // 7) la salida es un vec4
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Busca los números enteros escritos donde se esperan floats (hay tres) y las operaciones entre <code>float</code> e <code>int</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Los otros cuatro: un constructor al que le falta una componente, una condición que no es <code>bool</code>, un swizzle que mezcla <code>rgba</code> con <code>xyzw</code> y una salida <code>vec4</code> a la que se asigna un <code>vec3</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los siete errores y su mensaje:</p>
+    <ol>
+      <li><code>float bandas = 6;</code> → <code>cannot convert from 'const int' to 'highp float'</code>. Se escribe <code>6.0</code>.</li>
+      <li><code>bandas - 1</code> → <code>wrong operand types</code> (float menos int). <code>bandas - 1.0</code>.</li>
+      <li><code>vec3(gris, gris * 0.5)</code> → <code>not enough data provided for construction</code>. El enunciado dice «naranja con el verde a la mitad del rojo»: la tercera componente es el azul, 0.0.</li>
+      <li><code>if (int(i) % 2)</code> → <code>boolean expression expected</code>. Un entero no es una condición: <code>int(i) % 2 == 1</code>. (Aquí el <code>%</code> es seguro: <code>i</code> nunca es negativo.) Las rayas salen de <code>step(0.5, fract(uv.y * 24.0))</code>, que alterna 0 y 1 doce veces de abajo arriba (lo sabes de 3.4).</li>
+      <li><code>color.rz = color.zr;</code> → <code>vector component fields not from the same set</code>. <code>r</code> es del juego <code>rgba</code> y <code>z</code> del <code>xyzw</code>. La intención era intercambiar rojo y azul: <code>color.rb = color.br;</code>, que además es un swizzle legal como destino porque no repite componentes.</li>
+      <li><code>uv.x * 20</code> → <code>wrong operand types</code>. <code>20.0</code>.</li>
+      <li><code>fragColor = color;</code> → <code>'=' : dimension mismatch</code>, seguido de <code>'assign' : cannot convert from 'highp 3-component vector of float' to 'out highp 4-component vector of float'</code>. <code>vec4(color, 1.0)</code>.</li>
+    </ol>
+    <p>Fíjate en que ANGLE informa de varios errores a la vez, pero algunos solo aparecen al arreglar otros: mientras una línea no compila, el compilador no sabe el tipo de su resultado y no puede comprobar las siguientes que dependen de ella. La estrategia profesional es arreglar de arriba abajo y recompilar a menudo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.1.2 — Dos resultados con <code>out</code></h3>
+  <p>Completa la función <code>aPolar</code> para que devuelva, a través de sus dos parámetros <code>out</code>, el radio del punto <code>p</code> (su distancia al origen) y su ángulo expresado en <strong>vueltas</strong>, de 0 a 1 (0 y 1 a la izquierda, 0.5 a la derecha). Con la función bien hecha verás una rueda de color dentro de un disco de radio 1, con cinco anillos más oscuros alternos. Sin tocar nada, todo el lienzo sale de un solo color: ¿sabrías decir por qué?</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.1.2" data-altura="300" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+
+// TODO: radio = distancia al origen; vueltas = ángulo en [0, 1]
+void aPolar(vec2 p, out float radio, out float vueltas) {
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r, v;
+  aPolar(p, r, v);
+  vec3 color = 0.5 + 0.5 * cos(TAU * (v + vec3(0.0, 0.33, 0.67)));
+  color *= 0.6 + 0.4 * step(0.5, fract(r * 5.0));   // anillos
+  color *= 1.0 - smoothstep(0.98, 1.0, r);           // disco
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+
+void aPolar(vec2 p, out float radio, out float vueltas) {
+  radio = length(p);
+  // atan(y, x) está en (-PI, PI]: dividir por TAU da (-0.5, 0.5]
+  // y sumar 0.5 lo lleva a (0, 1]: 0.5 a la derecha, 0 y 1 a la izquierda
+  vueltas = atan(p.y, p.x) / TAU + 0.5;
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r, v;
+  aPolar(p, r, v);
+  vec3 color = 0.5 + 0.5 * cos(TAU * (v + vec3(0.0, 0.33, 0.67)));
+  color *= 0.6 + 0.4 * step(0.5, fract(r * 5.0));   // anillos
+  color *= 1.0 - smoothstep(0.98, 1.0, r);           // disco
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El radio es <code>length(p)</code>. Para el ángulo, <code>atan(p.y, p.x)</code> (primero la y) devuelve un valor entre −π y π.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para pasar de $(-\pi, \pi]$ a $(0, 1]$: divide por $2\pi$ (queda entre −0.5 y 0.5) y suma 0.5.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La función escribe sus dos resultados en los parámetros <code>out</code>, que al volver se copian en <code>r</code> y <code>v</code>. Con la función vacía, los dos parámetros salen con su valor inicial indefinido, que en Chrome es 0: <code>r = 0</code> y <code>v = 0</code> en todos los píxeles, así que todos los píxeles están «dentro del disco», reciben el color de «vueltas = 0» y ninguno cae en un anillo claro. En otra plataforma podría salir basura: un <code>out</code> que no se escribe en todos los caminos es un error, aunque compile.</p>
+    <p>La conversión del ángulo es la interpolación inversa de 3.4: de $(-\pi, \pi]$ a $(-0.5, 0.5]$ dividiendo por $2\pi$, y a $(0, 1]$ sumando 0.5. El color usa la rueda de tres cosenos desfasados un tercio de vuelta (0, 0.33, 0.67) que viste en 3.3; como <code>cos(TAU * v)</code> vale lo mismo en <code>v = 0</code> y en <code>v = 1</code>, la rueda no tiene costura en el salto de −π a π.</p>
+    <p>Un detalle de hacker: <code>atan(0.0, 0.0)</code> es indefinido. ¿Existe un píxel con <code>p</code> exactamente (0, 0)? Solo si el ancho y el alto del lienzo son impares, porque los centros de los píxeles están en .5 (<code>p.x = 0</code> exige <code>gl_FragCoord.x = u_resolution.x / 2</code>). Con un lienzo de tamaño par, ningún píxel cae en el centro exacto. En una aplicación real no deberías depender de eso: si el centro importa, protégelo (<code>length(p) &lt; 1e-6 ? 0.0 : atan(p.y, p.x)</code>).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.1.3 — Capas con <code>inout</code> y sobrecarga</h3>
+  <p>Escribe una función <code>pintar(inout vec3 color, vec3 tinta, float mascara)</code> que pinte una capa encima del color que ya hay (donde la máscara vale 1, la tinta; donde vale 0, lo que había; en medio, la mezcla), y una <strong>sobrecarga</strong> con un cuarto parámetro, la opacidad de la capa. Úsalas para dibujar tres discos que se solapan: rojo arriba a la izquierda, verde arriba a la derecha y, encima de los dos, uno azul abajo al 60 % de opacidad, a través del que se vean los otros.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.1.3" data-altura="300" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float disco(vec2 p, vec2 centro, float radio) {
+  float px = 2.0 / u_resolution.y;              // un píxel, en estas unidades
+  return 1.0 - smoothstep(radio - px, radio + px, length(p - centro));
+}
+
+// TODO 1: void pintar(inout vec3 color, vec3 tinta, float mascara)
+// TODO 2: la sobrecarga con un cuarto parámetro: la opacidad
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec3 color = vec3(0.08, 0.09, 0.11);
+  // TODO 3: rojo (-0.3, 0.15), verde (0.3, 0.15), azul (0.0, -0.3) al 60 %
+  //         radio 0.45 los tres
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float disco(vec2 p, vec2 centro, float radio) {
+  float px = 2.0 / u_resolution.y;              // un píxel, en estas unidades
+  return 1.0 - smoothstep(radio - px, radio + px, length(p - centro));
+}
+
+// Lee el color que hay (in) y deja el nuevo (out): inout
+void pintar(inout vec3 color, vec3 tinta, float mascara) {
+  color = mix(color, tinta, mascara);
+}
+// Sobrecarga: mismo nombre, otros parámetros. Llama a la primera versión.
+void pintar(inout vec3 color, vec3 tinta, float mascara, float opacidad) {
+  pintar(color, tinta, mascara * opacidad);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec3 color = vec3(0.08, 0.09, 0.11);
+  pintar(color, vec3(0.95, 0.30, 0.35), disco(p, vec2(-0.3, 0.15), 0.45));
+  pintar(color, vec3(0.30, 0.85, 0.45), disco(p, vec2( 0.3, 0.15), 0.45));
+  pintar(color, vec3(0.35, 0.50, 1.00), disco(p, vec2( 0.0, -0.3), 0.45), 0.6);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>«Pintar encima» es <code>mix(color, tinta, mascara)</code>: con máscara 0 queda el color, con 1 la tinta.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La opacidad multiplica a la máscara. La sobrecarga puede llamar a la primera versión con <code>mascara * opacidad</code>: no es recursión, porque es otra función (distintos parámetros).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>pintar</code> necesita el color que ya hay para mezclarlo, y tiene que devolver el nuevo: el parámetro es <code>inout</code>. Con <code>out</code> empezaría en 0 (negro) y cada capa borraría las anteriores; con <code>in</code>, la modificación se quedaría en la copia local y <code>color</code> no cambiaría nunca.</p>
+    <p>La sobrecarga comparte nombre y se distingue por el número de parámetros; el compilador elige la versión que encaja con cada llamada. Que una llame a la otra está permitido porque son funciones distintas: la recursión prohibida es la de una función que se llama a sí misma, directa o indirectamente. El orden de las llamadas es el orden de las capas (el algoritmo del pintor): el disco verde tapa al rojo donde se solapan, y el azul, al 60 %, deja ver a los dos a través.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.1.4 — Una paleta cíclica sin comportamientos indefinidos</h3>
+  <p>El lienzo tiene diez bandas, y cada una pide un color a <code>paleta(banda)</code> con un índice que puede ser negativo o mayor que 4, porque se le suma un desfase (el deslizador, de −12 a 12). Haz que la paleta sea <strong>cíclica</strong>: el índice 5 es el color 0, el 6 el 1… y el −1 es el color 4, el −2 el 3, etc. Al mover el deslizador, los cinco colores deben desplazarse una banda por paso, siempre en el mismo orden, también con desfases negativos. Y sin ningún comportamiento indefinido: ni índices fuera de rango, ni <code>%</code> con negativos. Antes de arreglarlo, mueve el deslizador y explica lo que ves.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.1.4" data-altura="160" data-apilado data-uniforms='{"u_desfase":{"tipo":"int","min":-12,"max":12,"valor":0,"etiqueta":"desfase"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_desfase;          // deslizador: de -12 a 12
+out vec4 fragColor;
+
+const vec3 PALETA[5] = vec3[5](
+  vec3(0.93, 0.33, 0.36), vec3(0.98, 0.70, 0.30), vec3(0.45, 0.80, 0.45),
+  vec3(0.30, 0.62, 0.95), vec3(0.62, 0.45, 0.95));
+
+vec3 paleta(int i) {
+  return PALETA[i];             // TODO: cíclica y sin nada indefinido
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  int banda = int(floor(uv.x * 10.0)) + u_desfase;   // de -12 a 21
+  fragColor = vec4(paleta(banda), 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_desfase;          // deslizador: de -12 a 12
+out vec4 fragColor;
+
+const vec3 PALETA[5] = vec3[5](
+  vec3(0.93, 0.33, 0.36), vec3(0.98, 0.70, 0.30), vec3(0.45, 0.80, 0.45),
+  vec3(0.30, 0.62, 0.95), vec3(0.62, 0.45, 0.95));
+
+vec3 paleta(int i) {
+  // % solo está definido con operandos no negativos: separamos el signo.
+  // Para i < 0: -i - 1 >= 0, y 4 - ((-i - 1) % 5) recorre 4, 3, 2, 1, 0, 4...
+  int k = (i >= 0) ? i % 5 : 4 - ((-i - 1) % 5);
+  return PALETA[k];             // k está garantizado en [0, 4]
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  int banda = int(floor(uv.x * 10.0)) + u_desfase;   // de -12 a 21
+  fragColor = vec4(paleta(banda), 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Sin arreglar, las bandas con índice mayor que 4 salen todas violetas y las negativas, rojas: ANGLE recorta el índice. Ese recorte es la protección de WebGL, no algo con lo que puedas contar.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La tentación es <code>((i % 5) + 5) % 5</code>, pero <code>i % 5</code> con <code>i</code> negativo es indefinido. Separa los dos casos: para <code>i &gt;= 0</code>, <code>i % 5</code>; para <code>i &lt; 0</code>, busca una expresión en la que el <code>%</code> solo vea números no negativos.</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>¿Y con floats, <code>int(mod(float(i), 5.0))</code>? Parece seguro, pero lee la solución: en la GPU, <code>mod(x, y)</code> puede devolver exactamente <code>y</code> en lugar de 0.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Sin arreglar, el índice de las bandas va de −12 a 21, y ANGLE lo recorta a [0, 4]: todo lo que pasa de 4 lee <code>PALETA[4]</code> (violeta) y todo lo negativo, <code>PALETA[0]</code> (rojo). Funciona sin errores, y está mal.</p>
+    <p>Para <code>i ≥ 0</code>, <code>i % 5</code> está definido y da 0…4. Para <code>i &lt; 0</code>, <code>-i - 1</code> es no negativo (−1 → 0, −2 → 1, −5 → 4, −6 → 5…), su resto entre 5 recorre 0, 1, 2, 3, 4, 0…, y <code>4 - …</code> lo convierte en 4, 3, 2, 1, 0, 4…, que es justo la continuación cíclica hacia atrás: el −1 es el 4 y el −5 es el 0. Todas las operaciones están definidas y <code>k</code> nunca se sale de [0, 4].</p>
+    <p>¿Por qué no <code>((i % 5) + 5) % 5</code>? En nuestra GPU funciona (el <code>%</code> de negativos se comporta como en C: −7 % 5 = −2), pero la especificación lo declara indefinido, y ese es el tipo de código que se rompe al cambiar de plataforma.</p>
+    <p>¿Y la versión con floats, <code>int(mod(float(i), 5.0))</code>? Aquí está la parte de hacker: <code>mod(x, y)</code> se calcula como <code>x - y * floor(x / y)</code>, y la división de la GPU no es exacta. Lo medimos con un millón de enteros, de −500 a 999 499: con <code>y = 5.0</code> no falló ninguno, pero con <code>y = 7.0</code>, en 39 casos <code>mod</code> devolvió <strong>7.0</strong> en lugar de 0 (por ejemplo, con <code>x = −441</code>, <code>x / y</code> dio −63.0000038 y el <code>floor</code> bajó a −64). Los 39 son múltiplos <strong>negativos</strong> de 7, y no es casualidad: con el fast math, la GPU no divide, sino que multiplica por el inverso de 7 redondeado a float, que es un pelo mayor que 1/7, y en los múltiplos negativos ese pelo deja el cociente justo por debajo del entero. Por eso cuántos fallan depende del rango que pruebes, no de cómo escribas el cálculo: en ese rango solo había 500 negativos; de −500 000 a 499 999 fallan 43 682, igual con un píxel por entero que con un bucle de un millón de vueltas (la explicación completa, con las cifras de otros divisores, en <a href="05-patrones.html#cuando-falla-mod">«¿Cuándo falla <code>mod</code>?»</a> de 6.5). Si la usas para indexar, blíndala contra ese caso: <code>int k = int(mod(float(i), 5.0)); if (k >= 5) k -= 5;</code> (el 5 que sale en lugar de 0). La versión entera no necesita ese remiendo.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><code>#version 300 es</code> en la primera línea (espacios delante sí; líneas, comentarios o directivas, no). Si falla, se compila como GLSL ES 1.00 y aparecen errores en cascada: el real es el primero.</li>
+    <li>El fragment shader no tiene precisión por defecto para <code>float</code>; <code>int</code> es <code>mediump</code>; <code>sampler3D</code>, <code>sampler2DArray</code>, <code>isampler*</code>… no tienen en ningún shader.</li>
+    <li>Cero conversiones implícitas: <code>1</code> es <code>int</code>, <code>1.0</code> es <code>float</code>, <code>1u</code> es <code>uint</code>, <code>010</code> es 8. La excepción son los constructores, que convierten. <code>int/int</code> trunca: convierte antes de dividir.</li>
+    <li>Constructores: un escalar se replica (en matrices, la diagonal); los argumentos se consumen en orden; las matrices se rellenan por columnas; una matriz pequeña en una grande se completa con la identidad.</li>
+    <li>Swizzles con un solo juego (<code>xyzw</code>, <code>rgba</code>, <code>stpq</code>), hasta cuatro, sin repetir si son destino. Operadores componente a componente, salvo <code>M * v</code> y <code>A * B</code>; <code>v * M</code> multiplica por la traspuesta.</li>
+    <li>Parámetros por copia: <code>in</code> copia al entrar, <code>out</code> al salir (y empieza indefinido: 0 en Chrome), <code>inout</code> las dos veces. Sin recursión; con sobrecarga por parámetros.</li>
+    <li>Arrays de tamaño constante y una dimensión. Índice constante fuera de rango: error; dinámico: indefinido, y ANGLE lo recorta.</li>
+    <li>Lo indefinido depende del contexto (valores constantes o no, <code>isnan</code> presente o no, e incluso si el programa sale de la caché del navegador). WebGL protege lo peligroso (índices, divisiones enteras, variables sin inicializar); lo numérico queda en manos de la GPU. Lee los avisos del compilador.</li>
+    <li>El preprocesador pega texto: paréntesis en las macros, sin <code>#</code> ni <code>##</code>, y <code>#line</code> para numerar los errores a tu gusto.</li>
+    <li>El compilador elimina lo que no llega a las salidas, pliega constantes, inserta las funciones y optimiza suponiendo que no hay NaN.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">Especificación de GLSL ES 3.00</a>: el lenguaje entero en unas 200 páginas. Las secciones 4 (variables y tipos), 5 (operadores y expresiones) y 8 (funciones built-in) son de consulta frecuente.</li>
+  <li><a href="https://registry.khronos.org/webgl/specs/latest/2.0/">Especificación de WebGL 2.0</a>, en especial sus diferencias con OpenGL ES 3.0: lo que la web restringe y lo que garantiza.</li>
+  <li><a href="https://www.khronos.org/opengl/wiki/Data_Type_(GLSL)">OpenGL Wiki — Data Type (GLSL)</a>: constructores, swizzles y conversiones con muchos ejemplos (ojo: describe el GLSL de escritorio, algo más permisivo).</li>
+  <li><a href="https://chromium.googlesource.com/angle/angle">El código fuente de ANGLE</a>, para los muy curiosos: el traductor de shaders está en <code>src/compiler/translator</code>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

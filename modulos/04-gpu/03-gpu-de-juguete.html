@@ -1,0 +1,1094 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4.3 · Una GPU de juguete en Python — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m4.css">
+</head>
+<body data-leccion="04-gpu/gpu-de-juguete">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 4 · La GPU por dentro</p>
+  <h1>Una GPU de juguete en Python</h1>
+  <p class="resumen">Construimos el pipeline completo en unas 550 líneas de Python sin dependencias: bytes empaquetados con <code>struct</code>, un VAO que los describe, shaders que son funciones, rasterización con funciones de arista, z-buffer, blending y un PNG escrito a mano. Y comprobamos que dibuja exactamente los mismos píxeles que la GPU de verdad.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: 1.6, 3.2, 4.2</span><span class="chip">Python 3.9+ (solo biblioteca estándar)</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás convertir una lista de vértices en los bytes exactos de un VBO y leerlos de vuelta con un descriptor de atributo.</li>
+      <li>Entenderás cada línea de un rasterizador: caja envolvente, funciones de arista, regla de desempate, baricéntricas y corrección de perspectiva.</li>
+      <li>Verás qué es realmente un uniform, un varying y un fragment shader cuando no hay GPU que los esconda.</li>
+      <li>Escribirás (y entenderás) un codificador PNG con <code>zlib</code> y <code>struct</code>.</li>
+      <li>Comprobarás, píxel a píxel, que la GPU de juguete y la GPU real dan el mismo resultado… y por qué a veces difieren en 1 de 255.</li>
+      <li>Modificarás la GPU: un fragment shader nuevo, back-face culling y un uniform.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué construir una GPU</h2>
+<p>En <a href="02-pipeline-grafico.html">4.2</a> describimos el pipeline con palabras, fórmulas y una demo. Pero una descripción siempre deja huecos: ¿cómo sabe exactamente la GPU dónde empieza el color del vértice 7 dentro del buffer? ¿Qué número multiplica a qué cuando interpola? ¿Qué pasa con un píxel cuyo centro cae justo en una arista? La forma de no dejar huecos es <strong>escribirlo</strong>. Si puedes programar una GPU, aunque sea lenta, entiendes la GPU.</p>
+<p>La nuestra está en <code>python/gpu_juguete/</code> y cumple tres condiciones:</p>
+<ul>
+  <li><strong>Solo biblioteca estándar</strong>: <code>struct</code> para los bytes, <code>zlib</code> para el PNG, <code>math</code>, <code>array</code>. Nada que instalar. Funciona con cualquier Python desde el 3.9.</li>
+  <li><strong>Las mismas convenciones que OpenGL/WebGL</strong>: espacio de clip, NDC de −1 a 1, ventana con la y hacia arriba, centros de píxel en ,5, triángulos antihorarios de frente, profundidad de 0 a 1. Hasta las constantes (<code>FLOAT = 0x1406</code>, <code>TRIANGLES = 0x0004</code>) tienen los mismos valores.</li>
+  <li><strong>Cada etapa es una función corta</strong> con el nombre de su etapa, en el mismo orden que el diagrama de 4.2.</li>
+</ul>
+<p>Es lentísima (dibuja del orden de cien mil fragmentos por segundo, frente a miles de millones de una GPU), pero eso da igual: aquí no queremos velocidad, queremos poder leer cada paso. Y al final de la lección verás que, píxel a píxel, dibuja lo mismo que la GPU del M1.</p>
+
+<h2>Preparar y ejecutar</h2>
+<p>No hace falta instalar nada. Desde la carpeta del curso:</p>
+<script type="text/plain" class="codigo" data-lang="bash" data-titulo="Terminal">
+cd python/gpu_juguete
+python3 ejemplo_01_triangulo.py     # el triángulo de colores: imprime la traza y guarda un PNG
+python3 pruebas.py                  # pruebas automáticas de la GPU de juguete
+</script>
+<p>Las imágenes se guardan en <code>modulos/04-gpu/img/</code> (puedes cambiar la carpeta con la variable de entorno <code>CARPETA_IMG</code>). El <a href="../../python/README.md"><code>README.md</code></a> de la carpeta <code>python/</code> explica todos los scripts, y <code>python/probar_todo.py</code> los ejecuta todos y comprueba que funcionan.</p>
+<table class="m4-compacta">
+  <thead><tr><th>Archivo</th><th>Qué contiene</th></tr></thead>
+  <tbody>
+    <tr><td><code>gpu.py</code></td><td>la GPU: buffers, VAO, programas, estado fijo, framebuffer y todas las etapas del pipeline</td></tr>
+    <tr><td><code>png_propio.py</code></td><td>el codificador PNG (y un lector mínimo para las pruebas)</td></tr>
+    <tr><td><code>matrices.py</code></td><td>matrices 4 × 4 column-major, como las de WebGL</td></tr>
+    <tr><td><code>maquina_estados.py</code></td><td>la misma GPU con la cara de OpenGL (la viste en <a href="01-cpu-vs-gpu.html">4.1</a>)</td></tr>
+    <tr><td><code>volcado.py</code></td><td>volcados hexadecimales de buffers</td></tr>
+    <tr><td><code>ejemplo_0N_*.py</code></td><td>ocho ejemplos: triángulo, índices, profundidad, perspectiva, blending, máquina de estados, formatos, varyings</td></tr>
+    <tr><td><code>ejercicios/</code>, <code>soluciones/</code></td><td>los ejercicios de esta lección, en Python</td></tr>
+  </tbody>
+</table>
+
+<h2>Paso 1: los datos son bytes</h2>
+<p>Empecemos por el ejemplo completo, que es corto. Son los mismos pasos que darás en WebGL en <a href="../05-webgl/02-primer-triangulo.html">5.2</a>, solo que aquí cada objeto es de Python y puedes imprimirlo:</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/ejemplo_01_triangulo.py:12-49">
+<script type="text/plain">
+# 1. Los datos en la CPU: 3 vértices, cada uno con posición (x, y) y color (r, g, b).
+vertices = [
+    # x      y      r    g    b
+    (-0.75, -0.75, 1.0, 0.0, 0.0),   # abajo a la izquierda: rojo
+    ( 0.75, -0.75, 0.0, 1.0, 0.0),   # abajo a la derecha:   verde
+    ( 0.00,  0.75, 0.0, 0.0, 1.0),   # arriba:               azul
+]
+
+# 2. El VBO: empaquetamos todo en bytes. '<' = little-endian, 'f' = float32 (4 bytes).
+#    5 floats por vértice → 20 bytes por vértice → stride = 20.
+vbo = gpu.Buffer(b"".join(struct.pack("<5f", *v) for v in vertices))
+print(f"VBO: {len(vbo)} bytes")
+print(volcado_hex(vbo.datos, por_fila=20))
+print(volcado_vertices(vbo.datos, 20, [("pos", 0, 8), ("color", 8, 12)]))
+
+# 3. El VAO: cómo leer cada atributo de esos bytes.
+vao = gpu.VAO()
+vao.configurar(0, gpu.Atributo(vbo, size=2, tipo=gpu.FLOAT, stride=20, offset=0))   # a_pos
+vao.configurar(1, gpu.Atributo(vbo, size=3, tipo=gpu.FLOAT, stride=20, offset=8))   # a_color
+
+
+# 4. Los shaders: funciones de Python.
+def vertex_shader(a, u):
+    x, y = a["a_pos"]
+    return (x, y, 0.0, 1.0), {"v_color": a["a_color"]}    # gl_Position, varyings
+
+
+def fragment_shader(v, u, frag):
+    r, g, b = v["v_color"]
+    return (r, g, b, 1.0)                                  # fragColor
+
+
+programa = gpu.Programa(vertex_shader, fragment_shader,
+                        atributos={"a_pos": (0, "vec2"), "a_color": (1, "vec3")})
+
+# 5. El framebuffer y la orden de dibujo.
+fb = gpu.Framebuffer(256, 256)
+fb.limpiar((0.08, 0.09, 0.12, 1.0))
+</script>
+<ol>
+  <li data-l="1-7">Los datos «humanos»: tres vértices, cada uno con posición (x, y) en espacio de clip (con w = 1 implícito, así que también son NDC) y color (r, g, b). Para la GPU todavía no existen: están en una lista de Python.</li>
+  <li data-l="9-11">El <strong>VBO</strong>: <code>struct.pack("&lt;5f", ...)</code> convierte cinco números en 20 bytes: <code>&lt;</code> es <em>little-endian</em> (el byte menos significativo primero, como en todas las GPU y CPU actuales; lo viste con <code>DataView</code> en <a href="../01-web/06-binario.html">1.6</a>) y <code>f</code> es float32, 4 bytes. <code>b"".join(...)</code> pega los tres vértices: 60 bytes en total. <code>gpu.Buffer</code> los guarda en un <code>bytearray</code>, sin saber qué son.</li>
+  <li data-l="12-14">Imprime el buffer en hexadecimal: lo desmontamos en el ejemplo resuelto 4.3.1. (<code>volcado_hex</code> y <code>volcado_vertices</code> son dos ayudantes de <code>volcado.py</code>, que el script importa al principio; el listado empieza después de los <code>import</code>.)</li>
+  <li data-l="16-19">El <strong>VAO</strong>: dos descriptores. El atributo 0 (<code>a_pos</code>) son 2 floats que empiezan en el byte 0 de cada vértice; el atributo 1 (<code>a_color</code>), 3 floats que empiezan en el byte 8 (justo después de los 2 floats de la posición). El <em>stride</em>, 20, es lo que hay que saltar para llegar al mismo atributo del vértice siguiente.</li>
+  <li data-l="22-25">El vertex shader es una función: recibe los atributos de <em>un</em> vértice (<code>a</code>) y los uniforms (<code>u</code>) y devuelve dos cosas: <code>gl_Position</code> (4 números) y un diccionario de varyings.</li>
+  <li data-l="28-30">El fragment shader: recibe los varyings ya interpolados (<code>v</code>), los uniforms y la información del fragmento (<code>frag</code>: su posición, si es de frente…) y devuelve el color RGBA. Devolver <code>None</code> equivale a <code>discard</code>.</li>
+  <li data-l="33-34">El «programa enlazado»: los dos shaders más la <em>interfaz</em>, que en GLSL serían las declaraciones <code>layout(location = 0) in vec2 a_pos;</code> y <code>layout(location = 1) in vec3 a_color;</code>. El tipo (<code>"vec2"</code>) decide cuántos componentes recibe el shader.</li>
+  <li data-l="36-38">El framebuffer de 256 × 256 y el <code>clear</code>, que pone todos los píxeles al color de fondo y el z-buffer a 1,0.</li>
+</ol>
+</div>
+
+<p>La orden de dibujo es una línea: <code>gpu.dibujar_arrays(fb, programa, vao, gpu.TRIANGLES, 0, 3)</code>, el equivalente de <code>gl.drawArrays(gl.TRIANGLES, 0, 3)</code> pero con los objetos pasados explícitamente (en 4.1 viste la versión con máquina de estados). Esta es la salida del script:</p>
+
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="python3 ejemplo_01_triangulo.py">
+VBO: 60 bytes
+00000000  00 00 40 bf 00 00 40 bf 00 00 80 3f 00 00 00 00 00 00 00 00  ..@...@....?........
+00000014  00 00 40 3f 00 00 40 bf 00 00 00 00 00 00 80 3f 00 00 00 00  ..@?..@........?....
+00000028  00 00 00 00 00 00 40 3f 00 00 00 00 00 00 00 00 00 00 80 3f  ......@?...........?
+vértice 0 @ byte   0: pos[00 00 40 bf 00 00 40 bf] color[00 00 80 3f 00 00 00 00 00 00 00 00]
+vértice 1 @ byte  20: pos[00 00 40 3f 00 00 40 bf] color[00 00 00 00 00 00 80 3f 00 00 00 00]
+vértice 2 @ byte  40: pos[00 00 00 00 00 00 40 3f] color[00 00 00 00 00 00 00 00 00 00 80 3f]
+vertex shader #0: entrada={'gl_VertexID': 0, 'a_pos': (-0.75, -0.75), 'a_color': (1.0, 0.0, 0.0)} → gl_Position=(-0.75, -0.75, 0.0, 1.0)
+vertex shader #1: entrada={'gl_VertexID': 1, 'a_pos': (0.75, -0.75), 'a_color': (0.0, 1.0, 0.0)} → gl_Position=(0.75, -0.75, 0.0, 1.0)
+vertex shader #2: entrada={'gl_VertexID': 2, 'a_pos': (0.0, 0.75), 'a_color': (0.0, 0.0, 1.0)} → gl_Position=(0.0, 0.75, 0.0, 1.0)
+estadísticas: invocaciones_vs=3, aciertos_cache=0, triangulos=1, recortados=0, descartados_culling=0, fragmentos=18432, descartados_fs=0, fallan_profundidad=0, escritos=18432
+fragmento ( 32, 32)  λ=(0.996, 0.001, 0.003)  color=(0.996, 0.001, 0.003)
+fragmento ( 33, 32)  λ=(0.991, 0.007, 0.003)  color=(0.991, 0.007, 0.003)
+fragmento ( 34, 32)  λ=(0.986, 0.012, 0.003)  color=(0.986, 0.012, 0.003)
+fragmento ( 35, 32)  λ=(0.980, 0.017, 0.003)  color=(0.980, 0.017, 0.003)
+píxel del centro (128, 100): (81, 83, 91, 255)
+guardado: modulos/04-gpu/img/juguete-triangulo.png
+</script>
+
+<figure class="m4-figura">
+  <img src="img/juguete-triangulo.png" width="256" height="256" alt="Triángulo con rojo abajo a la izquierda, verde abajo a la derecha y azul arriba, degradado entre ellos">
+  <figcaption>El PNG que genera el script: 18 432 fragmentos, exactamente el área del triángulo en píxeles ($192 \times 192 / 2$).</figcaption>
+</figure>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.3.1 — Desmontar el VBO byte a byte</h3>
+  <p>En el volcado, ¿dónde está la $x$ del vértice 0 y por qué se escribe <code>00 00 40 bf</code>? ¿En qué bytes está el color del vértice 2?</p>
+  <ol>
+    <li><strong>La x del vértice 0</strong> es el primer float: bytes 0–3. En float32, $-0{,}75$ se codifica como <code>0xBF400000</code>: bit de signo 1 (negativo), exponente <code>0x7E</code> (126, que con el sesgo de 127 significa $2^{-1}$) y mantisa <code>0x400000</code> (la fracción $0{,}5$, es decir, $1{,}5$ con el 1 implícito): $-1{,}5 \times 2^{-1} = -0{,}75$ (el formato se explica en <a href="../03-matematicas/07-precision.html">3.7</a>).</li>
+    <li><strong>¿Por qué al revés?</strong> Little-endian: el byte menos significativo va primero en memoria. <code>0xBF400000</code> se guarda como <code>00 00 40 BF</code>. Si hubieras empaquetado con <code>"&gt;5f"</code> (big-endian) verías <code>bf 40 00 00</code>… y la GPU leería basura.</li>
+    <li><strong>El 1,0 del rojo</strong> (<code>0x3F800000</code>) aparece como <code>00 00 80 3f</code> en los bytes 8–11.</li>
+    <li><strong>El color del vértice 2</strong>: el atributo 1 empieza en $\text{offset} + i \times \text{stride} = 8 + 2 \times 20 = 48$ y ocupa $3 \times 4 = 12$ bytes: del 48 al 59. En el volcado son los 12 últimos bytes de la tercera fila: <code>00 00 00 00 · 00 00 00 00 · 00 00 80 3f</code> = $(0, 0, 1)$, azul.</li>
+  </ol>
+  <p>Esa fórmula, $\text{offset} + i \times \text{stride}$, es literalmente lo que hace el vertex fetch. La siguiente sección la muestra en código.</p>
+</section>
+
+<h2>Paso 2: el VAO describe cómo leer los bytes</h2>
+<p>Un descriptor de atributo guarda los mismos seis datos que le pasas a <code>gl.vertexAttribPointer</code> (más un par de ellos que veremos en <a href="04-vbo-vao.html">4.4</a>). Y su método <code>leer</code> es el vertex fetch de un atributo:</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:72-121">
+<script type="text/plain">
+class Atributo:
+    """Lo que gl.vertexAttribPointer guarda en el VAO para UNA location."""
+
+    def __init__(self, buffer, size, tipo, normalizado=False, stride=0, offset=0,
+                 entero=False, divisor=0):
+        if size not in (1, 2, 3, 4):
+            raise ValueError("size debe ser 1, 2, 3 o 4 (en GL: INVALID_VALUE)")
+        self.buffer = buffer            # el buffer QUE ESTABA ENLAZADO al configurar
+        self.size = size                # componentes por vértice (1..4)
+        self.tipo = tipo                # FLOAT, UNSIGNED_BYTE, ...
+        self.normalizado = normalizado  # enteros → [0, 1] o [-1, 1]
+        self.entero = entero            # True = vertexAttribIPointer (sin convertir a float)
+        self.divisor = divisor          # 0 = por vértice (instancing: lo veremos en 5.9)
+        self.offset = offset            # byte donde empieza el primer vértice
+        # stride 0 significa "empaquetado": exactamente el tamaño de un elemento
+        self.stride = stride or size * TIPOS[tipo][1]
+
+    def leer(self, indice):
+        """Vertex fetch de este atributo para el vértice número `indice`."""
+        codigo, nbytes, con_signo = TIPOS[self.tipo]
+        inicio = self.offset + indice * self.stride
+        if inicio + self.size * nbytes > len(self.buffer.datos):
+            raise IndexError(f"el vértice {indice} se sale del buffer (WebGL: INVALID_OPERATION)")
+        crudos = struct.unpack_from("<" + codigo * self.size, self.buffer.datos, inicio)
+        if self.entero:                         # enteros tal cual
+            return crudos + (0, 0, 0, 1)[self.size:]
+        if self.tipo == FLOAT or not self.normalizado:
+            valores = [float(c) for c in crudos]          # 255 → 255.0
+        elif con_signo:                         # [-127, 127] → [-1, 1]  (y -128 → -1)
+            m = (1 << (8 * nbytes - 1)) - 1
+            valores = [max(c / m, -1.0) for c in crudos]
+        else:                                   # [0, 255] → [0, 1]
+            m = (1 << (8 * nbytes)) - 1
+            valores = [c / m for c in crudos]
+        # los componentes que no están en el buffer se rellenan con (0, 0, 0, 1)
+        return tuple(valores) + (0.0, 0.0, 0.0, 1.0)[self.size:]
+
+
+class VAO:
+    """Vertex Array Object: la receta para leer los vértices de los buffers."""
+
+    def __init__(self):
+        self.atributos = {}      # location → Atributo      (gl.vertexAttribPointer)
+        self.habilitados = set()  # locations habilitadas    (gl.enableVertexAttribArray)
+        self.elementos = None    # buffer de índices (EBO): TAMBIÉN es estado del VAO
+
+    def configurar(self, location, atributo):
+        """Atajo: vertexAttribPointer + enableVertexAttribArray."""
+        self.atributos[location] = atributo
+        self.habilitados.add(location)
+</script>
+<ol>
+  <li data-l="8">El descriptor guarda una referencia al <em>buffer concreto</em>. En la API real, es el buffer que estaba enlazado en <code>ARRAY_BUFFER</code> al llamar a <code>vertexAttribPointer</code> (lo viste en 4.1).</li>
+  <li data-l="9-14"><code>size</code> (1 a 4 componentes), <code>tipo</code> (qué hay en cada componente), <code>normalizado</code> (si los enteros se escalan a 0..1 o −1..1), <code>entero</code> (si el shader los recibe como enteros, lo que en WebGL2 hace <code>vertexAttribIPointer</code>), <code>divisor</code> (para instancing, <a href="../05-webgl/09-instancing.html">5.9</a>) y <code>offset</code>.</li>
+  <li data-l="15-16">El caso especial más traicionero de la API: <code>stride = 0</code> no significa «cero bytes», significa «vértices pegados», es decir, exactamente <code>size × bytes del tipo</code>. Para 2 floats, 8.</li>
+  <li data-l="20-23">La aritmética del vertex fetch: el atributo del vértice <code>indice</code> empieza en <code>offset + indice × stride</code>. Si los bytes que necesita se salen del buffer, lanzamos un error, como hace WebGL (<code>INVALID_OPERATION</code>: lo verás medido en 4.4). OpenGL nativo no lo comprueba: leería memoria ajena.</li>
+  <li data-l="24"><code>struct.unpack_from</code> interpreta <code>size</code> valores del tipo indicado a partir del byte <code>inicio</code>, en little-endian. Aquí es donde unos bytes «sin tipo» pasan a ser números.</li>
+  <li data-l="25-26">Atributos enteros: se entregan tal cual, sin convertir.</li>
+  <li data-l="27-34">Atributos float: si el tipo ya es float o no se normaliza, se convierten sin más (un byte 255 llega como 255.0). Si se normaliza: sin signo se divide por el máximo (255 → 1,0; 128 → 0,502); con signo se divide por 2<sup>b-1</sup> − 1 y se limita a −1 (así −128 y −127 dan los dos −1,0). Son las reglas de OpenGL ES 3.0, que medimos en Chrome en 4.4.</li>
+  <li data-l="35-36">Si el atributo tiene menos de 4 componentes, los que faltan se rellenan con (0, 0, 0, 1): un <code>vec2</code> leído como <code>vec4</code> llega como (x, y, 0, 1). Por eso puedes declarar <code>in vec4 a_pos</code> y darle solo x e y.</li>
+  <li data-l="39-50">El VAO: un diccionario de descriptores por <em>location</em>, un conjunto de locations habilitadas (<code>enableVertexAttribArray</code>) y el buffer de índices. <code>configurar</code> es un atajo que hace las dos primeras cosas a la vez.</li>
+</ol>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un buffer entrelazado tiene, por vértice, <code>posición (3 floats) + normal (3 floats) + uv (2 floats)</code>. ¿Qué <code>stride</code> y qué <code>offset</code> tiene el atributo <code>uv</code>, y en qué byte empieza el uv del vértice 10?</p>
+  <ul>
+    <li><code>stride = 8</code>, <code>offset = 6</code>, byte 86.<div class="explicacion">Esos son números de <em>componentes</em>, no de bytes. La API cuenta siempre en bytes: cada float son 4.</div></li>
+    <li data-correcta><code>stride = 32</code>, <code>offset = 24</code>, byte 344.<div class="explicacion">Correcto: un vértice ocupa $8 \times 4 = 32$ bytes; el uv empieza después de 6 floats, en el byte 24; y el del vértice 10 en $24 + 10 \times 32 = 344$.</div></li>
+    <li><code>stride = 0</code>, porque los atributos están pegados.<div class="explicacion"><code>stride = 0</code> significa «pegados <em>dentro de este atributo</em>» (el uv del vértice siguiente justo detrás del anterior), lo que solo vale si el buffer contiene únicamente uvs. En un buffer entrelazado, entre un uv y el siguiente hay 24 bytes de otras cosas.</div></li>
+  </ul>
+</div>
+
+<p>El resto del vertex fetch reúne las entradas de un vértice para el shader:</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:238-254">
+<script type="text/plain">
+def buscar_vertice(programa, vao, indice, constantes=None):
+    """Arma el diccionario de entradas (atributos) del vertex shader para un vértice."""
+    entrada = {"gl_VertexID": indice}                    # variable predefinida de GLSL
+    for nombre, (loc, tipo_glsl) in programa.atributos.items():
+        if loc in vao.habilitados:
+            atributo = vao.atributos[loc]
+            if atributo.entero != es_entero(tipo_glsl):
+                raise TypeError(f"'{nombre}': el tipo del atributo no coincide con el del shader "
+                                "(WebGL2: INVALID_OPERATION al dibujar)")
+            valor = atributo.leer(indice)
+        else:
+            # atributo deshabilitado: todos los vértices reciben el mismo valor constante
+            # (gl.vertexAttrib4f); si nunca lo pusiste, vale (0, 0, 0, 1)
+            valor = (constantes or {}).get(loc, (0.0, 0.0, 0.0, 1.0))
+        n = COMPONENTES[tipo_glsl]
+        entrada[nombre] = valor[0] if n == 1 else tuple(valor[:n])
+    return entrada
+</script>
+<ol>
+  <li data-l="3"><code>gl_VertexID</code>: en GLSL es una variable predefinida con el índice del vértice. La usaremos para dibujar sin buffers en <a href="05-uniforms-varyings.html">4.5</a>.</li>
+  <li data-l="4-10">Para cada atributo que declara el programa (nombre, location, tipo GLSL): si su location está habilitada en el VAO, se lee del buffer. Antes se comprueba que el shader y el descriptor coinciden en «entero sí / entero no»: WebGL2 da <code>INVALID_OPERATION</code> al dibujar si no coinciden (lo medimos en 4.4).</li>
+  <li data-l="11-14">Si la location <em>no</em> está habilitada, el atributo no se lee de ningún buffer: todos los vértices reciben el mismo valor constante (el de <code>gl.vertexAttrib4f</code>), que por defecto es (0, 0, 0, 1). Es un truco muy útil que explota <a href="05-uniforms-varyings.html">4.5</a>.</li>
+  <li data-l="15-16">El shader recibe tantos componentes como dice su tipo: <code>vec2</code> → 2, <code>float</code> → un número suelto.</li>
+</ol>
+</div>
+
+<h2>Paso 3: uniforms y shaders</h2>
+<p>En la GPU real, un uniform es un valor en una memoria de constantes que todas las invocaciones de un dibujo leen (en 4.1 viste que ANGLE los mete en un <code>struct</code> dentro de un buffer). En la nuestra es un diccionario que pertenece al programa:</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:124-150">
+<script type="text/plain">
+def valor_inicial(tipo_glsl):
+    """Todo uniform vale 0 hasta que lo asignas (como en GL)."""
+    if tipo_glsl.startswith("mat"):
+        n = int(tipo_glsl[3])
+        return (0.0,) * (n * n)
+    if tipo_glsl == "bool":
+        return False
+    n = COMPONENTES[tipo_glsl]
+    cero = 0 if es_entero(tipo_glsl) else 0.0
+    return cero if n == 1 else (cero,) * n
+
+
+class Programa:
+    """Un 'programa' enlazado: vertex shader + fragment shader + sus interfaces.
+
+    atributos: {"a_pos": (location, "vec2"), ...}   ≈  layout(location=0) in vec2 a_pos;
+    uniforms:  {"u_escala": "float", ...}           ≈  uniform float u_escala;
+    flat:      nombres de varyings sin interpolar   ≈  flat out ...
+    """
+
+    def __init__(self, vertex_shader, fragment_shader, atributos, uniforms=None, flat=()):
+        self.vertex_shader = vertex_shader
+        self.fragment_shader = fragment_shader
+        self.atributos = dict(atributos)
+        self.tipos_uniform = dict(uniforms or {})
+        self.uniforms = {n: valor_inicial(t) for n, t in self.tipos_uniform.items()}
+        self.flat = set(flat)
+</script>
+<ol>
+  <li data-l="1-10">Todo uniform empieza valiendo cero (0, 0.0, <code>False</code> o una tupla de ceros según el tipo). Es la regla de GL: un uniform que nunca asignas vale 0, y no hay aviso. Si alguna vez un shader «no hace nada», sospecha de un uniform sin asignar.</li>
+  <li data-l="21-27">El programa guarda los dos shaders, la interfaz de atributos, los tipos de los uniforms y sus valores, y qué varyings son <code>flat</code> (sin interpolar, 4.5). Los uniforms viven <strong>en el programa</strong>: si usas dos programas, cada uno tiene los suyos, y persisten entre dibujos.</li>
+</ol>
+</div>
+
+<div class="callout senior" data-titulo="Un nombre mal escrito no da error… en ningún sitio">
+  <p>Prueba esto: <code>programa.uniforms["u_esacla"] = 2.0</code> (con la errata). Python añade una clave nueva al diccionario sin quejarse y el shader sigue leyendo <code>u_escala</code>, que vale 0. Es exactamente lo que pasa en WebGL: <code>gl.getUniformLocation(prog, "u_esacla")</code> devuelve <code>null</code> y <code>gl.uniform1f(null, 2.0)</code> no hace nada, sin error ni aviso (lo comprobamos en Chrome; lo desarrolla <a href="05-uniforms-varyings.html">4.5</a>). La máquina no puede saber que te has equivocado.</p>
+</div>
+
+<h2>Paso 4: el recorrido de un dibujo</h2>
+<p>Esta es la función que ejecutan <code>dibujar_arrays</code> y <code>dibujar_elementos</code> (la primera le pasa los índices <code>primero … primero + cuenta − 1</code>; la segunda, los que lee del buffer de índices del VAO):</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:506-534">
+<script type="text/plain">
+def _dibujar(fb, programa, vao, modo, indices, estado, constantes, trazar, indexado):
+    estado = estado or EstadoFijo()
+    est = Estadisticas()
+    # 1-2. vertex fetch + vertex shader (con caché post-transformación si hay índices)
+    cache = OrderedDict()
+    salida = []
+    for idx in indices:
+        if indexado and idx in cache:
+            est.aciertos_cache += 1
+            salida.append(cache[idx])
+            continue
+        entrada = buscar_vertice(programa, vao, idx, constantes)
+        pos, varyings = programa.vertex_shader(entrada, programa.uniforms)
+        est.invocaciones_vs += 1
+        v = (tuple(float(c) for c in pos), dict(varyings))
+        if trazar:
+            trazar("vertice", {"indice": idx, "entrada": entrada, "gl_Position": v[0], "varyings": v[1]})
+        if indexado:
+            cache[idx] = v
+            if len(cache) > estado.cache_vertices:
+                cache.popitem(last=False)                # FIFO: sale el más antiguo
+        salida.append(v)
+    # 3. ensamblado, y el resto del pipeline por triángulo
+    for a, b, c, i_primero, i_ultimo in ensamblar(modo, salida):
+        est.triangulos += 1
+        prov = salida[i_ultimo if estado.provocador == "ULTIMO" else i_primero]
+        flat_de = {k: prov[1][k] for k in programa.flat if k in prov[1]}
+        procesar_triangulo(fb, programa, (a, b, c), flat_de, estado, est, trazar)
+    return est
+</script>
+<ol>
+  <li data-l="2-3">Si no le pasas estado fijo, usa el de por defecto (sin culling, sin profundidad, sin blending: como un contexto WebGL recién creado). <code>est</code> cuenta lo que pasa: invocaciones, fragmentos, descartes…</li>
+  <li data-l="5-11">La <strong>caché post-transformación</strong>: en un dibujo con índices, si el índice ya está en la caché, se reutiliza el resultado del vertex shader sin volver a ejecutarlo. Sin índices no hay forma de saber que dos vértices son el mismo, así que no hay caché.</li>
+  <li data-l="12-15">Para cada vértice: vertex fetch (<code>buscar_vertice</code>), ejecución del vertex shader con los uniforms del programa, y la salida se guarda como una tupla de floats más un diccionario de varyings.</li>
+  <li data-l="16-17">Un gancho de depuración: si le pasas una función <code>trazar</code>, le cuenta cada paso. Es lo que usa el script para imprimir la traza (y la demo de más abajo para animar la rasterización).</li>
+  <li data-l="18-21">La caché es una FIFO de tamaño fijo (16 por defecto): cuando se llena, sale el índice más antiguo. Las cachés reales son más sofisticadas; en <a href="04-vbo-vao.html">4.4</a> medirás cuánto importa su tamaño y el orden de los índices.</li>
+  <li data-l="24-28">Ensamblado: <code>ensamblar</code> agrupa los vértices en triángulos según el modo (<code>TRIANGLES</code>, <code>TRIANGLE_STRIP</code> o <code>TRIANGLE_FAN</code>) y dice qué vértice es el provocador (el que da los varyings <code>flat</code>: por defecto, el último). Cada triángulo sigue su camino por <code>procesar_triangulo</code>: recorte y rasterización.</li>
+</ol>
+</div>
+
+<h2>Paso 5: recorte y paso a la ventana</h2>
+<p>El recorte usa el algoritmo de Sutherland–Hodgman: recorre las aristas del polígono y, para cada plano, se queda con lo que está dentro y añade los puntos de corte. La GPU de juguete recorta solo contra los planos cercano y lejano (los laterales los resuelve la caja envolvente, como hace la GPU real con su guard band; lo explicamos en 4.2):</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:290-322">
+<script type="text/plain">
+def lerp_vertice(a, b, t):
+    """Punto a + t·(b − a) entre dos vértices de clip (posición y varyings)."""
+    pos = tuple(pa + t * (pb - pa) for pa, pb in zip(a[0], b[0]))
+    var = {k: mezclar((a[1][k], b[1][k]), (1.0 - t, t)) for k in a[1]}
+    return pos, var
+
+
+# ---------------------------------------------------------------------------
+# Etapa 4: recorte (clipping) contra los planos cercano y lejano
+# ---------------------------------------------------------------------------
+def recortar(poligono):
+    """Sutherland–Hodgman en espacio de clip contra z >= -w (cercano) y z <= w (lejano).
+
+    Los planos laterales (x, y) no hace falta recortarlos geométricamente: la
+    rasterización ya se limita al viewport (las GPU reales hacen lo mismo: 'guard band').
+    El plano cercano sí es obligatorio: detrás de la cámara w <= 0 y dividir por w
+    daría basura (puntos 'reflejados').
+    """
+    for distancia in (lambda p: p[2] + p[3], lambda p: p[3] - p[2]):
+        salida = []
+        for i, actual in enumerate(poligono):
+            previo = poligono[i - 1]
+            da, dp = distancia(actual[0]), distancia(previo[0])
+            if da >= 0:
+                if dp < 0:                                       # entra: añade el corte
+                    salida.append(lerp_vertice(previo, actual, dp / (dp - da)))
+                salida.append(actual)
+            elif dp >= 0:                                        # sale: solo el corte
+                salida.append(lerp_vertice(previo, actual, dp / (dp - da)))
+        poligono = salida
+        if len(poligono) < 3:
+            return []
+    return poligono
+</script>
+<ol>
+  <li data-l="1-5">Un vértice nuevo en el punto a + t (b − a): su posición y todos sus varyings se interpolan <em>linealmente en espacio de clip</em>, antes de dividir por w. Aquí la interpolación lineal es la correcta.</li>
+  <li data-l="19">Dos planos, cada uno como una función de «distancia con signo» que es ≥ 0 dentro: z + w ≥ 0 es z ≥ −w (plano cercano) y w − z ≥ 0 es z ≤ w (plano lejano).</li>
+  <li data-l="21-29">Para cada arista (del vértice <code>previo</code> al <code>actual</code>): si el actual está dentro, se queda (y si el previo estaba fuera, antes se añade el punto donde la arista entra). Si el actual está fuera pero el previo dentro, solo se añade el punto donde la arista sale. El parámetro del corte, <code>t = dp / (dp − da)</code>, es donde la distancia con signo pasa por cero (una regla de tres).</li>
+  <li data-l="30-33">El polígono resultante (3, 4 o 5 vértices) pasa al plano siguiente. Si se queda con menos de 3, el triángulo estaba entero fuera.</li>
+</ol>
+</div>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:406-415">
+<script type="text/plain">
+def a_ventana(vertice, viewport):
+    """5-6. División de perspectiva (clip → NDC) y transformación de viewport."""
+    (x, y, z, w), _ = vertice
+    xn, yn, zn = x / w, y / w, z / w                     # NDC: de -1 a 1
+    vx, vy, vw, vh = viewport
+    return (vx + (xn + 1.0) * vw / 2.0,                  # x de ventana (píxeles)
+            vy + (yn + 1.0) * vh / 2.0,                  # y de ventana (hacia ARRIBA)
+            (zn + 1.0) / 2.0,                            # profundidad en [0, 1]
+            1.0 / w)                                     # 1/w: para corregir la perspectiva
+
+</script>
+<ol>
+  <li data-l="4">La división de perspectiva: NDC. Después del recorte, w > 0 siempre.</li>
+  <li data-l="6-8">La transformación de viewport de 4.2, sin trucos: [−1, 1] → [v<sub>x</sub>, v<sub>x</sub> + ancho], lo mismo en y (hacia arriba), y la profundidad de [−1, 1] a [0, 1].</li>
+  <li data-l="9">Guardamos 1/w junto a la posición: la interpolación con corrección de perspectiva lo necesita, y además es el <code>gl_FragCoord.w</code> de GLSL.</li>
+</ol>
+</div>
+
+<h2>Paso 6: el rasterizador</h2>
+<p>Primero, las dos piezas pequeñas: la función de arista de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a> y la regla de desempate que medimos en 4.2.</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:328-347">
+<script type="text/plain">
+def arista(a, b, p):
+    """Función de arista: > 0 si p está a la IZQUIERDA de a→b (con y hacia arriba).
+    Es el producto cruz 2D (b − a) × (p − a) de la lección 3.2."""
+    return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+
+
+def cuenta_empate(a, b):
+    """Regla de desempate para centros EXACTAMENTE sobre la arista a→b (triángulo CCW).
+
+    Solo cuenta si es una arista izquierda (baja: dy < 0) o inferior (horizontal
+    hacia la derecha). Es lo que medimos en Chrome (ANGLE/Metal) y en el driver GL de
+    Apple: la regla 'top-left' de D3D/Metal vista con el eje y hacia arriba.
+    Así un píxel sobre una arista compartida se pinta UNA sola vez.
+    """
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    return dy < 0 or (dy == 0 and dx > 0)
+
+
+def _dentro(w, empate):
+    return w > 0 or (w == 0 and empate)
+</script>
+<ol>
+  <li data-l="1-4">El producto cruz 2D (b − a) × (p − a): positivo si p queda a la izquierda de la arista a → b. Evaluado en el tercer vértice, da el doble del área con signo.</li>
+  <li data-l="7-16">La regla de desempate: con el triángulo en sentido antihorario, una arista es «izquierda» si baja (Δ y < 0) e «inferior» si es horizontal y va hacia la derecha. Solo en esas un centro con función exactamente 0 cuenta como dentro.</li>
+  <li data-l="19-20">«Dentro de una arista»: estrictamente positivo, o cero si la regla lo permite.</li>
+</ol>
+</div>
+
+<p>Y el corazón de la GPU de juguete. Es la función más larga (unas 60 líneas) porque hace cuatro etapas del pipeline seguidas: culling, rasterización, interpolación y la llamada al fragment shader.</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:417-478">
+<script type="text/plain">
+def rasterizar(fb, programa, tri, flat_de, estado, est, trazar=None):
+    viewport = estado.viewport or (0, 0, fb.ancho, fb.alto)
+    A, B, C = (a_ventana(v, viewport) for v in tri)
+    VA, VB, VC = (v[1] for v in tri)                    # varyings de cada vértice
+
+    # 6. orientación y culling: el signo del área dice si el triángulo gira CCW o CW
+    area2 = arista(A, B, C)                              # = 2 × área con signo
+    if area2 == 0:
+        return                                           # degenerado: no cubre nada
+    frontal = es_frontal(area2, estado.front_face)
+    if descartar_por_cara(frontal, estado):
+        est.descartados_culling += 1
+        return
+    if area2 < 0:                                        # lo ponemos CCW para que
+        B, C, VB, VC = C, B, VC, VB                      # "dentro" sea siempre w > 0
+        area2 = -area2
+    empates = (cuenta_empate(B, C), cuenta_empate(C, A), cuenta_empate(A, B))
+
+    # 7. caja envolvente, recortada al viewport y al framebuffer
+    x0 = max(math.floor(min(A[0], B[0], C[0])), viewport[0], 0)
+    x1 = min(math.ceil(max(A[0], B[0], C[0])), viewport[0] + viewport[2], fb.ancho) - 1
+    y0 = max(math.floor(min(A[1], B[1], C[1])), viewport[1], 0)
+    y1 = min(math.ceil(max(A[1], B[1], C[1])), viewport[1] + viewport[3], fb.alto) - 1
+    if trazar:
+        trazar("triangulo", {"ventana": (A, B, C), "area2": area2, "frontal": frontal, "caja": (x0, y0, x1, y1)})
+
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            p = (x + 0.5, y + 0.5)                       # ¡el CENTRO del píxel!
+            w0, w1, w2 = arista(B, C, p), arista(C, A, p), arista(A, B, p)
+            dentro = (_dentro(w0, empates[0]) and _dentro(w1, empates[1])
+                      and _dentro(w2, empates[2]))
+            if trazar:
+                trazar("candidato", {"x": x, "y": y, "w": (w0, w1, w2), "dentro": dentro})
+            if not dentro:
+                continue
+            est.fragmentos += 1
+            # 8. coordenadas baricéntricas en pantalla (suman 1)
+            l0, l1, l2 = w0 / area2, w1 / area2, w2 / area2
+            z = l0 * A[2] + l1 * B[2] + l2 * C[2]         # la z de ventana SÍ es lineal en pantalla
+            q = l0 * A[3] + l1 * B[3] + l2 * C[3]         # 1/w interpolado
+            if estado.correccion_perspectiva:            # pesos corregidos: λ_i (1/w_i) / Σ λ_j (1/w_j)
+                pesos = (l0 * A[3] / q, l1 * B[3] / q, l2 * C[3] / q)
+            else:                                        # interpolación "afín" (PS1)
+                pesos = (l0, l1, l2)
+            varyings = {}
+            for nombre in VA:
+                if nombre in programa.flat:
+                    varyings[nombre] = flat_de[nombre]   # sin interpolar: el vértice provocador
+                else:
+                    varyings[nombre] = mezclar((VA[nombre], VB[nombre], VC[nombre]), pesos)
+            frag = Fragmento(x, y, (p[0], p[1], z, q), frontal)
+            # 9. el fragment shader
+            color = programa.fragment_shader(varyings, programa.uniforms, frag)
+            info = {"x": x, "y": y, "lambda": (l0, l1, l2), "pesos": pesos, "z": z,
+                    "varyings": varyings, "color": color} if trazar else None
+            if color is None:                            # discard
+                est.descartados_fs += 1
+                if trazar:
+                    trazar("fragmento", dict(info, resultado="discard"))
+                continue
+            escribir_fragmento(fb, x, y, z, color, estado, est, info, trazar)
+</script>
+<ol>
+  <li data-l="2-4">El viewport (por defecto, el framebuffer entero), los tres vértices en coordenadas de ventana (x, y, z, 1/w) y sus varyings.</li>
+  <li data-l="7-9">El doble del área con signo. Si es 0, el triángulo es degenerado (una línea): no cubre el centro de ningún píxel.</li>
+  <li data-l="10-13">Orientación y culling. El signo del área decide si está de frente; <code>descartar_por_cara</code> aplica <code>CULL_FACE</code> y <code>cullFace</code>. Esta función la escribirás tú en el ejercicio 4.3.2.</li>
+  <li data-l="14-17">Si el triángulo es horario, intercambiamos B y C (con sus varyings) para trabajar siempre en sentido antihorario: así «dentro» es siempre «las tres funciones positivas» y la regla de desempate se aplica igual. Ojo: el valor de <code>frontal</code> ya se calculó antes del intercambio. Después, qué aristas cuentan en caso de empate.</li>
+  <li data-l="20-23">La caja envolvente en píxeles: del <code>floor</code> del mínimo al <code>ceil</code> del máximo, recortada al viewport y al framebuffer. Esto es lo que sustituye al recorte de los planos laterales.</li>
+  <li data-l="27-30">Para cada píxel de la caja, su <strong>centro</strong> (x + 0,5, y + 0,5) y las tres funciones de arista. El nombre de cada una va con el vértice <em>opuesto</em>: <code>w0</code> es la de la arista BC (la que no toca a A) y será el peso de A.</li>
+  <li data-l="31-36">¿Dentro? Si no, siguiente píxel (y el fragment shader no se ejecuta).</li>
+  <li data-l="39">Las <strong>coordenadas baricéntricas</strong> en la pantalla: cada función de arista dividida por el doble del área. Suman 1.</li>
+  <li data-l="40">La profundidad se interpola con las λ de pantalla, sin corregir: z<sub>ndc</sub> ya es lineal en pantalla.</li>
+  <li data-l="41-45">1/w interpolado (<code>q</code>) y los pesos para los varyings: con corrección de perspectiva, λ<sub>i</sub> (1/w<sub>i</sub>) / Σ<sub>j</sub> λ<sub>j</sub> (1/w<sub>j</sub>), que es la fórmula de 4.2 reordenada; sin ella, las λ tal cual (el interruptor existe solo para poder ver el error).</li>
+  <li data-l="46-51">Cada varying se interpola con esos pesos (<code>mezclar</code> funciona igual con números que con tuplas), salvo los <code>flat</code>, que toman el valor del vértice provocador.</li>
+  <li data-l="52-54">Se construye <code>gl_FragCoord</code> (centro del píxel, z, 1/w) y se llama al fragment shader con los varyings interpolados y los uniforms del programa.</li>
+  <li data-l="55-61">Más ganchos de traza. Si el shader devuelve <code>None</code>, es un <code>discard</code>: el fragmento no llega a las operaciones por fragmento.</li>
+  <li data-l="62">El fragmento superviviente va a las pruebas y al framebuffer.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.3.2 — Seguir un fragmento: el píxel (32, 32)</h3>
+  <p>La traza dice que el píxel $(32, 32)$ tiene $\lambda = (0{,}996,\ 0{,}001,\ 0{,}003)$ y que su color es $(0{,}996,\ 0{,}001,\ 0{,}003)$. Rehaz las cuentas y di qué bytes se escriben en el framebuffer.</p>
+  <ol>
+    <li><strong>Vértices en ventana</strong> (256 × 256): $A = (32, 32)$, $B = (224, 32)$, $C = (128, 224)$. Doble del área: $E_{AB}(C) = 192 \times 192 = 36\,864$.</li>
+    <li><strong>Centro</strong>: $P = (32{,}5,\ 32{,}5)$. $w_0 = E_{BC}(P) = (128 - 224)(32{,}5 - 32) - (224 - 32)(32{,}5 - 224) = -48 + 36\,768 = 36\,720$; $w_1 = E_{CA}(P) = (32 - 128)(32{,}5 - 224) - (32 - 224)(32{,}5 - 128) = 18\,384 - 18\,336 = 48$; $w_2 = E_{AB}(P) = 192 \times 0{,}5 = 96$. Las tres positivas: dentro.</li>
+    <li><strong>Baricéntricas</strong>: $\lambda = (36\,720,\ 48,\ 96) / 36\,864 = (0{,}99609,\ 0{,}00130,\ 0{,}00260)$. Como todos los $w$ de clip valen 1, la corrección de perspectiva no cambia nada: los pesos son las $\lambda$.</li>
+    <li><strong>Color</strong>: $0{,}99609 \cdot (1, 0, 0) + 0{,}00130 \cdot (0, 1, 0) + 0{,}00260 \cdot (0, 0, 1) = (0{,}99609,\ 0{,}00130,\ 0{,}00260)$.</li>
+    <li><strong>Bytes</strong>: cada canal se multiplica por 255 y se redondea: $254{,}0 \to 254$, $0{,}33 \to 0$, $0{,}66 \to 1$. El framebuffer guarda <code>(254, 0, 1, 255)</code>, que es lo que devuelve <code>fb.leer(32, 32)</code>.</li>
+  </ol>
+</section>
+
+<h2>La rasterización, píxel a píxel</h2>
+<p>La misma GPU de juguete, portada línea a línea a JavaScript (da exactamente los mismos bytes que la de Python: lo comprobamos), dibuja aquí un triángulo en una rejilla de 20 × 12 píxeles y te enseña cada paso del bucle del rasterizador: el recorrido de la caja envolvente fila a fila (de abajo arriba, porque la y crece hacia arriba), las funciones de arista en el centro de cada píxel, si está dentro o fuera, las baricéntricas y el color que devuelve el fragment shader. Los vértices son A (rojo), B (verde) y C (azul). Arrástralos (se ajustan a cuartos de píxel), cambia la $w$ del vértice C para ver cómo la corrección de perspectiva separa los pesos de las $\lambda$, y compara con y sin corrección.</p>
+
+<div class="demo" id="demo-raster">
+  <div class="demo-lienzo" style="height:470px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Tres cosas para observar: el orden de recorrido (la caja, no el triángulo, determina qué píxeles se evalúan: en un triángulo alargado y en diagonal, la mayoría de los candidatos quedan fuera); los píxeles del borde cuyo centro cae fuera aunque el triángulo los «pise»; y, con la $w$ de C a 3 o 4, los pesos corregidos, que se alejan de las $\lambda$ y desplazan el color azul hacia su vértice, igual que en el ejemplo 4.2.3.</p>
+
+<h2>Paso 7: profundidad, blending y la conversión a 8 bits</h2>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:481-500">
+<script type="text/plain">
+def escribir_fragmento(fb, x, y, z, color, estado, est, info=None, trazar=None):
+    """10. Operaciones por fragmento: prueba de profundidad, blending y escritura."""
+    i = y * fb.ancho + x
+    z = min(max(z, 0.0), 1.0)
+    if estado.depth_test:
+        if not PRUEBAS_PROFUNDIDAD[estado.depth_func](z, fb.profundidad[i]):
+            est.fallan_profundidad += 1
+            if trazar:
+                trazar("fragmento", dict(info, resultado="falla profundidad"))
+            return
+        if estado.depth_mask:
+            fb.profundidad[i] = z
+    color = tuple(color) + (1.0,) * (4 - len(color))
+    if estado.blend:
+        destino = tuple(c / 255.0 for c in fb.color[i * 4:i * 4 + 4])
+        color = mezclar_color(color, destino, estado.blend_func)
+    fb.color[i * 4:i * 4 + 4] = bytes(a_byte(c) for c in color)
+    est.escritos += 1
+    if trazar:
+        trazar("fragmento", dict(info, resultado="escrito"))
+</script>
+<ol>
+  <li data-l="3-4">El índice del píxel en el framebuffer (fila por fila, la fila 0 abajo) y la profundidad limitada a [0, 1].</li>
+  <li data-l="5-12">La prueba de profundidad: se compara la z del fragmento con la del z-buffer usando la función configurada (<code>LESS</code> por defecto). Si falla, el fragmento muere aquí. Si pasa y <code>depth_mask</code> lo permite, escribe su z. Fíjate en que esto ocurre <em>después</em> de ejecutar el fragment shader: nuestra GPU no tiene early-z (4.2).</li>
+  <li data-l="13">Si el shader devolvió 3 componentes, el alfa es 1.</li>
+  <li data-l="14-16">Blending: se lee el color que había (de bytes a 0..1) y se mezcla con <code>mezclar_color</code>, que aplica src · f<sub>src</sub> + dst · f<sub>dst</sub>.</li>
+  <li data-l="17">La escritura: cada canal pasa a un byte con <code>a_byte</code>. El framebuffer es RGBA de 8 bits por canal, como el de un canvas WebGL por defecto.</li>
+  <li data-l="18-20">Estadísticas y traza.</li>
+</ol>
+</div>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/gpu.py:200-208">
+<script type="text/plain">
+def f32(x):
+    """Redondea un float de Python (64 bits) a float32, que es con lo que calcula la GPU."""
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def a_byte(c):
+    """float [0, 1] → entero [0, 255], redondeando (como al escribir en RGBA8).
+    Primero a float32: 0.9 en float32 es 0.89999998 → 229.49999 → 229, no 230."""
+    return int(min(max(f32(c), 0.0), 1.0) * 255.0 + 0.5)
+</script>
+<ol>
+  <li data-l="1-3"><code>f32</code> redondea un float de Python (64 bits, un <em>double</em>) al float32 más cercano, empaquetándolo y desempaquetándolo con <code>struct</code>. Es la precisión con la que calculan los shaders de la GPU (<code>highp</code>).</li>
+  <li data-l="6-9">De [0, 1] a [0, 255]: primero a float32, luego se limita al rango, se multiplica por 255 y se redondea al entero más cercano. ¿Por qué el paso por float32? Lo cuenta el siguiente bestiario.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m4-uno-de-diferencia" data-titulo="Mi cálculo en la CPU da 230 y la GPU escribe 229">
+  <p><strong>Síntoma:</strong> calculas en JavaScript o en Python el color que debería salir (por ejemplo, <code>Math.round(0.9 * 255)</code>, que da 230) y al leer el píxel de la GPU con <code>readPixels</code> obtienes 229. La diferencia es de uno y aparece solo con algunos valores.</p>
+  <p><strong>Causa:</strong> JavaScript y Python calculan en doble precisión (64 bits); los shaders, en float32. El número 0,9 no existe exactamente en ninguno de los dos formatos: en float64 es 0,90000000000000002, y $\times 255$ da 229,50000000000000…6, que redondea a 230; en float32 es 0,89999997615814, y $\times 255$ da 229,4999939, que redondea a 229. Nuestra primera versión de la GPU de juguete no pasaba por float32 y difería de la GPU real en 13 633 píxeles (todos por 1). Con <code>f32</code>, en 0.</p>
+  <p><strong>Solución:</strong> no compares colores de la GPU con igualdad exacta: usa una tolerancia de ±1 en los bytes. Y si necesitas reproducir en la CPU el resultado exacto de un shader, redondea los intermedios a float32 (<code>Math.fround</code> en JavaScript, <code>numpy.float32</code> o <code>struct</code> en Python).</p>
+</div>
+
+<div class="callout hack" data-titulo="El printf de la GPU: escribe el número como color">
+  <p>En la GPU de juguete puedes imprimir cualquier valor desde un shader. En la de verdad no hay <code>print</code>, pero hay una salida que sí puedes leer: el color. Para sacar un entero <em>n</em> entre 0 y 255, escríbelo como <code>n / 255.0</code> en un canal y léelo con <code>readPixels</code>:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+// vertex shader: gl_InstanceID solo existe aquí, así que lo pasamos como varying flat
+flat out int v_n;
+void main() {
+  v_n = gl_InstanceID;
+  // ... y el resto de tu vertex shader
+}
+
+// fragment shader: readPixels devolverá en el rojo exactamente v_n
+flat in int v_n;
+fragColor = vec4(float(v_n) / 255.0, 0.0, 0.0, 1.0);
+</script>
+  <p>Funciona porque la conversión a 8 bits es exactamente la de <code>a_byte</code>: multiplicar por 255 y redondear al entero más cercano. En el M1 lo comprobamos con los 256 valores: <code>n / 255.0</code> devuelve <em>n</em> en todos (y 0,5 da 128: 0,5 × 255 = 127,5 exactos, y el empate se resuelve hacia arriba, como en <code>a_byte</code>). Cuidado con una receta que circula por internet, sumar medio escalón «para que no se trunque»: <code>(n + 0.5) / 255.0</code> devuelve <em>n</em> + 1 en 255 de los 256 casos en una GPU que redondea. Si te preocupa una GPU que truncara, suma un cuarto de escalón, <code>(n + 0.25) / 255.0</code>, que sirve con las dos reglas (aquí, 256 de 256). Para números mayores, reparte los bits entre canales: los 8 bajos en rojo, los siguientes en verde…</p>
+</div>
+
+<h2>Paso 8: un PNG escrito a mano</h2>
+<p>Para ver el resultado necesitamos una imagen. El formato PNG parece complicado, pero su versión mínima cabe en una pantalla: una firma, tres «trozos» (<em>chunks</em>) y los píxeles comprimidos con <code>zlib</code>, que es el mismo algoritmo (deflate) que usan los ZIP.</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/gpu_juguete/png_propio.py:7-34">
+<script type="text/plain">
+import struct
+import zlib
+
+FIRMA = b"\x89PNG\r\n\x1a\n"
+
+
+def _trozo(tipo, datos):
+    crc = zlib.crc32(tipo + datos) & 0xFFFFFFFF          # el CRC cubre tipo + datos
+    return struct.pack(">I", len(datos)) + tipo + datos + struct.pack(">I", crc)
+
+
+def codificar_png(ancho, alto, rgba):
+    """rgba: bytes con ancho*alto*4 valores, filas de ARRIBA a ABAJO."""
+    fila = ancho * 4
+    assert len(rgba) == fila * alto, "tamaño de datos incorrecto"
+    # Cada fila va precedida de un byte de "filtro" (0 = sin filtro).
+    crudo = b"".join(b"\x00" + bytes(rgba[y * fila:(y + 1) * fila]) for y in range(alto))
+    # IHDR: ancho, alto, 8 bits por canal, tipo de color 6 (RGBA),
+    # compresión 0 (deflate), filtro 0, sin entrelazado.
+    ihdr = struct.pack(">IIBBBBB", ancho, alto, 8, 6, 0, 0, 0)
+    return (FIRMA + _trozo(b"IHDR", ihdr)
+            + _trozo(b"IDAT", zlib.compress(crudo, 9))
+            + _trozo(b"IEND", b""))
+
+
+def guardar_png(ruta, ancho, alto, rgba):
+    with open(ruta, "wb") as f:
+        f.write(codificar_png(ancho, alto, rgba))
+</script>
+<ol>
+  <li data-l="4">Los 8 bytes mágicos con los que empieza todo PNG. Contienen un <code>\r\n</code> y un <code>\n</code> a propósito: si un programa convierte los saltos de línea (como hacían los FTP en modo texto), la firma se rompe y el archivo se detecta como dañado.</li>
+  <li data-l="7-9">Un trozo: longitud de los datos (4 bytes, <strong>big-endian</strong>, al revés que los vértices), el tipo en 4 letras ASCII, los datos y un CRC32 de tipo + datos para detectar corrupción. <code>&amp; 0xFFFFFFFF</code> asegura un entero sin signo de 32 bits.</li>
+  <li data-l="12-17">Los píxeles se escriben fila a fila, <em>de arriba abajo</em>, y cada fila va precedida por un byte que indica el «filtro» usado para comprimirla mejor. Usamos siempre el filtro 0 (ninguno): el archivo queda más grande, pero el código es trivial.</li>
+  <li data-l="18-20">La cabecera IHDR: ancho y alto (4 bytes cada uno), 8 bits por canal, tipo de color 6 (RGBA), compresión 0 (deflate), filtro 0 y entrelazado 0 (no).</li>
+  <li data-l="21-23">El PNG completo: firma + IHDR + IDAT (todas las filas comprimidas con <code>zlib.compress</code>, nivel 9) + IEND (vacío, marca el final).</li>
+  <li data-l="26-28">Y se guarda en binario (<code>"wb"</code>).</li>
+</ol>
+</div>
+
+<p>Un detalle revelador: <code>juguete-triangulo.png</code> ocupa 59 807 bytes, mientras que la misma imagen guardada por Pillow (la de moderngl, idéntica píxel a píxel) ocupa 3 990. La diferencia son los filtros: Pillow elige para cada fila el que mejor comprime (por ejemplo, guardar la diferencia con el píxel de la izquierda, que en un degradado es casi constante). Mismos píxeles, archivo 15 veces más pequeño.</p>
+
+<div class="callout bestiario" data-id="m4-imagen-boca-abajo" data-titulo="La imagen que guardo del framebuffer sale boca abajo">
+  <p><strong>Síntoma:</strong> lees los píxeles del framebuffer (con <code>gl.readPixels</code>, <code>glReadPixels</code> en Python o <code>fbo.read()</code> en moderngl), los guardas como imagen y sale volteada verticalmente.</p>
+  <p><strong>Causa:</strong> en GL la fila 0 es la de <em>abajo</em> (la y crece hacia arriba) y las lecturas devuelven las filas en ese orden. Los formatos de imagen (PNG, el <code>ImageData</code> de Canvas 2D) empiezan por la fila de <em>arriba</em>.</p>
+  <p><strong>Solución:</strong> invierte el orden de las filas al guardar. En la GPU de juguete lo hace <code>Framebuffer.filas_de_arriba_abajo</code>; con Pillow, <code>imagen.transpose(Image.Transpose.FLIP_TOP_BOTTOM)</code> (lo verás en <a href="06-opengl-python.html">4.6</a>). No «arregles» el problema dando la vuelta a la geometría: la imagen en pantalla ya está bien.</p>
+</div>
+
+<h2>¿Es fiel? La GPU de juguete contra la GPU de verdad</h2>
+<p>Una GPU de juguete solo sirve si dice la verdad. Así que la pusimos a prueba: el script <code>python/moderngl/comparar_con_juguete.py</code> dibuja tres escenas con la GPU de juguete y con la GPU real del M1 (a través de moderngl, que verás en <a href="06-opengl-python.html">4.6</a>) y las compara píxel a píxel:</p>
+
+<figure class="m4-figura">
+  <img src="img/comparacion-juguete-real.png" width="600" height="626" alt="Tabla de tres filas: el triángulo de colores, triángulos con aristas compartidas y una pared con damero; columnas: GPU de juguete, GPU real y diferencias">
+  <figcaption>Columna izquierda: GPU de juguete (Python). Centro: GPU real (Apple M1, OpenGL 4.1 sobre Metal). Derecha: diferencias multiplicadas por 40.</figcaption>
+</figure>
+
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="python moderngl/comparar_con_juguete.py">
+1. triángulo de colores      píxeles distintos:     0 de 65536  (diferencia máxima: 0/255)
+   juguete : píxeles pintados 1 vez = 454, 2 veces o más = 0
+   real    : píxeles pintados 1 vez = 454, 2 veces o más = 0
+2. regla de desempate        píxeles distintos:     0 de 1024  (diferencia máxima: 0/255)
+3. pared en perspectiva      píxeles distintos:     2 de 65536  (diferencia máxima: 186/255)
+</script>
+
+<ul>
+  <li><strong>El triángulo de colores</strong>: 0 píxeles distintos de 65 536. La cobertura y la interpolación coinciden exactamente.</li>
+  <li><strong>La regla de desempate</strong>: triángulos cuyas aristas pasan exactamente por centros de píxel (un cuadrado partido por la diagonal, dos triángulos que comparten una diagonal, un abanico de cuatro), dibujados con blending aditivo para contar cuántas veces se pinta cada píxel. 454 píxeles pintados una vez, ninguno dos veces, en las dos GPU. Esta prueba es la que nos dio la regla «izquierda o inferior».</li>
+  <li><strong>La pared en perspectiva</strong>: 2 píxeles distintos. Son dos píxeles en el borde entre dos casillas del damero, donde $\lfloor 8u \rfloor$ cambia de valor: la GPU interpola en float32 y la de juguete en float64, y en esos dos centros la diferencia cae justo a cada lado del entero. El script <code>moderngl/04_interpolacion.py</code> hace lo mismo con los calificadores <code>smooth</code>, <code>noperspective</code> y <code>flat</code>: 0 diferencias en los cuatro paneles.</li>
+</ul>
+
+<div class="callout senior" data-titulo="Por qué coinciden tan bien (y dónde dejarían de coincidir)">
+  <p>Coinciden porque la GPU de juguete implementa las mismas reglas que el hardware: cobertura por el centro del píxel, la misma regla de desempate, las mismas fórmulas de interpolación y la misma conversión a 8 bits. Dejarían de coincidir en casos que no hemos modelado: coordenadas que no son múltiplos exactos de 1/16 de píxel (el hardware las redondea a coma fija antes de rasterizar; nosotros no), triángulos gigantes fuera de la guard band, antialiasing (MSAA), y cualquier cálculo del shader donde float32 y float64 den resultados a distinto lado de un umbral. Elegimos las escenas de la comparación con coordenadas exactas precisamente para que la comparación mida las reglas, no los redondeos.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Por qué la prueba de la regla de desempate dibuja con blending aditivo (<code>ONE, ONE</code>) y cada triángulo suma un alfa de 0,25?</p>
+  <ul>
+    <li>Para que se vean los colores más brillantes.<div class="explicacion">El brillo es un efecto secundario. Lo que importa es que, con mezcla aditiva, lo que se escribe depende de cuántas veces se pintó el píxel.</div></li>
+    <li data-correcta>Porque así el alfa final cuenta las veces que se pintó cada píxel: 64 = una vez, 128 = dos.<div class="explicacion">Exacto. Sin blending, el segundo triángulo sobrescribiría al primero y un píxel pintado dos veces sería indistinguible de uno pintado una. Con la suma, cualquier doble cobertura se delata.</div></li>
+    <li>Porque sin blending la GPU no aplica la regla de desempate.<div class="explicacion">La regla de desempate es parte de la rasterización y se aplica siempre, antes y con independencia del blending.</div></li>
+  </ul>
+</div>
+
+<h2>Lo que la GPU de juguete no hace</h2>
+<p>Para que el código siga siendo legible, nos dejamos fuera muchas cosas que una GPU real sí hace. Cada una es un buen proyecto si quieres seguir:</p>
+<ul>
+  <li><strong>Paralelismo</strong>: procesa un fragmento detrás de otro. No hay warps, ni divergencia, ni quads de 2 × 2, así que tampoco derivadas (<code>dFdx</code>) ni selección automática de mipmaps.</li>
+  <li><strong>Texturas</strong>: no hay muestreo, ni filtrado, ni mipmaps (<a href="../05-webgl/05-texturas.html">5.5</a>). Un fragment shader puede leer una lista de Python como si fuera una textura, sin filtrar.</li>
+  <li><strong>Puntos y líneas</strong>: solo triángulos (<code>TRIANGLES</code>, <code>TRIANGLE_STRIP</code>, <code>TRIANGLE_FAN</code>).</li>
+  <li><strong>Coma fija</strong>: rasteriza con floats de 64 bits, sin redondear los vértices a 1/16 de píxel.</li>
+  <li><strong>Early-z</strong>: prueba la profundidad después del fragment shader, siempre.</li>
+  <li><strong>Instancing, stencil, scissor, MSAA, varios destinos de color</strong>: no están. El <code>divisor</code> del descriptor existe, pero se ignora.</li>
+</ul>
+
+<h2>Ejercicios</h2>
+<p>Los tres primeros existen en dos versiones: en Python, en <code>python/gpu_juguete/ejercicios/</code> (con la solución en <code>soluciones/</code>), y aquí, en JavaScript, con la GPU de juguete portada, para hacerlos sin salir del navegador. Los playgrounds incluyen la GPU con <code>data-incluir="gpujuguete"</code>: tienes disponible el objeto <code>GPUJuguete</code> con las mismas piezas que en Python (<code>Buffer</code>, <code>Atributo</code>, <code>VAO</code>, <code>Programa</code>, <code>EstadoFijo</code>, <code>Framebuffer</code>, <code>dibujarArrays</code>…), más <code>GPUJuguete.mostrar(fb, canvas)</code> para ver el framebuffer.</p>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 4.3.1 — Cambia el fragment shader</h3>
+  <p>Haz que el triángulo se pinte con franjas diagonales de 16 píxeles: franja clara <code>(0.93, 0.90, 0.80)</code> si <code>floor((x + y) / 16)</code> es par, y el color interpolado si es impar, donde <code>(x, y)</code> es <code>gl_FragCoord.xy</code> (en la GPU de juguete, <code>frag.coord[0]</code> y <code>frag.coord[1]</code>). En Python: <code>ejercicios/ej1_fragment_shader.py</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.3.1" data-altura="260" data-incluir="gpujuguete" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const G = GPUJuguete;
+const vbo = new G.Buffer(new Float32Array([
+  -0.75, -0.75,  1, 0, 0,
+   0.75, -0.75,  0, 1, 0,
+   0.00,  0.75,  0, 0, 1,
+]));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 2, tipo: G.FLOAT, stride: 20, offset: 0 }));
+vao.configurar(1, new G.Atributo(vbo, { size: 3, tipo: G.FLOAT, stride: 20, offset: 8 }));
+
+function vertexShader(a, u) {
+  return [[a.a_pos[0], a.a_pos[1], 0, 1], { v_color: a.a_color }];
+}
+function fragmentShader(v, u, frag) {
+  const [r, g, b] = v.v_color;
+  // TODO: usa frag.coord[0] y frag.coord[1] para decidir la franja
+  return [r, g, b, 1];
+}
+
+const prog = new G.Programa({ vertexShader, fragmentShader, atributos: { a_pos: [0, 'vec2'], a_color: [1, 'vec3'] } });
+const fb = new G.Framebuffer(256, 256);
+fb.limpiar([0.08, 0.09, 0.12, 1]);
+console.log(String(G.dibujarArrays(fb, prog, vao, G.TRIANGLES, 0, 3)));
+G.mostrar(fb, document.getElementById('c'));
+</script>
+<script type="text/x-js" data-solucion>
+const G = GPUJuguete;
+const vbo = new G.Buffer(new Float32Array([
+  -0.75, -0.75,  1, 0, 0,
+   0.75, -0.75,  0, 1, 0,
+   0.00,  0.75,  0, 0, 1,
+]));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 2, tipo: G.FLOAT, stride: 20, offset: 0 }));
+vao.configurar(1, new G.Atributo(vbo, { size: 3, tipo: G.FLOAT, stride: 20, offset: 8 }));
+
+function vertexShader(a, u) {
+  return [[a.a_pos[0], a.a_pos[1], 0, 1], { v_color: a.a_color }];
+}
+function fragmentShader(v, u, frag) {
+  const x = frag.coord[0], y = frag.coord[1];    // gl_FragCoord.xy: el centro del píxel
+  if (Math.floor((x + y) / 16) % 2 === 0) return [0.93, 0.90, 0.80, 1];
+  const [r, g, b] = v.v_color;
+  return [r, g, b, 1];
+}
+
+const prog = new G.Programa({ vertexShader, fragmentShader, atributos: { a_pos: [0, 'vec2'], a_color: [1, 'vec3'] } });
+const fb = new G.Framebuffer(256, 256);
+fb.limpiar([0.08, 0.09, 0.12, 1]);
+console.log(String(G.dibujarArrays(fb, prog, vao, G.TRIANGLES, 0, 3)));
+G.mostrar(fb, document.getElementById('c'));
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Las franjas diagonales son las rectas $x + y = \text{constante}$. <code>Math.floor((x + y) / 16)</code> numera las franjas; el resto de dividir entre 2 (<code>% 2</code>) alterna entre par e impar.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El fragment shader recibe en <code>frag.coord</code> el <code>gl_FragCoord</code> del fragmento: el centro del píxel ($x + 0{,}5$, $y + 0{,}5$), su profundidad y $1/w$. Con <code>Math.floor((x + y) / 16) % 2</code> numeramos franjas diagonales de 16 unidades de $x + y$ y alternamos. Como la y crece hacia arriba, las rectas $x + y = c$ bajan hacia la derecha: las franjas van de arriba a la izquierda a abajo a la derecha. En la solución de Python (<code>soluciones/ej1_fragment_shader.py</code>) la condición es la misma con <code>int((x + y) // 16) % 2 == 0</code>.</p>
+    <p>Fíjate en lo que <em>no</em> ha cambiado: ni el VBO, ni el VAO, ni el vertex shader, ni el número de fragmentos (18 432). El fragment shader solo decide el color de fragmentos que ya existen.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.3.2 — Implementa el back-face culling</h3>
+  <p>Este cubo (12 triángulos, todos antihorarios vistos desde fuera) se dibuja <strong>sin prueba de profundidad</strong>, así que las caras traseras se pintan encima de las delanteras y se ve «del revés». Sustituye la función <code>descartarPorCara</code> de la GPU de juguete por la tuya: debe devolver <code>true</code> cuando el triángulo se tenga que descartar según <code>estado.cullFace</code> (activado o no) y <code>estado.cullMode</code> (<code>"BACK"</code>, <code>"FRONT"</code> o <code>"FRONT_AND_BACK"</code>). Al terminar, el cubo debe verse bien y la consola debe decir que se descartan 6 de 12 triángulos. En Python: <code>ejercicios/ej2_culling.py</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.3.2" data-altura="240" data-incluir="gpujuguete" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const G = GPUJuguete;
+
+G.descartarPorCara = function (frontal, estado) {
+  // TODO: devuelve true si el triángulo debe descartarse
+  return false;
+};
+
+// ---- matrices mínimas (column-major, como WebGL)
+const mul = (a, b) => { const o = []; for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; };
+const porVector = (m, v) => [0, 1, 2, 3].map((r) => m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r] * v[3]);
+const f = 1 / Math.tan(25 * Math.PI / 180), nf = 1 / (0.1 - 50);
+const P = [f, 0, 0, 0, 0, f, 0, 0, 0, 0, (50 + 0.1) * nf, -1, 0, 0, 2 * 50 * 0.1 * nf, 0];
+const T = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -6, 1];
+const rx = 25 * Math.PI / 180, ry = 35 * Math.PI / 180;
+const RX = [1, 0, 0, 0, 0, Math.cos(rx), Math.sin(rx), 0, 0, -Math.sin(rx), Math.cos(rx), 0, 0, 0, 0, 1];
+const RY = [Math.cos(ry), 0, -Math.sin(ry), 0, 0, 1, 0, 0, Math.sin(ry), 0, Math.cos(ry), 0, 0, 0, 0, 1];
+
+// ---- el cubo: 6 caras × 2 triángulos, antihorarios vistos desde fuera
+const V = [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]];
+const caras = [[[4, 5, 6, 7], [1, .35, .3]], [[1, 0, 3, 2], [.3, .8, .4]], [[5, 1, 2, 6], [.35, .55, 1]],
+               [[0, 4, 7, 3], [1, .8, .3]], [[7, 6, 2, 3], [.8, .4, 1]], [[0, 1, 5, 4], [.3, .9, .9]]];
+const datos = [];
+for (const [[a, b, c, d], color] of caras) for (const i of [a, b, c, a, c, d]) datos.push(...V[i], ...color);
+const vbo = new G.Buffer(new Float32Array(datos));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 3, stride: 24, offset: 0 }));
+vao.configurar(1, new G.Atributo(vbo, { size: 3, stride: 24, offset: 12 }));
+const prog = new G.Programa({
+  vertexShader: (a, u) => [porVector(u.u_mvp, [...a.a_pos, 1]), { v_color: a.a_color }],
+  fragmentShader: (v) => [...v.v_color, 1],
+  atributos: { a_pos: [0, 'vec3'], a_color: [1, 'vec3'] }, uniforms: { u_mvp: 'mat4' },
+});
+prog.uniforms.u_mvp = mul(P, mul(T, mul(RX, RY)));
+const fb = new G.Framebuffer(200, 200);
+fb.limpiar([0.08, 0.09, 0.12, 1]);
+const estado = new G.EstadoFijo();
+estado.cullFace = true;          // gl.enable(gl.CULL_FACE)
+estado.cullMode = 'BACK';        // gl.cullFace(gl.BACK)
+const est = G.dibujarArrays(fb, prog, vao, G.TRIANGLES, 0, 36, estado);
+console.log(`triángulos descartados por culling: ${est.descartadosCulling} de ${est.triangulos}`);
+G.mostrar(fb, document.getElementById('c'));
+</script>
+<script type="text/x-js" data-solucion>
+const G = GPUJuguete;
+
+G.descartarPorCara = function (frontal, estado) {
+  if (!estado.cullFace) return false;                // sin gl.enable(gl.CULL_FACE) no se descarta nada
+  if (estado.cullMode === 'FRONT_AND_BACK') return true;
+  return estado.cullMode === 'BACK' ? !frontal : frontal;
+};
+
+const mul = (a, b) => { const o = []; for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; };
+const porVector = (m, v) => [0, 1, 2, 3].map((r) => m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r] * v[3]);
+const f = 1 / Math.tan(25 * Math.PI / 180), nf = 1 / (0.1 - 50);
+const P = [f, 0, 0, 0, 0, f, 0, 0, 0, 0, (50 + 0.1) * nf, -1, 0, 0, 2 * 50 * 0.1 * nf, 0];
+const T = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -6, 1];
+const rx = 25 * Math.PI / 180, ry = 35 * Math.PI / 180;
+const RX = [1, 0, 0, 0, 0, Math.cos(rx), Math.sin(rx), 0, 0, -Math.sin(rx), Math.cos(rx), 0, 0, 0, 0, 1];
+const RY = [Math.cos(ry), 0, -Math.sin(ry), 0, 0, 1, 0, 0, Math.sin(ry), 0, Math.cos(ry), 0, 0, 0, 0, 1];
+
+const V = [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]];
+const caras = [[[4, 5, 6, 7], [1, .35, .3]], [[1, 0, 3, 2], [.3, .8, .4]], [[5, 1, 2, 6], [.35, .55, 1]],
+               [[0, 4, 7, 3], [1, .8, .3]], [[7, 6, 2, 3], [.8, .4, 1]], [[0, 1, 5, 4], [.3, .9, .9]]];
+const datos = [];
+for (const [[a, b, c, d], color] of caras) for (const i of [a, b, c, a, c, d]) datos.push(...V[i], ...color);
+const vbo = new G.Buffer(new Float32Array(datos));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 3, stride: 24, offset: 0 }));
+vao.configurar(1, new G.Atributo(vbo, { size: 3, stride: 24, offset: 12 }));
+const prog = new G.Programa({
+  vertexShader: (a, u) => [porVector(u.u_mvp, [...a.a_pos, 1]), { v_color: a.a_color }],
+  fragmentShader: (v) => [...v.v_color, 1],
+  atributos: { a_pos: [0, 'vec3'], a_color: [1, 'vec3'] }, uniforms: { u_mvp: 'mat4' },
+});
+prog.uniforms.u_mvp = mul(P, mul(T, mul(RX, RY)));
+const fb = new G.Framebuffer(200, 200);
+fb.limpiar([0.08, 0.09, 0.12, 1]);
+const estado = new G.EstadoFijo();
+estado.cullFace = true;
+estado.cullMode = 'BACK';
+const est = G.dibujarArrays(fb, prog, vao, G.TRIANGLES, 0, 36, estado);
+console.log(`triángulos descartados por culling: ${est.descartadosCulling} de ${est.triangulos}`);
+G.mostrar(fb, document.getElementById('c'));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>frontal</code> ya te llega calculado (es <code>true</code> si el triángulo gira en sentido antihorario en la pantalla, con el <code>frontFace</code> por defecto). Tu función solo tiene que combinarlo con <code>estado.cullFace</code> y <code>estado.cullMode</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Hay cuatro casos: culling desactivado (nunca se descarta), <code>"BACK"</code> (se descartan los no frontales), <code>"FRONT"</code> (los frontales) y <code>"FRONT_AND_BACK"</code> (todos).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La función combina tres datos: si el culling está activado, qué caras hay que descartar y si este triángulo es frontal. Con <code>"BACK"</code>, se descartan los que <em>no</em> son frontales. En este cubo, visto desde una esquina, hay 3 caras visibles y 3 ocultas: 6 triángulos frontales y 6 traseros, así que se descartan 6.</p>
+    <p>Lo interesante es el resultado visual: sin prueba de profundidad y con el orden de dibujo «equivocado», el culling basta para que el cubo se vea bien. En un objeto <strong>convexo</strong>, las caras frontales nunca se tapan entre sí, así que eliminar las traseras resuelve la visibilidad. En un objeto cóncavo (una taza, un personaje) no basta y hace falta el z-buffer, pero el culling sigue ahorrando la mitad de la rasterización. Y ojo al caso <code>"FRONT_AND_BACK"</code>: descarta todos los triángulos (en OpenGL, los puntos y las líneas se siguen dibujando).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.3.3 — Añade un uniform</h3>
+  <p>Añade al programa un uniform <code>u_angulo</code> (<code>float</code>, en radianes) y úsalo en el vertex shader para girar el triángulo alrededor del origen: $x' = x\cos\theta - y\sin\theta$, $y' = x\sin\theta + y\cos\theta$. Después dibuja el <strong>mismo</strong> VAO cuatro veces, cada una en su viewport de 128 × 128 dentro de un framebuffer de 512 × 128, con ángulos $0$, $\pi/6$, $\pi/3$ y $\pi/2$. En Python: <code>ejercicios/ej3_uniform.py</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.3.3" data-altura="150" data-incluir="gpujuguete" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const G = GPUJuguete;
+const vbo = new G.Buffer(new Float32Array([-0.75, -0.75, 1, 0, 0,  0.75, -0.75, 0, 1, 0,  0, 0.75, 0, 0, 1]));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 2, stride: 20, offset: 0 }));
+vao.configurar(1, new G.Atributo(vbo, { size: 3, stride: 20, offset: 8 }));
+
+function vertexShader(a, u) {
+  const [x, y] = a.a_pos;
+  // TODO: gira (x, y) con u.u_angulo
+  return [[x, y, 0, 1], { v_color: a.a_color }];
+}
+const prog = new G.Programa({
+  vertexShader,
+  fragmentShader: (v) => [...v.v_color, 1],
+  atributos: { a_pos: [0, 'vec2'], a_color: [1, 'vec3'] },
+  uniforms: {},                                   // TODO: declara u_angulo
+});
+const fb = new G.Framebuffer(512, 128);
+fb.limpiar([0.08, 0.09, 0.12, 1]);
+const estado = new G.EstadoFijo();
+// TODO: 4 dibujos, cada uno con su estado.viewport = [x, y, ancho, alto] y su prog.uniforms.u_angulo
+G.dibujarArrays(fb, prog, vao, G.TRIANGLES, 0, 3, estado);
+G.mostrar(fb, document.getElementById('c'));
+</script>
+<script type="text/x-js" data-solucion>
+const G = GPUJuguete;
+const vbo = new G.Buffer(new Float32Array([-0.75, -0.75, 1, 0, 0,  0.75, -0.75, 0, 1, 0,  0, 0.75, 0, 0, 1]));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 2, stride: 20, offset: 0 }));
+vao.configurar(1, new G.Atributo(vbo, { size: 3, stride: 20, offset: 8 }));
+
+function vertexShader(a, u) {
+  const [x, y] = a.a_pos;
+  const c = Math.cos(u.u_angulo), s = Math.sin(u.u_angulo);
+  return [[x * c - y * s, x * s + y * c, 0, 1], { v_color: a.a_color }];
+}
+const prog = new G.Programa({
+  vertexShader,
+  fragmentShader: (v) => [...v.v_color, 1],
+  atributos: { a_pos: [0, 'vec2'], a_color: [1, 'vec3'] },
+  uniforms: { u_angulo: 'float' },                // ≈ uniform float u_angulo;  (vale 0 hasta que lo asignes)
+});
+const fb = new G.Framebuffer(512, 128);
+fb.limpiar([0.08, 0.09, 0.12, 1]);
+const estado = new G.EstadoFijo();
+[0, Math.PI / 6, Math.PI / 3, Math.PI / 2].forEach((angulo, k) => {
+  estado.viewport = [k * 128, 0, 128, 128];       // ≈ gl.viewport(k * 128, 0, 128, 128)
+  prog.uniforms.u_angulo = angulo;                // ≈ gl.uniform1f(ubicacion, angulo)
+  G.dibujarArrays(fb, prog, vao, G.TRIANGLES, 0, 3, estado);   // ≈ gl.drawArrays(gl.TRIANGLES, 0, 3)
+});
+G.mostrar(fb, document.getElementById('c'));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Declarar el uniform es añadir <code>u_angulo: 'float'</code> al objeto <code>uniforms</code> del programa; a partir de ahí, <code>prog.uniforms.u_angulo</code> existe y vale 0.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Entre dibujo y dibujo cambian solo dos cosas: <code>estado.viewport</code> (el hueco de 128 × 128 donde cae el cubo NDC) y <code>prog.uniforms.u_angulo</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Un uniform es un dato que vale lo mismo para todos los vértices (y fragmentos) de <em>un</em> dibujo. Por eso se asigna entre dibujos: el bucle hace cuatro draw calls y antes de cada uno cambia el valor de <code>u_angulo</code> y el viewport. El VBO y el VAO no cambian nunca: los mismos 60 bytes producen cuatro triángulos distintos. Es la idea que hay detrás de dibujar muchos objetos con una malla y distintas matrices.</p>
+    <p>Dos detalles. El viewport no recorta los vértices, pero la rasterización no genera fragmentos fuera de él: el triángulo girado $\pi/6$ tiene un vértice un poco fuera de su hueco de 128 × 128 y aparece recortado, sin invadir el vecino. Y el orden importa: si asignaras el uniform <em>después</em> del <code>dibujarArrays</code>, cada triángulo usaría el ángulo del anterior (el primero, 0).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 4.3.4 — Un círculo en abanico, sin píxeles repetidos</h3>
+  <p>Construye un círculo de radio 0,8 (en NDC) como un <code>TRIANGLE_FAN</code> de $N = 40$ triángulos: el vértice 0 en el centro y $N + 1$ vértices en el borde (el último repite el primero para cerrar). Dibújalo en un framebuffer de 200 × 200 con blending aditivo, sumando alfa 0,25 por fragmento, igual que la prueba de la regla de desempate. La consola cuenta los píxeles pintados una vez y dos o más veces: debes conseguir <strong>0 píxeles dobles</strong> y una cobertura cercana al área del círculo, $\pi \cdot 80^2 \approx 20\,106$ píxeles.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.3.4" data-altura="220" data-incluir="gpujuguete" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const G = GPUJuguete;
+const N = 40;
+const datos = [];            // x, y por vértice
+// TODO: el centro, y N + 1 vértices en el borde (ángulo 2π·k/N, radio 0.8)
+
+const vbo = new G.Buffer(new Float32Array(datos));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 2 }));
+const prog = new G.Programa({
+  vertexShader: (a) => [[a.a_pos[0], a.a_pos[1], 0, 1], {}],
+  fragmentShader: () => [0.35, 0.3, 0.75, 0.25],
+  atributos: { a_pos: [0, 'vec2'] },
+});
+const fb = new G.Framebuffer(200, 200);
+fb.limpiar([0, 0, 0, 0]);
+const estado = new G.EstadoFijo();
+estado.blend = true;
+estado.blendFunc = ['ONE', 'ONE'];
+G.dibujarArrays(fb, prog, vao, G.TRIANGLE_FAN, 0, datos.length / 2, estado);
+let una = 0, mas = 0;
+for (let i = 3; i < fb.color.length; i += 4) { if (fb.color[i] === 64) una++; else if (fb.color[i] > 64) mas++; }
+console.log(`pintados una vez: ${una} · dos o más veces: ${mas} · área del círculo: ${(Math.PI * 80 * 80).toFixed(0)}`);
+G.mostrar(fb, document.getElementById('c'));
+</script>
+<script type="text/x-js" data-solucion>
+const G = GPUJuguete;
+const N = 40;
+const datos = [0, 0];                                   // vértice 0: el centro, compartido por todos
+for (let k = 0; k <= N; k++) {                          // N + 1 vértices: el último cierra el círculo
+  const a = 2 * Math.PI * k / N;
+  datos.push(0.8 * Math.cos(a), 0.8 * Math.sin(a));
+}
+datos[datos.length - 2] = datos[2];                     // cierre EXACTO: el último igual al primero
+datos[datos.length - 1] = datos[3];
+
+const vbo = new G.Buffer(new Float32Array(datos));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 2 }));
+const prog = new G.Programa({
+  vertexShader: (a) => [[a.a_pos[0], a.a_pos[1], 0, 1], {}],
+  fragmentShader: () => [0.35, 0.3, 0.75, 0.25],
+  atributos: { a_pos: [0, 'vec2'] },
+});
+const fb = new G.Framebuffer(200, 200);
+fb.limpiar([0, 0, 0, 0]);
+const estado = new G.EstadoFijo();
+estado.blend = true;
+estado.blendFunc = ['ONE', 'ONE'];
+G.dibujarArrays(fb, prog, vao, G.TRIANGLE_FAN, 0, datos.length / 2, estado);
+let una = 0, mas = 0;
+for (let i = 3; i < fb.color.length; i += 4) { if (fb.color[i] === 64) una++; else if (fb.color[i] > 64) mas++; }
+console.log(`pintados una vez: ${una} · dos o más veces: ${mas} · área del círculo: ${(Math.PI * 80 * 80).toFixed(0)}`);
+G.mostrar(fb, document.getElementById('c'));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En un abanico, el triángulo $i$ es (vértice 0, vértice $i$, vértice $i + 1$). Con $N + 2$ vértices en total (centro + $N + 1$ del borde) salen $N$ triángulos. El número de vértices que dibujas es <code>datos.length / 2</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Calcula el vértice del borde $k$ con <code>0.8 * Math.cos(2 * Math.PI * k / N)</code> y lo mismo con el seno. ¿Da exactamente lo mismo para $k = N$ que para $k = 0$? Si no, el último triángulo y el primero no comparten exactamente la misma arista.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Todos los triángulos del abanico comparten el vértice central y cada uno comparte una arista con el siguiente. La regla de desempate garantiza que cada píxel cuyo centro caiga sobre una arista compartida se pinte una sola vez, así que con blending aditivo ningún alfa pasa de 64. La cobertura sale algo menor que el área del círculo ideal (unos 20 000 píxeles) porque un polígono de 40 lados inscrito en el círculo tiene un área un poco más pequeña: $\frac{N}{2} r^2 \sin\frac{2\pi}{N} \approx 0{,}996\,\pi r^2$.</p>
+    <p>El detalle de senior está en el cierre: <code>Math.sin</code> y <code>Math.cos</code> no son exactos (<code>Math.sin(2 * Math.PI)</code> da −2,4 × 10⁻¹⁶, no 0). En este ejercicio da igual por dos motivos que conviene conocer: el <code>Float32Array</code> suele redondear el primer y el último vértice del borde al mismo float32 (no siempre: con el ángulo inicial 0, la y del último queda en −1,96 × 10⁻¹⁶ en lugar de 0), y esa arista de cierre es horizontal y pasa <em>entre</em> dos filas de centros de píxel, así que no hay ningún empate que resolver. Lo comprobamos: 20 020 píxeles pintados una vez y ninguno dos veces, cierres exactos o no. Pero la garantía de «ni dobles ni huecos» solo vale para aristas <em>idénticas</em>: copiar el vértice (o, mejor, reutilizarlo por índice, como verás en <a href="04-vbo-vao.html">4.4</a>) es la forma de no depender de la suerte. En las mallas reales, los vértices compartidos se comparten por índice, no recalculando el mismo punto dos veces.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un <strong>VBO</strong> son bytes: <code>struct.pack("&lt;5f", …)</code> produce exactamente lo que guarda la GPU (little-endian, float32). La GPU no sabe qué hay dentro.</li>
+    <li>Un <strong>descriptor de atributo</strong> (lo que guarda <code>vertexAttribPointer</code> en el VAO) dice dónde y cómo leer: el atributo del vértice $i$ empieza en $\text{offset} + i \times \text{stride}$. Los componentes que faltan valen $(0, 0, 0, 1)$; los enteros normalizados se dividen por su máximo.</li>
+    <li>Los <strong>uniforms</strong> son estado del programa y valen 0 hasta que los asignas; los <strong>shaders</strong> son funciones puras: atributos + uniforms → posición + varyings; varyings + uniforms → color.</li>
+    <li>El <strong>rasterizador</strong>: caja envolvente, funciones de arista en el centro de cada píxel, regla de desempate, baricéntricas, pesos corregidos con $1/w$, y el fragment shader para cada píxel cubierto.</li>
+    <li>La GPU calcula en <strong>float32</strong>: redondear a float32 antes de convertir a 8 bits es lo que hace que la GPU de juguete y la real coincidan (y la causa de las diferencias de 1).</li>
+    <li>Un <strong>PNG</strong> mínimo: firma, IHDR, IDAT (filas con un byte de filtro, comprimidas con zlib) e IEND. Las lecturas del framebuffer vienen con la fila 0 abajo: hay que voltearlas.</li>
+    <li>Verificada contra el M1: 0 píxeles distintos en el triángulo y en la prueba de desempate; 2 en una escena en perspectiva, por float32 contra float64.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li>Dmitry Sokolov, <a href="https://github.com/ssloy/tinyrenderer/wiki">tinyrenderer</a>: un curso clásico que construye un rasterizador en C++ en 500 líneas, con el mismo espíritu que esta lección.</li>
+  <li>Juan Pineda, «A Parallel Algorithm for Polygon Rasterization» (SIGGRAPH 1988): el artículo que introdujo las funciones de arista para rasterizar.</li>
+  <li>W3C, <a href="https://www.w3.org/TR/png-3/">especificación de PNG</a>: los trozos, los filtros y el CRC, con todo detalle.</li>
+  <li>La documentación del módulo <a href="https://docs.python.org/3/library/struct.html"><code>struct</code></a> de Python: todos los códigos de formato y el orden de bytes.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/gpu-juguete.js"></script>
+<script src="recursos/demo-raster.js"></script>
+</body>
+</html>

@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.6 · Datos binarios: ArrayBuffer y TypedArrays — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m1.css">
+</head>
+<body data-leccion="01-web/binario">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 1 · Fundamentos web mínimos</p>
+  <h1>Datos binarios: ArrayBuffer y TypedArrays</h1>
+  <p class="resumen">La GPU no entiende arrays ni objetos de JavaScript: consume bytes crudos, en un formato exacto. Aquí aprendes a fabricar esos bytes: el <code>ArrayBuffer</code>, las vistas tipadas que lo interpretan, <code>DataView</code> y el orden de los bytes, la precisión real de un float de 32 bits y cómo empaquetar vértices entrelazados para un VBO.</p>
+  <div class="meta"><span class="chip">⏱ 85 min</span><span class="chip">Requisitos: 1.3</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás por qué WebGL necesita bytes y qué pasa si le das un array normal.</li>
+      <li>Crearás <code>ArrayBuffer</code>s y vistas tipadas, y entenderás que varias vistas pueden compartir la misma memoria, con <code>byteOffset</code>, <code>byteLength</code> y la regla de alineación.</li>
+      <li>Leerás y escribirás con <code>DataView</code> controlando el orden de los bytes, sin caer en su valor por defecto.</li>
+      <li>Predecirás la precisión de un float32 (<code>Math.fround</code>) y qué hacen los enteros al desbordar (<code>Uint8Array</code> frente a <code>Uint8ClampedArray</code>).</li>
+      <li>Distinguirás <code>subarray</code> (vista) de <code>slice</code> (copia) y copiarás en bloque con <code>set</code>.</li>
+      <li>Construirás un buffer de vértices entrelazados y calcularás el <em>stride</em> y los <em>offsets</em> que pedirá <code>gl.vertexAttribPointer</code>.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué bytes</h2>
+<p>En el esquema de la lección <a href="../00-inicio/01-bienvenida.html">0.1</a>, el canal principal entre JavaScript y la GPU son los <strong>buffers</strong>: bloques de memoria que la GPU lee directamente, sin saber nada de JavaScript. Para la GPU, un buffer de vértices es una tira de bytes; tú le dices después «cada 12 bytes empieza un vértice; los 8 primeros son dos floats de 32 bits; los 4 siguientes, cuatro bytes de color». Si los bytes no están exactamente así, dibuja basura, o nada. (Fíjate en la ortografía: en este curso escribimos <em>buffer</em>, como las APIs, para estos bloques de bytes, y <em>búfer</em> para la rejilla de píxeles en la que dibuja un canvas, el de la lección <a href="01-html.html">1.1</a>. Son cosas distintas.)</p>
+<p>Un array de JavaScript no es una tira de bytes. <code>[0.5, 1, 1.5]</code> es una lista de valores de JavaScript, cada uno un double de 64 bits, que el motor guarda como le conviene (a veces como enteros pequeños marcados, a veces como punteros a objetos en otro sitio de la memoria). No hay forma de entregárselo a la GPU tal cual. Por eso existen los <strong>TypedArrays</strong>: arrays de números de un tipo fijo (float de 32 bits, entero sin signo de 8…) guardados uno detrás de otro, sin huecos, en un bloque de memoria contigua.</p>
+<p>Lo peor es que, si te equivocas, WebGL no siempre se queja. Lo comprobé:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Le paso a <code>gl.bufferData(gl.ARRAY_BUFFER, datos, …)</code></th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td><code>new Float32Array([0.5, 1, 1.5])</code></td><td>un buffer de 12 bytes (3 × 4). Correcto.</td></tr>
+    <tr><td><code>[0.5, 1, 1.5]</code>, un array normal</td><td>sin excepción y sin error de GL… y un buffer de <strong>0 bytes</strong></td></tr>
+    <tr><td><code>new Float64Array([0.5, 1, 1.5])</code></td><td>un buffer de 24 bytes de doubles; si el atributo dice <code>gl.FLOAT</code>, la GPU los lee como floats: <code>(0.5, 1)</code> se convierte en <code>(0, 1.75, 0, 1.875)</code></td></tr>
+  </tbody>
+</table>
+<p>El caso del array normal merece explicación: <code>bufferData</code> tiene otra forma, <code>bufferData(target, tamañoEnBytes, uso)</code>, que reserva un buffer vacío de ese tamaño. Como un array no es un bloque de bytes, WebIDL (la capa que convierte los argumentos de JavaScript para las APIs del navegador) intenta convertirlo en un número: <code>Number([0.5, 1, 1.5])</code> es <code>NaN</code>, que como tamaño vale 0.</p>
+
+<div class="callout bestiario" data-id="m1-bufferdata-array" data-titulo="No se dibuja nada y no hay ningún error">
+  <p><strong>Síntoma:</strong> tu geometría no aparece; la consola está limpia y <code>gl.getError()</code> devuelve 0.</p>
+  <p><strong>Causa:</strong> le pasaste a <code>gl.bufferData</code> un array normal de JavaScript. Se interpretó como un <em>tamaño</em> (0 bytes), así que el buffer está vacío y no hay vértices que dibujar. Si lo que pasaste fue un <code>Float64Array</code>, el buffer tiene datos, pero de 8 bytes por número, y la GPU los lee como floats de 4: basura.</p>
+  <p><strong>Solución:</strong> <code>new Float32Array(tusNumeros)</code> para vértices, <code>Uint16Array</code> o <code>Uint32Array</code> para índices, <code>Uint8Array</code> para píxeles. Compruébalo con <code>gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE)</code>: debe valer el número de elementos por los bytes de cada uno.</p>
+</div>
+
+<p>Los datos binarios aparecen en todo lo que conecta con la GPU: vértices e índices (lección <a href="../05-webgl/03-buffers-atributos.html">5.3</a>), texturas (<code>Uint8Array</code> de píxeles RGBA, lección <a href="../05-webgl/05-texturas.html">5.5</a>), <code>gl.readPixels</code>, los píxeles de un canvas 2D (<code>ImageData</code>), y también fuera de ella: audio, archivos de modelos 3D, WebSockets binarios. La GPU de juguete de la lección <a href="../04-gpu/03-gpu-de-juguete.html">4.3</a> y los VBO de la <a href="../04-gpu/04-vbo-vao.html">4.4</a> parten de aquí.</p>
+
+<h2><code>ArrayBuffer</code>: un bloque de bytes</h2>
+<p><code>new ArrayBuffer(16)</code> reserva 16 bytes contiguos, todos a cero. Eso es todo: un <code>ArrayBuffer</code> no tiene índices ni sabe qué significan sus bytes. Su tamaño (<code>byteLength</code>) es fijo al crearlo (hay una variante redimensionable, <code>new ArrayBuffer(4, { maxByteLength: 16 })</code>, que no necesitarás casi nunca). Para leer o escribir hay que mirarlo a través de una <strong>vista</strong>: un TypedArray o un <code>DataView</code>.</p>
+
+<h2>Las vistas tipadas</h2>
+<p>Cada TypedArray interpreta los bytes como números de un tipo concreto. Estos son los que usarás; la columna de bytes es su <code>BYTES_PER_ELEMENT</code>, comprobado:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Tipo</th><th>Bytes</th><th>Rango</th><th>En gráficos</th></tr></thead>
+  <tbody>
+    <tr><td><code>Float32Array</code></td><td>4</td><td>float de 32 bits (~7 cifras)</td><td>posiciones, normales, UV, uniforms, matrices</td></tr>
+    <tr><td><code>Float64Array</code></td><td>8</td><td>double, como los números de JS</td><td>cálculos en CPU; la GPU casi nunca</td></tr>
+    <tr><td><code>Uint8Array</code></td><td>1</td><td>0 … 255, da la vuelta al desbordar</td><td>píxeles, colores empaquetados, bytes crudos</td></tr>
+    <tr><td><code>Uint8ClampedArray</code></td><td>1</td><td>0 … 255, se <strong>satura</strong></td><td><code>ImageData.data</code> del canvas 2D</td></tr>
+    <tr><td><code>Int8Array</code></td><td>1</td><td>−128 … 127</td><td>normales comprimidas</td></tr>
+    <tr><td><code>Uint16Array</code> / <code>Int16Array</code></td><td>2</td><td>0 … 65 535 / −32 768 … 32 767</td><td>índices de mallas</td></tr>
+    <tr><td><code>Uint32Array</code> / <code>Int32Array</code></td><td>4</td><td>0 … 4 294 967 295 / ±2 147 483 648</td><td>índices grandes, datos enteros</td></tr>
+  </tbody>
+</table>
+<p>Se crean de tres formas: con una longitud (<code>new Float32Array(3)</code> da tres ceros), a partir de números (<code>new Float32Array([1, 2, 3])</code>, que los convierte uno a uno) o sobre un buffer existente (<code>new Float32Array(buffer, byteOffset, longitud)</code>). Se parecen a un array, pero con diferencias importantes, todas comprobadas:</p>
+<ul>
+  <li><strong>Longitud fija</strong>: no hay <code>push</code> (<code>TypeError: a.push is not a function</code>). Escribir fuera de rango no da error: se ignora (<code>a[10] = 5</code> en un array de 3 no hizo nada, y leer <code>a[10]</code> dio <code>undefined</code>).</li>
+  <li><strong>Cada escritura se convierte al tipo</strong>: en un <code>Float32Array</code>, <code>"3.5"</code> se guarda como 3.5, <code>null</code> como 0, <code>undefined</code> como <code>NaN</code>. En los enteros, lo veremos enseguida, pasan cosas más raras.</li>
+  <li><strong><code>map</code> devuelve el mismo tipo</strong>: <code>new Uint8Array([100, 200]).map((x) =&gt; x * 1.5)</code> dio <code>[150, 44]</code>, porque 300 no cabe en un byte. Si quieres un array normal, <code>Array.from(tipado)</code>.</li>
+  <li><code>JSON.stringify(new Float32Array([1.5, 2]))</code> da <code>'{"0":1.5,"1":2}'</code>, un objeto: conviértelo antes con <code>Array.from</code>.</li>
+</ul>
+
+<h2>Varias vistas, una memoria</h2>
+<p>Lo más potente de las vistas es que varias pueden mirar el mismo buffer. Escribir por una cambia lo que ven las demás:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const buffer = new ArrayBuffer(4);
+const f = new Float32Array(buffer);
+const b = new Uint8Array(buffer);
+f[0] = 1.0;
+console.log(b);        // Uint8Array [0, 0, 128, 63]
+b[3] = 0x40;
+console.log(f[0]);     // 4
+</script>
+<ol>
+  <li data-l="1">Cuatro bytes, a cero.</li>
+  <li data-l="2-3">Dos vistas del mismo buffer: una ve un float de 32 bits; la otra, cuatro bytes sueltos. No se copia nada: las dos leen y escriben la misma memoria.</li>
+  <li data-l="4-5">Escribimos 1.0 como float y miramos sus bytes: <code>0, 0, 128, 63</code>, es decir, <code>00 00 80 3F</code> en hexadecimal. El float 1.0 en binario es <code>0x3F800000</code>, pero en memoria aparece al revés, empezando por el byte menos significativo. Es el orden <em>little-endian</em>; lo explicamos en la sección de <code>DataView</code>.</li>
+  <li data-l="6-7">Cambiamos solo el último byte (el más significativo) de <code>0x3F</code> a <code>0x40</code>: los bits son ahora <code>0x40800000</code>, que como float vale 4. Lo comprobé en Chrome. Tocando bytes cambiamos el exponente del float: así de literal es la memoria compartida.</li>
+</ol>
+</div>
+
+<h3><code>byteOffset</code>, <code>byteLength</code> y la regla de alineación</h3>
+<p>Una vista puede empezar en cualquier punto del buffer y abarcar solo una parte. En la figura, un buffer de 16 bytes con tres vistas a la vez:</p>
+
+<svg class="diagrama" viewBox="0 0 760 210" width="760" role="img" aria-label="Un ArrayBuffer de 16 bytes con tres vistas: Uint8Array, Float32Array y una Float32Array parcial">
+  <text x="20" y="28" style="font-weight:700">ArrayBuffer(16)</text>
+  <text x="180" y="28" class="texto-tenue" style="font-size:11.5px">índice de byte</text>
+  <text x="20" y="72" style="font-size:12px">new Uint8Array(buf)</text>
+  <text x="20" y="118" style="font-size:12px">new Float32Array(buf)</text>
+  <text x="20" y="164" style="font-size:12px">new Float32Array(buf, 8, 2)</text>
+  <g>
+    <!-- 16 celdas de byte -->
+    <rect class="caja" x="180" y="40" width="560" height="22" rx="3"/>
+    <path d="M215 40 V62 M250 40 V62 M285 40 V62 M320 40 V62 M355 40 V62 M390 40 V62 M425 40 V62 M460 40 V62 M495 40 V62 M530 40 V62 M565 40 V62 M600 40 V62 M635 40 V62 M670 40 V62 M705 40 V62" class="tenue"/>
+    <text x="197" y="56" text-anchor="middle" style="font-size:11px">0</text><text x="232" y="56" text-anchor="middle" style="font-size:11px">1</text><text x="267" y="56" text-anchor="middle" style="font-size:11px">2</text><text x="302" y="56" text-anchor="middle" style="font-size:11px">3</text>
+    <text x="337" y="56" text-anchor="middle" style="font-size:11px">4</text><text x="372" y="56" text-anchor="middle" style="font-size:11px">5</text><text x="407" y="56" text-anchor="middle" style="font-size:11px">6</text><text x="442" y="56" text-anchor="middle" style="font-size:11px">7</text>
+    <text x="477" y="56" text-anchor="middle" style="font-size:11px">8</text><text x="512" y="56" text-anchor="middle" style="font-size:11px">9</text><text x="547" y="56" text-anchor="middle" style="font-size:11px">10</text><text x="582" y="56" text-anchor="middle" style="font-size:11px">11</text>
+    <text x="617" y="56" text-anchor="middle" style="font-size:11px">12</text><text x="652" y="56" text-anchor="middle" style="font-size:11px">13</text><text x="687" y="56" text-anchor="middle" style="font-size:11px">14</text><text x="722" y="56" text-anchor="middle" style="font-size:11px">15</text>
+    <!-- Uint8: 16 elementos -->
+    <g style="font-size:11px">
+      <rect x="180" y="84" width="560" height="4" rx="2" style="fill:var(--accent-2)"/>
+      <text x="460" y="80" text-anchor="middle" class="texto-tenue">16 elementos de 1 byte: [0] … [15]</text>
+    </g>
+    <!-- Float32: 4 elementos -->
+    <rect x="182" y="100" width="136" height="24" rx="4" style="fill:color-mix(in srgb, var(--accent) 30%, transparent);stroke:var(--accent)"/>
+    <rect x="322" y="100" width="136" height="24" rx="4" style="fill:color-mix(in srgb, var(--accent) 30%, transparent);stroke:var(--accent)"/>
+    <rect x="462" y="100" width="136" height="24" rx="4" style="fill:color-mix(in srgb, var(--accent) 30%, transparent);stroke:var(--accent)"/>
+    <rect x="602" y="100" width="136" height="24" rx="4" style="fill:color-mix(in srgb, var(--accent) 30%, transparent);stroke:var(--accent)"/>
+    <text x="250" y="117" text-anchor="middle" style="font-size:12px">[0]</text><text x="390" y="117" text-anchor="middle" style="font-size:12px">[1]</text><text x="530" y="117" text-anchor="middle" style="font-size:12px">[2]</text><text x="670" y="117" text-anchor="middle" style="font-size:12px">[3]</text>
+    <!-- Float32 parcial -->
+    <rect x="462" y="146" width="136" height="24" rx="4" style="fill:color-mix(in srgb, var(--c-hack) 30%, transparent);stroke:var(--c-hack)"/>
+    <rect x="602" y="146" width="136" height="24" rx="4" style="fill:color-mix(in srgb, var(--c-hack) 30%, transparent);stroke:var(--c-hack)"/>
+    <text x="530" y="163" text-anchor="middle" style="font-size:12px">[0]</text><text x="670" y="163" text-anchor="middle" style="font-size:12px">[1]</text>
+    <text x="320" y="163" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">byteOffset = 8, length = 2 → byteLength = 8</text>
+  </g>
+  <text x="460" y="198" text-anchor="middle" class="texto-tenue" style="font-size:12px">el [0] de la tercera vista es el mismo float que el [2] de la segunda: los mismos bytes 8 a 11</text>
+</svg>
+
+<p>La vista parcial la comprobé con <code>new Float32Array(buffer, 4, 2)</code>: <code>byteOffset</code> 4, <code>byteLength</code> 8 y <code>length</code> 2. Y aquí aparece la regla que más muerde: <strong>una vista de elementos de N bytes tiene que empezar en un <code>byteOffset</code> múltiplo de N</strong> (y, si no das longitud, el resto del buffer tiene que ser múltiplo de N). Los errores exactos de Chrome:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Código</th><th>Error</th></tr></thead>
+  <tbody>
+    <tr><td><code>new Float32Array(new ArrayBuffer(16), 2)</code></td><td><code>RangeError: start offset of Float32Array should be a multiple of 4</code></td></tr>
+    <tr><td><code>new Float32Array(new ArrayBuffer(10))</code></td><td><code>RangeError: byte length of Float32Array should be a multiple of 4</code></td></tr>
+    <tr><td><code>new Float32Array(new ArrayBuffer(16), 4, 4)</code></td><td><code>RangeError: Invalid typed array length: 4</code> (4 + 4·4 = 20 &gt; 16)</td></tr>
+  </tbody>
+</table>
+<p>¿Por qué la restricción? Una vista calcula la dirección de cada elemento como <code>byteOffset + i × 4</code> y lo lee con una sola instrucción de la CPU, que es rápida (y en algunos procesadores, solo posible) cuando la dirección es múltiplo del tamaño. Los <code>Uint8Array</code> pueden empezar donde quieran (<code>new Uint8Array(buffer, 3)</code> funcionó), y <code>DataView</code> no tiene esta restricción: leyó sin problema un float en el byte 2.</p>
+<div class="callout bestiario" data-id="m1-alineacion" data-titulo="«start offset of Float32Array should be a multiple of 4»">
+  <p><strong>Síntoma:</strong> al crear una vista sobre un buffer que contiene datos mezclados (una cabecera de 2 bytes, colores de 3 bytes…), salta este <code>RangeError</code>.</p>
+  <p><strong>Causa:</strong> una vista de floats (o de enteros de 2 o 4 bytes) solo puede empezar en un byte múltiplo de su tamaño.</p>
+  <p><strong>Solución:</strong> diseña el formato con relleno (<em>padding</em>) para que cada campo quede alineado (por ejemplo, un color de 3 bytes seguido de 1 byte de relleno), lee los campos desalineados con <code>DataView</code>, o copia el trozo a un buffer nuevo con <code>slice</code>. Es la misma razón por la que los formatos de vértices y los bloques de uniforms de la GPU tienen reglas de alineación.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tienes <code>const f = new Float32Array(2)</code> y <code>const b = new Uint8Array(f.buffer)</code>. Ejecutas <code>f[1] = 1.0</code>. ¿Qué contiene <code>b</code>?</p>
+  <ul>
+    <li><code>[0, 0, 0, 0, 63, 128, 0, 0]</code><div class="explicacion">Los bytes están al revés: en memoria, un float se guarda empezando por su byte menos significativo (little-endian), así que el <code>0x3F</code> va el último.</div></li>
+    <li data-correcta><code>[0, 0, 0, 0, 0, 0, 128, 63]</code><div class="explicacion">Correcto. <code>f[1]</code> ocupa los bytes 4 a 7. El float 1.0 es <code>0x3F800000</code>, y en orden little-endian sus bytes son <code>00 00 80 3F</code> (128 = 0x80, 63 = 0x3F).</div></li>
+    <li><code>[0, 1]</code><div class="explicacion">Eso sería si la vista de bytes convirtiera los valores. No convierte nada: muestra los bytes crudos del buffer, que son 8 (dos floats de 4 bytes).</div></li>
+  </ul>
+</div>
+
+<h2><code>DataView</code> y el orden de los bytes</h2>
+<p>Un número de varios bytes se puede guardar empezando por el byte más significativo (<em>big-endian</em>, como escribimos los números: 3F 80 00 00) o por el menos significativo (<em>little-endian</em>: 00 00 80 3F). Casi todo el hardware actual (x86, ARM de móviles y Macs, y las GPUs) es little-endian. Los TypedArrays usan el orden de la plataforma: lo comprobé con <code>new Uint8Array(new Uint16Array([1]).buffer)</code>, que dio <code>[1, 0]</code>. Como WebGL también usa el orden de la plataforma, un <code>Float32Array</code> pasa a la GPU tal cual y todo encaja.</p>
+<p><code>DataView</code> es la otra forma de mirar un buffer: sin tipo fijo, con métodos para leer y escribir cualquier tipo en cualquier byte, y con el orden explícito: <code>dv.getFloat32(byteOffset, littleEndian)</code>, <code>dv.setUint16(byteOffset, valor, littleEndian)</code>… Aquí está la trampa: <strong>si no pasas el tercer argumento, <code>DataView</code> usa big-endian</strong>. Lo comprobé:</p>
+<ul>
+  <li><code>dv.setFloat32(0, 1.0)</code> escribió <code>[63, 128, 0, 0]</code>; con <code>setFloat32(0, 1.0, true)</code>, <code>[0, 0, 128, 63]</code>, como un <code>Float32Array</code>.</li>
+  <li>Leer los bytes de un <code>Float32Array</code> que contiene 1.0 con <code>getFloat32(0)</code> dio <code>4.600602988224807e-41</code>: los mismos cuatro bytes, leídos al revés, son un número diminuto y absurdo. Con <code>getFloat32(0, true)</code>, 1.</li>
+</ul>
+<div class="callout bestiario" data-id="m1-dataview-endian" data-titulo="DataView lee números absurdos (4.6e-41, 256 en vez de 1…)">
+  <p><strong>Síntoma:</strong> lees con <code>DataView</code> unos datos que escribiste con un TypedArray (o que vienen de un archivo) y obtienes valores diminutos, enormes o multiplicados por 256.</p>
+  <p><strong>Causa:</strong> <code>DataView</code> usa big-endian si no le dices otra cosa, y los TypedArrays (y casi todos los formatos modernos) usan little-endian. Con los bytes <code>[1, 0]</code>, <code>getUint16(0)</code> dio 256.</p>
+  <p><strong>Solución:</strong> pasa siempre <code>true</code> como último argumento (<code>getFloat32(o, true)</code>, <code>setUint32(o, v, true)</code>) salvo que el formato sea big-endian de verdad (algunos formatos de red y de archivo antiguos lo son).</p>
+</div>
+
+<h3>La demo: de números a bytes, y de bytes a bits</h3>
+<p>Escribe números, elige el tipo y mira cómo quedan en memoria. Los valores que cambian al guardarse (porque no caben o pierden precisión) salen marcados. Pulsa un valor o uno de sus bytes para ver sus bits: en un float, el signo, el exponente y la mantisa, con la cuenta que reconstruye el valor.</p>
+
+<div class="demo ancho" id="demo-hex">
+  <div class="m1-hex-entrada">
+    <label for="hex-numeros">Números:</label>
+    <input type="text" id="hex-numeros" value="1, 0.1, -2.5, 16777217" spellcheck="false">
+  </div>
+  <div class="demo-controles"></div>
+  <div class="m1-hex-cuerpo" id="hex-salida"></div>
+</div>
+<p>Prueba esto: 0.1 en <code>Float32Array</code> frente a <code>Float64Array</code> (mira cuántos bits de mantisa tiene cada uno); 16777217 en float32 (se convierte en 16777216: ya no hay bits para la última unidad); 300 y −1 en <code>Uint8Array</code> frente a <code>Uint8ClampedArray</code>; −1 en <code>Int16Array</code> (todos los bits a 1: el complemento a dos); y cambia el orden de bytes a big-endian para ver los mismos números como los escribiría <code>DataView</code> sin su tercer argumento.</p>
+
+<h2>La precisión real de un float32</h2>
+<p>La GPU trabaja casi siempre con floats de 32 bits: vértices, uniforms, casi todos los cálculos de los shaders. Un float32 tiene <strong>1 bit de signo, 8 de exponente y 23 de mantisa</strong>, y su valor es</p>
+$$\text{valor} = (-1)^{s} \times 1.m \times 2^{\,e - 127}$$
+<p>donde <code>1.m</code> es un número entre 1 y 2 (el 1 inicial no se guarda: está implícito) y el exponente se guarda sumándole 127 para no necesitar signo. Los patrones de bits que obtuve en Chrome:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Valor</th><th>signo · exponente · mantisa</th><th>hex</th></tr></thead>
+  <tbody>
+    <tr><td>1.0</td><td><code>0 · 01111111 · 000…0</code> (e = 127 → 2<sup>0</sup>)</td><td><code>0x3F800000</code></td></tr>
+    <tr><td>0.5</td><td><code>0 · 01111110 · 000…0</code> (2<sup>−1</sup>)</td><td><code>0x3F000000</code></td></tr>
+    <tr><td>−2.5</td><td><code>1 · 10000000 · 0100…0</code> (1,25 × 2<sup>1</sup>)</td><td><code>0xC0200000</code></td></tr>
+    <tr><td>0.1</td><td><code>0 · 01111011 · 10011001100110011001101</code></td><td><code>0x3DCCCCCD</code></td></tr>
+    <tr><td>−0</td><td><code>1 · 00000000 · 000…0</code> (solo el signo)</td><td><code>0x80000000</code></td></tr>
+    <tr><td>Infinity / NaN</td><td>exponente <code>11111111</code>, mantisa 0 / distinta de 0</td><td><code>0x7F800000</code> / <code>0x7FC00000</code></td></tr>
+  </tbody>
+</table>
+<p>0.1 es una fracción periódica en binario (0,000110011001100…), así que hay que cortarla en 23 bits y redondear. <code>Math.fround(x)</code> te dice qué número queda al guardar <code>x</code> en un float32: <code>Math.fround(0.1)</code> es <code>0.10000000149011612</code>, y es exactamente lo que devuelve <code>new Float32Array([0.1])[0]</code>. Tres consecuencias medidas:</p>
+<ul>
+  <li><strong>Unas 7 cifras decimales</strong>, frente a las 15–17 de un double.</li>
+  <li><strong>Enteros exactos hasta 2<sup>24</sup> = 16 777 216.</strong> A partir de ahí faltan números: <code>new Float32Array([16777217])</code> guardó 16 777 216, y 16 777 219 se convirtió en 16 777 220 (solo quedan los pares).</li>
+  <li><strong>Rango</strong>: hasta unos 3,4 · 10<sup>38</sup> (<code>Math.fround(1e39)</code> dio <code>Infinity</code>), y los más pequeños rondan 1,4 · 10<sup>−45</sup>.</li>
+</ul>
+<div class="callout senior" data-titulo="El tiempo de un shader también es un float32">
+  <p>El uniform <code>u_time</code> que usan los shaders de este curso es un float32. Al principio sobra precisión, pero cuanto más grande es el número, más separados están los floats consecutivos: <code>Math.fround(10000.016)</code> ya es 10000,015625, y <code>Math.fround(100000.016)</code> (unas 27 horas en segundos) es 100000,015625. Con saltos de casi 8 ms entre valores representables, una animación que lleva un día en marcha empieza a moverse a trompicones o a dar pasos visibles. Por eso se reinicia el tiempo, se pasa en trozos o se envuelve con un módulo antes de mandarlo. Lo verás con detalle en la lección <a href="../03-matematicas/07-precision.html">3.7</a>.</p>
+</div>
+<p>Una curiosidad: <code>Math.fround(Math.fround(0.1) + Math.fround(0.2))</code> es 0,30000001192092896, que es exactamente <code>Math.fround(0.3)</code>. En float32, el famoso <code>0.1 + 0.2</code> «sale bien»: los errores de redondeo se compensan de otra forma que en double. No es que float32 sea más preciso; es otra forma de equivocarse. Y existe también un tipo aún más pequeño: Chrome ya incluye <code>Float16Array</code> (floats de 16 bits, los de las texturas <code>HALF_FLOAT</code>), donde 0.1 se guarda como 0,0999755859375, los enteros solo son exactos hasta 2048 y 70 000 ya es <code>Infinity</code>.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.6.1 — Desmontar un float con operaciones de bits</h3>
+  <p>La demo te enseña los bits; ahora los sacamos nosotros, con una vista <code>Uint32Array</code> sobre el mismo buffer de un <code>Float32Array</code> y los operadores de bits de la lección <a href="03-js-lenguaje.html">1.3</a>. Después reconstruimos el valor con la fórmula y comprobamos que sale exactamente el float guardado.</p>
+  <div class="js-playground" data-titulo="Los bits de un float32" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+const f = new Float32Array(1);
+const u = new Uint32Array(f.buffer);          // los mismos 4 bytes, vistos como entero sin signo
+
+function desmontar(x) {
+  f[0] = x;                                    // guardar como float32 (aquí se redondea)
+  const bits = u[0];
+  const signo = bits >>> 31;                   // el bit 31
+  const exponente = (bits >>> 23) & 0xFF;      // los 8 bits siguientes
+  const mantisa = bits & 0x7FFFFF;             // los 23 bits bajos
+  // valor = (−1)^signo × (1 + mantisa / 2^23) × 2^(exponente − 127)   (números normales)
+  const reconstruido = (signo ? -1 : 1) * (1 + mantisa / 2 ** 23) * 2 ** (exponente - 127);
+  console.log(String(x).padStart(9), "→ 0x" + bits.toString(16).toUpperCase().padStart(8, "0"),
+    "· s =", signo, "· e =", exponente, "(2^" + (exponente - 127) + ")",
+    "· m =", mantisa, "→", reconstruido, reconstruido === f[0] ? "✓" : "✗");
+}
+[1, 0.5, -2.5, 0.1, 16777217].forEach(desmontar);
+</script>
+  </div>
+  <p><strong>La vista entera.</strong> <code>u</code> mira los 4 bytes de <code>f</code> como un <code>Uint32</code>. Al escribir en <code>f[0]</code>, <code>u[0]</code> pasa a contener los bits del float, sin conversión: es el mismo truco de aliasing de antes, y lo que en GLSL hace la función <code>floatBitsToUint</code>. Como ambas vistas usan el orden de la plataforma, el entero sale con el bit de signo arriba, sin preocuparnos del little-endian.</p>
+  <p><strong>Los campos.</strong> <code>bits &gt;&gt;&gt; 31</code> baja el bit 31 a la posición 0 (con <code>&gt;&gt;&gt;</code>, que rellena con ceros, y no <code>&gt;&gt;</code>, que copiaría el signo). <code>(bits &gt;&gt;&gt; 23) &amp; 0xFF</code> baja el exponente y se queda con sus 8 bits. <code>bits &amp; 0x7FFFFF</code> se queda con los 23 bits de la mantisa (0x7FFFFF son 23 unos).</p>
+  <p><strong>La reconstrucción.</strong> Con la fórmula, todos los valores salen idénticos al float guardado (la comprobación usa <code>===</code>). Fíjate en dos líneas: 0.1 da <code>0x3DCCCCCD</code> con exponente 123 (2<sup>−4</sup>) y se reconstruye como 0,10000000149011612, no como 0,1, porque lo que desmontamos es lo que se guardó; y 16777217 se reconstruye como 16777216, porque con 23 bits de mantisa y exponente 24 ya no queda un bit para la última unidad. (La fórmula de la reconstrucción no vale para 0, los subnormales, <code>Infinity</code> ni <code>NaN</code>, que usan los exponentes 0 y 255 como casos especiales.)</p>
+</section>
+
+<h2>Enteros que desbordan… o se saturan</h2>
+<p>Al escribir un número en una vista entera, primero se trunca hacia cero y después se reduce al rango del tipo. Lo que pasa con los que no caben depende del tipo:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Escribes</th><th><code>Uint8Array</code></th><th><code>Uint8ClampedArray</code></th><th><code>Int8Array</code></th></tr></thead>
+  <tbody>
+    <tr><td>300</td><td>44 (300 − 256)</td><td>255</td><td>44</td></tr>
+    <tr><td>256</td><td>0</td><td>255</td><td>0</td></tr>
+    <tr><td>200</td><td>200</td><td>200</td><td>−56 (200 − 256)</td></tr>
+    <tr><td>−1</td><td>255</td><td>0</td><td>−1</td></tr>
+    <tr><td>1.7</td><td>1 (trunca)</td><td>2 (redondea)</td><td>1</td></tr>
+    <tr><td>1.5 / 2.5</td><td>1 / 2</td><td>2 / 2</td><td>1 / 2</td></tr>
+    <tr><td><code>NaN</code></td><td>0</td><td>0</td><td>0</td></tr>
+  </tbody>
+</table>
+<p>Los tipos normales hacen aritmética <strong>modular</strong>: el valor da la vuelta (<code>u8[0] = 255; u8[0]++</code> dejó un 0). <code>Uint8ClampedArray</code> <strong>satura</strong>: lo que pasa de 255 se queda en 255 y lo negativo en 0, y además redondea en lugar de truncar, con una regla peculiar: los medios van al par más cercano (1,5 → 2, 2,5 → 2, 3,5 → 4, 254,5 → 254; lo comprobé). Es el tipo de <code>ImageData.data</code>, los píxeles de un canvas 2D (lección <a href="../02-animacion/06-canvas2d.html">2.6</a>), precisamente para que aclarar u oscurecer una imagen no produzca píxeles absurdos.</p>
+<div class="callout bestiario" data-id="m1-desbordamiento" data-titulo="Al aclarar una imagen, las zonas más brillantes se vuelven oscuras">
+  <p><strong>Síntoma:</strong> subes el brillo o sumas dos imágenes y justo las zonas más claras aparecen negras o de colores extraños.</p>
+  <p><strong>Causa:</strong> los píxeles están en un <code>Uint8Array</code> (o en tu propio array de bytes), y los valores de más de 255 dan la vuelta: 250 + 80 = 330 se guarda como 74.</p>
+  <p><strong>Solución:</strong> usa <code>Uint8ClampedArray</code>, que satura en 255, o limita tú el valor: <code>Math.min(255, v)</code>. En un shader no pasa: allí los colores son floats de 0 a 1 y la GPU recorta al escribir en un framebuffer de 8 bits.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué valen <code>new Uint8Array([260, -2])</code> y <code>new Uint8ClampedArray([260, -2])</code>?</p>
+  <ul>
+    <li><code>[255, 0]</code> y <code>[255, 0]</code><div class="explicacion">Solo la versión <em>clamped</em> satura. Un <code>Uint8Array</code> normal hace aritmética modular: el valor da la vuelta.</div></li>
+    <li data-correcta><code>[4, 254]</code> y <code>[255, 0]</code><div class="explicacion">Correcto. En <code>Uint8Array</code>, 260 − 256 = 4 y −2 + 256 = 254 (módulo 256). <code>Uint8ClampedArray</code> recorta al rango: 255 y 0.</div></li>
+    <li><code>[4, 254]</code> y <code>[4, 254]</code><div class="explicacion"><code>Uint8ClampedArray</code> existe justo para no dar la vuelta: satura en los extremos.</div></li>
+  </ul>
+</div>
+
+<h2><code>subarray</code>, <code>slice</code> y <code>set</code></h2>
+<p>Parecen iguales y son opuestos:</p>
+<ul>
+  <li><code>a.subarray(1, 3)</code> crea una <strong>vista</strong> nueva sobre el mismo buffer: no copia nada. Comprobado: al escribir 99 en el primer elemento de la subvista, cambió <code>a[1]</code>; y la subvista tenía <code>byteOffset</code> 4 y el mismo <code>buffer</code> que <code>a</code>.</li>
+  <li><code>a.slice(1, 3)</code> crea una <strong>copia</strong> con su propio buffer: modificarla no afecta a <code>a</code>.</li>
+</ul>
+<p><code>destino.set(origen, desplazamiento)</code> copia un array (o un TypedArray) entero dentro de otro, a partir de una posición: <code>new Float32Array(6)</code> con <code>set([1, 2, 3], 2)</code> quedó <code>[0, 0, 1, 2, 3, 0]</code>. Es la forma rápida de montar un buffer a trozos, mucho más que un bucle elemento a elemento. Maneja bien el solapamiento (copiar una parte de un array sobre sí mismo desplazada funcionó como si hubiera copia intermedia), y si no cabe lanza <code>RangeError: offset is out of bounds</code>. Con <code>subarray</code> y <code>set</code> manipulas trozos de un buffer grande sin crear memoria nueva, que es justo lo que querrás hacer en un bucle de animación (lección <a href="03-js-lenguaje.html">1.3</a>: nada de basura en los bucles calientes).</p>
+
+<h3>Transferir en vez de copiar</h3>
+<p>Para mandar un buffer a un Web Worker (lección <a href="05-event-loop.html">1.5</a>) sin copiar sus megas, se <em>transfiere</em>: <code>worker.postMessage(buffer, [buffer])</code>. Tras transferirlo, el buffer original queda vacío y <em>desconectado</em> (<em>detached</em>). Lo comprobé con <code>structuredClone(buffer, { transfer: [buffer] })</code> y con <code>buffer.transfer()</code>: el original pasó a <code>byteLength</code> 0 (<code>buffer.detached === true</code>), y una vista que había sobre él pasó a tener <code>length</code> 0.</p>
+
+<h2>Adelanto del VBO: vértices entrelazados</h2>
+<p>Un triángulo con color por vértice tiene, para cada uno de sus tres vértices, una posición (x, y) y un color (r, g, b). Se pueden guardar en dos buffers separados, o <strong>entrelazados</strong> en uno solo: todos los datos del vértice 0, luego todos los del vértice 1, etc. El entrelazado es muy común porque la GPU lee cada vértice de una zona contigua de memoria.</p>
+
+<svg class="diagrama" viewBox="0 0 760 230" width="760" role="img" aria-label="Buffer entrelazado: posición y color por vértice, stride de 20 bytes y offsets 0 y 8">
+  <text x="20" y="26" style="font-weight:700">Todo floats: x, y, r, g, b</text>
+  <g style="font-size:12px">
+    <rect x="20" y="38" width="80" height="30" rx="3" style="fill:color-mix(in srgb, var(--accent) 30%, transparent);stroke:var(--accent)"/><text x="60" y="58" text-anchor="middle">x</text>
+    <rect x="100" y="38" width="80" height="30" rx="3" style="fill:color-mix(in srgb, var(--accent) 30%, transparent);stroke:var(--accent)"/><text x="140" y="58" text-anchor="middle">y</text>
+    <rect x="180" y="38" width="80" height="30" rx="3" style="fill:color-mix(in srgb, var(--c-bestiario) 30%, transparent);stroke:var(--c-bestiario)"/><text x="220" y="58" text-anchor="middle">r</text>
+    <rect x="260" y="38" width="80" height="30" rx="3" style="fill:color-mix(in srgb, var(--c-bestiario) 30%, transparent);stroke:var(--c-bestiario)"/><text x="300" y="58" text-anchor="middle">g</text>
+    <rect x="340" y="38" width="80" height="30" rx="3" style="fill:color-mix(in srgb, var(--c-bestiario) 30%, transparent);stroke:var(--c-bestiario)"/><text x="380" y="58" text-anchor="middle">b</text>
+    <rect x="420" y="38" width="80" height="30" rx="3" class="caja"/><text x="460" y="58" text-anchor="middle" class="texto-tenue">x (v1)</text>
+    <rect x="500" y="38" width="80" height="30" rx="3" class="caja"/><text x="540" y="58" text-anchor="middle" class="texto-tenue">y (v1)</text>
+    <text x="600" y="58" class="texto-tenue">…</text>
+    <text x="20" y="84" class="texto-tenue">byte 0</text><text x="100" y="84" class="texto-tenue">4</text><text x="180" y="84" class="texto-tenue">8</text><text x="260" y="84" class="texto-tenue">12</text><text x="340" y="84" class="texto-tenue">16</text><text x="420" y="84" class="texto-tenue">20</text>
+    <path d="M20 96 L420 96" stroke="currentColor" stroke-width="1.5"/><path d="M20 90 V102 M420 90 V102" stroke="currentColor" stroke-width="1.5"/>
+    <text x="220" y="112" text-anchor="middle">stride = 5 × 4 = 20 bytes (de un vértice al siguiente)</text>
+    <text x="640" y="40" class="texto-tenue">posición: offset 0</text>
+    <text x="640" y="58" class="texto-tenue">color: offset 8</text>
+  </g>
+  <text x="20" y="146" style="font-weight:700">Compacto: x, y en float; r, g, b, a en bytes</text>
+  <g style="font-size:12px">
+    <rect x="20" y="158" width="80" height="30" rx="3" style="fill:color-mix(in srgb, var(--accent) 30%, transparent);stroke:var(--accent)"/><text x="60" y="178" text-anchor="middle">x</text>
+    <rect x="100" y="158" width="80" height="30" rx="3" style="fill:color-mix(in srgb, var(--accent) 30%, transparent);stroke:var(--accent)"/><text x="140" y="178" text-anchor="middle">y</text>
+    <rect x="180" y="158" width="20" height="30" rx="2" style="fill:color-mix(in srgb, var(--c-bestiario) 30%, transparent);stroke:var(--c-bestiario)"/><text x="190" y="178" text-anchor="middle">r</text>
+    <rect x="200" y="158" width="20" height="30" rx="2" style="fill:color-mix(in srgb, var(--c-bestiario) 30%, transparent);stroke:var(--c-bestiario)"/><text x="210" y="178" text-anchor="middle">g</text>
+    <rect x="220" y="158" width="20" height="30" rx="2" style="fill:color-mix(in srgb, var(--c-bestiario) 30%, transparent);stroke:var(--c-bestiario)"/><text x="230" y="178" text-anchor="middle">b</text>
+    <rect x="240" y="158" width="20" height="30" rx="2" style="fill:color-mix(in srgb, var(--c-bestiario) 30%, transparent);stroke:var(--c-bestiario)"/><text x="250" y="178" text-anchor="middle">a</text>
+    <rect x="260" y="158" width="80" height="30" rx="3" class="caja"/><text x="300" y="178" text-anchor="middle" class="texto-tenue">x (v1)</text>
+    <text x="360" y="178" class="texto-tenue">…</text>
+    <text x="20" y="204" class="texto-tenue">0</text><text x="100" y="204" class="texto-tenue">4</text><text x="180" y="204" class="texto-tenue">8</text><text x="260" y="204" class="texto-tenue">12</text>
+    <text x="420" y="172" class="texto-tenue">stride = 4 + 4 + 4 × 1 = 12 bytes</text>
+    <text x="420" y="190" class="texto-tenue">color: 4 × UNSIGNED_BYTE normalizados, offset 8</text>
+  </g>
+</svg>
+
+<p>Dos números describen el formato: el <strong>stride</strong>, cuántos bytes hay de un vértice al siguiente, y el <strong>offset</strong> de cada atributo, en qué byte del vértice empieza. Son exactamente dos de los argumentos de <code>gl.vertexAttribPointer(loc, tamaño, tipo, normalizado, stride, offset)</code>, que desmontarás llamada a llamada en la lección <a href="../05-webgl/03-buffers-atributos.html">5.3</a>. Para el formato de todo floats:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+gl.vertexAttribPointer(locPos, 2, gl.FLOAT, false, 20, 0);   // 2 floats desde el byte 0
+gl.vertexAttribPointer(locCol, 3, gl.FLOAT, false, 20, 8);   // 3 floats desde el byte 8
+// formato compacto: 4 bytes de color, normalizados (0..255 → 0..1), desde el byte 8
+gl.vertexAttribPointer(locCol, 4, gl.UNSIGNED_BYTE, true, 12, 8);
+</script>
+<p>Comprobé los dos formatos dibujando de verdad un triángulo con WebGL2 (rojo, verde y azul en sus vértices) y leyendo los píxeles resultantes con <code>gl.readPixels</code>: los dos dieron exactamente los mismos colores (el píxel de la esquina roja, <code>(254, 1, 1)</code>) y ningún error de GL. El compacto ocupa 12 bytes por vértice en lugar de 20: con un millón de vértices, 8 MB menos que subir a la GPU.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.6.2 — Empaquetar el triángulo en los dos formatos</h3>
+  <p>Partimos de los vértices como objetos, que es como los escribirías a mano, y construimos los dos buffers. Después comprobamos byte a byte que cada dato está donde dicen el stride y el offset.</p>
+  <div class="js-playground" data-titulo="Vértices entrelazados" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+const vertices = [
+  { x: -0.8, y: -0.8, color: [255, 60, 60] },
+  { x:  0.8, y: -0.8, color: [60, 255, 60] },
+  { x:  0.0, y:  0.8, color: [60, 60, 255] },
+];
+
+// --- Formato 1: todo float32 (x, y, r, g, b) ---------------------------
+const FLOATS_POR_VERTICE = 5;
+const STRIDE_1 = FLOATS_POR_VERTICE * Float32Array.BYTES_PER_ELEMENT;   // 20 bytes
+const datos1 = new Float32Array(vertices.length * FLOATS_POR_VERTICE);
+vertices.forEach((v, i) => {
+  const base = i * FLOATS_POR_VERTICE;                   // índice en FLOATS, no en bytes
+  datos1.set([v.x, v.y, v.color[0] / 255, v.color[1] / 255, v.color[2] / 255], base);
+});
+console.log("formato 1:", datos1.byteLength, "bytes · stride", STRIDE_1);
+
+// --- Formato 2: x, y en float32 + r, g, b, a en bytes --------------------
+const STRIDE_2 = 2 * 4 + 4 * 1;                           // 12 bytes
+const buffer2 = new ArrayBuffer(vertices.length * STRIDE_2);
+const f32 = new Float32Array(buffer2);                     // dos vistas del MISMO buffer
+const u8 = new Uint8Array(buffer2);
+vertices.forEach((v, i) => {
+  f32[i * STRIDE_2 / 4 + 0] = v.x;                         // byte i*12 + 0
+  f32[i * STRIDE_2 / 4 + 1] = v.y;                         // byte i*12 + 4
+  u8.set([...v.color, 255], i * STRIDE_2 + 8);             // bytes i*12 + 8 … +11
+});
+console.log("formato 2:", buffer2.byteLength, "bytes · stride", STRIDE_2);
+
+// --- Comprobación: leer el vértice 1 como lo haría la GPU ---------------
+const dv = new DataView(buffer2);
+const v1 = 1 * STRIDE_2;
+console.log("vértice 1 (formato 2): x =", dv.getFloat32(v1 + 0, true), "· y =", dv.getFloat32(v1 + 4, true),
+            "· rgba =", [0, 1, 2, 3].map((k) => dv.getUint8(v1 + 8 + k)).join(","));
+console.log("bytes del vértice 1:", Array.from(u8.subarray(v1, v1 + STRIDE_2)).join(" "));
+</script>
+  </div>
+  <p><strong>Formato 1.</strong> Todo son floats, así que basta un <code>Float32Array</code>. La única cuenta delicada es la de los índices: el vértice <code>i</code> empieza en el float <code>i × 5</code> (índice de la vista), que es el byte <code>i × 20</code> (el stride). Confundir índices de elementos con bytes es el error clásico de este código. <code>set</code> copia los cinco valores de golpe. Los colores se dividen por 255 porque en este formato van como floats de 0 a 1, como los usará el shader.</p>
+  <p><strong>Formato 2.</strong> Un <code>ArrayBuffer</code> de 36 bytes y dos vistas sobre él. Las posiciones se escriben con la vista de floats: el vértice <code>i</code> empieza en el byte <code>i × 12</code>, que en índices de float es <code>i × 12 / 4 = i × 3</code>. Funciona porque 12 es múltiplo de 4, de modo que todas las posiciones quedan alineadas (con un stride de 11 no podrías usar un <code>Float32Array</code> para las posiciones: necesitarías <code>DataView</code>). Los colores van en bytes, en la vista <code>Uint8Array</code>, a partir del byte 8 de cada vértice, sin dividir: la GPU los normalizará si se lo pides con <code>normalized = true</code>.</p>
+  <p><strong>La comprobación.</strong> Leemos el vértice 1 con <code>DataView</code> exactamente como lo hará la GPU: floats en los bytes 12 y 16, colores en los bytes 20 a 23. Los bytes crudos del vértice muestran los dos floats en little-endian (0.8 es <code>0x3F4CCCCD</code>, en memoria <code>205 204 76 63</code>) seguidos de los cuatro bytes de color.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Cada vértice tiene posición (x, y, z) y coordenadas de textura (u, v), todo en float32 y entrelazado. ¿Qué stride y qué offset tiene el atributo de UV?</p>
+  <ul>
+    <li>stride 5, offset 3<div class="explicacion">Son las cuentas en <em>floats</em>. <code>vertexAttribPointer</code> quiere bytes: cada float son 4.</div></li>
+    <li data-correcta>stride 20, offset 12<div class="explicacion">Correcto: 5 floats × 4 bytes = 20 bytes por vértice, y las UV empiezan después de x, y, z: 3 × 4 = 12 bytes.</div></li>
+    <li>stride 8, offset 12<div class="explicacion">8 bytes es el tamaño del atributo UV (2 floats), no el stride. El stride es el tamaño del vértice completo.</div></li>
+  </ul>
+</div>
+
+<div class="callout senior" data-titulo="Arrays de estructuras frente a estructuras de arrays">
+  <p>El formato entrelazado es un <em>array de estructuras</em> (AoS): todos los datos de un vértice juntos. La alternativa es una <em>estructura de arrays</em> (SoA): un buffer con todas las posiciones y otro con todos los colores. Para la GPU los dos funcionan. En CPU, el SoA suele ser mejor para simular miles de partículas: guardar <code>xs</code>, <code>ys</code>, <code>vxs</code>, <code>vys</code> en cuatro <code>Float32Array</code> y recorrerlos en un bucle evita crear un objeto por partícula (sin basura para el recolector, lección <a href="03-js-lenguaje.html">1.3</a>) y aprovecha mejor la caché del procesador. Lo usarás en el proyecto de la lección <a href="../02-animacion/08-proyecto-particulas.html">2.8</a> y en las partículas en GPU de la <a href="../07-integracion/05-particulas-gpu.html">7.5</a>.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 1.6.1 — Lee los bytes</h3>
+  <p>Completa <code>volcado(tipado)</code> para que devuelva los bytes del TypedArray como texto hexadecimal, dos cifras por byte y separados por espacios, en el orden en que están en memoria (<code>00 00 80 3F …</code>). Después completa <code>bigEndian(f)</code>, que devuelve los bytes de cada float de un <code>Float32Array</code> en orden big-endian (el que usaría <code>DataView</code> sin su tercer argumento). La consola comprueba tus resultados con valores conocidos.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.6.1" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+function volcado(tipado) {
+  // Pista: una vista Uint8Array sobre el mismo buffer (¡respeta byteOffset y byteLength!)
+  return "";
+}
+function bigEndian(f) {
+  // Pista: un DataView y setFloat32(offset, valor) sin el tercer argumento
+  return "";
+}
+
+const f = new Float32Array([1, -2, 0.5]);
+const pruebas = [
+  [volcado(f), "00 00 80 3F 00 00 00 C0 00 00 00 3F"],
+  [volcado(new Uint16Array([1, 256])), "01 00 00 01"],
+  [volcado(f.subarray(1, 2)), "00 00 00 C0"],
+  [bigEndian(f), "3F 80 00 00 C0 00 00 00 3F 00 00 00"],
+];
+for (const [obtenido, esperado] of pruebas) console.log(obtenido === esperado ? "✓" : "✗", JSON.stringify(obtenido), "· esperado", JSON.stringify(esperado));
+</script>
+<script type="text/x-js" data-solucion>
+function volcado(tipado) {
+  // La vista de bytes debe abarcar SOLO los bytes del tipado, no todo su buffer
+  const bytes = new Uint8Array(tipado.buffer, tipado.byteOffset, tipado.byteLength);
+  return Array.from(bytes, (b) => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
+}
+function bigEndian(f) {
+  const dv = new DataView(new ArrayBuffer(f.length * 4));
+  f.forEach((v, i) => dv.setFloat32(i * 4, v));            // sin 3er argumento: big-endian
+  return volcado(new Uint8Array(dv.buffer));
+}
+
+const f = new Float32Array([1, -2, 0.5]);
+const pruebas = [
+  [volcado(f), "00 00 80 3F 00 00 00 C0 00 00 00 3F"],
+  [volcado(new Uint16Array([1, 256])), "01 00 00 01"],
+  [volcado(f.subarray(1, 2)), "00 00 00 C0"],
+  [bigEndian(f), "3F 80 00 00 C0 00 00 00 3F 00 00 00"],
+];
+for (const [obtenido, esperado] of pruebas) console.log(obtenido === esperado ? "✓" : "✗", JSON.stringify(obtenido), "· esperado", JSON.stringify(esperado));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>b.toString(16)</code> da el hexadecimal de un número; <code>.padStart(2, "0")</code> añade el cero delante de los bytes menores que 16.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La tercera prueba usa una <code>subarray</code>: su <code>buffer</code> es el de <code>f</code> entero. Si haces <code>new Uint8Array(tipado.buffer)</code>, verás los 12 bytes. ¿Qué dos propiedades de la vista te dicen dónde empieza y cuánto ocupa?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La clave está en la tercera prueba. <code>f.subarray(1, 2)</code> es una vista del <em>mismo</em> buffer de 12 bytes, que empieza en el byte 4 y ocupa 4. Una vista de bytes hecha con <code>new Uint8Array(tipado.buffer)</code> vería el buffer entero; hay que pasarle <code>tipado.byteOffset</code> y <code>tipado.byteLength</code> para mirar solo la parte que corresponde. Es un error muy común al convertir trozos de buffers.</p>
+    <p>Los bytes de 1.0 salen <code>00 00 80 3F</code> porque la memoria es little-endian; los de −2, <code>00 00 00 C0</code> (−2 es <code>0xC0000000</code>: signo 1, exponente 128). En <code>bigEndian</code>, <code>setFloat32</code> sin tercer argumento escribe cada float con su byte más significativo primero, que es el orden en que se escribe el número en hexadecimal: <code>3F 80 00 00</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.6.2 — Más brillo sin desbordar</h3>
+  <p>La función <code>aclarar</code> suma 90 a los canales rojo, verde y azul de cada píxel de un degradado. Arriba ves el original; abajo, el resultado: la parte clara se ha vuelto oscura. Arréglalo para que los valores que se pasen de 255 se queden en 255 (sin tocar el canal alfa). La consola comprueba tres píxeles.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.6.2" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="antes" width="256" height="40"></canvas>
+<canvas id="despues" width="256" height="40"></canvas>
+</script>
+<script type="text/x-css">
+body { padding: 10px; }
+canvas { display: block; width: 100%; height: 60px; margin-bottom: 8px; image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const antes = document.getElementById("antes").getContext("2d", { willReadFrequently: true });   // vamos a leer sus píxeles
+const despues = document.getElementById("despues").getContext("2d");
+// Un degradado de negro a blanco
+const grad = antes.createLinearGradient(0, 0, 256, 0);
+grad.addColorStop(0, "#000"); grad.addColorStop(1, "#fff");
+antes.fillStyle = grad; antes.fillRect(0, 0, 256, 40);
+
+function aclarar(imagen, cantidad) {
+  const px = new Uint8Array(imagen.data);            // copia de los bytes RGBA
+  for (let i = 0; i < px.length; i += 4) {
+    px[i] += cantidad; px[i + 1] += cantidad; px[i + 2] += cantidad;   // r, g, b (a en i + 3)
+  }
+  return new ImageData(new Uint8ClampedArray(px.buffer), imagen.width, imagen.height);
+}
+
+const resultado = aclarar(antes.getImageData(0, 0, 256, 40), 90);
+despues.putImageData(resultado, 0, 0);
+for (const x of [10, 160, 250]) console.log("x =", x, "→ r =", resultado.data[x * 4], "(esperado " + Math.min(255, antes.getImageData(x, 0, 1, 1).data[0] + 90) + ")");
+</script>
+<script type="text/x-js" data-solucion>
+const antes = document.getElementById("antes").getContext("2d", { willReadFrequently: true });   // vamos a leer sus píxeles
+const despues = document.getElementById("despues").getContext("2d");
+// Un degradado de negro a blanco
+const grad = antes.createLinearGradient(0, 0, 256, 0);
+grad.addColorStop(0, "#000"); grad.addColorStop(1, "#fff");
+antes.fillStyle = grad; antes.fillRect(0, 0, 256, 40);
+
+function aclarar(imagen, cantidad) {
+  const px = new Uint8ClampedArray(imagen.data);     // copia que SATURA en 0 y 255
+  for (let i = 0; i < px.length; i += 4) {
+    px[i] += cantidad; px[i + 1] += cantidad; px[i + 2] += cantidad;   // r, g, b (a en i + 3)
+  }
+  return new ImageData(px, imagen.width, imagen.height);
+}
+
+const resultado = aclarar(antes.getImageData(0, 0, 256, 40), 90);
+despues.putImageData(resultado, 0, 0);
+for (const x of [10, 160, 250]) console.log("x =", x, "→ r =", resultado.data[x * 4], "(esperado " + Math.min(255, antes.getImageData(x, 0, 1, 1).data[0] + 90) + ")");
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué hace un <code>Uint8Array</code> cuando le sumas 90 a un 200? ¿Qué tipo de TypedArray no da la vuelta?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>imagen.data</code> ya es un <code>Uint8ClampedArray</code>. El problema es la copia.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>new Uint8Array(imagen.data)</code> copia los bytes a un array de enteros normal, que hace aritmética módulo 256: un píxel de 200 + 90 = 290 se guarda como 34, y la zona clara del degradado se vuelve oscura (la consola lo muestra para x = 250). Copiando a un <code>Uint8ClampedArray</code>, el mismo <code>+=</code> satura en 255: la zona clara se queda blanca, que es lo que se espera de «más brillo». Además, ahora el array ya es del tipo que pide <code>ImageData</code> y no hace falta la conversión final.</p>
+    <p>Otra solución válida es mantener el tipo y limitar a mano: <code>px[i] = Math.min(255, px[i] + cantidad)</code>. Y un detalle del <code>Uint8ClampedArray</code>: si la cantidad fuera decimal (por ejemplo 90,5), redondearía los medios al par más cercano en lugar de truncar.</p>
+    <p>Una línea del código de partida que no es el problema: <code>{ willReadFrequently: true }</code> al pedir el contexto le avisa a Chrome de que vas a leer píxeles con <code>getImageData</code>; así guarda el canvas en memoria de la CPU y cada lectura no tiene que traerlo desde la GPU.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.6.3 — Empaqueta los vértices para la GPU</h3>
+  <p>El código de abajo ya sabe dibujar un triángulo con WebGL2 (ese código lo desmontarás en la lección <a href="../05-webgl/02-primer-triangulo.html">5.2</a>; aquí no lo toques). Solo le falta el buffer: completa <code>empaquetar</code> para que devuelva un <code>Float32Array</code> entrelazado con <code>x, y, r, g, b</code> por vértice (colores de 0 a 1), y pon los valores correctos de <code>STRIDE</code> y <code>OFFSET_COLOR</code> en bytes. Si lo haces bien, verás un triángulo con un degradado rojo, verde y azul, y la consola mostrará el tamaño del buffer en bytes.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.6.3" data-altura="360" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const vertices = [
+  { x: -0.8, y: -0.8, color: [255, 0, 0] },
+  { x:  0.8, y: -0.8, color: [0, 255, 0] },
+  { x:  0.0, y:  0.8, color: [0, 0, 255] },
+];
+
+// ✏️ Completa estas tres cosas:
+const STRIDE = 0;          // bytes de un vértice al siguiente
+const OFFSET_COLOR = 0;    // byte donde empieza el color dentro de cada vértice
+function empaquetar(vs) {
+  return new Float32Array(0);
+}
+
+// ---------- A partir de aquí, WebGL (no hace falta tocarlo) ----------
+const canvas = document.getElementById("lienzo");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const gl = canvas.getContext("webgl2");
+function shader(tipo, src) { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+in vec2 a_pos; in vec3 a_color; out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_pos, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; in vec3 v_color; out vec4 fragColor;
+void main() { fragColor = vec4(v_color, 1.0); }`));
+gl.linkProgram(prog); gl.useProgram(prog);
+const datos = empaquetar(vertices);
+console.log("buffer:", datos.byteLength, "bytes · STRIDE", STRIDE, "· OFFSET_COLOR", OFFSET_COLOR);
+gl.clearColor(0.07, 0.08, 0.1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+if (datos.byteLength < 3 * 5 * 4) {
+  console.log("El buffer no tiene datos para 3 vértices: no se dibuja.");
+} else {
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, datos, gl.STATIC_DRAW);
+  const locPos = gl.getAttribLocation(prog, "a_pos"), locCol = gl.getAttribLocation(prog, "a_color");
+  gl.enableVertexAttribArray(locPos); gl.vertexAttribPointer(locPos, 2, gl.FLOAT, false, STRIDE, 0);
+  gl.enableVertexAttribArray(locCol); gl.vertexAttribPointer(locCol, 3, gl.FLOAT, false, STRIDE, OFFSET_COLOR);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  console.log("gl.getError() =", gl.getError());
+}
+</script>
+<script type="text/x-js" data-solucion>
+const vertices = [
+  { x: -0.8, y: -0.8, color: [255, 0, 0] },
+  { x:  0.8, y: -0.8, color: [0, 255, 0] },
+  { x:  0.0, y:  0.8, color: [0, 0, 255] },
+];
+
+const FLOATS = 5;                            // x, y, r, g, b
+const STRIDE = FLOATS * 4;                   // 20 bytes de un vértice al siguiente
+const OFFSET_COLOR = 2 * 4;                  // el color empieza tras x e y: byte 8
+function empaquetar(vs) {
+  const datos = new Float32Array(vs.length * FLOATS);
+  vs.forEach((v, i) => datos.set([v.x, v.y, v.color[0] / 255, v.color[1] / 255, v.color[2] / 255], i * FLOATS));
+  return datos;
+}
+
+// ---------- A partir de aquí, WebGL (no hace falta tocarlo) ----------
+const canvas = document.getElementById("lienzo");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const gl = canvas.getContext("webgl2");
+function shader(tipo, src) { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+in vec2 a_pos; in vec3 a_color; out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_pos, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; in vec3 v_color; out vec4 fragColor;
+void main() { fragColor = vec4(v_color, 1.0); }`));
+gl.linkProgram(prog); gl.useProgram(prog);
+const datos = empaquetar(vertices);
+console.log("buffer:", datos.byteLength, "bytes · STRIDE", STRIDE, "· OFFSET_COLOR", OFFSET_COLOR);
+gl.clearColor(0.07, 0.08, 0.1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+if (datos.byteLength < 3 * 5 * 4) {
+  console.log("El buffer no tiene datos para 3 vértices: no se dibuja.");
+} else {
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, datos, gl.STATIC_DRAW);
+  const locPos = gl.getAttribLocation(prog, "a_pos"), locCol = gl.getAttribLocation(prog, "a_color");
+  gl.enableVertexAttribArray(locPos); gl.vertexAttribPointer(locPos, 2, gl.FLOAT, false, STRIDE, 0);
+  gl.enableVertexAttribArray(locCol); gl.vertexAttribPointer(locCol, 3, gl.FLOAT, false, STRIDE, OFFSET_COLOR);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  console.log("gl.getError() =", gl.getError());
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Cuántos floats tiene cada vértice? ¿Cuántos bytes ocupa cada float?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El vértice <code>i</code> empieza en el <em>índice</em> <code>i × 5</code> del <code>Float32Array</code>, pero en el <em>byte</em> <code>i × 20</code>. <code>STRIDE</code> y <code>OFFSET_COLOR</code> van en bytes; los índices del array, en floats.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada vértice son 5 floats (x, y, r, g, b) de 4 bytes: <code>STRIDE = 20</code>. El color empieza después de x e y: <code>OFFSET_COLOR = 8</code>. <code>empaquetar</code> crea un <code>Float32Array</code> de 3 × 5 = 15 floats (60 bytes) y copia cada vértice con <code>set</code> en el índice <code>i × 5</code>, dividiendo los colores por 255 porque el atributo es de tipo <code>gl.FLOAT</code> y el shader espera valores de 0 a 1.</p>
+    <p>El código de comprobación no dibuja si el buffer no tiene datos para tres vértices. Si lo intentara con el buffer vacío del código de partida, WebGL no lanzaría ninguna excepción, pero <code>gl.getError()</code> devolvería <code>INVALID_OPERATION</code> (1282) y la consola mostraría <code>GL_INVALID_OPERATION: glDrawArrays: Vertex buffer is not big enough for the draw call</code>: WebGL comprueba que el buffer alcance para todos los vértices que pides, algo que OpenGL de escritorio no hace.</p>
+    <p>Un experimento que merece la pena: deja tu buffer correcto y pon <code>STRIDE = 0</code>. En WebGL, un stride de 0 no significa «sin avance», sino «datos compactos»: el stride pasa a ser el tamaño del propio atributo (8 bytes para la posición). Lo comprobé: <code>gl.getError()</code> dio 0 (no es un error) y la GPU leyó las posiciones (−0,8, −0,8), (1, 0) y (0, 0,8), es decir, x e y del primer vértice y después números que en realidad eran colores. Sale otro triángulo, con otros colores, y ningún aviso. Es el tipo de fallo que la lección <a href="../05-webgl/03-buffers-atributos.html">5.3</a> te enseñará a diagnosticar.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 1.6.4 — Tu propio formato binario</h3>
+  <p>Diseña un formato para guardar nubes de puntos de colores en un <code>ArrayBuffer</code>: una cabecera con los 4 caracteres ASCII <code>"PTS1"</code> y el número de puntos (<code>uint32</code>, little-endian), y después, por punto, <code>x</code> e <code>y</code> en float32 little-endian y <code>r, g, b</code> en bytes, más 1 byte de relleno para que cada punto ocupe 12 bytes (y quede alineado). Escribe <code>codificar(puntos)</code> y <code>decodificar(buffer)</code> con <code>DataView</code>. La consola hace un viaje de ida y vuelta, compara, y muestra el volcado de la cabecera.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.6.4" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+const CABECERA = 8, BYTES_PUNTO = 12;
+
+function codificar(puntos) {
+  const buffer = new ArrayBuffer(CABECERA + puntos.length * BYTES_PUNTO);
+  const dv = new DataView(buffer);
+  // ✏️ "PTS1" en los bytes 0-3, el número de puntos en 4-7, y después los puntos
+  return buffer;
+}
+
+function decodificar(buffer) {
+  const dv = new DataView(buffer);
+  // ✏️ comprueba la firma "PTS1", lee el número de puntos y reconstruye el array
+  return [];
+}
+
+// --- Comprobación ---
+const puntos = [{ x: 1.5, y: -2, r: 255, g: 128, b: 0 }, { x: 0.1, y: 100, r: 0, g: 64, b: 255 }];
+const buffer = codificar(puntos);
+const vuelta = decodificar(buffer);
+console.log("bytes:", buffer.byteLength, "(esperado", CABECERA + puntos.length * BYTES_PUNTO + ")");
+console.log("cabecera:", Array.from(new Uint8Array(buffer, 0, 8), (b) => b.toString(16).padStart(2, "0")).join(" "));
+console.log("ida y vuelta:", JSON.stringify(vuelta));
+const iguales = vuelta.length === puntos.length && vuelta.every((p, i) => p.x === Math.fround(puntos[i].x) && p.y === Math.fround(puntos[i].y) && p.r === puntos[i].r && p.g === puntos[i].g && p.b === puntos[i].b);
+console.log(iguales ? "✓ los datos sobreviven al viaje (x e y como float32)" : "✗ algo no coincide");
+</script>
+<script type="text/x-js" data-solucion>
+const CABECERA = 8, BYTES_PUNTO = 12;
+
+function codificar(puntos) {
+  const buffer = new ArrayBuffer(CABECERA + puntos.length * BYTES_PUNTO);
+  const dv = new DataView(buffer);
+  "PTS1".split("").forEach((c, i) => dv.setUint8(i, c.charCodeAt(0)));   // firma ASCII
+  dv.setUint32(4, puntos.length, true);                                   // true = little-endian
+  puntos.forEach((p, i) => {
+    const o = CABECERA + i * BYTES_PUNTO;                                 // offset del punto
+    dv.setFloat32(o, p.x, true);
+    dv.setFloat32(o + 4, p.y, true);
+    dv.setUint8(o + 8, p.r); dv.setUint8(o + 9, p.g); dv.setUint8(o + 10, p.b);
+    // el byte o + 11 es relleno: ya vale 0
+  });
+  return buffer;
+}
+
+function decodificar(buffer) {
+  const dv = new DataView(buffer);
+  const firma = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (firma !== "PTS1") throw new Error("No es un archivo PTS1: firma " + JSON.stringify(firma));
+  const n = dv.getUint32(4, true);
+  const puntos = [];
+  for (let i = 0; i < n; i++) {
+    const o = CABECERA + i * BYTES_PUNTO;
+    puntos.push({ x: dv.getFloat32(o, true), y: dv.getFloat32(o + 4, true), r: dv.getUint8(o + 8), g: dv.getUint8(o + 9), b: dv.getUint8(o + 10) });
+  }
+  return puntos;
+}
+
+// --- Comprobación ---
+const puntos = [{ x: 1.5, y: -2, r: 255, g: 128, b: 0 }, { x: 0.1, y: 100, r: 0, g: 64, b: 255 }];
+const buffer = codificar(puntos);
+const vuelta = decodificar(buffer);
+console.log("bytes:", buffer.byteLength, "(esperado", CABECERA + puntos.length * BYTES_PUNTO + ")");
+console.log("cabecera:", Array.from(new Uint8Array(buffer, 0, 8), (b) => b.toString(16).padStart(2, "0")).join(" "));
+console.log("ida y vuelta:", JSON.stringify(vuelta));
+const iguales = vuelta.length === puntos.length && vuelta.every((p, i) => p.x === Math.fround(puntos[i].x) && p.y === Math.fround(puntos[i].y) && p.r === puntos[i].r && p.g === puntos[i].g && p.b === puntos[i].b);
+console.log(iguales ? "✓ los datos sobreviven al viaje (x e y como float32)" : "✗ algo no coincide");
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El punto <code>i</code> empieza en el byte <code>8 + i × 12</code>. Dentro de él: x en +0, y en +4, r, g, b en +8, +9 y +10.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Un carácter ASCII es un byte: <code>"P".charCodeAt(0)</code> da 80. Para leerlo, <code>String.fromCharCode(80)</code>.</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>No olvides el <code>true</code> final en <code>setUint32</code>, <code>setFloat32</code> y sus lecturas. ¿Por qué no hace falta en <code>setUint8</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La cabecera ocupa 8 bytes: la firma <code>"PTS1"</code> (bytes <code>50 54 53 31</code> en hexadecimal) y el número de puntos como <code>uint32</code> little-endian (con 2 puntos, <code>02 00 00 00</code>). Cada punto ocupa 12 bytes: dos floats (8 bytes), tres bytes de color y uno de relleno. El relleno hace que cada punto empiece en un múltiplo de 4 (8, 20, 32…), así que los floats están alineados y otro programa podría leer las coordenadas con un <code>Float32Array</code> en lugar de <code>DataView</code>.</p>
+    <p>Todos los accesos de más de un byte llevan <code>true</code> para fijar el orden little-endian; los de un byte no lo necesitan (un byte no tiene orden). La comprobación compara x e y con <code>Math.fround</code> de los originales, porque al guardarlos como float32 pierden precisión: 0.1 vuelve como 0,10000000149011612. Por último, la firma sirve para rechazar datos que no son de este formato antes de interpretarlos: un archivo cualquiera leído como PTS1 daría números absurdos sin ningún error.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>La GPU consume bytes. A <code>gl.bufferData</code> dale un TypedArray del tipo correcto: un array normal crea un buffer de 0 bytes sin ningún error, y un <code>Float64Array</code> da basura si el atributo es <code>gl.FLOAT</code>.</li>
+    <li><code>ArrayBuffer</code> = bytes sin tipo; TypedArray = vista con tipo, longitud fija y conversión en cada escritura. Varias vistas pueden compartir un buffer: escribir por una cambia lo que ven las otras.</li>
+    <li>Una vista de N bytes por elemento debe empezar en un <code>byteOffset</code> múltiplo de N. <code>DataView</code> no tiene esa restricción.</li>
+    <li>La memoria es little-endian (1.0 en float32 son los bytes <code>00 00 80 3F</code>). <code>DataView</code> usa big-endian por defecto: pasa siempre <code>true</code>.</li>
+    <li>Float32: signo, 8 bits de exponente, 23 de mantisa; ~7 cifras; enteros exactos hasta 16 777 216. <code>Math.fround(x)</code> te dice qué queda de <code>x</code>.</li>
+    <li><code>Uint8Array</code> trunca y da la vuelta (300 → 44); <code>Uint8ClampedArray</code> redondea (medios al par) y satura (300 → 255).</li>
+    <li><code>subarray</code> es una vista; <code>slice</code>, una copia; <code>set</code> copia en bloque. Transferir un buffer lo deja vacío en origen.</li>
+    <li>Vértices entrelazados: stride = bytes por vértice; offset = byte donde empieza cada atributo. Cuidado con mezclar índices de floats y bytes.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Typed_arrays">MDN, «JavaScript typed arrays»</a>: la guía completa de buffers, vistas y <code>DataView</code>.</li>
+  <li><a href="https://float.exposed/">float.exposed</a>: un explorador interactivo de los bits de float16, float32 y float64.</li>
+  <li><a href="https://floating-point-gui.de/">The Floating-Point Guide</a>: por qué los decimales no son exactos, sin matemáticas pesadas.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/vertexAttribPointer">MDN, <code>vertexAttribPointer</code></a>: el adelanto de lo que verás en la lección 5.3.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script>
+/* Demo: de números a bytes y de bytes a bits. Todo se calcula con TypedArrays
+   y DataView reales: lo que ves es lo que guarda el navegador. */
+Curso.alListo(() => {
+  const raiz = document.getElementById("demo-hex");
+  const entrada = document.getElementById("hex-numeros");
+  const salida = document.getElementById("hex-salida");
+  const ctrl = raiz.querySelector(".demo-controles");
+  const esc = Curso.util.escapar;
+  const TIPOS = { Float32Array, Float64Array, Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array };
+  if (typeof Float16Array === "function") TIPOS.Float16Array = Float16Array;
+  let tipo = "Float32Array", big = false, sel = 0;
+
+  Curso.selector(ctrl, { etiqueta: "Tipo:", opciones: Object.keys(TIPOS).map((k) => [k, k]), valor: tipo, alCambiar: (v) => { tipo = v; sel = 0; actualizar(); } });
+  Curso.selector(ctrl, { etiqueta: "Bytes en orden:", opciones: [["little", "de memoria (little-endian)"], ["big", "big-endian (DataView sin true)"]], valor: "little", alCambiar: (v) => { big = v === "big"; actualizar(); } });
+  entrada.addEventListener("input", Curso.util.debounce(() => { sel = 0; actualizar(); }, 150));
+
+  const hex2 = (b) => b.toString(16).toUpperCase().padStart(2, "0");
+  const formatear = (v) => (Object.is(v, -0) ? "-0" : String(v));
+
+  function bitsDe(T, arr, i) {
+    const n = T.BYTES_PER_ELEMENT;
+    const dv = new DataView(arr.buffer, i * n, n);
+    let bits = "";
+    for (let k = n - 1; k >= 0; k--) bits += dv.getUint8(k).toString(2).padStart(8, "0");   // del byte más significativo al menos (memoria little-endian)
+    return bits;
+  }
+  function explicarFloat(bits, expBits, bias, valor) {
+    const s = bits[0], e = bits.slice(1, 1 + expBits), m = bits.slice(1 + expBits);
+    const eNum = parseInt(e, 2);
+    let mNum = 0;
+    for (let k = 0; k < m.length; k++) if (m[k] === "1") mNum += Math.pow(2, -(k + 1));
+    const html = '<div class="m1-bits">' +
+      '<span class="s">' + s + '</span><span class="sep"></span>' +
+      [...e].map((b) => '<span class="e">' + b + "</span>").join("") + '<span class="sep"></span>' +
+      [...m].map((b) => '<span class="m">' + b + "</span>").join("") + "</div>";
+    let cuenta;
+    const todosUno = !e.includes("0");
+    if (todosUno) cuenta = m.includes("1") ? "exponente todo a 1 y mantisa ≠ 0 → NaN" : "exponente todo a 1 y mantisa 0 → " + (s === "1" ? "−" : "") + "Infinity";
+    else if (eNum === 0) cuenta = "exponente 0 → número subnormal: (−1)^" + s + " × 0." + "m × 2^" + (1 - bias) + " = " + formatear(valor);
+    else cuenta = "(−1)^" + s + " × " + (1 + mNum) + " × 2^(" + eNum + " − " + bias + ") = " + (s === "1" ? "−" : "") + (1 + mNum) + " × " + Math.pow(2, eNum - bias) + " = " + formatear(valor);
+    return html + '<div>signo <b>' + s + "</b> · exponente <b>" + e + "</b> = " + eNum + " · mantisa <b>1." + (m.replace(/0+$/, "") || "0") + "</b>₂ = " + (1 + mNum) + "</div><div>" + esc(cuenta) + "</div>";
+  }
+
+  function actualizar() {
+    const T = TIPOS[tipo];
+    const n = T.BYTES_PER_ELEMENT;
+    const escritos = entrada.value.split(/[\s,;]+/).filter(Boolean).map(Number).slice(0, 24);
+    const arr = new T(escritos);
+    const bytes = new Uint8Array(arr.buffer);
+    if (sel >= arr.length) sel = 0;
+    // valores guardados
+    let html = '<div class="m1-hex-sub" style="margin-top:0">valores guardados en un ' + tipo + " (" + n + " byte" + (n > 1 ? "s" : "") + " por elemento, " + arr.byteLength + " bytes en total):</div>";
+    html += '<div class="m1-valores">' + Array.from(arr, (v, i) => {
+      const cambia = !Object.is(v, escritos[i]) && !(Number.isNaN(v) && Number.isNaN(escritos[i]));
+      return '<span data-i="' + i + '" class="el' + (i % 2) + (i === sel ? " sel" : "") + '">' + esc(formatear(v)) + (cambia ? ' <span class="cambio">(escribiste ' + esc(formatear(escritos[i])) + ")</span>" : "") + "</span>";
+    }).join("") + "</div>";
+    // volcado hexadecimal, 16 bytes por fila
+    html += '<div class="m1-hex-sub">bytes' + (big ? " (cada elemento con su byte más significativo primero, como DataView sin true)" : " tal como están en memoria") + ":</div>";
+    const orden = [];
+    for (let i = 0; i < arr.length; i++) for (let k = 0; k < n; k++) orden.push({ el: i, b: bytes[i * n + (big ? n - 1 - k : k)] });
+    for (let f = 0; f < orden.length; f += 16) {
+      html += '<div class="m1-hex-fila"><span class="off">' + String(f).padStart(3, "0") + "</span><span>" +
+        orden.slice(f, f + 16).map((o) => '<span class="m1-byte el' + (o.el % 2) + (o.el === sel ? " sel" : "") + '" data-i="' + o.el + '">' + hex2(o.b) + "</span>").join("") + "</span></div>";
+    }
+    // bits del elemento seleccionado
+    if (arr.length) {
+      const v = arr[sel];
+      const bits = bitsDe(T, arr, sel);
+      html += '<div class="m1-hex-sub">bits del elemento [' + sel + "] = " + esc(formatear(v)) + ":</div>";
+      if (tipo === "Float32Array") html += explicarFloat(bits, 8, 127, v);
+      else if (tipo === "Float64Array") html += explicarFloat(bits, 11, 1023, v);
+      else if (tipo === "Float16Array") html += explicarFloat(bits, 5, 15, v);
+      else {
+        const conSigno = tipo.startsWith("Int");
+        html += '<div class="m1-bits">' + [...bits].map((b, k) => '<span class="' + (k === 0 && conSigno ? "s" : "m") + '">' + b + "</span>").join("") + "</div>";
+        html += "<div>" + (conSigno ? "entero con signo en complemento a dos: el bit de la izquierda vale −2^" + (n * 8 - 1) + "; los demás suman como siempre." : "entero sin signo: cada bit vale una potencia de 2.") + "</div>";
+      }
+    }
+    salida.innerHTML = html;
+  }
+  salida.addEventListener("click", (e) => {
+    const x = e.target.closest("[data-i]");
+    if (!x) return;
+    sel = +x.dataset.i;
+    actualizar();
+  });
+  actualizar();
+});
+</script>
+</body>
+</html>

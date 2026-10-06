@@ -1,0 +1,13 @@
+/* Estilos propios de las lecciones 6.1–6.5 (módulo 6, parte A).
+   Siempre con las variables del tema para funcionar en claro y oscuro. */
+
+/* fila de botones de ajustes predefinidos en las demos */
+.demo .a-botonera { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border); }
+/* línea de código generada por una demo (p. ej. el editor de paletas) */
+.demo .a-codigo {
+  margin: 0; padding: 8px 12px; border-top: 1px solid var(--border);
+  font: 12.5px/1.5 var(--mono); color: var(--text-2); background: var(--code-bg);
+  white-space: pre-wrap; word-break: break-all;
+}
+/* muestras de color en línea dentro del texto */
+.a-muestra { display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.2em; border-radius: 3px; border: 1px solid var(--border-2); }

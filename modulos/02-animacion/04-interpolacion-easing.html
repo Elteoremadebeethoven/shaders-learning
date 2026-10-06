@@ -1,0 +1,1021 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.4 · Interpolación y easing — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m2.css">
+</head>
+<body data-leccion="02-animacion/interpolacion-easing">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 2 · Animación con CSS y JavaScript</p>
+  <h1>Interpolación y easing</h1>
+  <p class="resumen">Toda animación es un valor que va de A a B a lo largo del tiempo. Esta lección separa ese problema en tres piezas (progreso, forma y mezcla), te da las herramientas matemáticas de cada una y resuelve los casos que casi todo el mundo hace mal: interrumpir una animación, suavizar sin depender de los FPS e interpolar ángulos, colores y zoom.</p>
+  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 2.2, 2.3</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Usarás con soltura <code>lerp</code>, <code>inverseLerp</code>, <code>remap</code> y <code>clamp</code>, y los reconocerás dentro de cualquier fórmula (y en GLSL, como <code>mix</code>).</li>
+      <li>Entenderás un easing como una función de [0, 1] en [0, 1], leerás su pendiente como velocidad y construirás las variantes <em>in</em>, <em>out</em> e <em>in-out</em> a partir de una sola curva.</li>
+      <li>Escribirás un mini sistema de tweens y entenderás por qué falla al interrumpirlo.</li>
+      <li>Usarás el suavizado exponencial sin que dependa de los FPS, con <code>1 − exp(−λ·dt)</code> y semivida.</li>
+      <li>Interpolarás bien ángulos, colores y escalas.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Tres preguntas separadas</h2>
+<p>Una animación de «mover la caja de 0 a 300 px en 0,5 s con arranque y frenado suaves» parece una sola cosa, pero son tres preguntas independientes:</p>
+<svg class="diagrama" viewBox="0 0 760 150" width="760" role="img" aria-label="Tiempo, progreso, easing y valor">
+  <defs><marker id="m24-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <rect class="caja" x="10" y="40" width="130" height="60" rx="10"/><text x="75" y="66" text-anchor="middle" style="font-weight:700">tiempo t</text><text x="75" y="86" text-anchor="middle" class="texto-tenue" style="font-size:11px">ms, del reloj</text>
+  <rect class="caja" x="200" y="40" width="150" height="60" rx="10"/><text x="275" y="66" text-anchor="middle" style="font-weight:700">progreso p</text><text x="275" y="86" text-anchor="middle" class="texto-tenue" style="font-size:11px">∈ [0, 1], lineal</text>
+  <rect class="caja" x="410" y="40" width="150" height="60" rx="10"/><text x="485" y="66" text-anchor="middle" style="font-weight:700">e = easing(p)</text><text x="485" y="86" text-anchor="middle" class="texto-tenue" style="font-size:11px">la forma</text>
+  <rect class="caja" x="620" y="40" width="130" height="60" rx="10"/><text x="685" y="66" text-anchor="middle" style="font-weight:700">valor</text><text x="685" y="86" text-anchor="middle" class="texto-tenue" style="font-size:11px">lerp(desde, hasta, e)</text>
+  <g stroke="currentColor" stroke-width="1.5" fill="none"><path d="M140 70 L196 70" marker-end="url(#m24-fl)"/><path d="M350 70 L406 70" marker-end="url(#m24-fl)"/><path d="M560 70 L616 70" marker-end="url(#m24-fl)"/></g>
+  <text x="170" y="125" text-anchor="middle" class="texto-tenue" style="font-size:11px">inverseLerp + clamp</text>
+  <text x="380" y="125" text-anchor="middle" class="texto-tenue" style="font-size:11px">¿cómo se reparte?</text>
+  <text x="590" y="125" text-anchor="middle" class="texto-tenue" style="font-size:11px">¿entre qué valores?</text>
+</svg>
+<ol>
+  <li><strong>¿Cuánto llevo?</strong> El progreso <code>p = (t − inicio) / duración</code>, limitado a [0, 1]. Es lineal en el tiempo y no sabe nada de cajas ni de píxeles.</li>
+  <li><strong>¿Con qué forma?</strong> El easing transforma el progreso lineal en un progreso con carácter: <code>e = easing(p)</code>. Tampoco sabe nada de píxeles: es una función de [0, 1] en [0, 1].</li>
+  <li><strong>¿Entre qué valores?</strong> La interpolación mezcla el origen y el destino según <code>e</code>: <code>valor = lerp(0, 300, e)</code>. Aquí aparecen por fin los píxeles, los grados o los colores.</li>
+</ol>
+<p>Separarlas es lo que te permite reutilizar: el mismo easing sirve para una posición, una opacidad o un color, y el mismo <code>lerp</code> sirve con cualquier easing. Es exactamente lo que hacen CSS (<a href="02-css-transiciones.html">2.2</a>) y todas las librerías de animación por dentro.</p>
+
+<h2><code>lerp</code>, <code>inverseLerp</code>, <code>remap</code> y <code>clamp</code></h2>
+<p>La interpolación lineal (<em>linear interpolation</em>, <code>lerp</code>) es la operación más usada de todos los gráficos por ordenador:</p>
+$$\operatorname{lerp}(a, b, t) = a + (b - a)\,t$$
+<p>Con $t = 0$ da $a$; con $t = 1$, $b$; con $t = 0{,}5$, el punto medio. Geométricamente, recorre el segmento de $a$ a $b$ y $t$ dice qué fracción del camino llevas. Con $t$ fuera de $[0, 1]$ no falla: <strong>extrapola</strong> (con $t = 1{,}2$ te pasas un 20 %), y eso es justo lo que aprovechan los easings con rebote. En GLSL se llama <code>mix(a, b, t)</code> y funciona igual con vectores y colores, componente a componente.</p>
+<p>Su inversa responde a la pregunta contraria: «¿en qué fracción del camino de $a$ a $b$ está $v$?»</p>
+$$\operatorname{inverseLerp}(a, b, v) = \frac{v - a}{b - a}$$
+<p>Y combinando las dos obtienes <code>remap</code>, que traslada un valor de un rango a otro: primero averiguas la fracción en el rango de origen y luego la aplicas al de destino. Casi siempre querrás <code>clamp</code> para que el resultado no se salga:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const inverseLerp = (a, b, v) => (v - a) / (b - a);
+  const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+  const remap = (v, a, b, c, d) => lerp(c, d, inverseLerp(a, b, v));
+  const remapClamp = (v, a, b, c, d) => lerp(c, d, clamp(inverseLerp(a, b, v), 0, 1));
+</script>
+
+<p>En el graficador, <code>a</code> y <code>b</code> son deslizadores. Fíjate en que <code>inverseLerp</code> es una recta que corta 0 en $x = a$ y 1 en $x = b$, y que con <code>clamp</code> se convierte en una rampa: la misma rampa que usa por dentro <code>smoothstep</code>.</p>
+<div class="graficador" data-x="-0.5,1.5" data-y="-0.5,1.5" data-titulo="inverseLerp, clamp y lerp" data-uniforms='{"a":{"min":-0.5,"max":1.5,"valor":0.25},"b":{"min":-0.5,"max":1.5,"valor":0.75}}'>
+<script type="text/x-exprs">
+(x - a) / (b - a)
+clamp((x - a) / (b - a), 0.0, 1.0)
+mix(a, b, x)
+</script>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.4.1 — Una cabecera que encoge al hacer scroll</h3>
+  <p>Queremos que la cabecera mida 96 px arriba del todo y 56 px cuando hayas bajado 200 px o más, y que el logotipo se desvanezca entre los 50 y los 150 px de scroll.</p>
+  <p><strong>Paso 1: identificar los rangos.</strong> Altura: el scroll $[0, 200]$ se traslada a $[96, 56]$. Opacidad: el scroll $[50, 150]$ se traslada a $[1, 0]$. Fíjate en que el rango de destino puede ir «hacia abajo»: <code>lerp</code> no exige $a &lt; b$.</p>
+  <p><strong>Paso 2: aplicar <code>remapClamp</code>.</strong></p>
+  <script type="text/plain" class="codigo" data-lang="js" data-lineas>
+    addEventListener('scroll', () => {
+      const y = window.scrollY;
+      cabecera.style.height = remapClamp(y, 0, 200, 96, 56) + 'px';
+      logo.style.opacity = remapClamp(y, 50, 150, 1, 0);
+    }, { passive: true });
+  </script>
+  <p><strong>Paso 3: comprobar valores.</strong> Con <code>y = 100</code>: altura = <code>lerp(96, 56, 0.5)</code> = 76 px; opacidad = <code>lerp(1, 0, 0.5)</code> = 0,5. Con <code>y = 1000</code>: sin <code>clamp</code>, la altura sería <code>lerp(96, 56, 5)</code> = −104 px (inválido), y la opacidad, −8,5. El <code>clamp</code> no es opcional.</p>
+  <p><strong>Paso 4: pensar en el rendimiento (<a href="01-pipeline-render.html">2.1</a>).</strong> Cambiar <code>height</code> provoca layout en cada evento de scroll. Una versión mejor anima <code>transform: scaleY()</code> en un fondo o traslada la cabecera. Y si quieres suavizar el movimiento, verás al final de la lección cómo hacerlo sin depender de los FPS.</p>
+</section>
+
+<div class="callout senior" data-titulo="dos formas de escribir lerp (y ninguna es perfecta)">
+  <p>Matemáticamente, $a + (b-a)t$ y $a(1-t) + bt$ son iguales. En coma flotante (lección <a href="../03-matematicas/07-precision.html">3.7</a>), no. Lo comprobamos:</p>
+  <ul>
+    <li><code>a + (b - a) * t</code> <strong>no garantiza</strong> devolver <code>b</code> con <code>t = 1</code>: <code>lerp(100, 0.1, 1)</code> dio <code>0.09999999999999432</code> y <code>lerp(1e8, 0.3, 1)</code>, <code>0.29999999701976776</code>. Al restar números de magnitudes muy distintas se pierden bits. A cambio, es monótona y con <code>a === b</code> devuelve exactamente <code>a</code>.</li>
+    <li><code>a * (1 - t) + b * t</code> sí devuelve exactamente <code>a</code> y <code>b</code> en los extremos, pero no garantiza devolver <code>a</code> cuando <code>a === b</code>: con <code>a = b = 1.415918963223658</code> y <code>t = 0.45…</code> dio <code>1.4159189632236577</code>.</li>
+  </ul>
+  <p>Consecuencia práctica: si una animación debe terminar <em>exactamente</em> en el destino (para comparar con <code>===</code> o evitar un píxel de error acumulado), asigna el destino a mano al llegar a <code>p = 1</code>. La especificación de GLSL define <code>mix(x, y, a)</code> como <code>x·(1−a) + y·a</code>, aunque el hardware puede calcularlo de otra forma equivalente.</p>
+</div>
+
+<div class="callout bestiario" data-id="m2-invlerp-nan" data-titulo="Un elemento animado se queda congelado en su última posición, sin ningún error">
+  <p><strong>Síntoma:</strong> un elemento que animas desde JavaScript escribiendo <code>el.style.transform</code> (o <code>opacity</code>, <code>width</code>…) deja de moverse y se queda donde estaba, sin ningún error en la consola. Suele pasar en un caso límite: un rango vacío, una duración de 0, una división por una distancia que resultó ser 0.</p>
+  <p><strong>Causa:</strong> el valor calculado es <code>NaN</code> o <code>Infinity</code> (por ejemplo, <code>inverseLerp(a, b, v)</code> con <code>a === b</code>: <code>0 / 0</code> da <code>NaN</code> y <code>1 / 0</code>, <code>Infinity</code>), y al convertirlo en texto la declaración es inválida: <code>'translateX(NaNpx)'</code>. El navegador ignora en silencio las declaraciones inválidas, así que el elemento conserva el último valor válido. Lo comprobamos con <code>translateX(NaNpx)</code>, <code>translateX(Infinitypx)</code> y <code>opacity = 'NaN'</code>: ninguna cambió nada. En Canvas 2D el síntoma es otro (lo que tiene coordenadas <code>NaN</code> no se dibuja y <code>translate(NaN, 0)</code> se ignora); el caso general del <code>NaN</code> que se propaga es el comportamiento raro <a href="../01-web/03-js-lenguaje.html#m1-nan">«La animación desaparece sin ningún error»</a> de la lección 1.3.</p>
+  <p><strong>Solución:</strong> protege las divisiones (<code>b === a ? 0 : (v - a) / (b - a)</code>), trata las duraciones de 0 como «ya terminado» y, al depurar, comprueba <code>Number.isFinite(valor)</code> antes de escribirlo en el estilo: un <code>console.assert(Number.isFinite(x))</code> en el bucle lo caza en el acto.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Cuánto vale <code>remap(75, 50, 100, 0, 10)</code>?</p>
+  <ul>
+    <li>7,5<div class="explicacion">Eso sería suponer que el rango de origen empieza en 0. Primero hay que averiguar la fracción dentro de [50, 100].</div></li>
+    <li>1,5<div class="explicacion">Eso es 75/50: estás dividiendo por el inicio del rango en lugar de por su longitud (<code>b − a</code>).</div></li>
+    <li data-correcta>5<div class="explicacion">Correcto: <code>inverseLerp(50, 100, 75)</code> = 25 / 50 = 0,5, y <code>lerp(0, 10, 0.5)</code> = 5.</div></li>
+  </ul>
+</div>
+
+<h2>Easing: la forma del progreso</h2>
+<p>Un easing es una función que recibe el progreso lineal $p \in [0,1]$ y devuelve otro progreso $e$, con dos condiciones: $e(0) = 0$ y $e(1) = 1$. Entre medias puede hacer lo que quiera, incluso salirse de $[0,1]$ (rebote). Su gráfica se lee así: la <strong>pendiente</strong> en cada punto es la <strong>velocidad relativa</strong>. Pendiente 0 al principio = arranca desde parado; pendiente 1 = velocidad «media» (la de <code>linear</code>); pendiente 3 = el triple de rápido que la media.</p>
+<p>Las familias clásicas (las popularizó Robert Penner en la época de Flash, a principios de los 2000, y por eso se llaman «ecuaciones de Penner») son potencias y funciones conocidas:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Familia</th><th>Versión <em>in</em>: $e(p)$</th><th>Carácter</th></tr></thead>
+  <tbody>
+    <tr><td>quad, cubic, quart, quint</td><td>$p^2$, $p^3$, $p^4$, $p^5$</td><td>Cuanto mayor la potencia, más tarda en arrancar y más brusco el final.</td></tr>
+    <tr><td>sine</td><td>$1 - \cos\left(\frac{\pi p}{2}\right)$</td><td>Muy suave; parecida a quad.</td></tr>
+    <tr><td>expo</td><td>$2^{10p - 10}$ (y 0 si $p = 0$)</td><td>Casi quieta hasta el final. El caso especial es necesario: $2^{-10} \approx 0{,}001 \ne 0$.</td></tr>
+    <tr><td>back</td><td>$c_3 p^3 - c_1 p^2$, con $c_1 = 1{,}70158$, $c_3 = c_1 + 1$</td><td>Retrocede un 10 % antes de arrancar (anticipación).</td></tr>
+    <tr><td>elastic</td><td>$-2^{10p-10}\sin\left((10p - 10{,}75)\frac{2\pi}{3}\right)$</td><td>Oscila como una goma.</td></tr>
+    <tr><td>bounce</td><td>definida a trozos con parábolas</td><td>Rebota como una pelota.</td></tr>
+  </tbody>
+</table>
+
+<div class="graficador" data-x="-0.1,1.1" data-y="-0.45,1.25" data-titulo="Familias de easing (versión in)" data-altura="340">
+<script type="text/x-exprs">
+x * x
+x * x * x * x
+1.0 - cos(x * 1.5707963)
+easeInBack(x)
+easeInElastic(x)
+</script>
+<script type="text/x-glsl">
+float easeInBack(float t) {
+  const float c1 = 1.70158;
+  const float c3 = c1 + 1.0;
+  return c3 * t * t * t - c1 * t * t;
+}
+float easeInElastic(float t) {
+  const float c4 = 6.2831853 / 3.0;
+  if (t <= 0.0) return 0.0;
+  if (t >= 1.0) return 1.0;
+  return -pow(2.0, 10.0 * t - 10.0) * sin((t * 10.0 - 10.75) * c4);
+}
+</script>
+</div>
+
+<h3>De una curva, tres: <em>in</em>, <em>out</em> e <em>in-out</em></h3>
+<p>Solo hace falta escribir la versión <em>in</em>. Las otras dos se construyen:</p>
+$$\text{out}(p) = 1 - \text{in}(1 - p) \qquad \text{inOut}(p) = \begin{cases} \frac{1}{2}\,\text{in}(2p) & p &lt; \frac{1}{2} \\[4pt] 1 - \frac{1}{2}\,\text{in}(2 - 2p) & p \ge \frac{1}{2} \end{cases}$$
+<ul>
+  <li><strong>out</strong> es la curva <em>in</em> girada 180° alrededor del centro $(0{,}5;\ 0{,}5)$: recorrer el tiempo al revés ($1 - p$) y el valor al revés ($1 - \ldots$). Lo que en <em>in</em> era un arranque lento, en <em>out</em> es un frenado lento.</li>
+  <li><strong>inOut</strong> encaja dos copias a mitad de tamaño: la primera mitad del tiempo es un <em>in</em> comprimido que llega a 0,5; la segunda, un <em>out</em> comprimido que sale de 0,5.</li>
+</ul>
+<div class="graficador" data-x="-0.1,1.1" data-y="-0.12,1.15" data-titulo="quad: in, out e inOut construidas con la misma función">
+<script type="text/x-exprs">
+entrada(x)
+1.0 - entrada(1.0 - x)
+x < 0.5 ? 0.5 * entrada(2.0 * x) : 1.0 - 0.5 * entrada(2.0 - 2.0 * x)
+</script>
+<script type="text/x-glsl">
+float entrada(float t) { return t * t; }   // cambia esto por t*t*t, pow(t, 5.0)...
+</script>
+</div>
+<p>Mira solo el intervalo $x \in [0, 1]$: fuera de él las fórmulas siguen calculando (por eso las curvas «se doblan» al pasar de 1), pero un easing nunca se evalúa ahí.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.4.2 — Derivar <code>easeOutCubic</code> y comprobarla</h3>
+  <p><strong>Paso 1: aplicar la fórmula.</strong> Con $\text{in}(p) = p^3$: $\text{out}(p) = 1 - (1-p)^3$.</p>
+  <p><strong>Paso 2: comprobar los extremos.</strong> $\text{out}(0) = 1 - 1 = 0$ ✓; $\text{out}(1) = 1 - 0 = 1$ ✓.</p>
+  <p><strong>Paso 3: comprobar las velocidades.</strong> La derivada es $\text{out}'(p) = 3(1-p)^2$. En $p = 0$ vale 3: arranca al triple de la velocidad media, y por eso da sensación de respuesta inmediata. En $p = 1$ vale 0: llega frenando hasta pararse. Es la curva ideal para lo que entra en escena o responde a un clic.</p>
+  <p><strong>Paso 4: la versión <em>in-out</em>.</strong> Para $p &lt; 0{,}5$: $\frac12 (2p)^3 = 4p^3$. Para $p \ge 0{,}5$: $1 - \frac12(2-2p)^3 = 1 - 4(1-p)^3$. En $p = 0{,}5$ las dos ramas valen 0,5 y su pendiente es 3: las piezas encajan sin salto de posición ni de velocidad.</p>
+  <script type="text/plain" class="codigo" data-lang="js">
+    const easeInCubic = (p) => p * p * p;
+    const easeOutCubic = (p) => 1 - (1 - p) ** 3;
+    const easeInOutCubic = (p) => (p < 0.5 ? 4 * p ** 3 : 1 - 4 * (1 - p) ** 3);
+  </script>
+  <p><strong>Conclusión:</strong> derivar un easing y mirar su pendiente en los extremos te dice cómo empieza y cómo termina. Si encadenas dos animaciones, la pendiente final de la primera y la inicial de la segunda deben coincidir para que no haya un cambio brusco de velocidad.</p>
+</section>
+
+<p>Compara cómo se mueven. Cada familia en sus tres versiones, con la misma duración:</p>
+<div class="demo" id="demo-easings">
+  <div class="demo-lienzo" style="height:300px"></div>
+  <div class="demo-controles"></div>
+</div>
+
+<h3><code>smoothstep</code> y <code>smootherstep</code></h3>
+<p>Dos in-out polinómicos que merecen nombre propio porque aparecen en todas partes, sobre todo en shaders:</p>
+$$\text{smoothstep}(p) = 3p^2 - 2p^3 \qquad \text{smootherstep}(p) = 6p^5 - 15p^4 + 10p^3$$
+<p><code>smoothstep</code> es el polinomio más simple con valor 0 y 1 en los extremos <em>y</em> pendiente 0 en los dos: arranca y llega parado. <code>smootherstep</code> (propuesto por Ken Perlin para su ruido) añade que la segunda derivada, la aceleración, también es 0 en los extremos: no hay «tirón» ni al arrancar ni al parar. En el graficador, las dos últimas curvas (f3 y f4) son sus derivadas, es decir, sus velocidades: fíjate en que valen 0 en los extremos, y en que la de <code>smootherstep</code> (f4) llega más alto en el centro (1,875 frente a 1,5) porque tiene que compensar que arranca y termina más despacio:</p>
+<div class="graficador" data-x="-0.1,1.1" data-y="-0.1,2.0" data-titulo="smoothstep, smootherstep y sus velocidades">
+<script type="text/x-exprs">
+x * x * (3.0 - 2.0 * x)
+x * x * x * (x * (6.0 * x - 15.0) + 10.0)
+6.0 * x * (1.0 - x)
+30.0 * x * x * (1.0 - x) * (1.0 - x)
+</script>
+</div>
+<p>En GLSL, <code>smoothstep(borde0, borde1, x)</code> incluye además el <code>clamp(inverseLerp(borde0, borde1, x), 0, 1)</code>: es la rampa del primer graficador suavizada. La estudiarás a fondo en <a href="../03-matematicas/04-funciones-forma.html">3.4</a>, y un aviso para entonces: la especificación de GLSL dice que el resultado <em>no está definido</em> si <code>borde0 ≥ borde1</code>, aunque muchas GPU lo calculen «bien».</p>
+
+<div class="quiz">
+  <p class="pregunta">Si <code>easeIn(p) = p²</code>, ¿cuánto vale <code>easeOut(0.5)</code> construida con la fórmula de arriba?</p>
+  <ul>
+    <li data-correcta>0,75<div class="explicacion">Correcto: <code>1 − easeIn(1 − 0.5)</code> = 1 − 0,25 = 0,75. A mitad de tiempo, <em>out</em> ya ha recorrido tres cuartas partes: arrancó rápido y ahora frena.</div></li>
+    <li>0,25<div class="explicacion">Eso es <code>easeIn(0.5)</code>: la versión <em>in</em> va retrasada. La <em>out</em> va adelantada.</div></li>
+    <li>0,5<div class="explicacion">Eso vale la versión <em>in-out</em> (y <code>linear</code>) a mitad de tiempo, por simetría.</div></li>
+  </ul>
+</div>
+
+<h2>Un mini sistema de tweens</h2>
+<p>Un <em>tween</em> (de <em>in-between</em>, los dibujos intermedios de la animación clásica) es un objeto que sabe animar un valor de <code>desde</code> a <code>hasta</code> en una <code>duración</code> con un <code>easing</code>. Con las tres piezas de la lección, un sistema completo cabe en veinte líneas:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const tweens = new Set();
+
+function tween({ desde, hasta, duracion, easing = (p) => p, alActualizar, alTerminar }) {
+  const tw = { desde, hasta, duracion, easing, alActualizar, alTerminar, inicio: null };
+  tweens.add(tw);
+  return tw;
+}
+
+function actualizarTweens(t) {
+  for (const tw of tweens) {
+    if (tw.inicio === null) tw.inicio = t;
+    const p = Math.min(1, (t - tw.inicio) / (tw.duracion * 1000));
+    const valor = tw.desde + (tw.hasta - tw.desde) * tw.easing(p);
+    tw.alActualizar(p === 1 ? tw.hasta : valor);
+    if (p === 1) {
+      tweens.delete(tw);
+      if (tw.alTerminar) tw.alTerminar();
+    }
+  }
+}
+
+function bucle(t) { actualizarTweens(t); requestAnimationFrame(bucle); }
+requestAnimationFrame(bucle);
+</script>
+<ol>
+  <li data-l="1">Los tweens activos. Un <code>Set</code> permite borrar durante la iteración sin saltarse elementos.</li>
+  <li data-l="3-7">Crear un tween no lo arranca todavía: <code>inicio: null</code> significa «empieza en el próximo frame». Así el tiempo de inicio es un tiempo de frame (<a href="03-raf.html">2.3</a>), coherente con el resto de animaciones.</li>
+  <li data-l="11">En su primer frame, el tween toma el tiempo del frame como inicio: progreso 0.</li>
+  <li data-l="12">El progreso lineal, con la duración en segundos convertida a ms. No acumulamos <code>dt</code>: calculamos el progreso desde el instante absoluto de inicio, así que no hay error acumulado y funciona igual a cualquier frecuencia de pantalla. Solo limitamos por arriba: por abajo no hace falta porque <code>t ≥ inicio</code>.</li>
+  <li data-l="13">Easing y lerp: las piezas 2 y 3 del diagrama.</li>
+  <li data-l="14">En el último frame entregamos exactamente <code>hasta</code>, por la trampa de precisión de <code>lerp</code> que acabas de ver.</li>
+  <li data-l="15-18">Al terminar, lo quitamos y avisamos. Si <code>alTerminar</code> crea un tween nuevo (para encadenar), el <code>Set</code> lo visitará en esta misma vuelta del bucle: empezará en este frame, sin un frame de pausa.</li>
+</ol>
+</div>
+
+<div class="js-playground" data-titulo="Mini sistema de tweens" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="caja" id="a">out</div>
+<div class="caja" id="b">inOut + cadena</div>
+<div class="caja" id="c">yoyó</div>
+</script>
+<script type="text/x-css">
+body { position: relative; font: 12px system-ui, sans-serif; }
+.caja { position: absolute; left: 20px; width: 110px; height: 40px; border-radius: 8px;
+  display: grid; place-items: center; color: #0e1014; font-weight: 700; }
+#a { top: 20px; background: #8b7bff; }
+#b { top: 80px; background: #3fd0e8; }
+#c { top: 140px; background: #ff6bb5; }
+</script>
+<script type="text/x-js">
+// ----- el sistema (idéntico al de la lección) -----
+const tweens = new Set();
+function tween({ desde, hasta, duracion, easing = (p) => p, alActualizar, alTerminar }) {
+  const tw = { desde, hasta, duracion, easing, alActualizar, alTerminar, inicio: null };
+  tweens.add(tw);
+  return tw;
+}
+function actualizarTweens(t) {
+  for (const tw of tweens) {
+    if (tw.inicio === null) tw.inicio = t;
+    const p = Math.min(1, (t - tw.inicio) / (tw.duracion * 1000));
+    const valor = tw.desde + (tw.hasta - tw.desde) * tw.easing(p);
+    tw.alActualizar(p === 1 ? tw.hasta : valor);
+    if (p === 1) { tweens.delete(tw); if (tw.alTerminar) tw.alTerminar(); }
+  }
+}
+function bucle(t) { actualizarTweens(t); requestAnimationFrame(bucle); }
+requestAnimationFrame(bucle);
+
+// ----- easings -----
+const easeOutCubic = (p) => 1 - (1 - p) ** 3;
+const easeInOutQuad = (p) => (p < 0.5 ? 2 * p * p : 1 - 2 * (1 - p) ** 2);
+
+// ----- uso -----
+const recorrido = innerWidth - 160;
+const mover = (el) => (x) => { el.style.transform = `translateX(${x}px)`; };
+const A = document.getElementById('a'), B = document.getElementById('b'), C = document.getElementById('c');
+
+function repetirA() {
+  tween({ desde: 0, hasta: recorrido, duracion: 1.2, easing: easeOutCubic, alActualizar: mover(A),
+          alTerminar: () => setTimeout(repetirA, 600) });
+}
+repetirA();
+
+// Cadena: ida con inOut, pausa corta, vuelta con out
+function cadenaB() {
+  tween({ desde: 0, hasta: recorrido, duracion: 1, easing: easeInOutQuad, alActualizar: mover(B),
+    alTerminar: () => tween({ desde: recorrido, hasta: 0, duracion: 0.6, easing: easeOutCubic, alActualizar: mover(B),
+      alTerminar: () => setTimeout(cadenaB, 400) }) });
+}
+cadenaB();
+
+// Yoyó: ida y vuelta infinita alternando el sentido
+function yoyo(desde, hasta) {
+  tween({ desde, hasta, duracion: 0.8, easing: easeInOutQuad, alActualizar: mover(C),
+          alTerminar: () => yoyo(hasta, desde) });
+}
+yoyo(0, recorrido);
+</script>
+</div>
+
+<h2>El problema de interrumpir</h2>
+<p>Un tween sabe tres cosas: de dónde sale, adónde va y cuánto tarda. No sabe a qué <strong>velocidad</strong> se mueve el objeto cuando lo creas. Si el usuario cambia de opinión a mitad de animación (pulsa otro sitio, el ratón sale del botón antes de tiempo), lo habitual es crear un tween nuevo desde la posición actual hasta el nuevo destino. La posición es continua, pero la velocidad no: si el nuevo tween usa un <em>ease-in-out</em>, arranca con velocidad cero. El objeto, que iba lanzado, <strong>frena en seco y vuelve a arrancar</strong>.</p>
+<p>En esta demo, cada clic (o el modo automático, que cambia el destino cada 0,6 s, antes de que termine cada animación de 0,9 s) redirige la pelota. Abajo tienes su velocidad:</p>
+
+<div class="demo" id="demo-interrumpir">
+  <div class="demo-lienzo" style="height:340px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">haz clic en el lienzo para cambiar el destino</div>
+</div>
+
+<ul>
+  <li><strong>tween ease-in-out</strong>: la gráfica de velocidad cae a cero en cada interrupción. Es el «stop and go» que hace que una interfaz se sienta torpe.</li>
+  <li><strong>tween ease-out</strong>: arranca con velocidad máxima, así que no se para, pero la velocidad pega saltos: ahora el problema es el contrario, un acelerón brusco.</li>
+  <li><strong>suavizado exponencial</strong>: no se para nunca y su velocidad es proporcional a la distancia al destino. Tiene saltos de velocidad (en el instante del clic) pero sin detenerse. Es la técnica de la siguiente sección.</li>
+</ul>
+<p>La solución completa, con velocidad continua pase lo que pase, es simular un muelle: la lección <a href="05-fisica-muelles.html">2.5</a> empieza justo donde termina esta demo.</p>
+
+<h2>El truco <code>x += (objetivo − x) · k</code></h2>
+<p>Es la línea de animación más popular de internet: en cada frame, recorre una fracción fija $k$ de lo que queda hasta el objetivo.</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  x += (objetivo - x) * 0.1;   // cada frame, un 10 % de la distancia que queda
+</script>
+<p>Tiene muy buenas propiedades: se adapta sola a objetivos que cambian (sigue al ratón, a otra animación, a un valor que llega de la red), nunca se pasa del objetivo y frena de forma natural al acercarse. Pero tiene un problema que ya conoces de la lección anterior: $k$ es <strong>por frame</strong>. A 120 Hz se aplica el doble de veces por segundo que a 60 Hz. Lo calculamos para $k = 0{,}1$: fracción del camino recorrida a los 0,5 s:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Frecuencia</th><th class="num">con <code>k = 0.1</code> fijo</th><th class="num">con <code>k = 1 − exp(−λ·dt)</code> y <code>λ = 6</code> s⁻¹</th></tr></thead>
+  <tbody>
+    <tr><td>30 Hz</td><td class="num">79,4 %</td><td class="num">95,0 %</td></tr>
+    <tr><td>60 Hz</td><td class="num">95,8 %</td><td class="num">95,0 %</td></tr>
+    <tr><td>120 Hz</td><td class="num">99,8 %</td><td class="num">95,0 %</td></tr>
+    <tr><td>144 Hz</td><td class="num">99,95 %</td><td class="num">95,0 %</td></tr>
+  </tbody>
+</table>
+<p>Y no, no se arregla con <code>x += (objetivo - x) * k * dt * 60</code>: eso es una aproximación que vale para <code>dt</code> pequeños y se rompe con los grandes (con <code>k·dt·60 &gt; 1</code> se pasa del objetivo, y con más de 2 oscila y diverge).</p>
+
+<h3>La corrección exacta</h3>
+<p>El truco es la versión discreta de una ecuación continua: «la velocidad es proporcional a la distancia que queda»,</p>
+$$\frac{dx}{dt} = \lambda\,(\text{objetivo} - x) \quad\Longrightarrow\quad x(t) = \text{objetivo} + (x_0 - \text{objetivo})\,e^{-\lambda t}$$
+<p>La distancia que queda se multiplica por $e^{-\lambda t}$: decae exponencialmente. En un intervalo $dt$ se multiplica por $e^{-\lambda\,dt}$, así que la fracción recorrida en ese frame es exactamente</p>
+$$k = 1 - e^{-\lambda\,dt}$$
+<script type="text/plain" class="codigo" data-lang="js">
+  x += (objetivo - x) * (1 - Math.exp(-lambda * dt));   // exacto para cualquier dt
+</script>
+<p>Esta línea da el mismo resultado a 30, 60 o 144 Hz, y con cualquier <code>dt</code>, por grande que sea, nunca se pasa del objetivo (porque $e^{-\lambda dt}$ está siempre entre 0 y 1). Es exacta mientras el objetivo no cambie durante el frame, que es lo más que se puede pedir.</p>
+
+<h3>Semivida: un parámetro que se entiende</h3>
+<p>$\lambda$ (en s⁻¹) no dice mucho. Es más cómodo pensar en la <strong>semivida</strong> $h$: el tiempo que tarda en recorrer la mitad de lo que queda. Como $e^{-\lambda h} = \frac12$:</p>
+$$\lambda = \frac{\ln 2}{h}$$
+<p>Con una semivida de 0,1 s: a los 0,1 s ha recorrido el 50 %, a los 0,2 s el 75 %, a los 0,3 s el 87,5 %… y el 90 % a los $h \cdot \log_2 10 \approx 3{,}32\,h$ = 0,33 s. Incluso puedes escribir la línea sin $\lambda$: <code>k = 1 - Math.pow(2, -dt / h)</code>.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.4.3 — Convertir un <code>k = 0.1</code> «ajustado a 60 fps»</h3>
+  <p>Heredas un código con <code>x += (obj - x) * 0.1</code> que «se ve bien» en el portátil de 60 Hz del diseñador. Queremos exactamente ese comportamiento en cualquier pantalla.</p>
+  <p><strong>Paso 1: qué pasa en un segundo a 60 Hz.</strong> Cada frame deja un 90 % de la distancia: en 60 frames, $0{,}9^{60}$.</p>
+  <p><strong>Paso 2: igualar con la exponencial.</strong> Queremos $e^{-\lambda \cdot 1} = 0{,}9^{60}$, es decir, $\lambda = -60 \ln 0{,}9 \approx 6{,}32$ s⁻¹. En general: $\lambda = -\text{fps} \cdot \ln(1 - k)$.</p>
+  <p><strong>Paso 3: la semivida equivalente.</strong> $h = \ln 2 / 6{,}32 \approx 0{,}110$ s. Ahora el parámetro tiene significado: «se acerca a la mitad de la distancia cada 110 ms».</p>
+  <p><strong>Paso 4: el código final.</strong></p>
+  <script type="text/plain" class="codigo" data-lang="js">
+    const SEMIVIDA = 0.110;   // s: equivale a k = 0.1 a 60 fps
+    function seguir(actual, objetivo, dt) {
+      return objetivo + (actual - objetivo) * Math.pow(2, -dt / SEMIVIDA);
+    }
+    x = seguir(x, objetivo, dt);
+  </script>
+  <p>Escrito así, como «el objetivo más la distancia restante multiplicada por el factor de decaimiento», se ve la fórmula cerrada de arriba aplicada a un solo paso.</p>
+</section>
+
+<div class="demo" id="demo-suavizado">
+  <div class="demo-lienzo" style="height:250px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">…</div>
+</div>
+
+<div class="callout bestiario" data-id="m2-suavizado-depende-hz" data-titulo="El «seguimiento suave» es más rápido en pantallas de 120 Hz">
+  <p><strong>Síntoma:</strong> una cámara que sigue al jugador, un cursor personalizado o un valor que se acerca «con suavidad» a su objetivo va mucho más nervioso (o más perezoso) según el equipo. A 30 fps se queda muy atrás; a 144 Hz, casi no suaviza.</p>
+  <p><strong>Causa:</strong> <code>x += (objetivo - x) * k</code> aplica una fracción fija <em>por frame</em>. Con más frames por segundo, se aplica más veces. Multiplicar <code>k</code> por <code>dt * 60</code> solo lo arregla a medias y se vuelve inestable con <code>dt</code> grandes.</p>
+  <p><strong>Solución:</strong> usa la fracción exacta para el <code>dt</code> del frame: <code>k = 1 - Math.exp(-lambda * dt)</code>, con <code>lambda = Math.LN2 / semivida</code>. Para convertir un <code>k</code> ajustado a 60 fps: <code>lambda = -60 * Math.log(1 - k)</code>.</p>
+</div>
+
+<div class="callout senior" data-titulo="nunca llega, y su velocidad salta">
+  <p>Dos propiedades del suavizado exponencial que conviene tener presentes. Primera: matemáticamente <strong>nunca llega</strong> (siempre queda una fracción); en coma flotante acaba llegando o quedándose a una distancia minúscula, pero tu código puede estar recalculando estilos durante segundos por diferencias de milésimas de píxel. Compara con un umbral (<code>if (Math.abs(objetivo - x) &lt; 0.01) x = objetivo</code>) y deja de animar al llegar. Segunda: su velocidad es $\lambda\,(\text{objetivo} - x)$, así que cuando el objetivo salta, la velocidad salta con él (instantáneamente pasa de 0 a su máximo). Es mucho mejor que un tween que se detiene, pero no es continuo. Si necesitas velocidad continua, necesitas inercia: un muelle (<a href="05-fisica-muelles.html">2.5</a>).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un cursor personalizado usa <code>pos += (raton - pos) * 0.2</code> en cada frame. En una pantalla de 120 Hz, comparado con 60 Hz…</p>
+  <ul>
+    <li>…se comporta igual, porque el factor es el mismo.<div class="explicacion">El factor es el mismo por frame, pero hay el doble de frames por segundo.</div></li>
+    <li>…va más lento, porque cada frame recorre menos.<div class="explicacion">Cada frame recorre la misma fracción, pero se aplican más frames por segundo, así que en total recorre más.</div></li>
+    <li data-correcta>…sigue al ratón más de cerca: el suavizado es más rápido.<div class="explicacion">Correcto: tras 1/60 s, a 60 Hz queda un 80 % de la distancia y a 120 Hz, un 0,8² = 64 %. Corrección: <code>k = 1 − exp(−λ·dt)</code> con <code>λ = −60·ln(0.8) ≈ 13,4</code> s⁻¹.</div></li>
+  </ul>
+</div>
+
+<h2>Interpolar otras cosas</h2>
+<h3>Ángulos: el camino corto</h3>
+<p>Los ángulos tienen una trampa propia: <code>lerp</code> entre 170° y −170° recorre 340° en lugar de 20°, porque como números están lejos aunque como direcciones estén cerca. La solución es interpolar la <em>diferencia envuelta</em> al intervalo $(-\pi, \pi]$: <code>a + envolver(b − a) · t</code>. (Lo verás a fondo en la lección de trigonometría, <a href="../03-matematicas/03-trigonometria.html#m3-giro-largo">3.3</a>, con una torreta que da una vuelta completa al cruzar por la izquierda). Aquí nos basta con una trampa de JavaScript al escribir <code>envolver</code>.</p>
+
+<p>La trampa está en el operador <code>%</code>: en JavaScript conserva el signo del dividendo (comprobamos que <code>-30 % 360</code> da <code>-30</code>), así que una envoltura escrita con <code>% (2 * Math.PI)</code> falla con diferencias negativas. Es el comportamiento raro <a href="../01-web/03-js-lenguaje.html#m1-modulo-negativo">«El índice cíclico se vuelve undefined»</a> de la lección 1.3; y en GLSL, <code>mod</code> usa <code>floor</code> y se comporta distinto (<a href="../03-matematicas/04-funciones-forma.html#m3-mod-negativos">3.4</a>). La envoltura robusta a $(-\pi, \pi]$ no usa <code>%</code>: <code>Math.atan2(Math.sin(d), Math.cos(d))</code>. Así queda la interpolación de ángulos completa:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  const envolver = (d) => Math.atan2(Math.sin(d), Math.cos(d));   // equivale a d, pero dentro de (−π, π]
+  const lerpAngulo = (a, b, t) => a + envolver(b - a) * t;         // 170° → −170° recorre 20°, no 340°
+</script>
+
+<h3>Colores: sRGB frente a luz lineal</h3>
+<p>Los valores de un color sRGB (<code>#ff0000</code>, <code>rgb(128, 128, 128)</code>) no son proporcionales a la luz que emite la pantalla: están <em>codificados con gamma</em>, una curva que dedica más valores a los tonos oscuros, donde el ojo distingue más. Un gris <code>rgb(128, 128, 128)</code> emite en realidad solo en torno al 22 % de la luz del blanco. Consecuencia: interpolar los números sRGB no equivale a mezclar la luz. De rojo a verde, la mitad en sRGB es <code>rgb(128, 128, 0)</code>, un oliva oscuro y sucio; mezclando luz de verdad (espacio <em>lineal</em>) es <code>rgb(188, 188, 0)</code>; y en Oklab, un espacio diseñado para que los cambios se perciban uniformes, <code>rgb(208, 168, 0)</code>.</p>
+<p>Lo comprobamos en Chrome: las transiciones y animaciones CSS de colores sRGB se interpolan en sRGB (la mitad de rojo a azul fue <code>rgb(128, 0, 128)</code>), igual que los degradados por defecto. Pero CSS moderno te deja elegir el espacio. Estas tres barras van de rojo a verde:</p>
+<div class="js-playground" data-titulo="Degradados en tres espacios de color" data-altura="300" data-pestaña="html" data-autorun data-consola="no" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="barra" style="background: linear-gradient(to right, rgb(255,0,0), rgb(0,255,0))">sRGB (por defecto)</div>
+<div class="barra" style="background: linear-gradient(in srgb-linear to right, rgb(255,0,0), rgb(0,255,0))">in srgb-linear (luz)</div>
+<div class="barra" style="background: linear-gradient(in oklab to right, rgb(255,0,0), rgb(0,255,0))">in oklab (perceptual)</div>
+<div class="barra" style="background: linear-gradient(to right, black, white)">negro → blanco en sRGB</div>
+<div class="barra" style="background: linear-gradient(in srgb-linear to right, black, white)">negro → blanco en luz lineal</div>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font: 13px system-ui, sans-serif; }
+.barra { height: 44px; margin-bottom: 8px; border-radius: 6px; display: flex; align-items: center;
+  padding-left: 12px; color: white; text-shadow: 0 1px 2px black; }
+</script>
+</div>
+<p>Muestreamos el píxel central de cada barra de color con una captura de pantalla: 127,127,0 (sRGB), 187,187,0 (lineal) y 208,168,0 (Oklab). Los valores teóricos son 127,5, 187,5 y 208,2 / 168,4: el píxel central no cae exactamente en la mitad del degradado y por eso un canal puede diferir en una unidad de lo que dice el cálculo. Observa también el gris: en luz lineal, la mitad «física» (el 50 % de la luz) se ve mucho más clara que el gris medio que esperabas, porque nuestra percepción del brillo no es lineal. Moraleja: para <strong>mezclar luz</strong> (fundidos, desenfoques, iluminación) se trabaja en lineal; para <strong>transiciones que se vean uniformes</strong>, en un espacio perceptual como Oklab. Este es un adelanto de la lección <a href="../06-glsl/04-color.html">6.4</a>, donde lo harás tú en un shader.</p>
+
+<div class="callout bestiario" data-id="m2-color-mitad-oscura" data-titulo="La transición entre dos colores pasa por un tono sucio y oscuro">
+  <p><strong>Síntoma:</strong> al animar de un color vivo a otro (rojo → verde, azul → amarillo), a mitad de camino aparece un color apagado, grisáceo u oscuro que no está en ninguno de los dos extremos.</p>
+  <p><strong>Causa:</strong> la interpolación se hace sobre los valores sRGB codificados con gamma, que no son proporcionales a la luz ni a la percepción. De rojo (255, 0, 0) a verde (0, 255, 0), la mitad sRGB es (128, 128, 0): cada canal a «medio valor», que en luz es mucho menos de la mitad.</p>
+  <p><strong>Solución:</strong> interpola en otro espacio: en CSS, <code>linear-gradient(in oklab, …)</code> o <code>color-mix(in oklab, …)</code>; en JavaScript o GLSL, convierte a lineal (o a Oklab), interpola y vuelve a sRGB. Detalles en la lección <a href="../06-glsl/04-color.html">6.4</a>.</p>
+</div>
+
+<h3>Escalas y zoom: en espacio logarítmico</h3>
+<p>Imagina un zoom de 1× a 64× en 3 segundos con <code>lerp(1, 64, p)</code>. A los 0,3 s (10 % del tiempo) ya estás en 7,3×: te has acercado más de siete veces en un instante. Los últimos 0,3 s solo van de 57,7× a 64×, un 11 % más. La sensación es un tirón al principio y un frenazo al final, aunque el <code>lerp</code> sea «lineal». ¿Por qué? Porque el zoom se percibe de forma <strong>multiplicativa</strong>: pasar de 1× a 2× se siente igual que de 32× a 64×. Cada duplicación debería costar el mismo tiempo, y eso se consigue interpolando el logaritmo:</p>
+$$s(p) = \exp\big(\operatorname{lerp}(\ln a, \ln b, p)\big) = a\left(\frac{b}{a}\right)^{p}$$
+<div class="demo" id="demo-zoom">
+  <div class="demo-lienzo" style="height:280px"></div>
+  <div class="demo-info">…</div>
+</div>
+
+<div class="callout hack">
+  <p>La interpolación logarítmica sirve para todo lo que percibimos en proporciones: el zoom de un mapa, la distancia de una cámara que se acerca a un objeto, frecuencias de audio (una octava es duplicar la frecuencia), el volumen, la exposición de una foto o el tamaño de un texto que crece. Y combinada con el suavizado exponencial es la receta de un zoom de mapa agradable: suaviza el <em>logaritmo</em> de la escala, no la escala.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Animas de rojo <code>rgb(255, 0, 0)</code> a verde <code>rgb(0, 255, 0)</code> con una transición CSS normal. ¿Qué color se ve a mitad de la transición?</p>
+  <ul>
+    <li>Un amarillo brillante, <code>rgb(255, 255, 0)</code>.<div class="explicacion">Eso es lo que da la interpolación en HSL (girando el tono) o una suma de luces, no la interpolación por defecto de CSS.</div></li>
+    <li data-correcta>Un oliva oscuro, <code>rgb(128, 128, 0)</code>.<div class="explicacion">Correcto: con colores sRGB, CSS interpola cada canal por separado en sRGB, y 128 es la mitad numérica, que en luz es mucho menos de la mitad. De ahí el tono sucio.</div></li>
+    <li>Un gris neutro.<div class="explicacion">El azul es 0 en los dos extremos y sigue siendo 0 durante toda la transición; rojo y verde van a medias. No hay forma de que salga gris.</div></li>
+  </ul>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 2.4.1 — El ratón como mando: <code>remap</code></h3>
+  <p>Implementa <code>lerp</code>, <code>inverseLerp</code>, <code>clamp</code> y <code>remapClamp</code> y úsalas para que, al mover el ratón por el lienzo: la posición horizontal (de 0 al ancho) controle el tono del círculo (de 0 a 360); la vertical (de arriba abajo) controle su radio (de 10 a 80 px); y la opacidad pase de 0,2 a 1 solo en el tercio central horizontal.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.4.1" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const lerp = (a, b, t) => 0;              // ← implementa
+const inverseLerp = (a, b, v) => 0;       // ← implementa
+const clamp = (v, min, max) => v;         // ← implementa
+const remapClamp = (v, a, b, c, d) => 0;  // ← implementa
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+let rx = canvas.width / 2, ry = canvas.height / 2;
+canvas.addEventListener('pointermove', (e) => { rx = e.offsetX; ry = e.offsetY; });
+
+function dibujar() {
+  const W = canvas.width, H = canvas.height;
+  const tono = 0;      // ← remapClamp de rx: [0, W] → [0, 360]
+  const radio = 30;    // ← remapClamp de ry: [0, H] → [10, 80]
+  const opacidad = 1;  // ← remapClamp de rx: [W/3, 2W/3] → [0.2, 1]… ¿seguro?
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = `hsla(${tono}, 80%, 60%, ${opacidad})`;
+  ctx.beginPath(); ctx.arc(rx, ry, radio, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(dibujar);
+}
+requestAnimationFrame(dibujar);
+</script>
+<script type="text/x-js" data-solucion>
+const lerp = (a, b, t) => a + (b - a) * t;
+const inverseLerp = (a, b, v) => (a === b ? 0 : (v - a) / (b - a));   // protegido contra a === b
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+const remapClamp = (v, a, b, c, d) => lerp(c, d, clamp(inverseLerp(a, b, v), 0, 1));
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+let rx = canvas.width / 2, ry = canvas.height / 2;
+canvas.addEventListener('pointermove', (e) => { rx = e.offsetX; ry = e.offsetY; });
+
+function dibujar() {
+  const W = canvas.width, H = canvas.height;
+  const tono = remapClamp(rx, 0, W, 0, 360);
+  const radio = remapClamp(ry, 0, H, 10, 80);
+  // "solo en el tercio central": sube de 0.2 a 1 entre W/3 y W/2 y baja entre W/2 y 2W/3
+  const opacidad = rx < W / 2 ? remapClamp(rx, W / 3, W / 2, 0.2, 1) : remapClamp(rx, W / 2, 2 * W / 3, 1, 0.2);
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = `hsla(${tono}, 80%, 60%, ${opacidad})`;
+  ctx.beginPath(); ctx.arc(rx, ry, radio, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(dibujar);
+}
+requestAnimationFrame(dibujar);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Las cuatro funciones están escritas en la sección <code>lerp</code>… de esta lección. <code>remapClamp</code> es <code>lerp(c, d, clamp(inverseLerp(a, b, v), 0, 1))</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La opacidad tiene truco: un solo <code>remapClamp</code> de [W/3, 2W/3] a [0,2; 1] hace una rampa que <em>sigue</em> en 1 en todo el tercio derecho. «Solo en el tercio central» necesita subir y volver a bajar: dos tramos.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Tono y radio son un <code>remapClamp</code> directo. El <code>clamp</code> importa aunque el ratón no pueda salir del lienzo: <code>offsetX</code> puede valer −1 o W en los bordes, y con otros controles (una rueda, un gesto) el valor sí puede salirse.</p>
+    <p>La opacidad es el caso interesante: se construye con dos rampas, una que sube de W/3 a W/2 y otra que baja de W/2 a 2W/3, y fuera de ellas el <code>clamp</code> deja 0,2. Esa forma de «triángulo» (o de trapecio, si añades una meseta) hecha con rampas es la misma idea que usarás en shaders con <code>smoothstep</code> para dibujar bandas y bordes suaves (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>). Fíjate también en la versión protegida de <code>inverseLerp</code>: con un rango vacío devuelve 0 en vez de <code>NaN</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.4.2 — Fábrica de easings</h3>
+  <p>Escribe dos funciones genéricas, <code>aOut(fIn)</code> y <code>aInOut(fIn)</code>, que reciban un easing <em>in</em> y devuelvan su versión <em>out</em> o <em>in-out</em>. Úsalas para crear <code>easeOutCubic</code>, <code>easeInOutCubic</code> y <code>easeOutBack</code>. El lienzo dibuja las curvas y anima una pelota con cada una.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.4.2" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const easeInCubic = (p) => p * p * p;
+const easeInBack = (p) => 2.70158 * p * p * p - 1.70158 * p * p;
+
+const aOut = (fIn) => (p) => p;       // ← construye la versión out
+const aInOut = (fIn) => (p) => p;     // ← construye la versión in-out
+
+const curvas = [
+  ['easeOutCubic', aOut(easeInCubic), '#8b7bff'],
+  ['easeInOutCubic', aInOut(easeInCubic), '#3fd0e8'],
+  ['easeOutBack', aOut(easeInBack), '#ff6bb5'],
+];
+
+// ----- dibujo (no hace falta tocarlo) -----
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+function frame(t) {
+  const W = canvas.width, H = canvas.height, lado = Math.min(H - 60, W * 0.38);
+  const ox = 30, oy = 30 + lado * 1.1;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#3a4256'; ctx.strokeRect(ox, oy - lado, lado, lado);
+  const p = Math.min(1, ((t / 1000) % 2.5) / 1.8);
+  curvas.forEach(([nombre, f, color], i) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    for (let k = 0; k <= 100; k++) { const u = k / 100; const X = ox + u * lado, Y = oy - f(u) * lado; k ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }
+    ctx.stroke();
+    const y = 40 + i * 70, x0 = ox + lado + 40, largo = W - x0 - 40;
+    ctx.fillStyle = '#8791a5'; ctx.font = '12px monospace'; ctx.fillText(nombre, x0, y - 16);
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x0 + f(p) * largo, y, 10, 0, Math.PI * 2); ctx.fill();
+  });
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const easeInCubic = (p) => p * p * p;
+const easeInBack = (p) => 2.70158 * p * p * p - 1.70158 * p * p;
+
+// out: girar 180° alrededor de (0.5, 0.5): tiempo al revés y valor al revés
+const aOut = (fIn) => (p) => 1 - fIn(1 - p);
+// in-out: primera mitad = in comprimido hasta 0.5; segunda = out comprimido desde 0.5
+const aInOut = (fIn) => (p) => (p < 0.5 ? fIn(2 * p) / 2 : 1 - fIn(2 - 2 * p) / 2);
+
+const curvas = [
+  ['easeOutCubic', aOut(easeInCubic), '#8b7bff'],
+  ['easeInOutCubic', aInOut(easeInCubic), '#3fd0e8'],
+  ['easeOutBack', aOut(easeInBack), '#ff6bb5'],
+];
+
+// ----- dibujo (no hace falta tocarlo) -----
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+function frame(t) {
+  const W = canvas.width, H = canvas.height, lado = Math.min(H - 60, W * 0.38);
+  const ox = 30, oy = 30 + lado * 1.1;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#3a4256'; ctx.strokeRect(ox, oy - lado, lado, lado);
+  const p = Math.min(1, ((t / 1000) % 2.5) / 1.8);
+  curvas.forEach(([nombre, f, color], i) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    for (let k = 0; k <= 100; k++) { const u = k / 100; const X = ox + u * lado, Y = oy - f(u) * lado; k ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }
+    ctx.stroke();
+    const y = 40 + i * 70, x0 = ox + lado + 40, largo = W - x0 - 40;
+    ctx.fillStyle = '#8791a5'; ctx.font = '12px monospace'; ctx.fillText(nombre, x0, y - 16);
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x0 + f(p) * largo, y, 10, 0, Math.PI * 2); ctx.fill();
+  });
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Son funciones que devuelven funciones: <code>aOut</code> recibe <code>fIn</code> y devuelve <code>(p) =&gt; …</code>, que usa <code>fIn</code> por dentro.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Traduce las fórmulas de la sección «De una curva, tres». Para la versión <em>out</em>: <code>1 - fIn(1 - p)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>aOut</code> invierte el tiempo (<code>1 − p</code>), aplica la curva y invierte el resultado (<code>1 − …</code>): es la simetría central respecto a (0,5; 0,5). <code>aInOut</code> usa la curva a doble velocidad en cada mitad y la escala a la mitad de altura. Con <code>easeInBack</code>, que retrocede un 10 % al principio, su versión <em>out</em> se pasa un 10 % al final: la pelota rosa rebasa el final y vuelve (fíjate en que la curva sale del cuadrado). Es el mismo rebote que diseñaste con <code>cubic-bezier(0.34, 1.56, 0.64, 1)</code> en <a href="02-css-transiciones.html">2.2</a>, ahora como función exacta. Estas funciones de orden superior (funciones que fabrican funciones) son la forma idiomática de organizar una librería de easings.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.4.3 — Suavizado con semivida, igual a cualquier frecuencia</h3>
+  <p>La pelota persigue un objetivo que salta cada 2 s. Con <code>k = 0.15</code> por frame, el tiempo que tarda en recorrer el 90 % del salto (que imprime la consola) cambia con <code>HZ</code>. Escribe <code>seguir(actual, objetivo, semivida, dt)</code> y úsala con una semivida de 0,1 s: el tiempo debe salir ≈ 0,33 s con cualquier <code>HZ</code> (prueba 30, 60 y 144).</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.4.3" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const HZ = 144;   // ← prueba 30, 60, 144
+
+// ----- rafSim de la lección 2.3: simula una pantalla de HZ hercios -----
+let tVirtual = null; const pendientes = [];
+function rafSim(cb) { pendientes.push(cb); }
+function motor(t) {
+  if (tVirtual === null) tVirtual = t;
+  while (tVirtual + 1000 / HZ <= t + 0.5) { tVirtual += 1000 / HZ; pendientes.splice(0).forEach((cb) => cb(tVirtual)); }
+  requestAnimationFrame(motor);
+}
+requestAnimationFrame(motor);
+// ----------------------------------------------------------------------
+
+function seguir(actual, objetivo, semivida, dt) {
+  return actual + (objetivo - actual) * 0.15;   // ← depende de los frames: arréglalo
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+let x = 40, objetivo = 40, anterior = null, tSalto = 0, desde = 40, medido = true;
+
+function bucle(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  if (t - tSalto > 2000) {                       // el objetivo salta al otro lado
+    tSalto = t; desde = x; medido = false;
+    objetivo = objetivo < canvas.width / 2 ? canvas.width - 40 : 40;
+  }
+  x = seguir(x, objetivo, 0.1, dt);
+  if (!medido && Math.abs(x - desde) >= 0.9 * Math.abs(objetivo - desde)) {
+    medido = true;
+    console.log(`HZ=${HZ}: 90 % del salto en ${((t - tSalto) / 1000).toFixed(3)} s`);
+  }
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#8791a5'; ctx.beginPath(); ctx.arc(objetivo, canvas.height / 2, 18, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#3ecf8e'; ctx.beginPath(); ctx.arc(x, canvas.height / 2, 12, 0, Math.PI * 2); ctx.fill();
+  rafSim(bucle);
+}
+rafSim(bucle);
+</script>
+<script type="text/x-js" data-solucion>
+const HZ = 144;   // ← prueba 30, 60, 144
+
+// ----- rafSim de la lección 2.3: simula una pantalla de HZ hercios -----
+let tVirtual = null; const pendientes = [];
+function rafSim(cb) { pendientes.push(cb); }
+function motor(t) {
+  if (tVirtual === null) tVirtual = t;
+  while (tVirtual + 1000 / HZ <= t + 0.5) { tVirtual += 1000 / HZ; pendientes.splice(0).forEach((cb) => cb(tVirtual)); }
+  requestAnimationFrame(motor);
+}
+requestAnimationFrame(motor);
+// ----------------------------------------------------------------------
+
+function seguir(actual, objetivo, semivida, dt) {
+  // la distancia que queda se multiplica por 2^(-dt/semivida): exacto para cualquier dt
+  return objetivo + (actual - objetivo) * Math.pow(2, -dt / semivida);
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+let x = 40, objetivo = 40, anterior = null, tSalto = 0, desde = 40, medido = true;
+
+function bucle(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  if (t - tSalto > 2000) {                       // el objetivo salta al otro lado
+    tSalto = t; desde = x; medido = false;
+    objetivo = objetivo < canvas.width / 2 ? canvas.width - 40 : 40;
+  }
+  x = seguir(x, objetivo, 0.1, dt);
+  if (!medido && Math.abs(x - desde) >= 0.9 * Math.abs(objetivo - desde)) {
+    medido = true;
+    console.log(`HZ=${HZ}: 90 % del salto en ${((t - tSalto) / 1000).toFixed(3)} s`);
+  }
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#8791a5'; ctx.beginPath(); ctx.arc(objetivo, canvas.height / 2, 18, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#3ecf8e'; ctx.beginPath(); ctx.arc(x, canvas.height / 2, 12, 0, Math.PI * 2); ctx.fill();
+  rafSim(bucle);
+}
+rafSim(bucle);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>En cada frame, la distancia que queda debe multiplicarse por <code>2 ** (-dt / semivida)</code>. Escríbelo como «objetivo más la distancia restante multiplicada por ese factor».</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con la semivida de 0,1 s, la distancia restante se reduce a la mitad cada 0,1 s, sea cual sea el tamaño de los frames: tras $n$ frames de duración $dt$, el factor total es $2^{-n\,dt/h} = 2^{-T/h}$, que solo depende del tiempo total $T$. El 90 % se alcanza cuando queda un 10 %: $2^{-T/h} = 0{,}1$, es decir, $T = h \log_2 10 \approx 0{,}332$ s. La consola lo confirma con cualquier <code>HZ</code> (con pequeñas diferencias porque la comprobación solo ocurre en los frames: a 30 Hz se detecta en múltiplos de 33 ms).</p>
+    <p>Con el <code>k = 0.15</code> original, el tiempo es de unos 14 frames: 0,47 s a 30 Hz, 0,23 s a 60 Hz y 0,1 s a 144 Hz.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 2.4.4 — Una flecha que apunta al ratón por el camino corto</h3>
+  <p>La flecha gira suavemente hacia el ratón, pero cuando el ratón cruza por la izquierda (donde el ángulo pasa de π a −π) da una vuelta completa en sentido contrario. Escribe <code>diferenciaAngular(desde, hasta)</code>, que devuelva la diferencia más corta en $(-\pi, \pi]$, y úsala para suavizar el ángulo con una semivida de 0,08 s, sin depender de los FPS.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.4.4" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const cx = canvas.width / 2, cy = canvas.height / 2;
+let raton = { x: cx + 100, y: cy }, angulo = 0, anterior = null, auto = true;
+canvas.addEventListener('pointermove', (e) => { raton = { x: e.offsetX, y: e.offsetY }; auto = false; });
+
+function diferenciaAngular(desde, hasta) {
+  return hasta - desde;                // ← no tiene en cuenta que los ángulos dan la vuelta
+}
+
+function bucle(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  if (auto) { const a = t / 700; raton = { x: cx + Math.cos(a) * 120, y: cy + Math.sin(a) * 90 }; }  // demo sola
+  const objetivo = Math.atan2(raton.y - cy, raton.x - cx);
+  angulo += diferenciaAngular(angulo, objetivo) * 0.1;   // ← y esto depende de los FPS
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(angulo);
+  ctx.fillStyle = '#ffcb6b';
+  ctx.beginPath(); ctx.moveTo(70, 0); ctx.lineTo(-20, -18); ctx.lineTo(-5, 0); ctx.lineTo(-20, 18); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#8b7bff'; ctx.beginPath(); ctx.arc(raton.x, raton.y, 6, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const cx = canvas.width / 2, cy = canvas.height / 2;
+let raton = { x: cx + 100, y: cy }, angulo = 0, anterior = null, auto = true;
+canvas.addEventListener('pointermove', (e) => { raton = { x: e.offsetX, y: e.offsetY }; auto = false; });
+
+function diferenciaAngular(desde, hasta) {
+  const d = hasta - desde;
+  return Math.atan2(Math.sin(d), Math.cos(d));   // envuelve a (-π, π]: el camino corto
+}
+
+const SEMIVIDA = 0.08;   // s
+function bucle(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  if (auto) { const a = t / 700; raton = { x: cx + Math.cos(a) * 120, y: cy + Math.sin(a) * 90 }; }  // demo sola
+  const objetivo = Math.atan2(raton.y - cy, raton.x - cx);
+  const k = 1 - Math.pow(2, -dt / SEMIVIDA);                 // fracción exacta para este dt
+  angulo += diferenciaAngular(angulo, objetivo) * k;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(angulo);
+  ctx.fillStyle = '#ffcb6b';
+  ctx.beginPath(); ctx.moveTo(70, 0); ctx.lineTo(-20, -18); ctx.lineTo(-5, 0); ctx.lineTo(-20, 18); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#8b7bff'; ctx.beginPath(); ctx.arc(raton.x, raton.y, 6, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>Math.atan2(Math.sin(d), Math.cos(d))</code> devuelve el ángulo equivalente a <code>d</code> dentro de $(-\pi, \pi]$. No usa <code>%</code>, así que no tiene la trampa de los negativos.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para el suavizado, calcula la fracción del frame con la semivida: <code>1 - Math.pow(2, -dt / SEMIVIDA)</code>, y aplícala a la diferencia envuelta.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>Math.atan2</code> devuelve ángulos en $(-\pi, \pi]$, así que al cruzar el eje negativo (el ratón a la izquierda de la flecha) el objetivo salta de casi π a casi −π. La diferencia «ingenua» pasa de un número pequeño a casi $2\pi$, y el suavizado recorre esa vuelta entera. Envolviendo la diferencia, la flecha ve que el objetivo está a un paso y gira por el camino corto. Fíjate en que <code>angulo</code> puede crecer sin límite (acumula vueltas): no importa, porque <code>rotate</code> y la diferencia envuelta lo toleran; si te preocupa la precisión tras horas girando, envuélvelo también a él de vez en cuando.</p>
+    <p>La semivida hace que el giro sea igual de rápido a cualquier frecuencia. Y una alternativa elegante que evita los ángulos: suaviza la <em>dirección</em> como vector (x, y) y calcula el ángulo al dibujar. Los vectores no «dan la vuelta».</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Toda animación son tres piezas: progreso lineal (<code>p</code>, con <code>inverseLerp</code> y <code>clamp</code>), forma (easing) y mezcla (<code>lerp</code>/<code>mix</code>).</li>
+    <li><code>lerp(a, b, t) = a + (b − a)t</code>; su inversa da la fracción; <code>remap</code> las encadena. Protege las divisiones (rango vacío → <code>NaN</code>) y asigna el valor final exacto al terminar.</li>
+    <li>Un easing va de (0, 0) a (1, 1); su pendiente es la velocidad. <code>out(p) = 1 − in(1 − p)</code>; <code>inOut</code> encaja dos mitades. <code>smoothstep</code> tiene velocidad 0 en los extremos; <code>smootherstep</code>, también aceleración 0.</li>
+    <li>Los tweens no conocen la velocidad: al interrumpirlos, la velocidad salta o cae a cero.</li>
+    <li><code>x += (objetivo − x)·k</code> depende de los FPS. Versión exacta: <code>k = 1 − exp(−λ·dt)</code>, con <code>λ = ln 2 / semivida</code> (o <code>λ = −60·ln(1 − k)</code> para convertir un <code>k</code> de 60 fps).</li>
+    <li>Ángulos: interpola la diferencia envuelta (cuidado con <code>%</code> en JavaScript). Colores: sRGB da mitades oscuras; usa luz lineal para mezclar y Oklab para transiciones uniformes. Zoom y escalas: interpola el logaritmo.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://easings.net/">easings.net</a>: todas las familias de Penner con sus gráficas y fórmulas.</li>
+  <li><a href="https://www.youtube.com/watch?v=LSNQuFEDOyQ">Lerp smoothing is broken</a> (Freya Holmér): una charla excelente sobre el suavizado exponencial y la semivida.</li>
+  <li><a href="https://bottosson.github.io/posts/oklab/">A perceptual color space for image processing</a> (Björn Ottosson): el artículo que presentó Oklab.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m2.js"></script>
+<script>
+Curso.alListo(() => {
+  const E = M2.easings;
+
+  /* ---------- Demo: comparador de easings ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-easings");
+    let familia = "cubic";
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      dibujar(ctx, e) {
+        const c = e.colores;
+        ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        const fs = [["in", E[familia + "In"]], ["out", E[familia + "Out"]], ["inOut", E[familia + "InOut"]]];
+        const colores = [c.acento, c.acento2, c.rosa];
+        const p = Math.min(1, (e.t % 2.6) / 1.8);
+        const lado = 64, x0 = 20;
+        fs.forEach(([n, f], i) => {
+          const y = 34 + i * 88, oy = y + lado;
+          // mini gráfica
+          ctx.strokeStyle = c.borde; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y + 0.5, lado, lado);
+          ctx.strokeStyle = colores[i]; ctx.lineWidth = 2; ctx.beginPath();
+          for (let k = 0; k <= 64; k++) { const u = k / 64, X = x0 + u * lado, Y = oy - f(u) * lado; k ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }
+          ctx.stroke();
+          ctx.fillStyle = c.amarillo; ctx.beginPath(); ctx.arc(x0 + p * lado, oy - f(p) * lado, 3.5, 0, Math.PI * 2); ctx.fill();
+          // pista
+          const px0 = x0 + lado + 40, largo = e.w - px0 - 40, cyp = y + lado / 2;
+          ctx.strokeStyle = c.borde; ctx.beginPath(); ctx.moveTo(px0, cyp + 0.5); ctx.lineTo(px0 + largo, cyp + 0.5); ctx.stroke();
+          ctx.fillStyle = c.tenue; ctx.font = "12px " + c.mono; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+          ctx.fillText("ease" + n.charAt(0).toUpperCase() + n.slice(1) + familia.charAt(0).toUpperCase() + familia.slice(1), px0, cyp - 16);
+          ctx.fillStyle = colores[i]; ctx.beginPath(); ctx.arc(px0 + f(p) * largo, cyp, 11, 0, Math.PI * 2); ctx.fill();
+        });
+      },
+    });
+    Curso.selector(raiz.querySelector(".demo-controles"), {
+      etiqueta: "familia", valor: "cubic",
+      opciones: [["quad", "quad (p²)"], ["cubic", "cubic (p³)"], ["quart", "quart (p⁴)"], ["sine", "sine"], ["expo", "expo"], ["back", "back"], ["elastic", "elastic"], ["bounce", "bounce"]],
+      alCambiar: (v) => { familia = v; },
+    });
+  })();
+
+  /* ---------- Demo: interrumpir ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-interrumpir");
+    const info = raiz.querySelector(".demo-info");
+    let modo = "inout", auto = true, ultimoClic = -10;
+    const pos = { x: 100, y: 100 }, obj = { x: 100, y: 100 };
+    let tw = null;                  // { desde, hasta, inicio }
+    const DUR = 0.9, SEMIVIDA = 0.12;
+    const hist = [];
+    let tAuto = 0, reloj = 0, prev = null;
+    function nuevoDestino(x, y) {
+      obj.x = x; obj.y = y;
+      tw = { desde: { x: pos.x, y: pos.y }, hasta: { x, y }, inicio: reloj };
+    }
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      alPulsar(e) { auto = false; ultimoClic = reloj; nuevoDestino(e.raton.x, e.raton.y); },
+      dibujar(ctx, e) {
+        reloj += e.dt;
+        const zonaH = e.h - 90;
+        if (auto && reloj - tAuto > 0.6) {
+          tAuto = reloj;
+          nuevoDestino(40 + Math.random() * (e.w - 80), 30 + Math.random() * (zonaH - 60));
+        }
+        if (!auto && reloj - ultimoClic > 8) auto = true;
+        if (modo === "exp") {
+          const k = 1 - Math.pow(2, -e.dt / SEMIVIDA);
+          pos.x += (obj.x - pos.x) * k; pos.y += (obj.y - pos.y) * k;
+        } else if (tw) {
+          const p = Math.min(1, (reloj - tw.inicio) / DUR);
+          const f = modo === "inout" ? E.cubicInOut(p) : E.cubicOut(p);
+          pos.x = tw.desde.x + (tw.hasta.x - tw.desde.x) * f;
+          pos.y = tw.desde.y + (tw.hasta.y - tw.desde.y) * f;
+        }
+        if (prev && e.dt > 0) { hist.push(Math.hypot(pos.x - prev.x, pos.y - prev.y) / e.dt); if (hist.length > 180) hist.shift(); }
+        prev = { x: pos.x, y: pos.y };
+        const c = e.colores;
+        ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        ctx.strokeStyle = c.tenue; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(obj.x - 8, obj.y); ctx.lineTo(obj.x + 8, obj.y); ctx.moveTo(obj.x, obj.y - 8); ctx.lineTo(obj.x, obj.y + 8); ctx.stroke();
+        ctx.fillStyle = c.acento; ctx.beginPath(); ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2); ctx.fill();
+        // gráfica de velocidad
+        const gy = e.h - 80, gh = 64, max = 2200;
+        ctx.fillStyle = c.superficie; ctx.fillRect(10, gy, e.w - 20, gh + 8);
+        ctx.strokeStyle = c.acento2; ctx.lineWidth = 2; ctx.beginPath();
+        hist.forEach((v, i) => { const X = 10 + i * (e.w - 20) / 180, Y = gy + gh + 4 - Math.min(v, max) / max * gh; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+        ctx.stroke();
+        ctx.fillStyle = c.tenue; ctx.font = "12px " + c.mono; ctx.textAlign = "left"; ctx.textBaseline = "top";
+        ctx.fillText("velocidad (px/s) de los últimos 3 s", 16, gy + 4);
+        if (e.frame % 20 === 0) info.textContent = (auto ? "modo automático: nuevo destino cada 0,6 s · " : "") + "haz clic en el lienzo para cambiar el destino";
+      },
+    });
+    const ctrls = raiz.querySelector(".demo-controles");
+    Curso.selector(ctrls, { etiqueta: "técnica", valor: "inout",
+      opciones: [["inout", "tween ease-in-out (0,9 s)"], ["out", "tween ease-out (0,9 s)"], ["exp", "suavizado exponencial (semivida 0,12 s)"]],
+      alCambiar: (v) => { modo = v; tw = { desde: { x: pos.x, y: pos.y }, hasta: { x: obj.x, y: obj.y }, inicio: reloj }; } });
+    Curso.casilla(ctrls, { etiqueta: "destinos automáticos", valor: true, alCambiar: (v) => { auto = v; } });
+  })();
+
+  /* ---------- Demo: suavizado a distintas frecuencias ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-suavizado");
+    const info = raiz.querySelector(".demo-info");
+    let modo = "k";
+    const LAMBDA = -60 * Math.log(0.9);   // equivale a k = 0.1 a 60 Hz
+    const carriles = [{ hz: 30, acc: 0, x: 0 }, { hz: 60, acc: 0, x: 0 }, { hz: 144, acc: 0, x: 0 }];
+    let reloj = 0, objetivo = 0.9;
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      dibujar(ctx, e) {
+        reloj += e.dt;
+        objetivo = Math.floor(reloj / 1.6) % 2 === 0 ? 0.92 : 0.08;
+        for (const c of carriles) {
+          const paso = 1 / c.hz;
+          c.acc += e.dt;
+          let n = 0;
+          while (c.acc >= paso * 0.98 && n < 10) {
+            c.acc -= paso; n++;
+            const k = modo === "k" ? 0.1 : 1 - Math.exp(-LAMBDA * paso);
+            c.x += (objetivo - c.x) * k;
+          }
+        }
+        const col = e.colores, W = e.w - 60;
+        ctx.fillStyle = col.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        const colores = [col.rosa, col.acento, col.acento2];
+        carriles.forEach((c, i) => {
+          const y = 45 + i * 70;
+          ctx.strokeStyle = col.borde; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(30, y + 0.5); ctx.lineTo(30 + W, y + 0.5); ctx.stroke();
+          ctx.strokeStyle = col.tenue; ctx.beginPath(); ctx.arc(30 + objetivo * W, y, 16, 0, Math.PI * 2); ctx.stroke();
+          ctx.fillStyle = col.tenue; ctx.font = "12px " + col.mono; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+          ctx.fillText(c.hz + " Hz", 30, y - 18);
+          ctx.fillStyle = colores[i]; ctx.beginPath(); ctx.arc(30 + c.x * W, y, 11, 0, Math.PI * 2); ctx.fill();
+        });
+        if (e.frame % 15 === 0) info.textContent = modo === "k"
+          ? "k = 0.1 por frame: a 144 Hz llega mucho antes y a 30 Hz se queda atrás"
+          : "k = 1 − exp(−λ·dt) con λ = " + LAMBDA.toFixed(2) + " s⁻¹ (semivida " + (Math.LN2 / LAMBDA * 1000).toFixed(0) + " ms): las tres pelotas van juntas";
+      },
+    });
+    Curso.selector(raiz.querySelector(".demo-controles"), { etiqueta: "fórmula", valor: "k",
+      opciones: [["k", "x += (obj − x) · 0.1"], ["exp", "x += (obj − x) · (1 − exp(−λ·dt))"]], alCambiar: (v) => { modo = v; } });
+  })();
+
+  /* ---------- Demo: zoom lineal contra logarítmico ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-zoom");
+    const info = raiz.querySelector(".demo-info");
+    const A = 1, B = 64, DUR = 3, PAUSA = 1;
+    function patron(ctx, cx, cy, s, c, recorte) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(recorte.x, recorte.y, recorte.w, recorte.h); ctx.clip();
+      ctx.lineWidth = 1.5;
+      for (let k = 0; k < 14; k++) {
+        const lado = 3 * Math.pow(2, k) * s;
+        if (lado < 2 || lado > 6000) continue;
+        ctx.strokeStyle = k % 2 ? c.acento : c.acento2;
+        ctx.strokeRect(cx - lado / 2, cy - lado / 2, lado, lado);
+      }
+      ctx.restore();
+    }
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      dibujar(ctx, e) {
+        const c = e.colores;
+        ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        const u = Math.min(1, (e.t % (DUR + PAUSA)) / DUR);
+        const sLin = A + (B - A) * u;
+        const sLog = Math.exp(Math.log(A) + (Math.log(B) - Math.log(A)) * u);
+        const mitad = e.w / 2;
+        patron(ctx, mitad / 2, e.h / 2, sLin / 8, c, { x: 0, y: 0, w: mitad - 4, h: e.h });
+        patron(ctx, mitad + mitad / 2, e.h / 2, sLog / 8, c, { x: mitad + 4, y: 0, w: mitad - 4, h: e.h });
+        ctx.fillStyle = c.borde; ctx.fillRect(mitad - 1, 0, 2, e.h);
+        ctx.fillStyle = c.texto; ctx.font = "13px " + c.mono; ctx.textAlign = "left"; ctx.textBaseline = "top";
+        ctx.fillText("lerp(1, 64, p): ×" + sLin.toFixed(1), 12, 10);
+        ctx.fillText("exp(lerp(ln 1, ln 64, p)): ×" + sLog.toFixed(1), mitad + 14, 10);
+        if (e.frame % 6 === 0) info.textContent = "p = " + u.toFixed(2) + " · izquierda ×" + sLin.toFixed(1) + " · derecha ×" + sLog.toFixed(1) + "   (cada cuadrado es el doble del anterior: a la derecha, cada duplicación tarda lo mismo)";
+      },
+    });
+  })();
+});
+</script>
+</body>
+</html>

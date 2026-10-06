@@ -1,0 +1,60 @@
+/* =====================================================================
+   m3.css — estilos propios del módulo 3 (Matemáticas para gráficos)
+   Solo variables del tema: funciona en claro y oscuro.
+   ===================================================================== */
+
+/* Matriz escrita "como en papel": corchetes a izquierda y derecha */
+.m3-matriz {
+  display: inline-grid; grid-template-columns: repeat(var(--cols, 2), auto);
+  gap: 2px 14px; padding: 4px 10px; margin: 0 4px; vertical-align: middle;
+  border-left: 2px solid var(--text-2); border-right: 2px solid var(--text-2); border-radius: 7px;
+  font: 13.5px/1.5 var(--mono); color: var(--text); text-align: right;
+}
+.m3-matriz > span { min-width: 3.2em; }
+.m3-matriz > span.tr { color: var(--accent-2); font-weight: 600; }  /* traslación */
+.m3-matriz > span.w { color: var(--muted); }                          /* fila de w */
+
+/* Leyenda de colores de una demo */
+.m3-leyenda { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 8px 14px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-2); }
+.m3-leyenda span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; background: var(--c, var(--accent)); vertical-align: -1px; }
+
+/* Dos columnas que se apilan en pantallas estrechas */
+.m3-dos { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .m3-dos { grid-template-columns: 1fr; } }
+
+/* Tablas de números alineados */
+.leccion table.m3-num td, .leccion table.m3-num th { font-family: var(--mono); font-size: 13.5px; text-align: right; }
+.leccion table.m3-num td:first-child, .leccion table.m3-num th:first-child { font-family: var(--font); text-align: left; }
+
+/* Demo con escena CSS (transformaciones reales del navegador) */
+.m3-escena-css { position: relative; height: 300px; background: var(--code-bg); overflow: hidden; }
+.m3-escena-css .m3-ejes { position: absolute; inset: 0; pointer-events: none; }
+.m3-escena-css .m3-caja {
+  position: absolute; left: 50%; top: 50%; width: 80px; height: 50px; margin: -25px 0 0 -40px;
+  border: 2px solid var(--accent); background: var(--accent-soft); border-radius: 6px;
+  display: flex; align-items: center; justify-content: center; font: 700 22px var(--mono); color: var(--accent);
+}
+.m3-escena-css .m3-caja.fantasma { border-style: dashed; border-color: var(--border-2); background: transparent; color: var(--muted); }
+
+/* Editor de bits de un float32 */
+.m3-bits { display: grid; grid-template-columns: repeat(32, minmax(0, 1fr)); gap: 2px; padding: 12px 14px 4px; user-select: none; }
+.m3-bits button {
+  font: 600 12px var(--mono); padding: 6px 0; border-radius: 4px; cursor: pointer; min-width: 0;
+  border: 1px solid var(--border-2); background: var(--surface-2); color: var(--text-2);
+}
+.m3-bits button.uno { color: var(--text); }
+.m3-bits button.s { border-color: var(--c-bestiario); }
+.m3-bits button.s.uno { background: color-mix(in srgb, var(--c-bestiario) 30%, var(--surface-2)); }
+.m3-bits button.e { border-color: var(--c-nota); }
+.m3-bits button.e.uno { background: color-mix(in srgb, var(--c-nota) 30%, var(--surface-2)); }
+.m3-bits button.m { border-color: var(--c-hack); }
+.m3-bits button.m.uno { background: color-mix(in srgb, var(--c-hack) 30%, var(--surface-2)); }
+.m3-bits-etq { display: grid; grid-template-columns: 1fr 8fr 23fr; gap: 2px; padding: 0 14px 8px; font: 11.5px var(--mono); color: var(--muted); text-align: center; }
+.m3-bits-etq span { border-top: 2px solid var(--c); padding-top: 2px; }
+@media (max-width: 700px) { .m3-bits button { font-size: 9px; padding: 4px 0; } }
+
+/* Entrada de texto pequeña para controles de demos */
+.m3-entrada { font: 13px var(--mono); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border-2); background: var(--code-bg); color: var(--text); width: 14em; }
+
+/* Fórmula destacada con explicación al lado */
+.m3-caja-formula { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 4px 18px; margin: 1.4rem 0; }

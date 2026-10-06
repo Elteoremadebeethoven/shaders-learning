@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.4 · JavaScript II: DOM, eventos y coordenadas — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m1.css">
+</head>
+<body data-leccion="01-web/js-dom-eventos">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 1 · Fundamentos web mínimos</p>
+  <h1>JavaScript II: DOM, eventos y coordenadas</h1>
+  <p class="resumen">Cómo encuentra y modifica JavaScript los elementos, cómo viaja un evento por el árbol y, sobre todo, en qué sistema de coordenadas llega cada posición del puntero y cómo convertirla en píxeles de un canvas y en coordenadas de GL.</p>
+  <div class="meta"><span class="chip">⏱ 95 min</span><span class="chip">Requisitos: 1.1, 1.2, 1.3</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Encontrarás, crearás, moverás y modificarás elementos sabiendo qué hace cada método por dentro (colecciones vivas, <code>textContent</code> frente a <code>innerHTML</code>, <code>style</code> frente a <code>getComputedStyle</code>).</li>
+      <li>Dominarás <code>addEventListener</code>: sus opciones, el objeto evento, las fases de captura y burbuja, la delegación, <code>preventDefault</code> y los listeners pasivos.</li>
+      <li>Usarás Pointer Events para ratón, dedo y lápiz, con <code>setPointerCapture</code> y <code>touch-action</code> para arrastrar sin perder el puntero.</li>
+      <li>Leerás el teclado con <code>key</code> y <code>code</code> sin que se te atasquen las teclas.</li>
+      <li>Conocerás todos los sistemas de coordenadas del puntero y convertirás una posición a coordenadas locales, a píxeles del búfer de un canvas y a coordenadas de GL.</li>
+      <li>Usarás <code>ResizeObserver</code> e <code>IntersectionObserver</code>, y evitarás el canvas que crece sin parar.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué esta lección importa tanto</h2>
+<p>La interacción es lo que convierte una animación en algo vivo: un shader que reacciona al ratón, partículas que huyen del dedo, una escena que se arrastra. Todo eso llega como <em>eventos</em> del DOM, con posiciones medidas en un sistema de coordenadas concreto. El fallo más común de la interacción en gráficos no es de lógica, es de coordenadas: el efecto aparece unos píxeles desplazado, o solo funciona bien en el centro, o en vertical va al revés, o se estropea en una pantalla retina. Al terminar esta lección sabrás de dónde sale cada número y cómo llevarlo a donde lo necesitas. En la lección <a href="../07-integracion/02-interaccion.html">7.2</a> usarás exactamente estas conversiones para pasar el puntero a un shader.</p>
+<p>Antes, lo imprescindible del DOM desde JavaScript: encontrar elementos y cambiarlos.</p>
+
+<h2>Encontrar elementos</h2>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Método</th><th>Devuelve</th><th>Detalle</th></tr></thead>
+  <tbody>
+    <tr><td><code>document.getElementById("lienzo")</code></td><td>un elemento o <code>null</code></td><td>el más rápido; sin <code>#</code></td></tr>
+    <tr><td><code>el.querySelector(".boton")</code></td><td>el primero que cumple el selector CSS, o <code>null</code></td><td>busca dentro de <code>el</code> (o de <code>document</code>)</td></tr>
+    <tr><td><code>el.querySelectorAll("li")</code></td><td>una <code>NodeList</code> <strong>estática</strong></td><td>una foto: no cambia si el DOM cambia</td></tr>
+    <tr><td><code>el.getElementsByClassName("item")</code></td><td>una <code>HTMLCollection</code> <strong>viva</strong></td><td>se actualiza sola al cambiar el DOM</td></tr>
+    <tr><td><code>el.closest(".tarjeta")</code></td><td>el propio <code>el</code> o su ancestro más cercano que cumpla el selector</td><td>clave para la delegación de eventos</td></tr>
+    <tr><td><code>el.matches(".activo")</code></td><td><code>true</code>/<code>false</code></td><td>¿cumple <code>el</code> este selector?</td></tr>
+  </tbody>
+</table>
+<p>La diferencia entre «estática» y «viva» parece un detalle hasta que te muerde:</p>
+<div class="callout bestiario" data-id="m1-coleccion-viva" data-titulo="El bucle se salta la mitad de los elementos">
+  <p><strong>Síntoma:</strong> recorres los elementos con una clase para quitársela (o para borrarlos) y solo se procesa uno de cada dos.</p>
+  <p><strong>Causa:</strong> <code>getElementsByClassName</code> (y <code>getElementsByTagName</code>, y <code>el.children</code>) devuelven una colección <em>viva</em>. Al quitar la clase al elemento 0, sale de la colección y el que era el 1 pasa a ser el 0; tu <code>i++</code> salta al nuevo 1 y se lo deja. Lo reproduje con cuatro <code>&lt;li class="item"&gt;</code>: tras el bucle, dos seguían teniendo la clase (b y d).</p>
+  <p><strong>Solución:</strong> usa <code>querySelectorAll</code>, que devuelve una foto fija, o convierte la colección en array antes de recorrerla: <code>[...coleccion].forEach(…)</code>.</p>
+</div>
+
+<h2>Crear, mover y borrar</h2>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const lista = document.querySelector("#lista");
+const li = document.createElement("li");
+li.textContent = "nuevo";
+li.className = "item";
+lista.appendChild(li);
+lista.append("texto suelto", document.createElement("hr"));
+lista.prepend(li);
+li.remove();
+const copia = lista.cloneNode(true);
+const trozo = document.createDocumentFragment();
+for (let i = 0; i < 1000; i++) trozo.append(document.createElement("span"));
+lista.append(trozo);
+</script>
+<ol>
+  <li data-l="2-4">Crea un elemento <em>fuera</em> del documento: existe en memoria, pero no se pinta hasta que lo insertas.</li>
+  <li data-l="5"><code>appendChild</code> inserta un nodo como último hijo y lo <strong>devuelve</strong>.</li>
+  <li data-l="6"><code>append</code> admite varios argumentos y también strings (que convierte en nodos de texto), pero devuelve <code>undefined</code>. Lo comprobé: <code>appendChild</code> devolvió el <code>span</code>; <code>append</code>, <code>undefined</code>.</li>
+  <li data-l="7">Insertar un nodo que <strong>ya está</strong> en el documento lo <em>mueve</em>, no lo copia. Un nodo solo puede estar en un sitio a la vez.</li>
+  <li data-l="8">Lo saca del árbol. Si no queda ninguna referencia a él, el recolector de basura lo liberará.</li>
+  <li data-l="9">Copia un nodo; con <code>true</code>, también todos sus descendientes. Ojo: los listeners añadidos con <code>addEventListener</code> no se copian.</li>
+  <li data-l="10-12">Un <code>DocumentFragment</code> es un contenedor temporal fuera del documento. Llenarlo no toca la página; al insertarlo, se vacía y sus hijos entran de una vez. Útil para insertar muchos elementos con una sola modificación del árbol.</li>
+</ol>
+</div>
+
+<h2><code>textContent</code>, <code>innerText</code> e <code>innerHTML</code></h2>
+<p>Las tres leen o escriben el contenido de un elemento, y no son intercambiables. Con <code>&lt;p&gt;visible &lt;span style="display:none"&gt;OCULTO&lt;/span&gt; &lt;span style="visibility:hidden"&gt;invisible&lt;/span&gt;&lt;/p&gt;</code>, Chrome dio:</p>
+<ul>
+  <li><code>textContent</code> → <code>"visible OCULTO invisible"</code>: todo el texto de los nodos, sin mirar el CSS. Es la rápida y la que debes usar para escribir texto: <code>el.textContent = mensaje</code> nunca interpreta HTML.</li>
+  <li><code>innerText</code> → <code>"visible "</code>: el texto <em>tal como se ve</em>, sin lo oculto por CSS. Para responder, el navegador tiene que calcular los estilos (y a menudo el layout) en ese momento, así que es mucho más cara. Evítala en bucles.</li>
+  <li><code>innerHTML</code> → el HTML serializado. Al escribirla, el navegador <em>analiza</em> el string como HTML con el parser de la lección <a href="01-html.html">1.1</a>, y sustituye todos los hijos.</li>
+</ul>
+<div class="callout cuidado" data-titulo="innerHTML y XSS">
+  <p>Nunca metas en <code>innerHTML</code> texto que venga del usuario o de fuera. Lo probé: un <code>&lt;script&gt;</code> insertado con <code>innerHTML</code> <strong>no</strong> se ejecuta (el navegador lo desactiva a propósito), pero un <code>&lt;img src="x" onerror="…"&gt;</code> <strong>sí</strong> ejecutó su código en cuanto falló la carga de la imagen. Así funcionan los ataques de <em>cross-site scripting</em> (XSS). Para mostrar texto, <code>textContent</code>; para construir estructura, <code>createElement</code>.</p>
+</div>
+
+<h2>Clases y estilos desde JavaScript</h2>
+<h3><code>classList</code></h3>
+<script type="text/plain" class="codigo" data-lang="js">
+el.classList.add("activo", "grande");   // añade (sin duplicar)
+el.classList.remove("grande");
+el.classList.toggle("activo");           // quita si está, pone si no; devuelve el estado final
+el.classList.toggle("activo", pulsado);  // con 2º argumento: fuerza (true = poner, false = quitar)
+el.classList.contains("activo");         // true / false
+</script>
+<p>Cambiar clases es la forma limpia de cambiar el aspecto: el CSS decide cómo se ve cada estado (y puede animar el cambio con una transición, lección <a href="../02-animacion/02-css-transiciones.html">2.2</a>) y JavaScript solo dice en qué estado está cada cosa.</p>
+
+<h3><code>el.style</code> frente a <code>getComputedStyle</code></h3>
+<p><code>el.style</code> es el atributo <code>style="…"</code> del elemento, <strong>nada más</strong>. No sabe lo que dicen las hojas de estilo: con <code>#caja { width: 50px }</code> en el CSS, <code>caja.style.width</code> devolvió <code>""</code>, mientras que <code>getComputedStyle(caja).width</code> devolvió <code>"50px"</code>. Las reglas de escritura, todas comprobadas:</p>
+<ul>
+  <li>Las propiedades se escriben en camelCase (<code>el.style.backgroundColor</code>) o con <code>setProperty</code> y su nombre CSS (<code>el.style.setProperty("background-color", …)</code>). Las variables CSS, solo con <code>setProperty</code> (lección <a href="02-css.html">1.2</a>).</li>
+  <li>Los valores son strings <strong>con unidad</strong>: <code>el.style.left = 100</code> se ignoró (en modo estándar; en quirks se acepta, recuerda la lección <a href="01-html.html">1.1</a>). Escribe <code>el.style.left = x + "px"</code>.</li>
+  <li>Un valor inválido se ignora en silencio y conserva el anterior: tras <code>el.style.width = "abc"</code>, seguía valiendo <code>"80px"</code>.</li>
+  <li><code>el.style.cssText = "…"</code> <strong>reemplaza</strong> todo el atributo <code>style</code>: lo que hubiera antes desaparece.</li>
+</ul>
+<p><code>getComputedStyle(el)</code> devuelve los valores finales, ya resueltos (longitudes en <code>px</code>, colores en <code>rgb()</code>). Y devuelve un objeto <em>vivo</em>: lo guardé en una variable, cambié el ancho del elemento y la misma variable ya daba el valor nuevo.</p>
+<div class="callout senior" data-titulo="Leer estilos no es gratis">
+  <p>Para responder a <code>getComputedStyle</code>, <code>offsetWidth</code>, <code>getBoundingClientRect</code> o <code>innerText</code>, el navegador tiene que tener los estilos (y a menudo el layout) al día. Si acabas de escribir un estilo, los recalcula <em>en ese momento</em>, de forma síncrona. Una lectura suelta no importa; alternar escrituras y lecturas en un bucle obliga a recalcular en cada vuelta. Lo verás con números en la lección <a href="05-event-loop.html">1.5</a> y a fondo en la <a href="../02-animacion/01-pipeline-render.html">2.1</a>.</p>
+</div>
+
+<h2>Eventos: <code>addEventListener</code></h2>
+<p>Un evento es un aviso del navegador: «han hecho clic», «se ha movido el puntero», «ha cambiado el tamaño». Te suscribes con <code>addEventListener</code>:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function alPulsar(e) {
+  console.log(e.type, e.target, e.timeStamp);
+}
+boton.addEventListener("click", alPulsar);
+boton.addEventListener("click", alPulsar);
+boton.removeEventListener("click", alPulsar, true);
+boton.removeEventListener("click", alPulsar);
+lienzo.addEventListener("pointerdown", iniciar, { once: true });
+const control = new AbortController();
+window.addEventListener("pointermove", mover, { signal: control.signal });
+window.addEventListener("pointerup", soltar, { signal: control.signal });
+control.abort();
+</script>
+<ol>
+  <li data-l="1-3">El manejador recibe un objeto evento. <code>e.type</code> es el nombre (<code>"click"</code>); <code>e.target</code>, el elemento donde ocurrió; <code>e.timeStamp</code>, el instante en milisegundos, <strong>en el mismo reloj que <code>performance.now()</code></strong> (lo comprobé), útil para calcular velocidades del puntero.</li>
+  <li data-l="4-5">Añadir la <em>misma</em> función dos veces para el mismo evento no la duplica: se llamó una sola vez por clic. Dos funciones flecha idénticas escritas por separado, en cambio, son dos funciones distintas.</li>
+  <li data-l="6">Para quitar un listener hace falta la misma función <strong>y</strong> el mismo valor de <code>capture</code>. Esta línea, con <code>true</code>, no quitó nada: el listener se había añadido con <code>capture</code> en falso.</li>
+  <li data-l="7">Esta sí lo quita. Consecuencia: un listener añadido con una función anónima (<code>addEventListener("click", () =&gt; …)</code>) no se puede quitar, porque no tienes la referencia.</li>
+  <li data-l="8"><code>once: true</code>: se quita solo tras la primera vez. Comprobado: dos clics, una llamada.</li>
+  <li data-l="9-12">El truco limpio para quitar muchos listeners de golpe: pásales la misma <code>signal</code> de un <code>AbortController</code> y llama a <code>abort()</code>. Comprobado: tras <code>abort()</code>, ninguno se volvió a llamar. Perfecto para «dejar de arrastrar».</li>
+</ol>
+</div>
+<p>Y dos propiedades del evento que conviene conocer: <code>e.currentTarget</code> es el elemento cuyo listener se está ejecutando ahora (que puede no ser <code>e.target</code>, como vas a ver), y <code>e.isTrusted</code> dice si el evento lo generó el usuario (<code>true</code>) o tu código con <code>el.click()</code> o <code>dispatchEvent</code> (<code>false</code>). Un evento fabricado solo trae lo que le pongas: lo comprobé con un <code>new PointerEvent("pointermove", { clientX, clientY })</code> en una página desplazada 1400 px, y su <code>pageY</code> no incluía el desplazamiento hasta que añadí <code>view: window</code> a las opciones.</p>
+
+<h2>El viaje de un evento: captura, objetivo y burbuja</h2>
+<p>Un evento no ocurre solo en el elemento donde haces clic. Recorre el árbol en tres fases: baja desde <code>window</code> hasta el elemento (<strong>captura</strong>), llega a él (<strong>objetivo</strong>) y vuelve a subir hasta <code>window</code> (<strong>burbuja</strong>). Los listeners normales escuchan la fase de burbuja; con <code>{ capture: true }</code>, la de captura.</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Fases de un evento: captura hacia abajo, objetivo y burbuja hacia arriba">
+  <defs>
+    <marker id="m14-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="300" y="12" width="160" height="30" rx="6"/><text x="380" y="32" text-anchor="middle">window</text>
+  <rect class="caja" x="300" y="58" width="160" height="30" rx="6"/><text x="380" y="78" text-anchor="middle">document</text>
+  <rect class="caja" x="300" y="104" width="160" height="30" rx="6"/><text x="380" y="124" text-anchor="middle">body</text>
+  <rect class="caja" x="300" y="150" width="160" height="30" rx="6"/><text x="380" y="170" text-anchor="middle">padre</text>
+  <rect x="300" y="196" width="160" height="34" rx="6" style="fill:color-mix(in srgb, var(--accent) 25%, var(--surface));stroke:var(--accent)"/><text x="380" y="218" text-anchor="middle" style="font-weight:700">hijo (target)</text>
+  <path d="M280 24 L280 205" stroke="currentColor" stroke-width="2" marker-end="url(#m14-fl)"/>
+  <text x="270" y="110" text-anchor="end" style="font-weight:700">1 · captura</text>
+  <text x="270" y="130" text-anchor="end" class="texto-tenue" style="font-size:12px">eventPhase = 1</text>
+  <text x="270" y="148" text-anchor="end" class="texto-tenue" style="font-size:12px">{ capture: true }</text>
+  <path d="M480 205 L480 24" stroke="currentColor" stroke-width="2" marker-end="url(#m14-fl)"/>
+  <text x="490" y="110" style="font-weight:700">3 · burbuja</text>
+  <text x="490" y="130" class="texto-tenue" style="font-size:12px">eventPhase = 3</text>
+  <text x="490" y="148" class="texto-tenue" style="font-size:12px">listeners normales</text>
+  <text x="380" y="246" text-anchor="middle" class="texto-tenue" style="font-size:12px">2 · objetivo (eventPhase = 2): se ejecutan los listeners del propio hijo</text>
+</svg>
+
+<p>Lo registré con un clic real sobre un hijo, con listeners de captura y de burbuja en cada nivel: captura en <code>window</code>, <code>document</code>, <code>body</code> y <code>padre</code> (fase 1); en el hijo, los dos listeners con fase 2; y luego burbuja en <code>padre</code>, <code>body</code>, <code>document</code> y <code>window</code> (fase 3). En todos ellos <code>e.target</code> fue el hijo, y <code>e.currentTarget</code>, el elemento de cada listener.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.4.1 — El recorrido de un clic, en vivo</h3>
+  <p>Tres cajas anidadas con listeners de captura y de burbuja. Al ejecutar, el código simula un clic en la caja interior con <code>interior.click()</code> para que veas el recorrido; después haz clic tú en cada caja (pulsa «Limpiar consola» entre clic y clic).</p>
+  <div class="js-playground" data-titulo="Captura y burbuja" data-altura="300">
+<script type="text/x-html">
+<div id="exterior" class="caja">exterior
+  <div id="medio" class="caja">medio
+    <div id="interior" class="caja">interior</div>
+  </div>
+</div>
+<label><input type="checkbox" id="parar"> stopPropagation() en «medio» (burbuja)</label>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 13px sans-serif; }
+.caja { padding: 14px; margin: 6px; border: 2px solid #5b46e8; border-radius: 8px; background: rgba(91, 70, 232, .08); cursor: pointer; }
+</script>
+<script type="text/x-js">
+const parar = document.getElementById("parar");
+for (const id of ["exterior", "medio", "interior"]) {
+  const el = document.getElementById(id);
+  el.addEventListener("click", (e) => {
+    console.log("captura ↓", id, "· target:", e.target.id, "· fase", e.eventPhase);
+  }, { capture: true });
+  el.addEventListener("click", (e) => {
+    console.log("burbuja ↑", id, "· target:", e.target.id, "· currentTarget:", e.currentTarget.id, "· fase", e.eventPhase);
+    if (id === "medio" && parar.checked) {
+      e.stopPropagation();
+      console.log("   (stopPropagation: el evento no sube más)");
+    }
+  });
+}
+document.getElementById("interior").click();   // clic simulado: isTrusted = false
+</script>
+  </div>
+  <p><strong>Lee la consola de arriba abajo.</strong> Primero bajan las capturas (exterior, medio, interior); en el interior, que es el objetivo, se ejecutan sus dos listeners con fase 2; después suben las burbujas (medio, exterior). <code>target</code> es siempre «interior», porque es donde ocurrió el clic; <code>currentTarget</code> cambia en cada línea, porque es el dueño del listener que se está ejecutando.</p>
+  <p><strong>Haz clic en «medio»</strong> (en su borde, fuera del interior): ahora el objetivo es «medio», la captura solo baja hasta él y la burbuja sube desde él. <strong>Marca la casilla</strong> y repite el clic en «interior»: <code>stopPropagation()</code> en la burbuja de «medio» impide que el evento llegue a «exterior». Hay una versión más drástica, <code>stopImmediatePropagation()</code>, que además impide que se ejecuten los demás listeners del mismo elemento.</p>
+  <p><strong>No todos los eventos burbujean.</strong> Lo medí con los de entrada y salida del puntero: <code>pointerenter</code> y <code>pointerleave</code> tienen <code>bubbles = false</code> y el padre solo los recibió al entrar y salir de él mismo. En cambio <code>pointerover</code> y <code>pointerout</code> burbujean, y el padre recibió un <code>pointerout</code> al entrar en su hijo (el puntero «salió» del padre para entrar en el hijo, aunque siga dentro de su caja). Para efectos de <em>hover</em> en un elemento con hijos, usa <code>pointerenter</code>/<code>pointerleave</code>.</p>
+</section>
+
+<h3>Delegación: un listener para muchos elementos</h3>
+<p>Como los eventos suben, no hace falta un listener en cada botón de una lista: basta uno en el contenedor que mire <code>e.target</code>. Con <code>closest</code> encuentras el elemento que te interesa aunque el clic cayera en un hijo suyo (un icono, un <code>&lt;span&gt;</code>):</p>
+<script type="text/plain" class="codigo" data-lang="js">
+paleta.addEventListener("click", (e) => {
+  const boton = e.target.closest("button[data-color]");   // el botón, aunque se pulse su icono
+  if (!boton || !paleta.contains(boton)) return;            // clic en un hueco, o fuera de la paleta
+  elegirColor(boton.dataset.color);
+});
+</script>
+<p>Ventajas: un solo listener en vez de cientos, y funciona también con los elementos que añadas después, porque el listener está en el contenedor, que ya existía.</p>
+
+<div class="quiz">
+  <p class="pregunta">Un <code>&lt;ul id="lista"&gt;</code> tiene un listener de <code>click</code>. Haces clic sobre un <code>&lt;span&gt;</code> que está dentro de un <code>&lt;li&gt;</code> de esa lista. Dentro del listener, ¿qué valen <code>e.target</code> y <code>e.currentTarget</code>?</p>
+  <ul>
+    <li><code>target</code> = el <code>li</code>, <code>currentTarget</code> = el <code>ul</code><div class="explicacion"><code>target</code> es el elemento más profundo donde ocurrió el clic: el <code>span</code>, no su <code>li</code>. Por eso en la delegación se usa <code>e.target.closest("li")</code>.</div></li>
+    <li data-correcta><code>target</code> = el <code>span</code>, <code>currentTarget</code> = el <code>ul</code><div class="explicacion">Exacto. <code>target</code> es donde ocurrió; <code>currentTarget</code>, el dueño del listener que se ejecuta. El evento llegó al <code>ul</code> subiendo en la fase de burbuja.</div></li>
+    <li>Los dos valen el <code>ul</code>, porque es donde está el listener.<div class="explicacion">Eso solo es cierto para <code>currentTarget</code>. <code>target</code> no cambia durante todo el recorrido del evento.</div></li>
+  </ul>
+</div>
+
+<h2><code>preventDefault</code> y los listeners pasivos</h2>
+<p>Muchos eventos tienen una <em>acción por defecto</em>: un clic en un enlace navega, un clic derecho abre el menú contextual, arrastrar selecciona texto, la rueda y el dedo desplazan la página. <code>e.preventDefault()</code> la cancela. Es lo que harás, por ejemplo, para que la rueda del ratón haga zoom en tu escena en lugar de desplazar la página.</p>
+<p>Pero hay una trampa. Para que el desplazamiento vaya fluido, el navegador quiere empezar a desplazar sin esperar a tu JavaScript. Si un listener de <code>wheel</code> o <code>touchmove</code> pudiera cancelar, tendría que esperar a que terminara cada vez. La solución son los listeners <strong>pasivos</strong> (<code>{ passive: true }</code>): prometen no llamar a <code>preventDefault</code>, y el navegador desplaza sin esperar. Y Chrome, por defecto, trata como pasivos los listeners de <code>wheel</code>, <code>touchstart</code> y <code>touchmove</code> que se añaden a <code>window</code>, <code>document</code> o <code>body</code>.</p>
+<p>Lo comprobé con una rueda real: en un listener de <code>wheel</code> añadido a <code>window</code>, el evento llegó con <code>cancelable = false</code>, <code>preventDefault()</code> no hizo nada y la consola mostró este error:</p>
+<script type="text/plain" class="codigo" data-lang="text">
+Unable to preventDefault inside passive event listener due to target being treated as passive.
+See https://www.chromestatus.com/feature/6662647093133312
+</script>
+<p>El mismo listener en un elemento normal (un <code>div</code>) recibió el evento con <code>cancelable = true</code> y sí pudo cancelarlo.</p>
+<div class="callout bestiario" data-id="m1-pasivo" data-titulo="preventDefault() no evita que la página se desplace">
+  <p><strong>Síntoma:</strong> haces zoom con la rueda o arrastras con el dedo sobre tu escena y, además, la página se desplaza. La consola dice <code>Unable to preventDefault inside passive event listener…</code>.</p>
+  <p><strong>Causa:</strong> el listener de <code>wheel</code>/<code>touchstart</code>/<code>touchmove</code> está en <code>window</code>, <code>document</code> o <code>body</code>, y Chrome lo trata como pasivo por defecto: no puede cancelar.</p>
+  <p><strong>Solución:</strong> pon el listener en el propio elemento (el canvas) o decláralo con <code>{ passive: false }</code>. Para el tacto, casi siempre es mejor la vía CSS: <code>touch-action: none</code> en el elemento le dice al navegador, antes de que llegue ningún evento, que ahí no debe desplazar ni hacer zoom. Y <code>overscroll-behavior: contain</code> evita que el desplazamiento «rebote» hacia la página.</p>
+</div>
+
+<h2>Pointer Events: ratón, dedo y lápiz con una sola API</h2>
+<p>Durante años hubo eventos de ratón (<code>mousedown</code>…) y eventos táctiles (<code>touchstart</code>…) con modelos distintos. Los <strong>Pointer Events</strong> los unifican: cualquier dispositivo que apunta (ratón, dedo, lápiz) genera los mismos eventos, <code>pointerdown</code>, <code>pointermove</code>, <code>pointerup</code> y <code>pointercancel</code>, con propiedades que dicen qué es y cómo es:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Propiedad</th><th>Qué es</th><th>Medido</th></tr></thead>
+  <tbody>
+    <tr><td><code>pointerType</code></td><td><code>"mouse"</code>, <code>"touch"</code> o <code>"pen"</code></td><td>ratón: <code>"mouse"</code>; dedo emulado: <code>"touch"</code></td></tr>
+    <tr><td><code>pointerId</code></td><td>identifica cada puntero (cada dedo tiene el suyo)</td><td>ratón: 1; cada toque nuevo: 2, 3, 4…</td></tr>
+    <tr><td><code>isPrimary</code></td><td>el primer dedo de un gesto multitáctil</td><td><code>true</code> en un solo dedo</td></tr>
+    <tr><td><code>pressure</code></td><td>presión de 0 a 1; sin sensor, 0,5 mientras está pulsado y 0 si no (así lo define la especificación)</td><td>dedo emulado: 0,5 al tocar, 0 al soltar</td></tr>
+    <tr><td><code>buttons</code></td><td>máscara de botones pulsados: 1 izquierdo, 2 derecho, 4 central (se suman)</td><td>1 en <code>pointerdown</code>, 0 en <code>pointerup</code></td></tr>
+  </tbody>
+</table>
+<p>Por compatibilidad, tras los eventos de puntero el navegador sigue lanzando los de ratón. El orden que registré para un clic de ratón sobre un elemento: <code>pointerover</code> → <code>pointerenter</code> → <code>mouseover</code> → <code>mouseenter</code> → <code>pointermove</code> → <code>mousemove</code> → <code>pointerdown</code> → <code>mousedown</code> → <code>pointerup</code> → <code>mouseup</code> → <code>click</code>. Los de puntero siempre se disparan antes que sus equivalentes de ratón. Usa solo los de puntero y te olvidas de los demás.</p>
+
+<h3>Arrastrar: <code>setPointerCapture</code> y <code>touch-action</code></h3>
+<p>El problema clásico de arrastrar: pones <code>pointermove</code> en el elemento, mueves el ratón rápido, el puntero sale del elemento y los eventos dejan de llegar. La solución es la <strong>captura del puntero</strong>: en el <code>pointerdown</code>, <code>el.setPointerCapture(e.pointerId)</code> hace que todos los eventos de ese puntero vayan a <code>el</code> hasta que se suelte, esté donde esté. Lo medí con un arrastre rápido que salía del elemento en el primer movimiento: sin captura, el elemento recibió 0 de los 10 <code>pointermove</code>; con captura, los 10.</p>
+<p>Con el dedo, además, pasan dos cosas que comprobé emulando una pantalla táctil:</p>
+<ul>
+  <li><strong>La captura es implícita</strong>: al tocar un elemento, el navegador lo captura solo (llegó un <code>gotpointercapture</code> sin haberlo pedido).</li>
+  <li><strong>El navegador te roba el gesto para desplazar la página</strong>: en un elemento normal, tras el primer <code>pointermove</code> llegó un <code>pointercancel</code> (y se perdió la captura), y la página se desplazó. Con <code>touch-action: none</code> en el elemento, llegaron todos los <code>pointermove</code> y el <code>pointerup</code> final.</li>
+</ul>
+<div class="callout bestiario" data-id="m1-arrastre-perdido" data-titulo="El arrastre se corta al mover rápido o con el dedo">
+  <p><strong>Síntoma:</strong> arrastras un objeto y, si mueves rápido, se queda atrás; o sigue «enganchado» al ratón después de soltar fuera del elemento; o en el móvil el arrastre se corta al poco de empezar y la página se desplaza.</p>
+  <p><strong>Causa:</strong> sin captura, los <code>pointermove</code> y el <code>pointerup</code> solo llegan mientras el puntero está sobre el elemento. Con el dedo, si el navegador decide desplazar, cancela el puntero con <code>pointercancel</code>.</p>
+  <p><strong>Solución:</strong> <code>el.setPointerCapture(e.pointerId)</code> en el <code>pointerdown</code>, <code>touch-action: none</code> en el CSS del elemento, y trata <code>pointercancel</code> igual que <code>pointerup</code> (termina el arrastre).</p>
+</div>
+
+<div class="callout senior" data-titulo="Más muestras de las que ves: getCoalescedEvents">
+  <p>Un ratón o un lápiz pueden informar de su posición cientos de veces por segundo, más que los fotogramas de tu pantalla. El navegador agrupa esos movimientos y te entrega menos eventos <code>pointermove</code>; las muestras intermedias siguen disponibles en <code>e.getCoalescedEvents()</code>, que devuelve un array de eventos con todas las posiciones. Para un programa de dibujo, donde quieres un trazo suave y no un polígono de pocos puntos, recorre ese array. Está disponible en contextos seguros; lo comprobé en <code>file://</code>, en <code>http://127.0.0.1</code> y en los editores del curso.</p>
+</div>
+
+<h2>Teclado: <code>key</code> frente a <code>code</code></h2>
+<p>Los eventos de teclado (<code>keydown</code> y <code>keyup</code>) llevan dos propiedades que parecen iguales y no lo son:</p>
+<ul>
+  <li><code>e.key</code>: el <strong>carácter o función</strong> que produce la tecla, teniendo en cuenta la distribución del teclado y los modificadores: <code>"a"</code>, <code>"A"</code> con <kbd>Mayús</kbd>, <code>" "</code> para el espacio, <code>"ArrowLeft"</code>, <code>"Enter"</code>.</li>
+  <li><code>e.code</code>: la <strong>tecla física</strong>, con un nombre fijo que no depende del idioma: <code>"KeyA"</code>, <code>"Space"</code>, <code>"ArrowLeft"</code>, <code>"Digit1"</code>. Los nombres son los de la posición en un teclado estadounidense.</li>
+</ul>
+<p>Lo que registré pulsando teclas en Chrome: <kbd>A</kbd> dio <code>key = "a"</code> y <code>code = "KeyA"</code>; con <kbd>Mayús</kbd>, <code>key = "A"</code> y el mismo <code>code</code>; el espacio, <code>key = " "</code> y <code>code = "Space"</code>. La consecuencia práctica: <strong>para controles de juego (WASD, flechas) usa <code>code</code></strong>, que marca la posición física. En un teclado francés AZERTY, la tecla que está en el sitio de la W produce una «z»: según la especificación UI Events, llega con <code>code = "KeyW"</code> y <code>key = "z"</code>, así que tus controles siguen en su sitio. Para atajos con significado («pulsa P para pausar»), usa <code>key</code>. En un teclado español, por cierto, la «ñ» ocupa la posición del <code>";"</code> estadounidense, así que, por esa misma regla, su <code>code</code> es <code>"Semicolon"</code> (en mis pruebas solo pude usar la distribución estadounidense del navegador sin ventana: allí la tecla <code>Semicolon</code> dio <code>key = ";"</code>).</p>
+<p>Dos detalles más: al mantener una tecla pulsada, el sistema repite el <code>keydown</code>, y esos eventos llegan con <code>e.repeat = true</code> (comprobado); y los eventos de teclado van al elemento que tiene el <em>foco</em> (<code>document.activeElement</code>). En los editores de este curso, el resultado es un <code>iframe</code>: haz clic dentro antes de pulsar teclas, o el teclado irá a la página de la lección.</p>
+
+<div class="callout bestiario" data-id="m1-tecla-atascada" data-titulo="Una tecla se queda «pulsada» para siempre">
+  <p><strong>Síntoma:</strong> en tu juego, el personaje sigue andando solo después de cambiar de pestaña, de hacer clic fuera o de abrir un diálogo mientras mantenías una tecla pulsada.</p>
+  <p><strong>Causa:</strong> guardas las teclas pulsadas en un conjunto, añadiendo en <code>keydown</code> y quitando en <code>keyup</code>. Si la ventana pierde el foco con la tecla pulsada, el <code>keyup</code> llega a otra ventana, no a la tuya. Lo reproduje: pulsé W, pasé a otra pestaña y solté W; la primera página recibió <code>blur</code> y <code>visibilitychange</code>, pero nunca el <code>keyup</code>, y seguía creyendo que W estaba pulsada.</p>
+  <p><strong>Solución:</strong> vacía el conjunto de teclas en el evento <code>blur</code> de <code>window</code> (y cuando <code>document.visibilityState</code> pase a <code>"hidden"</code>).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Programas los controles de un juego con <code>if (e.key === "w") avanzar()</code>. Un jugador con teclado francés (AZERTY) pulsa la tecla que ocupa la posición de la W. ¿Qué pasa?</p>
+  <ul>
+    <li>Avanza: <code>key</code> identifica la tecla física.<div class="explicacion">Es al revés: la tecla física la identifica <code>code</code>. <code>key</code> es el carácter producido, que en AZERTY, en esa posición, es una «z».</div></li>
+    <li data-correcta>No avanza: en esa posición su teclado produce <code>key = "z"</code>. Con <code>e.code === "KeyW"</code> funcionaría.<div class="explicacion">Correcto. <code>code</code> nombra la posición física (con el nombre del teclado estadounidense) y no cambia con el idioma; <code>key</code> depende de la distribución y de los modificadores. Además, con <code>key</code> también fallaría con <kbd>Mayús</kbd> pulsada (<code>"W"</code>) o con el bloqueo de mayúsculas.</div></li>
+    <li>Avanza, porque el navegador traduce las teclas al teclado estadounidense.<div class="explicacion">El navegador no traduce <code>key</code>: te da el carácter real que produjo la tecla en la distribución del usuario.</div></li>
+  </ul>
+</div>
+
+<h2>Los sistemas de coordenadas del puntero</h2>
+<p>Un evento de puntero trae la posición en cinco sistemas de coordenadas a la vez. Cuál usar depende de a qué quieras referir la posición:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Propiedades</th><th>Origen</th><th>Detalles comprobados</th></tr></thead>
+  <tbody>
+    <tr><td><code>clientX</code>, <code>clientY</code></td><td>esquina superior izquierda de la <strong>ventana</strong> (el viewport)</td><td>no cambian al desplazar la página. Es el sistema de <code>getBoundingClientRect()</code>: se combinan directamente</td></tr>
+    <tr><td><code>pageX</code>, <code>pageY</code></td><td>esquina del <strong>documento</strong></td><td><code>client</code> + desplazamiento: con la página desplazada 100 px, <code>clientY = 100</code> dio <code>pageY = 200</code></td></tr>
+    <tr><td><code>offsetX</code>, <code>offsetY</code></td><td>borde del <strong>padding</strong> del elemento <code>target</code></td><td>excluye el borde; <strong>cambia de referencia cuando el puntero pasa a un hijo</strong>; y viene en coordenadas locales, sin transformar</td></tr>
+    <tr><td><code>screenX</code>, <code>screenY</code></td><td>esquina de la <strong>pantalla</strong> física</td><td>casi nunca las necesitas (dependen de dónde esté la ventana)</td></tr>
+    <tr><td><code>movementX</code>, <code>movementY</code></td><td>desplazamiento desde el evento anterior</td><td>la base de las cámaras «de ratón» con <em>pointer lock</em></td></tr>
+  </tbody>
+</table>
+<p>La fila de <code>offsetX</code> tiene tres trampas y las tres las medí. <strong>Primera</strong>: es relativa al borde del <em>padding</em>, no al exterior de la caja: sobre un padre con 10 px de borde, 25 px desde el borde del padding dieron <code>offsetX = 25</code>, mientras que <code>clientX − rect.left</code> daba 35. <strong>Segunda</strong>: es relativa al <code>target</code>, y el <code>target</code> es el elemento más profundo bajo el puntero; al pasar sobre un hijo, <code>offsetX</code> saltó de 25 (relativo al padre) a 40 (relativo al hijo). <strong>Tercera</strong>, y esta es una ventaja: viene en las coordenadas <em>locales</em> del elemento, deshaciendo sus transformaciones. En una caja escalada ×2, un punto 100 px visuales a la derecha de su esquina dio <code>offsetX = 50</code>; en una caja girada 90°, un clic cerca de la esquina visual superior derecha dio <code>offsetX, offsetY = 10, 10</code>, porque esa es su esquina local superior izquierda.</p>
+
+<div class="callout bestiario" data-id="m1-offsetx-hijo" data-titulo="Las coordenadas del ratón saltan al pasar por encima de algo">
+  <p><strong>Síntoma:</strong> usas <code>e.offsetX</code>/<code>offsetY</code> para dibujar o posicionar algo bajo el puntero y, al pasar sobre un elemento hijo (un icono, una etiqueta, un texto), la posición salta de golpe.</p>
+  <p><strong>Causa:</strong> <code>offsetX</code> se mide respecto al <code>target</code>, el elemento más profundo bajo el puntero, no respecto al elemento donde pusiste el listener.</p>
+  <p><strong>Solución:</strong> calcula la posición respecto al elemento que te interesa con <code>e.clientX − el.getBoundingClientRect().left</code> (y lo mismo en Y), o pon <code>pointer-events: none</code> en los hijos para que el <code>target</code> sea siempre el padre. Lo comprobé: con los hijos así, el <code>target</code> fue siempre el padre y <code>offsetX</code> siempre relativo a él.</p>
+</div>
+
+<h3>La demo: todos los sistemas a la vez</h3>
+<p>Mueve el puntero por el padre y por su hijo. La tabla muestra todos los sistemas en vivo, más dos cálculos que haremos a mano enseguida: la posición local (con y sin tener en cuenta la transformación) y la conversión a píxeles de un canvas imaginario del tamaño del padre y a coordenadas de GL. Prueba las transformaciones y la casilla de <code>pointer-events</code>. Al cargar, la tabla muestra un evento simulado sobre el hijo (<code>isTrusted = false</code>); en cuanto muevas el puntero, verás los reales.</p>
+
+<div class="demo ancho" id="demo-coords">
+  <div class="m1-escenario m1-rejilla" style="height:330px">
+    <div class="m1-insp-padre" id="insp-padre"><div class="m1-insp-hijo" id="insp-hijo">hijo</div></div>
+    <div class="m1-cruz-h"></div><div class="m1-cruz-v"></div>
+  </div>
+  <div class="demo-controles"></div>
+  <div class="demo-info m1-insp-info"></div>
+</div>
+
+<h3>De la ventana a coordenadas locales</h3>
+<p>La receta general para saber dónde está el puntero dentro de un elemento es restar la esquina de su rectángulo:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+const r = el.getBoundingClientRect();    // en coordenadas de ventana, como clientX
+const x = e.clientX - r.left;            // px CSS desde el borde EXTERIOR (incluye el borde de la caja)
+const y = e.clientY - r.top;
+</script>
+<p>Funciona con cualquier <code>target</code> (los hijos no la alteran) y con la página desplazada, porque <code>clientX</code> y <code>getBoundingClientRect()</code> están en el mismo sistema. Sus dos límites los viste en la demo: si el elemento está <strong>escalado</strong>, la resta da píxeles de pantalla y hay que dividir por la escala (<code>r.width / el.offsetWidth</code>); si está <strong>girado</strong>, el rectángulo es la caja alineada que envuelve al elemento y la resta no significa nada útil. En la demo, la fila «local exacto» deshace la transformación con una matriz inversa (<code>DOMMatrix</code>, el mismo cálculo que hace el navegador para darte <code>offsetX</code>); lo verás con matrices en las lecciones <a href="../03-matematicas/05-matrices.html">3.5</a> (coordenadas locales con la matriz inversa) y <a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a> (del ratón a la escena 3D). Para un canvas, que casi nunca se gira, la resta basta.</p>
+
+<h3>De coordenadas locales a píxeles del canvas</h3>
+<p>Un canvas tiene dos tamaños (lección <a href="01-html.html">1.1</a>): la caja CSS, donde está el puntero, y el búfer, donde dibujas. Para pasar de una a otro hay que escalar por la relación entre los dos:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+function aPixelesDelCanvas(e, canvas) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * (canvas.width / r.width),     // px CSS → px del búfer
+    y: (e.clientY - r.top) * (canvas.height / r.height),
+  };
+}
+</script>
+<p>Si el búfer tiene los píxeles físicos de la caja (<code>canvas.width = clientWidth * devicePixelRatio</code>), el factor <code>canvas.width / r.width</code> vale justo <code>devicePixelRatio</code>. Esta función supone un canvas <strong>sin borde ni padding</strong>. Si los tiene, el dibujo ocupa solo la caja de contenido y hay que descontarlos:</p>
+<div class="callout bestiario" data-id="m1-raton-desplazado" data-titulo="El dibujo aparece desplazado del ratón, más cuanto más cerca del borde">
+  <p><strong>Síntoma:</strong> pintas donde está el ratón y el trazo sale unos píxeles desplazado; en el centro casi coincide, pero cerca de los bordes el error crece. O sale bien en tu portátil y mal en otra pantalla.</p>
+  <p><strong>Causa:</strong> falta una de las piezas de la conversión. O no escalas de px CSS a px del búfer (el error es un factor <code>devicePixelRatio</code>, y crece hacia la derecha y hacia abajo), o el canvas tiene <code>border</code> o <code>padding</code>, que <code>getBoundingClientRect()</code> incluye y el búfer no. Medí un canvas con 10 px de borde, 5 de padding y 300 px de contenido: su rectángulo medía 330 px, así que la fórmula simple escalaba por 600 / 330 en vez de 600 / 300 y desplazaba el origen 15 px. Justo en el centro los dos errores se compensan, y por eso cuesta tanto verlo.</p>
+  <p><strong>Solución:</strong> escala siempre por <code>canvas.width / anchoDelContenido</code>, y si hay borde o padding, resta primero <code>canvas.clientLeft</code> (el borde) y el padding: <code>x = (e.clientX − r.left − canvas.clientLeft − paddingIzq) * canvas.width / anchoDelContenido</code>. Mejor todavía: no le pongas borde ni padding al canvas; envuélvelo en un <code>div</code> que los tenga.</p>
+</div>
+
+<h3>De píxeles del canvas a coordenadas de GL</h3>
+<p>En el DOM, en CSS y en Canvas 2D, el origen está arriba a la izquierda y la Y crece <strong>hacia abajo</strong>. En WebGL, <code>gl_FragCoord</code> tiene el origen <strong>abajo</strong> a la izquierda y la Y crece hacia arriba; y los vértices se colocan en <em>coordenadas normalizadas</em> (NDC), de −1 a 1 en los dos ejes, con el centro en 0 (las definirás en la lección <a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a> y colocarás vértices con ellas en la <a href="../05-webgl/02-primer-triangulo.html">5.2</a>). A partir de las coordenadas en píxeles del búfer (<code>px</code>, <code>py</code>, medidas desde arriba):</p>
+$$x_{gl} = p_x,\qquad y_{gl} = H - p_y \qquad\qquad x_{ndc} = \frac{2\,p_x}{W} - 1,\qquad y_{ndc} = 1 - \frac{2\,p_y}{H}$$
+<p>donde <code>W</code> × <code>H</code> es el tamaño del búfer. Un detalle fino: <code>gl_FragCoord</code> mide el <em>centro</em> de cada píxel, así que el píxel de la fila <code>i</code> contando desde arriba tiene <code>gl_FragCoord.y = H − i − 0.5</code>. Los editores de GLSL de este curso hacen exactamente esta conversión para rellenar <code>u_mouse</code>; esta es la línea, copiada tal cual de <code>assets/js/playground-glsl.js</code>:</p>
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="playground-glsl.js · posRaton()">
+const r = canvas.getBoundingClientRect();
+return [(e.clientX - r.left) * (canvas.width / r.width), (r.bottom - e.clientY) * (canvas.height / r.height)];
+</script>
+<p>Fíjate en el segundo elemento: <code>r.bottom − e.clientY</code> mide desde el borde <em>inferior</em>, que es invertir la Y en un solo paso.</p>
+<div class="callout bestiario" data-id="m1-raton-invertido" data-titulo="En mi shader, el ratón va al revés en vertical">
+  <p><strong>Síntoma:</strong> el efecto sigue al ratón en horizontal, pero en vertical va al revés: subes y el efecto baja.</p>
+  <p><strong>Causa:</strong> pasas al shader la coordenada del DOM (Y hacia abajo) y la comparas con <code>gl_FragCoord</code> (Y hacia arriba).</p>
+  <p><strong>Solución:</strong> invierte la Y al convertir: <code>y = (r.bottom − e.clientY) * (canvas.height / r.height)</code>, o <code>canvas.height − py</code> si ya tenías los píxeles desde arriba. Escala también por la relación búfer/caja, o fallará en pantallas retina.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.4.2 — Una mira que sigue al puntero en un canvas nítido</h3>
+  <p>Un canvas con el búfer a resolución física (como en el ejercicio 1.1.4). Dibujamos una mira en la posición del puntero y mostramos sus coordenadas en los tres sistemas. Al ejecutar, la mira aparece en el centro; mueve el puntero por el resultado.</p>
+  <div class="js-playground" data-titulo="Del puntero al búfer y a GL" data-altura="360" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+const dpr = window.devicePixelRatio || 1;
+canvas.width = Math.round(canvas.clientWidth * dpr);       // búfer a resolución física
+canvas.height = Math.round(canvas.clientHeight * dpr);
+const W = canvas.width, H = canvas.height;
+
+function dibujar(px, py) {                                  // px, py: píxeles del BÚFER, desde arriba
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = "#ff6b7a"; ctx.lineWidth = dpr;
+  ctx.beginPath();
+  ctx.moveTo(px, 0); ctx.lineTo(px, H);
+  ctx.moveTo(0, py); ctx.lineTo(W, py);
+  ctx.stroke();
+  const glY = H - py;                                       // Y hacia arriba
+  const ndcX = 2 * px / W - 1, ndcY = 1 - 2 * py / H;       // de −1 a 1
+  ctx.fillStyle = "#e4e7ee";
+  ctx.font = (13 * dpr) + "px monospace";
+  const lineas = [
+    "búfer " + W + "×" + H + " (dpr " + dpr + ")",
+    "píxel del búfer: " + px.toFixed(1) + ", " + py.toFixed(1),
+    "GL (Y arriba):   " + px.toFixed(1) + ", " + glY.toFixed(1),
+    "NDC:             " + ndcX.toFixed(3) + ", " + ndcY.toFixed(3),
+  ];
+  lineas.forEach((l, i) => ctx.fillText(l, 10 * dpr, (20 + i * 18) * dpr));
+}
+
+canvas.addEventListener("pointermove", (e) => {
+  const r = canvas.getBoundingClientRect();
+  const px = (e.clientX - r.left) * (W / r.width);          // px CSS → px del búfer
+  const py = (e.clientY - r.top) * (H / r.height);
+  dibujar(px, py);
+});
+dibujar(W / 2, H / 2);
+console.log("caja CSS", canvas.clientWidth, "×", canvas.clientHeight, "· búfer", W, "×", H);
+</script>
+  </div>
+  <p><strong>El búfer.</strong> Las tres primeras líneas ajustan el búfer a los píxeles físicos. Todo el dibujo trabaja después en píxeles del búfer: por eso el grosor de línea y el tamaño de la fuente se multiplican por <code>dpr</code> (sin <code>ctx.scale</code>, a diferencia del ejercicio 1.1.4, para que veas los números reales del búfer).</p>
+  <p><strong>La conversión.</strong> En cada <code>pointermove</code>, restamos la esquina del rectángulo (px CSS desde la esquina del canvas) y escalamos por <code>W / r.width</code>, que en una pantalla retina vale 2. Si quitas los factores de escala, la mira solo coincidirá con el puntero en la esquina superior izquierda y se alejará de él hacia la derecha y hacia abajo: es el primer caso del bestiario del ratón desplazado.</p>
+  <p><strong>GL y NDC.</strong> <code>H − py</code> invierte la Y. En el centro del canvas, NDC vale (0, 0); en la esquina superior izquierda, (−1, 1): la Y de NDC también apunta hacia arriba. Estas dos cuentas son todo lo que necesitas para pasar el puntero a un shader (<code>u_mouse</code> en píxeles, con Y hacia arriba) o para colocar un vértice donde ha hecho clic el usuario (NDC).</p>
+  <p><strong><code>touch-action: none</code></strong> en el CSS del canvas: en un móvil, sin él, arrastrar el dedo desplazaría la página en lugar de mover la mira.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Un listener de <code>pointermove</code> en un <code>div</code> con padding lee <code>e.offsetX</code>. El puntero se mueve 1 px a la derecha, pasando del padding del <code>div</code> a un <code>&lt;span&gt;</code> hijo. ¿Qué le pasa a <code>offsetX</code>?</p>
+  <ul>
+    <li>Aumenta en 1, como siempre que el puntero avanza 1 px.<div class="explicacion">Solo si el <code>target</code> no cambia. Al entrar en el <code>span</code>, el <code>target</code> pasa a ser el <code>span</code> y <code>offsetX</code> se mide desde su borde de padding.</div></li>
+    <li data-correcta>Salta a un valor pequeño: ahora se mide desde el borde del <code>span</code>.<div class="explicacion">Correcto. <code>offsetX</code> es relativa al elemento más profundo bajo el puntero (el <code>target</code>), no al dueño del listener. Para medir siempre respecto al <code>div</code>: <code>e.clientX − div.getBoundingClientRect().left</code>, o <code>pointer-events: none</code> en los hijos.</div></li>
+    <li>Se queda igual, porque el listener está en el <code>div</code>.<div class="explicacion">El sitio del listener no importa para <code>offsetX</code>. Es la trampa de este bestiario.</div></li>
+  </ul>
+</div>
+
+<h2>Observadores: <code>ResizeObserver</code> e <code>IntersectionObserver</code></h2>
+<h3><code>ResizeObserver</code>: enterarse de que un elemento cambia de tamaño</h3>
+<p>El evento <code>resize</code> de <code>window</code> solo avisa cuando cambia la ventana. Pero un canvas puede cambiar de tamaño por muchas otras razones: un panel que se abre, un cambio de maquetación, un contenedor flexible. <code>ResizeObserver</code> vigila elementos concretos:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const ro = new ResizeObserver((entradas) => {
+  for (const entrada of entradas) {
+    const caja = entrada.contentBoxSize[0];
+    const fisico = entrada.devicePixelContentBoxSize?.[0];
+    canvas.width = fisico ? fisico.inlineSize : Math.round(caja.inlineSize * devicePixelRatio);
+    canvas.height = fisico ? fisico.blockSize : Math.round(caja.blockSize * devicePixelRatio);
+  }
+});
+ro.observe(canvas);
+</script>
+<ol>
+  <li data-l="1">El callback recibe una lista de entradas, una por elemento que ha cambiado. Se ejecuta en el propio frame, <strong>después del layout y antes de pintar</strong>: registré que, en el primer frame, el callback de <code>requestAnimationFrame</code> llegó antes que el del observador.</li>
+  <li data-l="3"><code>contentBoxSize</code>: el tamaño de la caja de contenido en px CSS (<code>inlineSize</code> es el ancho en texto horizontal; <code>blockSize</code>, el alto). Admite decimales: un canvas con <code>width: 300.5px</code> dio 300,5.</li>
+  <li data-l="4"><code>devicePixelContentBoxSize</code>: el tamaño en <strong>píxeles físicos exactos</strong>, ya redondeado como lo redondea el navegador al pintar. Con un factor de escala real de 2, la caja de 300,5 × 150 px CSS dio 601 × 300. Es lo que necesita un búfer para ser nítido sin adivinar redondeos. (Con la escala «emulada» de las herramientas de pruebas, en cambio, no cambió: comprueba en un dispositivo real).</li>
+  <li data-l="5-6">Si existe, usamos el tamaño físico exacto; si no, multiplicamos y redondeamos nosotros.</li>
+  <li data-l="9">Empieza a vigilar. El callback se llama también una vez al principio, con el tamaño inicial.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m1-canvas-crece" data-titulo="El canvas crece sin parar hasta llenar (y romper) la página">
+  <p><strong>Síntoma:</strong> al ajustar el búfer al tamaño de la caja, el canvas se hace más grande en cada frame (en una pantalla retina sí, en tu monitor normal no), y la consola se llena de <code>ResizeObserver loop completed with undelivered notifications.</code></p>
+  <p><strong>Causa:</strong> el canvas no tiene tamaño CSS. Su caja toma entonces el tamaño del búfer (lección <a href="01-html.html">1.1</a>), así que multiplicar el búfer por <code>devicePixelRatio</code> agranda la caja, lo que dispara el observador, que vuelve a multiplicar… Lo reproduje con un factor de escala real de 2: la caja pasó por 600×300, 1200×600, 2400×1200… hasta 76800×38400 en menos de un segundo, con ese error en cada frame. Con factor 1 no pasaba nada, por eso «en mi máquina funciona».</p>
+  <p><strong>Solución:</strong> fija el tamaño de la caja con CSS, independiente del búfer (<code>width: 100%; height: 100%</code> en un contenedor con tamaño, o <code>position: fixed; inset: 0</code>). La caja manda y el búfer la sigue; nunca al revés.</p>
+</div>
+
+<h3><code>IntersectionObserver</code>: ¿está a la vista?</h3>
+<p>Una animación que nadie ve gasta batería. <code>IntersectionObserver</code> avisa cuando un elemento entra o sale de la zona visible:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+new IntersectionObserver((entradas) => {
+  for (const e of entradas) e.isIntersecting ? animacion.iniciar() : animacion.parar();
+}, { rootMargin: "100px" }).observe(canvas);   // rootMargin: avisa 100 px antes de que entre
+</script>
+<p>Como <code>ResizeObserver</code>, llama una vez al empezar con el estado inicial (comprobé que con el elemento fuera de la pantalla llegaba <code>isIntersecting = false</code> y, al desplazar hasta él, <code>true</code>). Todos los componentes de este curso lo usan: por eso los editores y las demos se detienen cuando sales de ellos. Y combinado con el ejemplo 1.3.2, ya tienes animaciones que solo trabajan cuando se ven.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 1.4.1 — Cien botones, un listener</h3>
+  <p>El código crea 100 botones de colores y les pone un listener a cada uno. Cámbialo para que haya <strong>un solo listener</strong>, en el contenedor, que funcione también si se pulsa el círculo de color que hay dentro de cada botón y con los botones que se añadan después (el botón «añadir» crea más). Al pulsar cualquier botón, la consola debe imprimir su número, y la línea inicial debe decir cuántos listeners de <code>click</code> has añadido.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.4.1" data-altura="260">
+<script type="text/x-html">
+<div id="paleta"></div>
+<button id="anadir">añadir 10 más</button>
+</script>
+<script type="text/x-css">
+body { padding: 8px; font: 12px sans-serif; }
+#paleta { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+#paleta button { display: flex; align-items: center; gap: 4px; padding: 3px 6px; font: 12px monospace; }
+#paleta i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+</script>
+<script type="text/x-js">
+const paleta = document.getElementById("paleta");
+let listeners = 0, n = 0;
+
+function crearBoton() {
+  const b = document.createElement("button");
+  b.dataset.numero = n;
+  b.innerHTML = `<i style="background:hsl(${n * 37 % 360} 70% 55%)"></i>${n}`;
+  b.addEventListener("click", () => console.log("botón", b.dataset.numero));
+  listeners++;
+  n++;
+  paleta.append(b);
+}
+for (let i = 0; i < 100; i++) crearBoton();
+document.getElementById("anadir").addEventListener("click", () => { for (let i = 0; i < 10; i++) crearBoton(); });
+console.log("listeners de click en botones de la paleta:", listeners);
+</script>
+<script type="text/x-js" data-solucion>
+const paleta = document.getElementById("paleta");
+let listeners = 0, n = 0;
+
+function crearBoton() {
+  const b = document.createElement("button");
+  b.dataset.numero = n;
+  b.innerHTML = `<i style="background:hsl(${n * 37 % 360} 70% 55%)"></i>${n}`;
+  n++;
+  paleta.append(b);
+}
+// Un único listener en el contenedor: los clics suben desde el botón (o su círculo)
+paleta.addEventListener("click", (e) => {
+  const b = e.target.closest("button");        // el botón, aunque se pulsara el <i>
+  if (!b || !paleta.contains(b)) return;       // clic en un hueco de la paleta
+  console.log("botón", b.dataset.numero);
+});
+listeners++;
+for (let i = 0; i < 100; i++) crearBoton();
+document.getElementById("anadir").addEventListener("click", () => { for (let i = 0; i < 10; i++) crearBoton(); });
+console.log("listeners de click en botones de la paleta:", listeners);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El clic en un botón sube hasta <code>#paleta</code> en la fase de burbuja. ¿Qué te dice <code>e.target</code> allí?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si se pulsa el círculo, <code>e.target</code> es el <code>&lt;i&gt;</code>, no el botón. ¿Qué método busca el ancestro más cercano que cumple un selector?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Un solo listener en <code>#paleta</code> recibe los clics de todos sus descendientes, porque suben en la fase de burbuja. <code>e.target.closest("button")</code> sube desde el elemento pulsado (el botón o su <code>&lt;i&gt;</code>) hasta el primer <code>button</code>; si no hay ninguno (un clic en el hueco entre botones), devuelve <code>null</code> y salimos. La comprobación <code>paleta.contains(b)</code> evita reaccionar a un botón que estuviera <em>fuera</em> de la paleta y contuviera a la paleta, algo que aquí no ocurre pero que en páginas complejas sí.</p>
+    <p>Los botones creados con «añadir» funcionan sin hacer nada, porque el listener está en el contenedor. Y la consola inicial dice 1 en lugar de 100. En una lista de miles de elementos (las teclas de un piano, las celdas de una rejilla) la diferencia en memoria y en tiempo de preparación es notable.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.4.2 — Arrastrar sin perder la caja</h3>
+  <p>La caja se puede arrastrar, pero si mueves el ratón rápido se queda atrás, y si sueltas fuera de ella sigue «pegada» al volver a entrar; además, salta para centrarse en el puntero al empezar. Arréglalo: la caja debe seguir al puntero aunque salga de ella, soltarse siempre al soltar el botón (también con <code>pointercancel</code>), funcionar con el dedo y mantener el punto por el que la agarraste. En cada <code>pointerdown</code>, imprime <code>pointerType</code> y <code>pointerId</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.4.2" data-altura="280" data-fondo="oscuro">
+<script type="text/x-html">
+<div id="caja">arrástrame</div>
+</script>
+<script type="text/x-css">
+body { margin: 0; height: 100vh; position: relative; overflow: hidden; }
+#caja { position: absolute; left: 40px; top: 40px; width: 110px; height: 70px; border-radius: 10px;
+        background: #8b7bff; color: #fff; font: 13px sans-serif; display: flex; align-items: center; justify-content: center;
+        cursor: grab; user-select: none; }
+</script>
+<script type="text/x-js">
+const caja = document.getElementById("caja");
+let arrastrando = false;
+
+caja.addEventListener("pointerdown", (e) => {
+  arrastrando = true;
+});
+caja.addEventListener("pointermove", (e) => {
+  if (!arrastrando) return;
+  // centra la caja en el puntero
+  caja.style.left = e.clientX - caja.offsetWidth / 2 + "px";
+  caja.style.top = e.clientY - caja.offsetHeight / 2 + "px";
+});
+caja.addEventListener("pointerup", () => { arrastrando = false; });
+</script>
+<script type="text/x-css" data-solucion>
+body { margin: 0; height: 100vh; position: relative; overflow: hidden; }
+#caja { position: absolute; left: 40px; top: 40px; width: 110px; height: 70px; border-radius: 10px;
+        background: #8b7bff; color: #fff; font: 13px sans-serif; display: flex; align-items: center; justify-content: center;
+        cursor: grab; user-select: none;
+        touch-action: none; }   /* con el dedo: que el navegador no desplace ni haga zoom aquí */
+</script>
+<script type="text/x-js" data-solucion>
+const caja = document.getElementById("caja");
+let agarre = null;   // null = no se arrastra; si no, el punto de agarre dentro de la caja
+
+caja.addEventListener("pointerdown", (e) => {
+  caja.setPointerCapture(e.pointerId);            // todos los eventos de este puntero, para la caja
+  const r = caja.getBoundingClientRect();
+  agarre = { x: e.clientX - r.left, y: e.clientY - r.top };   // dónde la agarré
+  console.log("pointerdown:", e.pointerType, "· pointerId", e.pointerId);
+});
+caja.addEventListener("pointermove", (e) => {
+  if (!agarre) return;
+  caja.style.left = e.clientX - agarre.x + "px";   // mantiene el punto de agarre bajo el puntero
+  caja.style.top = e.clientY - agarre.y + "px";
+});
+const soltar = () => { agarre = null; };          // la captura se libera sola al soltar
+caja.addEventListener("pointerup", soltar);
+caja.addEventListener("pointercancel", soltar);   // p. ej., el sistema interrumpe el gesto
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué método hace que los eventos de un puntero sigan llegando a un elemento aunque el puntero salga de él?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para no «saltar», guarda en el <code>pointerdown</code> la distancia entre el puntero y la esquina de la caja, y réstala al mover.</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>Para el dedo hace falta una línea de CSS, no de JavaScript.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>Captura.</strong> <code>setPointerCapture(e.pointerId)</code> en el <code>pointerdown</code> envía a la caja todos los eventos de ese puntero hasta que se suelta, aunque salga de ella; y el <code>pointerup</code> también llega aunque sueltes fuera, así que la caja ya no se queda pegada. La captura se libera sola al soltar.</p>
+    <p><strong>El punto de agarre.</strong> En el <code>pointerdown</code> guardamos dónde agarramos la caja (<code>e.clientX − r.left</code>); al mover, colocamos la esquina en la posición del puntero menos ese agarre. Usamos <code>clientX</code> porque la caja es <code>absolute</code> dentro de un <code>body</code> que ocupa la ventana sin desplazarse; en una página con scroll, restarías también la posición del contenedor.</p>
+    <p><strong>El dedo.</strong> <code>touch-action: none</code> le dice al navegador que no use los gestos sobre la caja para desplazar ni hacer zoom. Sin esa línea, en un móvil llegaría un <code>pointercancel</code> al empezar a mover (lo que comprobé emulando una pantalla táctil) y el arrastre se cortaría. Tratar <code>pointercancel</code> como <code>pointerup</code> hace que la caja no se quede en estado «arrastrando» si el sistema interrumpe el gesto.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.4.3 — El ratón desplazado</h3>
+  <p>Este canvas tiene un borde de 6 px, un padding de 10 px y un búfer de 400 × 200 píxeles mostrado en una caja de contenido de 200 × 100 px CSS. La función <code>aPixeles</code> está mal: pinta desplazado respecto al ratón. Arréglala. Para comprobarlo sin ratón, el código simula clics en tres puntos conocidos del contenido (esquina superior izquierda, centro y esquina inferior derecha); al terminar, las tres líneas deben dar aproximadamente <code>(0, 0)</code>, <code>(200, 100)</code> y <code>(400, 200)</code> y marcarse con <code>✓</code>. Después haz clic tú en el canvas y comprueba que el punto aparece bajo el puntero.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.4.3" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo" width="400" height="200"></canvas>
+</script>
+<script type="text/x-css">
+body { padding: 20px; }
+#lienzo { width: 200px; height: 100px; border: 6px solid #8791a5; padding: 10px; background: #161a22; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+
+function aPixeles(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };    // ← arréglala
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  const p = aPixeles(e);
+  ctx.fillStyle = "#ff6b7a";
+  ctx.fillRect(p.x - 4, p.y - 4, 8, 8);
+});
+
+// --- comprobación automática (no hace falta tocarla) ---
+const r = canvas.getBoundingClientRect(), cs = getComputedStyle(canvas);
+const x0 = r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
+const y0 = r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop);
+for (const [fx, fy, ex, ey] of [[0, 0, 0, 0], [0.5, 0.5, 200, 100], [1, 1, 400, 200]]) {
+  const e = new PointerEvent("pointerdown", { clientX: x0 + fx * 200, clientY: y0 + fy * 100, bubbles: true });
+  const p = aPixeles(e);
+  const ok = Math.abs(p.x - ex) < 1 && Math.abs(p.y - ey) < 1;
+  console.log(ok ? "✓" : "✗", "clic en (" + fx + ", " + fy + ") del contenido →", p.x.toFixed(1), p.y.toFixed(1), "(esperado " + ex + ", " + ey + ")");
+  canvas.dispatchEvent(e);
+}
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+
+function aPixeles(e) {
+  const r = canvas.getBoundingClientRect();
+  const cs = getComputedStyle(canvas);
+  const padIzq = parseFloat(cs.paddingLeft), padArr = parseFloat(cs.paddingTop);
+  // 1. del exterior de la caja al borde del CONTENIDO: fuera el borde y el padding
+  const xc = e.clientX - r.left - canvas.clientLeft - padIzq;
+  const yc = e.clientY - r.top - canvas.clientTop - padArr;
+  // 2. de px CSS a px del búfer: escalar por búfer / contenido
+  const anchoContenido = canvas.clientWidth - padIzq - parseFloat(cs.paddingRight);
+  const altoContenido = canvas.clientHeight - padArr - parseFloat(cs.paddingBottom);
+  return { x: xc * (canvas.width / anchoContenido), y: yc * (canvas.height / altoContenido) };
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  const p = aPixeles(e);
+  ctx.fillStyle = "#ff6b7a";
+  ctx.fillRect(p.x - 4, p.y - 4, 8, 8);
+});
+
+// --- comprobación automática (no hace falta tocarla) ---
+const r = canvas.getBoundingClientRect(), cs = getComputedStyle(canvas);
+const x0 = r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
+const y0 = r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop);
+for (const [fx, fy, ex, ey] of [[0, 0, 0, 0], [0.5, 0.5, 200, 100], [1, 1, 400, 200]]) {
+  const e = new PointerEvent("pointerdown", { clientX: x0 + fx * 200, clientY: y0 + fy * 100, bubbles: true });
+  const p = aPixeles(e);
+  const ok = Math.abs(p.x - ex) < 1 && Math.abs(p.y - ey) < 1;
+  console.log(ok ? "✓" : "✗", "clic en (" + fx + ", " + fy + ") del contenido →", p.x.toFixed(1), p.y.toFixed(1), "(esperado " + ex + ", " + ey + ")");
+  canvas.dispatchEvent(e);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Desde dónde mide <code>r.left</code>? ¿Dónde empieza de verdad la zona dibujada del canvas?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>canvas.clientLeft</code> es el ancho del borde izquierdo; el padding lo da <code>getComputedStyle</code>. Y <code>clientWidth</code> incluye el padding: réstalo para obtener el ancho del contenido.</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>Faltan dos cosas: desplazar el origen y escalar. El factor de escala es <code>canvas.width</code> dividido por el ancho del contenido en px CSS.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La versión original tenía dos errores. <strong>El origen</strong>: <code>r.left</code> es el exterior del borde, pero el búfer se dibuja en la caja de contenido, 6 px de borde + 10 px de padding más adentro. <strong>La escala</strong>: la resta da px CSS, y el búfer tiene 400 píxeles repartidos en 200 px CSS; hay que multiplicar por 400 / 200 = 2. Con los dos errores, el clic en la esquina del contenido daba (16, 16) en vez de (0, 0) y el del centro, (116, 66) en vez de (200, 100).</p>
+    <p>La solución resta el borde (<code>clientLeft</code>/<code>clientTop</code>) y el padding (de <code>getComputedStyle</code>), y escala por <code>canvas.width / anchoContenido</code>, donde el ancho del contenido es <code>clientWidth</code> menos el padding horizontal. Es la fórmula completa, válida para cualquier canvas sin transformaciones. En la práctica, la forma de no necesitarla es no dar borde ni padding al canvas y envolverlo en un contenedor que los tenga: entonces <code>(e.clientX − r.left) * canvas.width / r.width</code> basta.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 1.4.4 — Controles de juego con el teclado</h3>
+  <p>Mueve la nave con WASD o con las flechas, con movimiento suave (a una velocidad en px/s, calculada con el tiempo entre frames) mientras la tecla esté pulsada, diagonales incluidas. Requisitos: usa <code>e.code</code> (que funcione en teclados AZERTY), ignora las repeticiones automáticas, evita que las flechas y el espacio desplacen la página, y que la nave no siga moviéndose si la ventana pierde el foco con una tecla pulsada. Imprime en la consola cada tecla nueva que se pulse (su <code>code</code> y su <code>key</code>). <strong>Haz clic en el resultado antes de usar el teclado</strong>, para darle el foco.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.4.4" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+<p id="ayuda">haz clic aquí y usa WASD o las flechas</p>
+</script>
+<script type="text/x-css">
+body { margin: 0; }
+canvas { width: 100%; height: 100vh; display: block; }
+#ayuda { position: absolute; left: 10px; top: 0; color: #8791a5; font: 12px sans-serif; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const nave = { x: canvas.width / 2, y: canvas.height / 2 };
+const VELOCIDAD = 220;             // px por segundo
+
+// TODO: guarda aquí las teclas pulsadas (por su code)
+
+window.addEventListener("keydown", (e) => {
+  // TODO
+});
+window.addEventListener("keyup", (e) => {
+  // TODO
+});
+
+let anterior = null;
+function frame(ms) {
+  const dt = anterior === null ? 0 : (ms - anterior) / 1000;   // segundos desde el frame anterior
+  anterior = ms;
+  let dx = 0, dy = 0;
+  // TODO: calcula dx, dy (−1, 0 o 1) según las teclas pulsadas
+
+  nave.x += dx * VELOCIDAD * dt;
+  nave.y += dy * VELOCIDAD * dt;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#3fd0e8";
+  ctx.beginPath();
+  ctx.arc(nave.x, nave.y, 12, 0, 2 * Math.PI);
+  ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const nave = { x: canvas.width / 2, y: canvas.height / 2 };
+const VELOCIDAD = 220;             // px por segundo
+
+const pulsadas = new Set();        // codes de las teclas que están abajo AHORA
+const CONTROLES = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"]);
+
+window.addEventListener("keydown", (e) => {
+  if (CONTROLES.has(e.code)) e.preventDefault();     // que las flechas y el espacio no desplacen la página
+  if (e.repeat) return;                              // repetición automática: la tecla ya estaba en el conjunto
+  pulsadas.add(e.code);
+  console.log("pulsada:", e.code, "· key:", JSON.stringify(e.key));
+});
+window.addEventListener("keyup", (e) => pulsadas.delete(e.code));
+window.addEventListener("blur", () => pulsadas.clear());   // el keyup se perdería: vaciamos
+document.addEventListener("visibilitychange", () => { if (document.hidden) pulsadas.clear(); });
+
+const eje = (neg, pos) => (pulsadas.has(pos) ? 1 : 0) - (pulsadas.has(neg) ? 1 : 0);
+
+let anterior = null;
+function frame(ms) {
+  const dt = anterior === null ? 0 : (ms - anterior) / 1000;   // segundos desde el frame anterior
+  anterior = ms;
+  let dx = eje("KeyA", "KeyD") || eje("ArrowLeft", "ArrowRight");
+  let dy = eje("KeyW", "KeyS") || eje("ArrowUp", "ArrowDown");   // Y hacia abajo en canvas
+  if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }       // diagonal: misma velocidad
+  nave.x += dx * VELOCIDAD * dt;
+  nave.y += dy * VELOCIDAD * dt;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#3fd0e8";
+  ctx.beginPath();
+  ctx.arc(nave.x, nave.y, 12, 0, 2 * Math.PI);
+  ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>No muevas la nave en el <code>keydown</code>: guarda qué teclas están pulsadas (un <code>Set</code> de <code>code</code>) y, en cada frame, mira el conjunto para decidir la dirección.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>e.repeat</code> es <code>true</code> en las repeticiones automáticas. ¿Y qué evento te avisa de que la ventana ha perdido el foco?</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>Si pulsas derecha y abajo a la vez, <code>(dx, dy) = (1, 1)</code> mide √2 ≈ 1,41: la nave iría un 41 % más rápido en diagonal. ¿Cómo lo corriges?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>Estado, no eventos.</strong> El <code>keydown</code> y el <code>keyup</code> solo mantienen un <code>Set</code> con las teclas que están abajo; el movimiento se decide en cada frame mirando ese conjunto. Si movieras la nave en el <code>keydown</code>, dependerías de la repetición automática del sistema: un salto, una pausa de medio segundo y después pasos a la cadencia del sistema. Con el conjunto, el movimiento es continuo y a la velocidad que tú eliges, en px/s, gracias a <code>dt</code>.</p>
+    <p><strong>Los detalles de teclado.</strong> Usamos <code>e.code</code>, que marca la posición física (en AZERTY, la tecla de la W llega como <code>KeyW</code> aunque escriba «z»). Ignoramos <code>e.repeat</code>, aunque como es un <code>Set</code> no haría daño repetir el <code>add</code>; lo importante es no hacer trabajo por cada repetición, como aquí el <code>console.log</code>. <code>preventDefault</code> en las teclas de control evita que las flechas y el espacio desplacen la página que contiene al juego. Y vaciamos el conjunto en <code>blur</code> y al ocultarse la página, porque el <code>keyup</code> de una tecla soltada en otra ventana nunca llega (el bestiario de la tecla atascada).</p>
+    <p><strong>La diagonal.</strong> <code>eje(neg, pos)</code> da −1, 0 o 1 según qué teclas del par estén pulsadas (las dos a la vez se anulan). Si hay movimiento en los dos ejes, el vector (1, 1) mide √2, así que lo multiplicamos por <code>Math.SQRT1_2</code> (1/√2 ≈ 0,707) para que su longitud vuelva a ser 1: es normalizar un vector, lo verás en la lección <a href="../03-matematicas/01-vectores.html">3.1</a>.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><code>querySelectorAll</code> devuelve una foto fija; <code>getElementsByClassName</code> y <code>children</code>, colecciones vivas que cambian mientras las recorres. Insertar un nodo que ya existe lo mueve.</li>
+    <li><code>textContent</code> para leer y escribir texto (rápido y seguro); <code>innerText</code> depende del CSS y es cara; <code>innerHTML</code> analiza HTML: nunca con datos externos (un <code>img onerror</code> se ejecuta).</li>
+    <li><code>el.style</code> es solo el atributo <code>style</code>, con valores con unidad; <code>getComputedStyle</code> da el valor final y fuerza a recalcular estilos.</li>
+    <li>Un listener se quita con la misma función y el mismo <code>capture</code>; <code>once</code> y <code>AbortController</code> simplifican. Los eventos bajan (captura), llegan (objetivo) y suben (burbuja): <code>target</code> es dónde ocurrió, <code>currentTarget</code> quién escucha. La delegación usa <code>closest</code>.</li>
+    <li>Chrome hace pasivos los listeners de rueda y toque en <code>window</code>/<code>document</code>/<code>body</code>: <code>preventDefault</code> no funciona ahí. Para el tacto, <code>touch-action: none</code>.</li>
+    <li>Pointer Events unifican ratón, dedo y lápiz. Para arrastrar: <code>setPointerCapture</code>, <code>touch-action: none</code> y trata <code>pointercancel</code> como el final.</li>
+    <li>Teclado: <code>code</code> para la posición física (juegos), <code>key</code> para el carácter (atajos); ignora <code>repeat</code> y vacía las teclas en <code>blur</code>.</li>
+    <li>Coordenadas: <code>clientX</code> (ventana, el sistema de <code>getBoundingClientRect</code>), <code>pageX</code> (documento), <code>offsetX</code> (padding del <code>target</code>, local, cambia con los hijos). Al canvas: <code>(clientX − r.left) · canvas.width / r.width</code>; a GL: <code>y = H − py</code>; a NDC: <code>2x/W − 1</code>, <code>1 − 2y/H</code>.</li>
+    <li><code>ResizeObserver</code> (con <code>devicePixelContentBoxSize</code>) para ajustar el búfer; la caja CSS debe tener tamaño propio o el canvas crecerá sin fin. <code>IntersectionObserver</code> para parar lo que no se ve.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Pointer_events">MDN, «Pointer events»</a>: la API completa, con captura y multitáctil.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/code">MDN, <code>KeyboardEvent.code</code></a>: la tabla de nombres de teclas físicas.</li>
+  <li><a href="https://web.dev/articles/device-pixel-content-box">web.dev, «Pixel-perfect rendering with devicePixelContentBox»</a>: por qué y cómo usar el tamaño en píxeles físicos exactos.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener">MDN, <code>addEventListener</code></a>: todas las opciones, con los listeners pasivos.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script>
+/* Demo: inspector de coordenadas. Todo se lee de eventos reales (o de uno simulado
+   al principio) y de las propiedades del DOM; nada se inventa. */
+Curso.alListo(() => {
+  const raiz = document.getElementById("demo-coords");
+  const escena = raiz.querySelector(".m1-escenario");
+  const padre = document.getElementById("insp-padre");
+  const hijo = document.getElementById("insp-hijo");
+  const cruzH = raiz.querySelector(".m1-cruz-h"), cruzV = raiz.querySelector(".m1-cruz-v");
+  const info = raiz.querySelector(".demo-info");
+  const ctrl = raiz.querySelector(".demo-controles");
+  let factor = 2, ultimo = null, ultimoDown = null;
+
+  const TRANSFORMACIONES = [["none", "sin transformación"], ["scale(1.25)", "scale(1.25)"], ["rotate(20deg)", "rotate(20deg)"], ["translate(40px, 10px) rotate(-12deg) scale(0.9)", "translate + rotate + scale"]];
+  Curso.selector(ctrl, { etiqueta: "transform del padre:", opciones: TRANSFORMACIONES, valor: "none", alCambiar: (v) => { padre.style.transform = v === "none" ? "" : v; simular(); } });
+  Curso.casilla(ctrl, { etiqueta: "hijo con pointer-events: none", valor: false, alCambiar: (v) => { hijo.style.pointerEvents = v ? "none" : ""; simular(); } });
+  Curso.selector(ctrl, { etiqueta: "búfer del canvas imaginario:", opciones: [["1", "1× (352×222)"], ["2", "2× (704×444)"]], valor: "2", alCambiar: (v) => { factor = +v; pintar(); } });
+
+  // Coordenadas locales EXACTAS respecto al borde del padding del padre, deshaciendo
+  // su transformación: p_local = inversa(T(origen) · M · T(−origen)) · p
+  function localExacto(cx, cy) {
+    const cs = getComputedStyle(padre);
+    const m = new DOMMatrix(cs.transform === "none" ? undefined : cs.transform);
+    const [ox, oy] = cs.transformOrigin.split(" ").map(parseFloat);
+    const total = new DOMMatrix().translate(ox, oy).multiply(m).translate(-ox, -oy);
+    const er = escena.getBoundingClientRect();
+    // esquina del padre SIN transformar, en coordenadas de ventana (offsetLeft ignora transform)
+    const x0 = er.left + escena.clientLeft + padre.offsetLeft, y0 = er.top + escena.clientTop + padre.offsetTop;
+    const q = total.inverse().transformPoint(new DOMPoint(cx - x0, cy - y0));
+    return { x: q.x - padre.clientLeft, y: q.y - padre.clientTop };   // del borde exterior al borde del padding
+  }
+
+  const f1 = (v) => (Math.round(v * 10) / 10).toFixed(1);
+  function pintar() {
+    if (!ultimo) return;
+    const e = ultimo;
+    const er = escena.getBoundingClientRect();
+    cruzH.style.top = e.clientY - er.top + "px";
+    cruzV.style.left = e.clientX - er.left + "px";
+    const rp = padre.getBoundingClientRect();
+    const loc = localExacto(e.clientX, e.clientY);
+    const anchoPad = padre.clientWidth, altoPad = padre.clientHeight;          // caja del padding: 352 × 222
+    const W = anchoPad * factor, H = altoPad * factor;
+    const px = loc.x * factor, py = loc.y * factor;
+    const dentro = loc.x >= 0 && loc.y >= 0 && loc.x <= anchoPad && loc.y <= altoPad;
+    const nombre = (el) => el === padre ? "#insp-padre" : el === hijo ? "#insp-hijo" : (el.id ? "#" + el.id : el.nodeName.toLowerCase());
+    const filas = [
+      ["evento", e.type + (e.isTrusted ? " (real)" : " (simulado · isTrusted = false)") + " · target = " + nombre(e.target) + " · " + (e.pointerType || "?")],
+      ["clientX, clientY", f1(e.clientX) + ", " + f1(e.clientY) + "   (ventana)"],
+      ["pageX, pageY", f1(e.pageX) + ", " + f1(e.pageY) + "   (documento: client + scroll " + Math.round(scrollY) + ")"],
+      ["screenX, screenY", e.isTrusted ? f1(e.screenX) + ", " + f1(e.screenY) + "   (pantalla)" : "—   (un evento simulado no tiene posición de pantalla)"],
+      ["offsetX, offsetY", f1(e.offsetX) + ", " + f1(e.offsetY) + "   (padding de " + nombre(e.target) + (e.target === hijo ? ": ¡relativo al HIJO!" : "") + ")"],
+      ["clientX − rect.left", f1(e.clientX - rp.left) + ", " + f1(e.clientY - rp.top) + "   (rect del padre: caja alineada de " + f1(rp.width) + "×" + f1(rp.height) + ")"],
+      ["local exacto", f1(loc.x) + ", " + f1(loc.y) + "   (padding del padre, transformación deshecha" + (dentro ? "" : " · fuera del padre") + ")"],
+      ["píxel del búfer", dentro ? f1(px) + ", " + f1(py) + "   (búfer " + W + "×" + H + ", Y hacia abajo)" : "— (fuera)"],
+      ["GL y NDC", dentro ? "gl_FragCoord ≈ (" + (Math.floor(px) + 0.5) + ", " + (H - Math.floor(py) - 0.5) + ") · NDC (" + (2 * px / W - 1).toFixed(3) + ", " + (1 - 2 * py / H).toFixed(3) + ")" : "— (fuera)"],
+    ];
+    if (ultimoDown) filas.push(["último pointerdown", "pointerType " + ultimoDown.pointerType + " · pointerId " + ultimoDown.pointerId + " · pressure " + ultimoDown.pressure + " · buttons " + ultimoDown.buttons + " · isPrimary " + ultimoDown.isPrimary]);
+    info.innerHTML = filas.map(([k, v]) => "<b>" + k + "</b><span" + (k === "offsetX, offsetY" && e.target === hijo ? ' class="aviso"' : "") + ">" + Curso.util.escapar(v) + "</span>").join("");
+  }
+
+  escena.addEventListener("pointermove", (e) => { ultimo = e; pintar(); });
+  escena.addEventListener("pointerdown", (e) => { ultimo = e; ultimoDown = e; pintar(); });
+
+  // Un evento simulado sobre el hijo, para que la tabla no empiece vacía
+  function simular() {
+    const r = hijo.getBoundingClientRect();
+    const objetivo = hijo.style.pointerEvents === "none" ? padre : hijo;
+    objetivo.dispatchEvent(new PointerEvent("pointermove", { clientX: r.left + r.width * 0.3, clientY: r.top + r.height * 0.4, bubbles: true, pointerType: "mouse", view: window }));
+  }
+  // Se simula cuando la demo aparece en pantalla: así clientX/Y son coordenadas de ventana sensatas
+  const io = new IntersectionObserver((ents) => {
+    if (ents.some((en) => en.isIntersecting)) { if (!ultimo || !ultimo.isTrusted) simular(); io.disconnect(); }
+  });
+  io.observe(escena);
+  document.addEventListener("curso:tema", pintar);
+});
+</script>
+</body>
+</html>

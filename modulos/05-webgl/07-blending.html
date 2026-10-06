@@ -1,0 +1,1007 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.7 · Transparencia y blending — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/blending">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>Transparencia y blending</h1>
+  <p class="resumen">La transparencia no es una propiedad de los objetos: es una operación que mezcla el color de cada fragmento con el que ya había en el píxel. Aquí aprendes la ecuación de mezcla y sus modos, por qué el alfa premultiplicado es la forma correcta de trabajar, cómo se compone el canvas con la página y por qué el orden de dibujo importa.</p>
+  <div class="meta"><span class="chip">⏱ 80 min</span><span class="chip">Requisitos: 5.6, 5.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Escribirás la ecuación de mezcla para cualquier <code>blendFunc</code> y <code>blendEquation</code>, y elegirás el modo adecuado: alfa, premultiplicado, aditivo, multiplicativo.</li>
+      <li>Entenderás el alfa premultiplicado: por qué evita los halos oscuros y por qué el compositor lo espera.</li>
+      <li>Controlarás el canal alfa del propio canvas con <code>blendFuncSeparate</code> y el atributo <code>premultipliedAlpha</code>.</li>
+      <li>Dibujarás objetos transparentes en 3D ordenándolos de atrás adelante y sin escribir profundidad.</li>
+      <li>Sabrás cuándo usar <code>discard</code> en lugar de alfa.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Mezclar, no sustituir</h2>
+<p>Hasta ahora, cada fragmento que superaba el test de profundidad <em>sustituía</em> el color del píxel. Para dibujar cristales, humo, partículas brillantes o la sombra suave de un sprite, el fragmento tiene que <em>mezclarse</em> con lo que ya había. Esa mezcla ocurre en una etapa fija del pipeline, después del fragment shader (la viste en <a href="../04-gpu/02-pipeline-grafico.html">4.2</a> y la simulaste en la <a href="../04-gpu/03-gpu-de-juguete.html">GPU de juguete</a>): el <strong>blending</strong>. El fragment shader no puede leer el color que hay en el framebuffer; solo entrega su color y su alfa, y el hardware los combina con el píxel según una fórmula que configuras desde JavaScript.</p>
+<p>Y hay un segundo blending que casi nadie tiene en cuenta: cuando el navegador compone el canvas con el resto de la página (5.1), también mezcla, usando el alfa que haya quedado en tu búfer. Muchos de los comportamientos raros de esta lección vienen de ahí.</p>
+
+<h2>La ecuación de mezcla</h2>
+<p>Llamemos <em>src</em> (<em>source</em>) al color que sale del fragment shader y <em>dst</em> (<em>destination</em>) al que ya está en el píxel. Con el blending activado, el color final es:</p>
+$$\text{final} = \text{src} \cdot f_{\text{src}} \;\oplus\; \text{dst} \cdot f_{\text{dst}}$$
+<p>donde los factores y la operación se eligen con tres llamadas:</p>
+<ul>
+  <li><code>gl.enable(gl.BLEND)</code>: sin ella no hay mezcla, pongas lo que pongas en las otras dos. Desactivado por defecto.</li>
+  <li><code>gl.blendFunc(fSrc, fDst)</code>: los dos factores. Por defecto <code>ONE</code> y <code>ZERO</code>, es decir, <code>final = src</code>: sustituir.</li>
+  <li><code>gl.blendEquation(op)</code>: la operación ⊕. Por defecto <code>FUNC_ADD</code> (suma); también <code>FUNC_SUBTRACT</code> (src − dst), <code>FUNC_REVERSE_SUBTRACT</code> (dst − src), y en WebGL2 <code>MIN</code> y <code>MAX</code>, que ignoran los factores y toman el mínimo o el máximo componente a componente.</li>
+</ul>
+<p>Así queda la configuración típica para dibujar un grupo de objetos transparentes (cada línea se explica a lo largo de la lección):</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+gl.enable(gl.BLEND);
+gl.blendEquation(gl.FUNC_ADD);
+gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.depthMask(false);
+dibujarTransparentesDeAtrasAdelante();
+gl.depthMask(true);
+gl.disable(gl.BLEND);
+</script>
+<ol>
+  <li data-l="1">Activa la etapa de mezcla. Sin esto, las dos líneas siguientes no tienen efecto.</li>
+  <li data-l="2">La operación: suma (el valor por defecto; se escribe para no heredar una resta o un <code>MAX</code> de otro código).</li>
+  <li data-l="3">Los factores del modo premultiplicado: el que usaremos por defecto, por las razones de la sección sobre alfa premultiplicado.</li>
+  <li data-l="4">Los transparentes no escriben profundidad, para no taparse entre sí (sección sobre el orden).</li>
+  <li data-l="5">Ordenados de atrás adelante, después de todos los opacos.</li>
+  <li data-l="6-7">Restaurar: el estado de mezcla y la máscara de profundidad son globales y afectarían a todo lo que venga después, incluido el siguiente <code>clear</code>.</li>
+</ol>
+</div>
+<p>Los factores disponibles, que multiplican componente a componente:</p>
+<table>
+  <thead><tr><th>Factor</th><th>Vale</th><th>Factor</th><th>Vale</th></tr></thead>
+  <tbody>
+    <tr><td><code>ZERO</code></td><td>(0, 0, 0, 0)</td><td><code>ONE</code></td><td>(1, 1, 1, 1)</td></tr>
+    <tr><td><code>SRC_ALPHA</code></td><td>(αs, αs, αs, αs)</td><td><code>ONE_MINUS_SRC_ALPHA</code></td><td>1 − αs</td></tr>
+    <tr><td><code>DST_ALPHA</code></td><td>αd</td><td><code>ONE_MINUS_DST_ALPHA</code></td><td>1 − αd</td></tr>
+    <tr><td><code>SRC_COLOR</code></td><td>(rs, gs, bs, αs)</td><td><code>ONE_MINUS_SRC_COLOR</code></td><td>1 − src</td></tr>
+    <tr><td><code>DST_COLOR</code></td><td>(rd, gd, bd, αd)</td><td><code>ONE_MINUS_DST_COLOR</code></td><td>1 − dst</td></tr>
+    <tr><td><code>CONSTANT_COLOR</code>, <code>CONSTANT_ALPHA</code></td><td>el color de <code>gl.blendColor(r, g, b, a)</code></td><td><code>SRC_ALPHA_SATURATE</code></td><td>min(αs, 1 − αd), solo como factor de src</td></tr>
+  </tbody>
+</table>
+<p>El resultado se recorta a 0…1 al escribirlo en un búfer de 8 bits por canal. Todo esto es estado global del contexto (no del programa ni del objeto): el blending que actives para las partículas seguirá activo cuando dibujes lo siguiente, si no lo desactivas.</p>
+
+<h2>Los modos que usarás</h2>
+<p>Cuatro combinaciones cubren casi todo. Las comprobamos todas en la GPU, leyendo el píxel resultante:</p>
+<table>
+  <thead><tr><th>Modo</th><th>Configuración</th><th>Fórmula</th><th>Ejemplo medido</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Alfa</strong> («normal»)</td><td><code>blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)</code></td><td>src·αs + dst·(1 − αs)</td><td>rojo al 50 % sobre azul → (128, 0, 128)</td></tr>
+    <tr><td><strong>Premultiplicado</strong></td><td><code>blendFunc(ONE, ONE_MINUS_SRC_ALPHA)</code></td><td>src + dst·(1 − αs), con src ya multiplicado por αs</td><td>(0.5, 0, 0, 0.5) sobre azul → (128, 0, 128)</td></tr>
+    <tr><td><strong>Aditivo</strong></td><td><code>blendFunc(ONE, ONE)</code></td><td>src + dst</td><td>(0.5, 0.2, 0.9) sobre gris 0.3 → (205, 128, 255): el azul satura</td></tr>
+    <tr><td><strong>Multiplicativo</strong></td><td><code>blendFunc(DST_COLOR, ZERO)</code></td><td>src·dst</td><td>gris 0.5 sobre (0.5, 0.8, 1) → (64, 102, 128)</td></tr>
+  </tbody>
+</table>
+<p>El <strong>alfa</strong> es la transparencia de toda la vida: una fracción αs del color nuevo y el resto del viejo. El <strong>aditivo</strong> suma luz: fuego, chispas, láseres, brillos; todo lo que se superpone se aclara, y como la suma es conmutativa no importa el orden (lo comprobamos: dos colores sumados en un orden y en el otro dieron exactamente lo mismo). El <strong>multiplicativo</strong> oscurece: sombras, manchas, filtros de color; el blanco no cambia nada y el negro lo tapa todo. Otros populares: <em>pantalla</em> (<code>ONE, ONE_MINUS_SRC_COLOR</code>), que aclara sin saturar tan rápido como la suma, y <code>MIN</code>/<code>MAX</code> para combinar máscaras. Del premultiplicado hablaremos a fondo en un momento.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.7.1 — Explorador de modos de blending</h3>
+  <p>Tres discos (rojo, verde y azul) al 60 % de alfa sobre un fondo que va de negro a blanco. Elige un modo predefinido o combina factores y operación a mano; la línea de abajo escribe la fórmula. La casilla decide si el shader devuelve el color tal cual o premultiplicado por su alfa: pruébala con el modo aditivo y fíjate en los bordes de los discos.</p>
+  <div class="js-playground" data-titulo="Explorador de blending" data-altura="330" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label>modo <select id="modo"></select></label>
+  <label>src <select id="src"></select></label>
+  <label>dst <select id="dst"></select></label>
+  <label>op <select id="op"></select></label>
+  <label><input type="checkbox" id="premul"> shader premultiplicado</label>
+</div>
+<div id="formula"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 10px; flex-wrap: wrap; padding: 6px 10px 0; font: 12px ui-monospace, monospace; color: #b4bccb; }
+select { font: 12px ui-monospace, monospace; }
+#formula { font: 12px ui-monospace, monospace; color: #3fd0e8; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });      // sin composición con la página
+const VS = `#version 300 es
+uniform vec4 u_rect;                 // x, y, ancho, alto en clip space
+out vec2 v_p;
+void main() {
+  vec2 P[4] = vec2[4](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+  v_p = P[gl_VertexID] * 2.0 - 1.0;                              // −1…1 dentro del rectángulo
+  gl_Position = vec4(u_rect.xy + P[gl_VertexID] * u_rect.zw, 0.0, 1.0);
+}`;
+const fondo = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_p;
+out vec4 color;
+void main() {
+  float x = v_p.x * 0.5 + 0.5;
+  float cuadros = mod(floor(v_p.x * 12.0) + floor(v_p.y * 5.0), 2.0) * 0.06;
+  color = vec4(vec3(x) + cuadros * (1.0 - 2.0 * x), 1.0);
+}`);
+const disco = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform vec4 u_color;                // rgb y alfa, SIN premultiplicar
+uniform bool u_premul;
+uniform float u_suavizado;
+in vec2 v_p;
+out vec4 color;
+void main() {
+  float a = u_color.a * (1.0 - smoothstep(1.0 - u_suavizado, 1.0, length(v_p)));   // alfa 0 fuera del disco
+  color = u_premul ? vec4(u_color.rgb * a, a) : vec4(u_color.rgb, a);
+}`);
+const locF = { rect: gl.getUniformLocation(fondo, 'u_rect') };
+const locD = {};
+for (const n of ['u_rect', 'u_color', 'u_premul', 'u_suavizado']) locD[n] = gl.getUniformLocation(disco, n);
+const vaoVacio = gl.createVertexArray();
+
+const FACTORES = ['ZERO', 'ONE', 'SRC_COLOR', 'ONE_MINUS_SRC_COLOR', 'DST_COLOR', 'ONE_MINUS_DST_COLOR',
+  'SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'DST_ALPHA', 'ONE_MINUS_DST_ALPHA', 'SRC_ALPHA_SATURATE'];
+const OPS = ['FUNC_ADD', 'FUNC_SUBTRACT', 'FUNC_REVERSE_SUBTRACT', 'MIN', 'MAX'];
+const MODOS = {
+  'Sin blending': null,
+  'Alfa (normal)': ['SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'FUNC_ADD', false],
+  'Premultiplicado': ['ONE', 'ONE_MINUS_SRC_ALPHA', 'FUNC_ADD', true],
+  'Aditivo': ['ONE', 'ONE', 'FUNC_ADD', true],
+  'Multiplicativo': ['DST_COLOR', 'ZERO', 'FUNC_ADD', false],
+  'Pantalla': ['ONE', 'ONE_MINUS_SRC_COLOR', 'FUNC_ADD', true],
+  'Máximo': ['ONE', 'ONE', 'MAX', false],
+  'Mínimo': ['ONE', 'ONE', 'MIN', false],
+};
+const $ = (id) => document.getElementById(id);
+for (const n of Object.keys(MODOS)) $('modo').add(new Option(n, n));
+for (const f of FACTORES) { $('src').add(new Option(f, f)); $('dst').add(new Option(f, f)); }
+for (const o of OPS) $('op').add(new Option(o, o));
+$('modo').value = 'Alfa (normal)';
+function aplicarModo() {
+  const m = MODOS[$('modo').value];
+  if (m) { $('src').value = m[0]; $('dst').value = m[1]; $('op').value = m[2]; $('premul').checked = m[3]; }
+  dibujar();
+}
+$('modo').onchange = aplicarModo;
+for (const id of ['src', 'dst', 'op', 'premul']) $(id).onchange = dibujar;
+
+function dibujar() {
+  GLKit.ajustarTamaño(canvas);
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  gl.viewport(0, 0, w, h);
+  gl.bindVertexArray(vaoVacio);
+  gl.disable(gl.BLEND);                                          // el fondo, opaco
+  gl.useProgram(fondo);
+  gl.uniform4f(locF.rect, -1, -1, 2, 2);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  const sinBlending = MODOS[$('modo').value] === null;
+  if (!sinBlending) {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl[$('src').value], gl[$('dst').value]);
+    gl.blendEquation(gl[$('op').value]);
+  }
+  gl.useProgram(disco);
+  gl.uniform1i(locD.u_premul, $('premul').checked);
+  const r = 0.55, ry = r, rx = r * h / w;                         // discos redondos
+  gl.uniform1f(locD.u_suavizado, 0.04);
+  const discos = [[-0.25, 0.12, [1, 0.2, 0.25]], [0.25, 0.12, [0.2, 1, 0.35]], [0, -0.3, [0.25, 0.4, 1]]];
+  for (const [x, y, c] of discos) {
+    gl.uniform4f(locD.u_color, c[0], c[1], c[2], 0.6);
+    gl.uniform4f(locD.u_rect, x - rx, y - ry, 2 * rx, 2 * ry);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  gl.disable(gl.BLEND);
+  gl.blendEquation(gl.FUNC_ADD);
+  const op = $('op').value;
+  $('formula').textContent = sinBlending ? 'final = src (el disco sustituye al fondo, incluido su cuadrado con alfa 0)'
+    : (op === 'MIN' || op === 'MAX') ? 'final = ' + op.toLowerCase() + '(src, dst)  (los factores se ignoran)'
+    : 'final = src × ' + $('src').value + (op === 'FUNC_ADD' ? ' + ' : ' − ') + 'dst × ' + $('dst').value +
+      (op === 'FUNC_REVERSE_SUBTRACT' ? '   (orden invertido: dst − src)' : '');
+}
+aplicarModo();
+</script>
+  </div>
+  <p>Cosas que ver: en <strong>alfa normal</strong>, el disco dibujado el último (el azul) tapa más que los otros: el orden importa. En <strong>aditivo</strong> con la casilla desactivada, los discos se ven como cuadrados que aclaran el fondo: fuera del disco el alfa es 0, pero el aditivo no mira el alfa y suma el color igualmente. Con el shader premultiplicado, fuera del disco el color es (0, 0, 0) y los bordes son perfectos: primera pista de por qué premultiplicar. En <strong>multiplicativo</strong>, sobre el negro no se ve nada y sobre el blanco se ve el color tal cual. Y <strong>sin blending</strong> aparecen los cuadrados enteros: el alfa del shader no hace nada si no hay mezcla.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Configuras <code>gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)</code>, tu shader devuelve alfa 0.5, y los objetos siguen saliendo opacos. ¿Qué falta?</p>
+  <ul>
+    <li>Un <code>premultipliedAlpha: true</code> en el contexto.<div class="explicacion">Ese atributo afecta a cómo se compone el canvas con la página, no a la mezcla entre tus dibujos.</div></li>
+    <li data-correcta><code>gl.enable(gl.BLEND)</code>.<div class="explicacion">Correcto: <code>blendFunc</code> configura los factores, pero sin activar el blending no se usan y cada fragmento sustituye al píxel. Es el ejercicio 5.7.1.</div></li>
+    <li>Desactivar el test de profundidad.<div class="explicacion">La profundidad puede impedir que algo se dibuje, pero no convierte en opaco lo que se dibuja. Con blending desactivado, el alfa del shader simplemente no se usa.</div></li>
+  </ul>
+</div>
+
+<h2>El canal alfa también se mezcla</h2>
+<p>La ecuación se aplica a los cuatro canales, alfa incluido. Con el modo alfa normal, el alfa resultante es <code>αs·αs + αd·(1 − αs)</code>: pintar un rojo al 50 % sobre un fondo opaco deja en el píxel un alfa de 0,25 + 0,5 = <strong>0,75</strong> (lo medimos: 191 de 255). En un framebuffer propio puede dar igual, pero en el canvas, con <code>alpha: true</code>, ese alfa se usa al componer con la página: donde dibujaste algo transparente, el canvas se vuelve translúcido y se ve lo que hay detrás.</p>
+<p>La solución es mezclar el alfa con otros factores, usando <code>gl.blendFuncSeparate(srcRGB, dstRGB, srcAlfa, dstAlfa)</code>:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+// El color se mezcla como siempre; el alfa, con la regla "over" correcta
+gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+// alfa final = αs + αd · (1 − αs)  →  0.5 + 1 · 0.5 = 1  (comprobado: 255)
+</script>
+<p>Existe también <code>gl.blendEquationSeparate(opRGB, opAlfa)</code>. Y la alternativa más simple, si tu canvas no necesita ser transparente: créalo con <code>alpha: false</code> y el alfa del búfer deja de importar.</p>
+
+<div class="callout bestiario" data-id="m5-canvas-translucido" data-titulo="Donde dibujo algo transparente, se ve la página a través del canvas">
+  <p><strong>Síntoma:</strong> los objetos semitransparentes se ven más claros (o más oscuros) de lo esperado, y en el hueco se transparenta el fondo de la página: su color, un degradado, el texto de detrás. Solo pasa en el canvas, nunca al leer los píxeles.</p>
+  <p><strong>Causa:</strong> el blending también mezcla el canal alfa. Con <code>blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)</code>, un objeto al 50 % sobre un fondo opaco deja alfa 0,75 en el búfer, y el navegador compone el canvas con la página usando ese alfa.</p>
+  <p><strong>Solución:</strong> <code>blendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA)</code>, trabajar en premultiplicado con <code>blendFunc(ONE, ONE_MINUS_SRC_ALPHA)</code> (que ya da el alfa correcto), o <code>alpha: false</code> si el canvas no tiene por qué dejar ver la página.</p>
+</div>
+
+<h2>Alfa premultiplicado, a fondo</h2>
+<p>Un color con alfa se puede guardar de dos maneras. En alfa <strong>directo</strong> (<em>straight</em>), <code>(r, g, b, α)</code>: el color «de verdad» y aparte cuánto cubre. En alfa <strong>premultiplicado</strong>, <code>(r·α, g·α, b·α, α)</code>: el color ya multiplicado por su cobertura. Un rojo al 50 % es <code>(1, 0, 0, 0.5)</code> en directo y <code>(0.5, 0, 0, 0.5)</code> en premultiplicado. Parece una diferencia de notación; tiene tres consecuencias enormes.</p>
+
+<h3>1. El filtrado de texturas solo es correcto en premultiplicado</h3>
+<p>Piensa en un sprite: un círculo blanco sobre fondo transparente. Los píxeles transparentes tienen α = 0, pero también tienen un RGB, que nadie ve y que suele ser negro. De hecho, cuando el navegador sube un canvas sin premultiplicar (5.5), los píxeles totalmente transparentes llegan como <code>(0, 0, 0, 0)</code> (comprobado). Ahora filtra con <code>LINEAR</code> en el borde, a medio camino entre un texel blanco opaco y uno negro transparente: en directo, la interpolación da <code>(0.5, 0.5, 0.5, 0.5)</code>, un <em>gris</em> al 50 %. Ese gris es falso: el blanco nunca tuvo nada de gris, ha salido de mezclar con el RGB negro de un píxel invisible. Con el modo alfa normal, el borde del sprite se pinta con ese gris: un halo oscuro alrededor de todo. En premultiplicado, el texel transparente es <code>(0, 0, 0, 0)</code> y el opaco <code>(1, 1, 1, 1)</code>: su media, <code>(0.5, 0.5, 0.5, 0.5)</code>, significa «blanco al 50 %», que es exactamente lo correcto.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.7.2 — El halo oscuro</h3>
+  <p>El mismo sprite (un círculo blanco con un borde suave, dibujado con Canvas 2D en 32×32 píxeles y ampliado con <code>LINEAR</code>) sobre un fondo claro. A la izquierda, textura en alfa directo con el modo alfa normal; a la derecha, textura premultiplicada al subirla (<code>UNPACK_PREMULTIPLY_ALPHA_WEBGL</code>) con el modo premultiplicado.</p>
+  <div class="js-playground" data-titulo="Directo frente a premultiplicado" data-altura="280" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="rotulos"><span>directo + SRC_ALPHA, ONE_MINUS_SRC_ALPHA</span><span>premultiplicado + ONE, ONE_MINUS_SRC_ALPHA</span></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.rotulos { display: flex; justify-content: space-around; padding: 6px; font: 12px ui-monospace, monospace; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform vec4 u_rect;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID];
+  gl_Position = vec4(u_rect.xy + P[gl_VertexID] * u_rect.zw, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+// El sprite: círculo blanco con un borde suave sobre transparente, en 32×32
+const sprite = document.createElement('canvas');
+sprite.width = sprite.height = 32;
+const g = sprite.getContext('2d');
+const grad = g.createRadialGradient(16, 16, 8, 16, 16, 14);
+grad.addColorStop(0, 'rgba(255,255,255,1)');
+grad.addColorStop(1, 'rgba(255,255,255,0)');
+g.fillStyle = grad;
+g.fillRect(0, 0, 32, 32);
+
+function crear(premultiplicar) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, premultiplicar);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sprite);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+const directa = crear(false), premultiplicada = crear(true);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.93, 0.9, 0.82, 1);                  // fondo claro: el halo oscuro se nota
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(gl.createVertexArray());
+gl.activeTexture(gl.TEXTURE0);
+gl.enable(gl.BLEND);
+const lado = 1.6, ancho = lado * gl.drawingBufferHeight / gl.drawingBufferWidth;
+const locRect = gl.getUniformLocation(programa, 'u_rect');
+// Izquierda: alfa directo
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+gl.bindTexture(gl.TEXTURE_2D, directa);
+gl.uniform4f(locRect, -0.5 - ancho / 2, -lado / 2, ancho, lado);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+// Derecha: premultiplicado
+gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.bindTexture(gl.TEXTURE_2D, premultiplicada);
+gl.uniform4f(locRect, 0.5 - ancho / 2, -lado / 2, ancho, lado);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+  </div>
+  <p>A la izquierda, el borde suave del círculo se ensucia de gris: cada texel semitransparente de la textura es blanco, pero entre dos texels el filtrado mezcla con el negro de los transparentes. A la derecha, el mismo sprite se funde limpio con el fondo. La diferencia se nota más cuanto más se amplía (más píxeles caen entre texels) y cuanto más claro es el fondo.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-halo-oscuro" data-titulo="Bordes oscuros (o de un color raro) alrededor de sprites y texto">
+  <p><strong>Síntoma:</strong> las imágenes con transparencia se dibujan con un contorno oscuro, sobre todo al ampliarlas o al usar mipmaps; a veces el contorno es de un color que no está en la imagen.</p>
+  <p><strong>Causa:</strong> filtrado (o mipmaps) en alfa directo. Los píxeles invisibles de la textura tienen un RGB (casi siempre negro) que el filtrado mezcla con los visibles, y el modo alfa normal lo pinta. Los mipmaps promedian igual, así que el problema crece a lo lejos.</p>
+  <p><strong>Solución:</strong> premultiplica: sube con <code>UNPACK_PREMULTIPLY_ALPHA_WEBGL = true</code> (o <code>premultiplyAlpha: 'premultiply'</code> en <code>createImageBitmap</code>) y mezcla con <code>blendFunc(ONE, ONE_MINUS_SRC_ALPHA)</code>. Si el shader modifica el alfa, que multiplique también el RGB. La alternativa, que usan algunos exportadores, es rellenar el RGB de los píxeles transparentes con el color de sus vecinos visibles («sangrado»).</p>
+</div>
+
+<h3>2. La composición es correcta y asociativa</h3>
+<p>En premultiplicado, pintar una capa sobre otra (el operador <em>over</em> de Porter y Duff) es simplemente <code>src + dst·(1 − αs)</code>, para el color y para el alfa a la vez: es la ecuación del modo premultiplicado. Y es asociativa: puedes componer primero dos capas entre sí y luego el resultado sobre el fondo, y obtienes lo mismo que capa a capa. En directo, componer dos capas semitransparentes entre sí exige dividir por el alfa resultante y la mezcla no es tan simple. Por eso los compositores (el del navegador, los de los sistemas operativos) trabajan en premultiplicado.</p>
+
+<h3>3. Aditivo y alfa con el mismo estado</h3>
+
+<div class="callout hack" data-titulo="Brillos y transparencia en una sola pasada">
+  <p>Con <code>blendFunc(ONE, ONE_MINUS_SRC_ALPHA)</code>, un fragmento premultiplicado normal <code>(c·α, α)</code> se mezcla como transparencia. Pero si el shader devuelve un color con alfa 0 y RGB distinto de cero, la ecuación queda <code>src + dst·1</code>: ¡suma pura, un aditivo! Con el mismo estado de blending puedes dibujar humo (alfa normal) y chispas (alfa 0, color brillante) mezclados, sin cambiar de modo ni ordenar dos listas. Muchos sistemas de partículas usan este truco.</p>
+</div>
+
+<h2>El canvas y la página: premultipliedAlpha</h2>
+<p>Llegamos al segundo blending, el del compositor. Con el atributo <code>premultipliedAlpha: true</code> (el valor por defecto, 5.1), el navegador trata el contenido de tu búfer como colores <strong>premultiplicados</strong>, y lo compone sobre la página con <code>canvas + página·(1 − α)</code>. Si lo que hay en tu búfer no está premultiplicado, el resultado es incorrecto. El caso extremo: un píxel con α = 0 y RGB distinto de cero no es transparente para el compositor, sino luz que se suma a la página. Lo comprobamos borrando cuatro canvas con colores con alfa, sobre fondo blanco y sobre fondo negro:</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.7.3 — Lo que ve el compositor</h3>
+  <p>Cuatro canvas, cada uno borrado con <code>clearColor</code> (nada más), sobre la mitad blanca y la mitad negra del documento del playground. Compara cada columna con lo que «esperarías».</p>
+  <div class="js-playground" data-titulo="premultipliedAlpha y la composición" data-altura="250" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<div class="banda blanca"></div><div class="banda negra"></div>
+<div class="fila">
+  <figure><canvas id="a"></canvas><figcaption>premultiplied: true<br>(0.2, 0.8, 1.0, 0.5)</figcaption></figure>
+  <figure><canvas id="b"></canvas><figcaption>premultiplied: false<br>(0.2, 0.8, 1.0, 0.5)</figcaption></figure>
+  <figure><canvas id="c"></canvas><figcaption>premultiplied: true<br>(1, 1, 1, 0)</figcaption></figure>
+  <figure><canvas id="d"></canvas><figcaption>premultiplied: true<br>(0.1, 0.4, 0.5, 0.5)</figcaption></figure>
+</div>
+</script>
+<script type="text/x-css">
+body { position: relative; }
+.banda { position: absolute; left: 0; right: 0; height: 50%; }
+.blanca { top: 0; background: #fff; }
+.negra { bottom: 0; background: #000; }
+.fila { position: relative; display: flex; justify-content: space-around; height: 100%; }
+figure { margin: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+canvas { width: 130px; height: 150px; display: block; }
+figcaption { font: 11px ui-monospace, monospace; color: #888; text-align: center; background: #222; color: #ddd; padding: 2px 6px; margin-top: 4px; }
+</script>
+<script type="text/x-js">
+function borrar(id, atributos, color) {
+  const gl = document.getElementById(id).getContext('webgl2', atributos);
+  gl.clearColor(...color);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+}
+borrar('a', { premultipliedAlpha: true }, [0.2, 0.8, 1.0, 0.5]);    // NO premultiplicado: mal
+borrar('b', { premultipliedAlpha: false }, [0.2, 0.8, 1.0, 0.5]);   // el compositor multiplica por α
+borrar('c', { premultipliedAlpha: true }, [1, 1, 1, 0]);            // "transparente"… ¿seguro?
+borrar('d', { premultipliedAlpha: true }, [0.1, 0.4, 0.5, 0.5]);    // el mismo color, premultiplicado a mano
+</script>
+  </div>
+  <p>Las columnas 2 y 4 son la forma correcta de decir «cian al 50 %»: sobre blanco, un celeste pálido; sobre negro, un cian oscuro. La columna 1 usa el color sin premultiplicar en un canvas premultiplicado: sobre negro sale un cian brillante, como si fuera opaco, porque el compositor suma el RGB entero en lugar de la mitad. Y la columna 3, con alfa 0, debería ser invisible: sobre blanco lo parece, pero sobre negro es un rectángulo <strong>blanco</strong>. Para el compositor, (1, 1, 1, 0) premultiplicado es «luz blanca que no tapa nada», y la suma sobre el negro da blanco.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-canvas-premultiplicado" data-titulo="Colores raros o fantasmas blancos al componer el canvas">
+  <p><strong>Síntoma:</strong> zonas del canvas que deberían ser transparentes brillan sobre fondos oscuros; los bordes suaves parecen «luminosos»; los colores semitransparentes se ven más claros de lo que deberían. En capturas o con <code>readPixels</code> todo parece correcto.</p>
+  <p><strong>Causa:</strong> el canvas tiene <code>alpha: true</code> y <code>premultipliedAlpha: true</code> (los valores por defecto), pero tu búfer contiene colores <em>no</em> premultiplicados: un shader que devuelve <code>vec4(color, alfa)</code> con el color sin multiplicar, un <code>clearColor(1, 1, 1, 0)</code>, o un modo de mezcla que deja RGB mayor que α. El compositor interpreta esos valores como premultiplicados y añade luz.</p>
+  <p><strong>Solución:</strong> si el canvas no tiene que ser transparente, <code>alpha: false</code> (la solución más común y la que usan los editores GLSL del curso). Si debe serlo, asegúrate de que el búfer acaba premultiplicado: el shader devuelve <code>vec4(color * a, a)</code>, borra con colores premultiplicados (<code>(0, 0, 0, 0)</code> para transparente) y mezcla con <code>ONE, ONE_MINUS_SRC_ALPHA</code>. Como último recurso, <code>premultipliedAlpha: false</code> hace que el compositor premultiplique por ti.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu canvas usa los atributos por defecto y el fragment shader de unas partículas devuelve <code>vec4(1.0, 0.6, 0.2, a)</code>, con <code>a</code> bajando hasta 0 en los bordes, y blending alfa normal. La página es oscura. ¿Qué verás en los bordes de las partículas?</p>
+  <ul>
+    <li>Un difuminado perfecto hacia el fondo.<div class="explicacion">Dentro de tu búfer la mezcla es correcta, pero el búfer acaba con un alfa menor que 1 y RGB no premultiplicado, y el compositor lo interpreta mal.</div></li>
+    <li data-correcta>Un halo naranja brillante: el compositor suma el RGB completo aunque el alfa sea bajo.<div class="explicacion">Correcto. En esos píxeles el alfa del búfer es bajo pero el RGB no, y para un compositor premultiplicado eso es luz añadida. Soluciones: <code>alpha: false</code>, o premultiplicar en el shader y mezclar con <code>ONE, ONE_MINUS_SRC_ALPHA</code>.</div></li>
+    <li>Bordes oscuros.<div class="explicacion">Los bordes oscuros son el problema del filtrado de texturas en alfa directo. Aquí el error es el contrario: sobra luz.</div></li>
+  </ul>
+</div>
+
+<h2>El orden importa</h2>
+<p>El modo alfa normal no es conmutativo: pintar A sobre B no da lo mismo que B sobre A. Lo medimos con un rojo y un verde al 50 % sobre blanco: rojo primero y verde después dio <code>(128, 191, 64)</code>; al revés, <code>(191, 128, 64)</code>. La capa de arriba domina. En 2D controlas el orden a mano. En 3D, con varios objetos transparentes y una cámara que se mueve, hay que <strong>ordenarlos de atrás adelante</strong> en cada frame (por su distancia a la cámara) y dibujarlos en ese orden.</p>
+<p>Y hay una interacción traicionera con el búfer de profundidad. Un objeto transparente que escribe profundidad bloquea todo lo que se dibuje después detrás de él: aunque debería verse a través del cristal, pierde el test y no se dibuja. La receta estándar:</p>
+<ol>
+  <li>Dibuja primero todos los objetos <strong>opacos</strong>, con el test y la escritura de profundidad activados, sin blending.</li>
+  <li>Después, los <strong>transparentes</strong>, ordenados de atrás adelante, con blending, con el test de profundidad activado (para que los opacos de delante los tapen) pero con <code>gl.depthMask(false)</code>, para que no escriban profundidad y no bloqueen a otros transparentes.</li>
+  <li>Al terminar, <code>gl.depthMask(true)</code>, o el siguiente <code>clear</code> de profundidad no hará nada: la máscara de escritura también afecta al <code>clear</code> (5.1).</li>
+</ol>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.7.4 — Tres cristales y una cámara que gira</h3>
+  <p>Tres paneles transparentes de colores, uno detrás de otro, y un cubo opaco en medio. La cámara orbita sola. Activa y desactiva el orden y la máscara de profundidad y observa qué se rompe en cada caso.</p>
+  <div class="js-playground" data-titulo="Transparencia en 3D: orden y depthMask" data-altura="320" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label><input type="checkbox" id="ordenar" checked> ordenar de atrás adelante</label>
+  <label><input type="checkbox" id="mascara" checked> depthMask(false) al dibujarlos</label>
+</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 18px; padding: 8px 12px; font: 13px ui-monospace, monospace; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+uniform mat4 u_mvp;
+void main() { gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec4 u_color;           // premultiplicado
+out vec4 color;
+void main() { color = u_color; }`);
+
+// Un cuadrado (panel) y un cubo, como mallas indexadas de posiciones
+const vaoPanel = gl.createVertexArray();
+gl.bindVertexArray(vaoPanel);
+GLKit.crearBuffer(gl, new Float32Array([-0.6, -0.6, 0, 0.6, -0.6, 0, 0.6, 0.6, 0, -0.6, 0.6, 0]));
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+GLKit.crearBuffer(gl, new Uint16Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const vaoCubo = gl.createVertexArray();
+gl.bindVertexArray(vaoCubo);
+const e = 0.2;
+GLKit.crearBuffer(gl, new Float32Array([-e,-e,-e, e,-e,-e, e,e,-e, -e,e,-e, -e,-e,e, e,-e,e, e,e,e, -e,e,e]));
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+GLKit.crearBuffer(gl, new Uint16Array([4,5,6,4,6,7, 1,0,3,1,3,2, 5,1,2,5,2,6, 0,4,7,0,7,3, 7,6,2,7,2,3, 0,1,5,0,5,4]), gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locMVP = gl.getUniformLocation(programa, 'u_mvp');
+const locColor = gl.getUniformLocation(programa, 'u_color');
+
+const paneles = [
+  { z: -0.6, color: [1.0, 0.3, 0.35] },
+  { z: 0.0, color: [0.3, 1.0, 0.45] },
+  { z: 0.6, color: [0.3, 0.5, 1.0] },
+];
+const alfa = 0.5;
+gl.enable(gl.DEPTH_TEST);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.depthMask(true);                                             // o el clear de profundidad no hará nada
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const ojo = [3 * Math.sin(t * 0.5), 1.0, 3 * Math.cos(t * 0.5)];
+  const vp = mat4.producto(mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+                           mat4.mirarA(ojo, [0, 0, 0], [0, 1, 0]));
+  gl.useProgram(programa);
+
+  // 1) Opacos: sin blending, escribiendo profundidad
+  gl.disable(gl.BLEND);
+  gl.uniformMatrix4fv(locMVP, false, mat4.producto(vp, mat4.rotacionY(t)));
+  gl.uniform4f(locColor, 0.95, 0.75, 0.3, 1);
+  gl.bindVertexArray(vaoCubo);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+
+  // 2) Transparentes: blending premultiplicado, ordenados y sin escribir profundidad
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(!document.getElementById('mascara').checked);
+  let lista = paneles.map((p) => ({ ...p, dist: Math.hypot(ojo[0], ojo[1], ojo[2] - p.z) }));
+  if (document.getElementById('ordenar').checked) lista.sort((a, b) => b.dist - a.dist);   // lejanos primero
+  gl.bindVertexArray(vaoPanel);
+  for (const p of lista) {
+    gl.uniformMatrix4fv(locMVP, false, mat4.producto(vp, mat4.traslacion(0, 0, p.z)));
+    gl.uniform4f(locColor, p.color[0] * alfa, p.color[1] * alfa, p.color[2] * alfa, alfa);
+    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+  }
+  gl.depthMask(true);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Con las dos casillas activadas, los paneles se mezclan como cristales y el cubo se ve a través de los que están delante de él. Desactiva la máscara: según el ángulo, un panel cercano dibujado antes «borra» a los que están detrás (han perdido el test de profundidad contra un cristal). Desactiva el orden con la máscara activada: no hay agujeros, pero el color de la superposición es incorrecto en la mitad de la órbita, porque la capa que queda «encima» no es la más cercana. Fíjate también en el <code>depthMask(true)</code> antes del <code>clear</code>: sin él, el borrado de profundidad del frame siguiente no haría nada.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-transparencia-orden" data-titulo="Los objetos detrás de un cristal desaparecen (según el ángulo)">
+  <p><strong>Síntoma:</strong> a través de un objeto semitransparente no se ve lo que hay detrás… a veces. Al girar la cámara, lo de detrás aparece y desaparece, o la mezcla de colores cambia de golpe.</p>
+  <p><strong>Causa:</strong> el objeto transparente escribió profundidad al dibujarse antes que los de detrás, así que esos fragmentos pierden el test y se descartan. Si además no se ordenan, el resultado depende del orden de la lista y no de la distancia.</p>
+  <p><strong>Solución:</strong> opacos primero; transparentes después, ordenados de atrás adelante por su distancia a la cámara, con <code>depthMask(false)</code> (y el test de profundidad activado). Ordenar por objetos no resuelve objetos que se cruzan entre sí, ni las caras de un mismo objeto transparente (dibújalo en dos pasadas: caras traseras con <code>cullFace(FRONT)</code> y luego delanteras); para eso existen técnicas de transparencia independiente del orden, más avanzadas. Y si puedes usar blending aditivo, no hace falta ordenar: la suma es conmutativa.</p>
+</div>
+
+<div class="callout senior" data-titulo="Lo que cuesta mezclar">
+  <p>Mezclar obliga a la GPU a <em>leer</em> el píxel de destino antes de escribirlo: por cada fragmento transparente, una lectura y una escritura en memoria, en lugar de solo una escritura. En pantallas de alta resolución con muchas capas transparentes superpuestas (humo, interfaces, partículas grandes) el coste real es el <em>overdraw</em>: cuántas veces se escribe cada píxel por frame. Diez partículas grandes que cubren la pantalla son diez pasadas de lectura-escritura sobre millones de píxeles. En 5.10 veremos cómo detectarlo (reducir el tamaño del canvas y ver si mejora). Y un detalle para 5.8: mezclar en texturas de tipo float de 32 bits depende de la extensión <code>EXT_float_blend</code>; sin ella, el dibujo da <code>INVALID_OPERATION</code>. Según su especificación, en las GPU que la soportan se activa sola al pedir <code>EXT_color_buffer_float</code> (en la GPU de pruebas, el blending sobre <code>RGBA32F</code> funcionó sin pedirla); en las que no, usa <code>RGBA16F</code>, que sí admite blending.</p>
+</div>
+
+<h2>discard frente a alfa</h2>
+<p>Hay objetos que no son semitransparentes sino <em>recortados</em>: una hoja, una valla, una letra. Cada píxel es opaco o no existe. Para ellos, en lugar de blending, se usa <code>discard</code> en el fragment shader:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+vec4 c = texture(u_tex, v_uv);
+if (c.a < 0.5) discard;       // el fragmento no existe: ni color ni profundidad
+color = vec4(c.rgb, 1.0);
+</script>
+<p><code>discard</code> abandona el fragmento: no escribe color ni profundidad. Ventajas: no hace falta ordenar (los píxeles que quedan son opacos y escriben profundidad normalmente) ni activar el blending. Inconvenientes: los bordes son duros y con dientes de sierra (un píxel está o no está), y en muchas GPU un shader con <code>discard</code> impide optimizaciones que descartan fragmentos ocultos <em>antes</em> de ejecutar el fragment shader, así que puede costar rendimiento en objetos que cubren mucha pantalla (en la GPU de pruebas, 32 capas con un <code>discard</code> que nunca se ejecutaba costaron entre 17 y 27 veces lo que una: lo mediste en <a href="../04-gpu/02-pipeline-grafico.html#early-z-probar-la-profundidad-antes-de-sombrear">4.2</a>).</p>
+
+<div class="callout hack" data-titulo="Alpha to coverage">
+  <p>Con un búfer multimuestreado (el canvas con <code>antialias: true</code>, 5.1), <code>gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE)</code> convierte el alfa de cada fragmento en el porcentaje de las muestras MSAA del píxel que cubre: con alfa 0,5 cubre 2 de 4 muestras. Los bordes de los recortes salen suavizados, sin ordenar y sin blending, aprovechando el antialiasing que ya pagas. Es el truco clásico para vegetación. Solo tiene resolución de tantos niveles como muestras (aquí, 4).</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.7.1 — Los cristales opacos</h3>
+  <p>Dos cuadrados de colores con alfa 0.5 que se superponen deberían mezclarse, pero el segundo tapa al primero por completo. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.7.1" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform vec4 u_rect;
+void main() {
+  vec2 P[4] = vec2[4](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+  gl_Position = vec4(u_rect.xy + P[gl_VertexID] * u_rect.zw, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec4 u_color;
+out vec4 color;
+void main() { color = u_color; }`);
+const locRect = gl.getUniformLocation(programa, 'u_rect'), locColor = gl.getUniformLocation(programa, 'u_color');
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.9, 0.9, 0.92, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(gl.createVertexArray());
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+gl.uniform4f(locRect, -0.6, -0.6, 0.8, 1.0); gl.uniform4f(locColor, 1.0, 0.3, 0.35, 0.5); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+gl.uniform4f(locRect, -0.2, -0.4, 0.8, 1.0); gl.uniform4f(locColor, 0.2, 0.5, 1.0, 0.5); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('BLEND activado:', gl.isEnabled(gl.BLEND));
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform vec4 u_rect;
+void main() {
+  vec2 P[4] = vec2[4](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+  gl_Position = vec4(u_rect.xy + P[gl_VertexID] * u_rect.zw, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec4 u_color;
+out vec4 color;
+void main() { color = u_color; }`);
+const locRect = gl.getUniformLocation(programa, 'u_rect'), locColor = gl.getUniformLocation(programa, 'u_color');
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.9, 0.9, 0.92, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(gl.createVertexArray());
+gl.enable(gl.BLEND);                                   // sin esto, blendFunc no se usa
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+gl.uniform4f(locRect, -0.6, -0.6, 0.8, 1.0); gl.uniform4f(locColor, 1.0, 0.3, 0.35, 0.5); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+gl.uniform4f(locRect, -0.2, -0.4, 0.8, 1.0); gl.uniform4f(locColor, 0.2, 0.5, 1.0, 0.5); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('BLEND activado:', gl.isEnabled(gl.BLEND));
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>La consola te lo dice. <code>blendFunc</code> configura; ¿qué activa?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Falta <code>gl.enable(gl.BLEND)</code>. <code>blendFunc</code> guarda los factores en el estado, pero con el blending desactivado cada fragmento sustituye al píxel y el alfa del shader no se usa para nada (aquí ni siquiera llega al canvas, que es <code>alpha: false</code>). Y como el blending es estado global, en un programa real conviene desactivarlo (<code>gl.disable(gl.BLEND)</code>) después de dibujar lo transparente.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.7.2 — El canvas translúcido</h3>
+  <p>El documento del playground tiene de fondo un damero (CSS). El canvas borra con un color opaco y dibuja encima un cuadrado naranja al 50 %. En el cuadrado se ve el damero de la página a través del canvas. Arréglalo sin cambiar el color del shader ni el atributo <code>alpha</code> del contexto.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.7.2" data-altura="220" data-apilado data-incluir="glkit">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+body { background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 24px 24px; }
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');                  // alpha: true por defecto
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[4] = vec2[4](vec2(-0.5, -0.6), vec2(0.5, -0.6), vec2(-0.5, 0.6), vec2(0.5, 0.6));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 0.5); }`);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.1, 0.1, 0.18, 1);                       // fondo opaco
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(gl.createVertexArray());
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+const px = new Uint8Array(4);
+gl.readPixels(gl.drawingBufferWidth / 2, gl.drawingBufferHeight / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+console.log('píxel central del búfer (RGBA):', px);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[4] = vec2[4](vec2(-0.5, -0.6), vec2(0.5, -0.6), vec2(-0.5, 0.6), vec2(0.5, 0.6));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 0.5); }`);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.1, 0.1, 0.18, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(gl.createVertexArray());
+gl.enable(gl.BLEND);
+// El RGB como antes; el alfa con la regla correcta: αs + αd·(1 − αs)
+gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+const px = new Uint8Array(4);
+gl.readPixels(gl.drawingBufferWidth / 2, gl.drawingBufferHeight / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+console.log('píxel central del búfer (RGBA):', px);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Mira el cuarto número del píxel que imprime la consola. ¿Por qué no es 255?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Necesitas factores distintos para el RGB y para el alfa.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)</code>, el alfa del píxel queda en <code>0.5·0.5 + 1·0.5 = 0.75</code> (191): el cuadrado deja el canvas translúcido y el compositor muestra el damero detrás. <code>blendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA)</code> mantiene la mezcla del color y calcula el alfa como <code>0.5 + 1·0.5 = 1</code>. Otras soluciones válidas que el enunciado prohíbe a propósito: <code>alpha: false</code>, o premultiplicar en el shader y usar <code>blendFunc(ONE, ONE_MINUS_SRC_ALPHA)</code>, que da el alfa correcto por sí solo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.7.3 — El halo oscuro, arreglado</h3>
+  <p>Un sprite con borde suave sobre fondo claro sale con un contorno gris. Arréglalo con dos cambios: uno en la subida de la textura y otro en el modo de mezcla.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.7.3" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID];
+  gl_Position = vec4((P[gl_VertexID] * 1.6 - 0.8) * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+// Una estrella blanca con borde suave, en 32×32
+const sprite = document.createElement('canvas');
+sprite.width = sprite.height = 32;
+const g = sprite.getContext('2d');
+g.fillStyle = '#fff'; g.shadowColor = '#fff'; g.shadowBlur = 4;
+g.beginPath();
+for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 5 : 12; g.lineTo(16 + r * Math.cos(a), 16 + r * Math.sin(a)); }
+g.fill();
+
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sprite);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.95, 0.85, 0.55, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.bindVertexArray(gl.createVertexArray());
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID];
+  gl_Position = vec4((P[gl_VertexID] * 1.6 - 0.8) * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+const sprite = document.createElement('canvas');
+sprite.width = sprite.height = 32;
+const g = sprite.getContext('2d');
+g.fillStyle = '#fff'; g.shadowColor = '#fff'; g.shadowBlur = 4;
+g.beginPath();
+for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 5 : 12; g.lineTo(16 + r * Math.cos(a), 16 + r * Math.sin(a)); }
+g.fill();
+
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);     // 1) subir premultiplicada
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sprite);
+gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.95, 0.85, 0.55, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.bindVertexArray(gl.createVertexArray());
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);               // 2) mezclar en premultiplicado
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué RGB tienen los texels transparentes de esta textura? ¿Qué pasa al interpolar entre uno de ellos y uno blanco?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si la textura está premultiplicada, su color ya va multiplicado por el alfa. ¿Qué factor de src hay que usar entonces?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los texels transparentes llegan como (0, 0, 0, 0): negro invisible. En el borde, el filtrado bilineal mezcla el blanco con ese negro y produce grises con alfa intermedio, que el modo alfa normal pinta como grises: el halo. Subiendo la textura premultiplicada, cada texel pasa a ser <code>(color·α, α)</code> y la interpolación entre (1, 1, 1, 1) y (0, 0, 0, 0) significa «blanco cada vez más transparente». Como el color ya lleva el alfa dentro, el factor de src debe ser <code>ONE</code> (con <code>SRC_ALPHA</code> multiplicarías dos veces y el borde saldría más oscuro de nuevo). Los dos cambios van siempre juntos.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.7.4 — Fantasmas sobre fondo negro</h3>
+  <p>Un canvas transparente (atributos por defecto) sobre una página negra dibuja un brillo circular que se desvanece hacia fuera. En vez de desvanecerse, se ve un cuadrado entero de color. Arréglalo cambiando solo el fragment shader.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.7.4" data-altura="240" data-apilado data-incluir="glkit">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+body { background: #000; }
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');                 // alpha y premultipliedAlpha: true
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_p;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_p = P[gl_VertexID];
+  gl_Position = vec4(P[gl_VertexID] * 0.8 * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec2 v_p;
+out vec4 color;
+void main() {
+  float a = pow(max(1.0 - length(v_p), 0.0), 2.0);     // 1 en el centro, 0 en el borde y fuera
+  color = vec4(1.0, 0.6, 0.2, a);
+}`);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0, 0, 0, 0);                              // transparente: se ve la página
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.bindVertexArray(gl.createVertexArray());
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);           // modo premultiplicado
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_p;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_p = P[gl_VertexID];
+  gl_Position = vec4(P[gl_VertexID] * 0.8 * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec2 v_p;
+out vec4 color;
+void main() {
+  float a = pow(max(1.0 - length(v_p), 0.0), 2.0);
+  color = vec4(vec3(1.0, 0.6, 0.2) * a, a);            // premultiplicado: el color también se apaga
+}`);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0, 0, 0, 0);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.bindVertexArray(gl.createVertexArray());
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué valen el RGB y el alfa de un fragmento en la esquina del cuadrado? ¿Cómo lo interpreta un modo de mezcla premultiplicado, y cómo lo interpreta el compositor?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Una sola multiplicación en la última línea del shader.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El shader devuelve el naranja completo en todo el cuadrado y solo el alfa se desvanece. Con <code>blendFunc(ONE, ONE_MINUS_SRC_ALPHA)</code>, el RGB se suma entero aunque el alfa sea 0 (el truco aditivo, aquí sin querer), y el búfer acaba con naranja y alfa bajo: el compositor, que espera premultiplicado, añade ese naranja a la página negra y aparece el cuadrado. Premultiplicar en el shader (<code>color * a</code>) hace que en la esquina el fragmento sea (0, 0, 0, 0): nada que sumar y nada que tapar. Es el bestiario del compositor con otra cara: en premultiplicado, <em>todo</em> lo que escribes en el búfer debe cumplir RGB ≤ α.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.7.5 — Partículas sin ordenar</h3>
+  <p>Cien partículas brillantes con blending alfa normal, en 3D y con la cámara girando. No se ordenan, y escriben profundidad: las esquinas transparentes de las partículas que se dibujan antes recortan a las que tienen detrás (se ven cortes rectos y cuadrados oscuros en los bordes), y el aspecto cambia a saltos al girar. Ordenarlas cada frame es una solución; aquí queremos la otra: cambia el modo de mezcla (y lo que haga falta en el shader y en la profundidad) para que el orden deje de importar, con un aspecto de luz que se suma.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.7.5" data-altura="300" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_color;
+uniform mat4 u_vp;
+uniform float u_escalaPunto;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  gl_Position = u_vp * vec4(a_posicion, 1.0);
+  gl_PointSize = u_escalaPunto / gl_Position.w;        // más pequeñas cuanto más lejos
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() {
+  float d = length(gl_PointCoord - 0.5) * 2.0;           // 0 en el centro del punto, 1 en el borde
+  float a = pow(max(1.0 - d, 0.0), 1.5);
+  color = vec4(v_color, a);
+}`);
+const N = 100, datos = new Float32Array(N * 6);
+for (let i = 0; i < N; i++) {
+  const r = Math.cbrt(Math.random()) * 1.2, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+  datos.set([r * Math.sin(ph) * Math.cos(th), r * Math.cos(ph), r * Math.sin(ph) * Math.sin(th),
+             0.6 + 0.4 * Math.random(), 0.3 + 0.4 * Math.random(), 0.2 + 0.3 * Math.random()], i * 6);
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+const locVP = gl.getUniformLocation(programa, 'u_vp'), locEscala = gl.getUniformLocation(programa, 'u_escalaPunto');
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.03, 0.03, 0.06, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const vp = mat4.producto(mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([3.2 * Math.sin(t * 0.4), 0.8, 3.2 * Math.cos(t * 0.4)], [0, 0, 0], [0, 1, 0]));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locVP, false, vp);
+  gl.uniform1f(locEscala, 0.32 * gl.drawingBufferHeight);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.POINTS, 0, N);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_color;
+uniform mat4 u_vp;
+uniform float u_escalaPunto;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  gl_Position = u_vp * vec4(a_posicion, 1.0);
+  gl_PointSize = u_escalaPunto / gl_Position.w;
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() {
+  float d = length(gl_PointCoord - 0.5) * 2.0;
+  float a = pow(max(1.0 - d, 0.0), 1.5);
+  color = vec4(v_color * a * 0.35, 1.0);              // luz que se suma: el color, ya atenuado
+}`);
+const N = 100, datos = new Float32Array(N * 6);
+for (let i = 0; i < N; i++) {
+  const r = Math.cbrt(Math.random()) * 1.2, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+  datos.set([r * Math.sin(ph) * Math.cos(th), r * Math.cos(ph), r * Math.sin(ph) * Math.sin(th),
+             0.6 + 0.4 * Math.random(), 0.3 + 0.4 * Math.random(), 0.2 + 0.3 * Math.random()], i * 6);
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+const locVP = gl.getUniformLocation(programa, 'u_vp'), locEscala = gl.getUniformLocation(programa, 'u_escalaPunto');
+gl.enable(gl.DEPTH_TEST);
+gl.depthMask(false);                                   // no escriben profundidad: no se tapan entre sí
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE);                          // aditivo: la suma es conmutativa
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.03, 0.03, 0.06, 1);
+  gl.depthMask(true);                                  // para que el clear de profundidad funcione
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.depthMask(false);
+  const vp = mat4.producto(mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+    mat4.mirarA([3.2 * Math.sin(t * 0.4), 0.8, 3.2 * Math.cos(t * 0.4)], [0, 0, 0], [0, 1, 0]));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locVP, false, vp);
+  gl.uniform1f(locEscala, 0.32 * gl.drawingBufferHeight);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.POINTS, 0, N);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué modo de mezcla es conmutativo? Con él, ¿importa qué partícula se dibuje antes?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Aunque el color sea conmutativo, las partículas siguen escribiendo profundidad y tapándose entre sí con sus esquinas transparentes. ¿Qué llamada lo evita? Y con el aditivo, el alfa ya no se usa: el shader debe atenuar el propio color.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Tres cambios. <strong>Aditivo</strong> (<code>blendFunc(ONE, ONE)</code>): la suma no depende del orden, así que no hace falta ordenar. <strong>Sin escritura de profundidad</strong> (<code>depthMask(false)</code>): si no, la esquina transparente de una partícula cercana dibujada antes impediría dibujarse a las de detrás (el test de profundidad no sabe de transparencias); el test sigue activo para que un objeto opaco pudiera taparlas. <strong>El shader atenúa el color</strong>, porque el aditivo ignora el alfa: <code>v_color * a</code> hace que el borde del punto sume cero. Y ojo al detalle de siempre: <code>depthMask(true)</code> antes del <code>clear</code>, o la profundidad no se borraría. El resultado es más brillante donde se acumulan partículas, que es justo el aspecto de «luz» que se buscaba.</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Blending: <code>final = src·fSrc ⊕ dst·fDst</code>. <code>enable(BLEND)</code> (desactivado por defecto), <code>blendFunc</code> (por defecto <code>ONE, ZERO</code>), <code>blendEquation</code> (<code>FUNC_ADD</code>, restas, <code>MIN</code>/<code>MAX</code>). Es estado global.</li>
+    <li>Modos: alfa <code>SRC_ALPHA, ONE_MINUS_SRC_ALPHA</code>; premultiplicado <code>ONE, ONE_MINUS_SRC_ALPHA</code>; aditivo <code>ONE, ONE</code> (conmutativo); multiplicativo <code>DST_COLOR, ZERO</code>.</li>
+    <li>El alfa también se mezcla: con el modo alfa normal, el búfer acaba con α &lt; 1 y el canvas se vuelve translúcido. <code>blendFuncSeparate(…, ONE, ONE_MINUS_SRC_ALPHA)</code>, modo premultiplicado o <code>alpha: false</code>.</li>
+    <li>Premultiplicado = <code>(rgb·α, α)</code>: filtrado y mipmaps correctos (sin halos oscuros), composición asociativa, y aditivo gratis con α = 0. Sube con <code>UNPACK_PREMULTIPLY_ALPHA_WEBGL</code> y mezcla con <code>ONE, ONE_MINUS_SRC_ALPHA</code>.</li>
+    <li>Con <code>premultipliedAlpha: true</code> (por defecto) el compositor espera RGB ≤ α; si no, añade luz: fantasmas blancos, bordes luminosos. <code>alpha: false</code> lo evita.</li>
+    <li>El orden importa: opacos primero; transparentes de atrás adelante, con <code>depthMask(false)</code>; <code>depthMask(true)</code> antes del siguiente <code>clear</code>.</li>
+    <li><code>discard</code> para recortes (sin ordenar, bordes duros); alpha to coverage para suavizarlos con MSAA.</li>
+  </ul>
+</div>
+
+<p>En <a href="08-framebuffers.html">5.8</a> dejamos de dibujar solo en el canvas: renderizaremos en texturas propias para reutilizar el resultado, encadenar pasadas de post-proceso y hacer simulaciones que se alimentan de sí mismas.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/blendFunc">MDN: <code>blendFunc()</code></a>, con todos los factores y la fórmula de cada uno.</li>
+  <li><a href="https://keithp.com/~keithp/porterduff/p253-porter.pdf">Porter y Duff, «Compositing Digital Images» (1984)</a>: el artículo que definió el alfa premultiplicado y el operador <em>over</em>.</li>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-and-alpha.html">WebGL2 Fundamentals: WebGL and Alpha</a>, sobre <code>premultipliedAlpha</code> y la composición con la página.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

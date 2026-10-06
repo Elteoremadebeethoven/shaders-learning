@@ -1,0 +1,1486 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.8 · Framebuffers, render-to-texture y ping-pong — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/framebuffers">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>Framebuffers, render-to-texture y ping-pong</h1>
+  <p class="resumen">Hasta ahora todo acababa en el canvas. Un framebuffer propio te deja dibujar dentro de una textura y usar el resultado después: para aplicar efectos a la imagen final, para simulaciones que se alimentan de sí mismas frame a frame, o para averiguar qué objeto hay bajo el ratón.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: 5.7, 5.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Crearás un framebuffer con adjuntos de textura y de renderbuffer, y diagnosticarás por qué está incompleto.</li>
+      <li>Renderizarás a una textura y la usarás en otra pasada, sin caer en el bucle de realimentación ni en el viewport olvidado.</li>
+      <li>Aplicarás la técnica del ping-pong: el juego de la vida en la GPU y un efecto de estelas.</li>
+      <li>Montarás una cadena de post-proceso (escena → framebuffer → efecto a pantalla completa).</li>
+      <li>Usarás texturas float como destino, leerás píxeles con <code>readPixels</code> para hacer <em>picking</em>, y conocerás los varios destinos (MRT) y el <em>blit</em> con MSAA.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Dibujar en otro sitio</h2>
+<p>Cada dibujo de este módulo ha escrito en el <strong>framebuffer por defecto</strong>: el búfer de dibujo del canvas, el que el navegador presenta en pantalla (5.1). Un <strong>framebuffer object</strong> (FBO) es un destino alternativo: un objeto que agrupa una o varias texturas (o renderbuffers) en las que se escribe en lugar de en el canvas. El pipeline es exactamente el mismo; solo cambia dónde acaban los píxeles. Y como lo que escribes es una textura, puedes leerla en el dibujo siguiente. Eso abre tres familias de técnicas:</p>
+<ul>
+  <li><strong>Post-proceso</strong>: dibujas la escena en una textura y luego la pasas por un shader a pantalla completa que la modifica (desenfoque, color, distorsiones, bordes). Casi todos los efectos «cinematográficos» funcionan así.</li>
+  <li><strong>Simulación en la GPU</strong>: una textura guarda el estado (celdas, posiciones, alturas de agua) y en cada frame un shader calcula el estado siguiente a partir del anterior. Es la técnica del <em>ping-pong</em>, y la base de las partículas en la GPU de <a href="../07-integracion/05-particulas-gpu.html">7.5</a>.</li>
+  <li><strong>Consultas</strong>: dibujas algo que no es para verlo (el identificador de cada objeto como color) y lees el resultado con <code>readPixels</code>: <em>picking</em>.</li>
+</ul>
+
+<h2>Anatomía de un framebuffer</h2>
+<p>Un FBO no guarda píxeles: es una lista de puntos de conexión, los <strong>adjuntos</strong> (<em>attachments</em>), a los que conectas la memoria donde se escribirá:</p>
+
+<svg class="diagrama" viewBox="0 0 760 230" width="760" role="img" aria-label="Un framebuffer con sus adjuntos">
+  <defs>
+    <marker id="m58-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="20" y="20" width="250" height="190" rx="10"/>
+  <text x="145" y="46" text-anchor="middle" style="font-weight:700">Framebuffer (FBO)</text>
+  <rect class="caja" x="40" y="62" width="210" height="30" rx="5"/><text x="145" y="82" text-anchor="middle" style="font-size:12px">COLOR_ATTACHMENT0</text>
+  <rect class="caja" x="40" y="100" width="210" height="30" rx="5"/><text x="145" y="120" text-anchor="middle" style="font-size:12px">COLOR_ATTACHMENT1 … 7 (MRT)</text>
+  <rect class="caja" x="40" y="138" width="210" height="30" rx="5"/><text x="145" y="158" text-anchor="middle" style="font-size:12px">DEPTH_ATTACHMENT</text>
+  <rect class="caja" x="40" y="176" width="210" height="24" rx="5"/><text x="145" y="193" text-anchor="middle" style="font-size:12px">STENCIL / DEPTH_STENCIL</text>
+  <rect x="370" y="45" width="240" height="60" rx="8" class="acento" stroke-width="2"/>
+  <text x="490" y="70" text-anchor="middle" style="font-weight:700">Textura</text>
+  <text x="490" y="90" text-anchor="middle" class="texto-tenue" style="font-size:12px">se escribe y luego se muestrea</text>
+  <rect class="caja" x="370" y="130" width="240" height="60" rx="8"/>
+  <text x="490" y="155" text-anchor="middle" style="font-weight:700">Renderbuffer</text>
+  <text x="490" y="175" text-anchor="middle" class="texto-tenue" style="font-size:12px">solo se escribe (profundidad, MSAA)</text>
+  <path d="M252 77 L366 75" class="acento" stroke-width="2" marker-end="url(#m58-fl)"/>
+  <path d="M252 153 L366 160" stroke="currentColor" stroke-width="1.5" marker-end="url(#m58-fl)"/>
+  <text x="688" y="70" text-anchor="middle" class="texto-tenue" style="font-size:11px">framebufferTexture2D</text>
+  <text x="688" y="160" text-anchor="middle" class="texto-tenue" style="font-size:11px">framebufferRenderbuffer</text>
+</svg>
+
+<ul>
+  <li><strong>Una textura</strong> como adjunto de color es lo habitual: después de dibujar en ella la muestreas como cualquier otra textura (5.5).</li>
+  <li><strong>Un renderbuffer</strong> es memoria de la GPU optimizada para ser destino de dibujo y que no se puede muestrear. Es lo natural para la profundidad (la necesitas para que el test funcione mientras dibujas, pero no para leerla después) y para el multisampling.</li>
+  <li><code>gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)</code> hace que <em>todos</em> los dibujos, <code>clear</code> y <code>readPixels</code> siguientes usen ese FBO. <code>gl.bindFramebuffer(gl.FRAMEBUFFER, null)</code> vuelve al canvas. (WebGL2 separa además <code>READ_FRAMEBUFFER</code> y <code>DRAW_FRAMEBUFFER</code>; <code>FRAMEBUFFER</code> enlaza los dos a la vez.)</li>
+</ul>
+
+<h2>Crear un framebuffer, llamada por llamada</h2>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const TAM = 256;
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, TAM, TAM, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+const profundidad = gl.createRenderbuffer();
+gl.bindRenderbuffer(gl.RENDERBUFFER, profundidad);
+gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, TAM, TAM);
+
+const fbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, textura, 0);
+gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, profundidad);
+const estado = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+if (estado !== gl.FRAMEBUFFER_COMPLETE) throw new Error('FBO incompleto: 0x' + estado.toString(16));
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+</script>
+<ol>
+  <li data-l="2-4">La textura de color, con la variante de datos crudos de <code>texImage2D</code> y <code>null</code> en lugar de datos: reserva memoria sin rellenarla (5.5).</li>
+  <li data-l="5-7">Filtro sin mipmaps (o la textura sería incompleta al muestrearla después) y <code>CLAMP_TO_EDGE</code>, lo habitual en post-proceso.</li>
+  <li data-l="9-11">Un renderbuffer de profundidad del <strong>mismo tamaño</strong>. <code>renderbufferStorage</code> recibe el destino, el formato interno y el tamaño, y reserva la memoria. <code>DEPTH_COMPONENT24</code> es profundidad de 24 bits.</li>
+  <li data-l="13-14">El FBO en sí, y enlazarlo: las llamadas siguientes lo configuran.</li>
+  <li data-l="15"><code>framebufferTexture2D</code> recibe el destino, el adjunto, el tipo de textura, la textura y el nivel de mipmap. Aquí conecta el nivel 0 de la textura al adjunto de color 0.</li>
+  <li data-l="16"><code>framebufferRenderbuffer</code>: destino, adjunto, <code>gl.RENDERBUFFER</code> y el renderbuffer. Conecta la profundidad.</li>
+  <li data-l="17-18">Comprobar que el FBO es <strong>completo</strong>, es decir, utilizable. Si no, di por qué con el código.</li>
+  <li data-l="19">Volver al canvas, para no dibujar en el FBO sin querer.</li>
+</ol>
+</div>
+
+<p>Los códigos de <code>checkFramebufferStatus</code> que verás, todos comprobados:</p>
+<table>
+  <thead><tr><th>Código</th><th>Nombre</th><th>Causa típica</th></tr></thead>
+  <tbody>
+    <tr><td><code>0x8CD5</code></td><td><code>FRAMEBUFFER_COMPLETE</code></td><td>Todo bien.</td></tr>
+    <tr><td><code>0x8CD6</code></td><td><code>…INCOMPLETE_ATTACHMENT</code></td><td>Un adjunto no admite renderizado: una textura <code>RGBA16F</code> o <code>RGBA32F</code> sin <code>EXT_color_buffer_float</code>, o una textura sin memoria reservada.</td></tr>
+    <tr><td><code>0x8CD7</code></td><td><code>…INCOMPLETE_MISSING_ATTACHMENT</code></td><td>No hay ningún adjunto.</td></tr>
+    <tr><td><code>0x8CD9</code></td><td><code>…INCOMPLETE_DIMENSIONS</code></td><td>Adjuntos de tamaños distintos (color de 64×64 y profundidad de 32×32). OpenGL ES 3.0 lo permite; WebGL2 no, y lo comprobamos.</td></tr>
+    <tr><td><code>0x8D56</code></td><td><code>…INCOMPLETE_MULTISAMPLE</code></td><td>Adjuntos con distinto número de muestras.</td></tr>
+  </tbody>
+</table>
+<p>Dibujar o borrar con un FBO incompleto enlazado da <code>INVALID_FRAMEBUFFER_OPERATION</code> (0x506), con un aviso tan claro como este: <code>glDrawArrays: Framebuffer is incomplete: No attachments and default size is zero</code>.</p>
+
+<div class="callout bestiario" data-id="m5-fbo-incompleto" data-titulo="«Framebuffer incompleto» (o INVALID_FRAMEBUFFER_OPERATION al dibujar)">
+  <p><strong>Síntoma:</strong> nada se dibuja en tu textura y la consola dice <code>INVALID_FRAMEBUFFER_OPERATION</code>, o tu comprobación de <code>checkFramebufferStatus</code> devuelve algo distinto de <code>0x8CD5</code>.</p>
+  <p><strong>Causa:</strong> la combinación de adjuntos no es válida. Las más comunes: un formato de color que no se puede renderizar (float sin <code>EXT_color_buffer_float</code>: <code>0x8CD6</code>), adjuntos de tamaños distintos (<code>0x8CD9</code>; pasa mucho al redimensionar la textura de color y olvidar la de profundidad) o ningún adjunto (<code>0x8CD7</code>).</p>
+  <p><strong>Solución:</strong> comprueba siempre el estado tras crear o modificar un FBO y lanza un error con el código. Para floats, pide la extensión (y comprueba que existe). Al redimensionar, recrea <em>todos</em> los adjuntos con el nuevo tamaño.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Al redimensionar la ventana, recreas la textura de color de tu FBO a 1024×768 pero olvidas el renderbuffer de profundidad, que sigue a 800×600. ¿Qué devuelve <code>checkFramebufferStatus</code>?</p>
+  <ul>
+    <li><code>FRAMEBUFFER_COMPLETE</code>: se dibuja en la zona común de 800×600.<div class="explicacion">Eso es lo que haría OpenGL ES 3.0. WebGL2 es más estricto y exige que todos los adjuntos midan lo mismo.</div></li>
+    <li data-correcta><code>FRAMEBUFFER_INCOMPLETE_DIMENSIONS</code> (<code>0x8CD9</code>), y dibujar dará <code>INVALID_FRAMEBUFFER_OPERATION</code>.<div class="explicacion">Correcto. Al redimensionar hay que recrear todos los adjuntos, no solo el de color.</div></li>
+    <li><code>FRAMEBUFFER_INCOMPLETE_ATTACHMENT</code> (<code>0x8CD6</code>).<div class="explicacion">Ese código es para un adjunto que no admite renderizado por sí mismo (formato float sin extensión, textura sin memoria). Cada uno de estos adjuntos es válido; lo que falla es la combinación.</div></li>
+  </ul>
+</div>
+
+<h2>Renderizar a una textura y usarla después</h2>
+<p>El patrón es siempre de dos (o más) pasadas: primero se enlaza el FBO y se dibuja en él, después se enlaza el canvas y se dibuja usando la textura del FBO. Entre una y otra hay que cambiar el viewport, y ahí está el error más frecuente del tema.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.8.1 — Una tele en cada cara del cubo</h3>
+  <p>Primera pasada: un triángulo de colores que gira, dibujado en una textura de 256×256 con un fondo que cambia con el tiempo. Segunda pasada: el cubo iluminado de 5.6, texturizado con esa textura. Todo creado a mano, llamada por llamada.</p>
+  <div class="js-playground" data-titulo="Render to texture" data-altura="320" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+
+// --- Lo que se dibuja DENTRO de la textura: un triángulo que gira
+const progTriangulo = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_angulo;
+out vec3 v_color;
+void main() {
+  float a = u_angulo + float(gl_VertexID) * 2.0943951;       // 120° entre vértices
+  v_color = vec3(gl_VertexID == 0, gl_VertexID == 1, gl_VertexID == 2);
+  gl_Position = vec4(0.75 * cos(a), 0.75 * sin(a), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+// --- El cubo iluminado (5.6)
+const progCubo = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+uniform mat4 u_mvp, u_modelo;
+out vec3 v_normal;
+out vec2 v_uv;
+void main() {
+  v_normal = mat3(u_modelo) * a_normal;          // solo rotaciones: aquí basta
+  v_uv = a_uv;
+  gl_Position = u_mvp * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec3 v_normal;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  float luz = 0.3 + 0.7 * max(dot(normalize(v_normal), normalize(vec3(0.5, 0.8, 0.6))), 0.0);
+  color = vec4(texture(u_tex, v_uv).rgb * luz, 1.0);
+}`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]),
+                 n[0], n[1], n[2], (su + 1) / 2, (sv + 1) / 2);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vaoCubo = gl.createVertexArray();
+gl.bindVertexArray(vaoCubo);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const vaoVacio = gl.createVertexArray();
+
+// --- El framebuffer: textura de color de 256×256 (sin profundidad: el triángulo es 2D)
+const TAM = 256;
+const texturaFBO = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texturaFBO);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, TAM, TAM, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+const fbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texturaFBO, 0);
+const estado = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+if (estado !== gl.FRAMEBUFFER_COMPLETE) throw new Error('FBO incompleto: 0x' + estado.toString(16));
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+const locAngulo = gl.getUniformLocation(progTriangulo, 'u_angulo');
+const loc = { mvp: gl.getUniformLocation(progCubo, 'u_mvp'), modelo: gl.getUniformLocation(progCubo, 'u_modelo'), tex: gl.getUniformLocation(progCubo, 'u_tex') };
+
+function frame(ms) {
+  const t = ms / 1000;
+  // Pasada 1: al framebuffer
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.viewport(0, 0, TAM, TAM);                                   // ¡el tamaño del FBO!
+  gl.disable(gl.DEPTH_TEST);
+  gl.clearColor(0.15 + 0.1 * Math.sin(t), 0.12, 0.25, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(progTriangulo);
+  gl.uniform1f(locAngulo, t * 1.5);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // Pasada 2: al canvas, usando la textura
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const modelo = mat4.producto(mat4.rotacionY(t * 0.5), mat4.rotacionX(t * 0.3));
+  const mvp = mat4.producto(mat4.perspectiva(Math.PI / 3, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+                            mat4.mirarA([0, 0.8, 2.4], [0, 0, 0], [0, 1, 0]), modelo);
+  gl.useProgram(progCubo);
+  gl.uniformMatrix4fv(loc.mvp, false, mvp);
+  gl.uniformMatrix4fv(loc.modelo, false, modelo);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texturaFBO);
+  gl.uniform1i(loc.tex, 0);
+  gl.bindVertexArray(vaoCubo);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Tres detalles que no son obvios:</p>
+  <ul>
+    <li><strong>El viewport cambia dos veces por frame</strong>: al tamaño del FBO (256×256) en la primera pasada y al del canvas en la segunda. El viewport es estado global y no sabe nada de framebuffers.</li>
+    <li><strong>La textura no sale al revés.</strong> Al renderizar en una textura, la fila de abajo del dibujo (la <code>y = 0</code> de <code>gl_FragCoord</code>) queda en la fila 0 de la textura, que es <code>v = 0</code>. Todo está en la convención de GL, así que no hace falta ningún <code>FLIP_Y</code>: ese problema era solo de las imágenes del DOM (5.5).</li>
+    <li><strong>Al terminar el frame, <code>texturaFBO</code> sigue enlazada en la unidad 0</strong>, y en el frame siguiente dibujamos en el FBO que la contiene. No hay conflicto porque el programa del triángulo no la muestrea; en la siguiente sección verás qué pasa cuando sí lo hace.</li>
+  </ul>
+</section>
+
+<div class="callout bestiario" data-id="m5-viewport-fbo" data-titulo="Lo dibujado en el framebuffer sale recortado, desplazado o estirado">
+  <p><strong>Síntoma:</strong> la textura resultante contiene solo una parte de la escena, la escena aparece desplazada hacia una esquina o deformada. O, al revés: tras la pasada del FBO, el canvas se dibuja pequeño en una esquina.</p>
+  <p><strong>Causa:</strong> el viewport no coincide con el tamaño del destino. <code>bindFramebuffer</code> no cambia el viewport: si el canvas mide 800×300 y el FBO 256×256, dibujar en el FBO con el viewport del canvas estira el clip space sobre un rectángulo de 800×300 del que solo caben 256×256 (comprobado: un triángulo que debía cubrir la mitad derecha del FBO quedó recortado y aplastado). Lo mismo al volver al canvas si no restauras el viewport.</p>
+  <p><strong>Solución:</strong> <code>gl.viewport(0, 0, anchoDelDestino, altoDelDestino)</code> inmediatamente después de cada <code>bindFramebuffer</code>, siempre. Un buen hábito es envolver los dos en una función <code>usarDestino(fbo, ancho, alto)</code>.</p>
+</div>
+
+<h2>El bucle de realimentación</h2>
+<p>¿Y si un dibujo muestrea la misma textura en la que está escribiendo? Por ejemplo, para desenfocar una imagen «en su sitio». La GPU procesa miles de fragmentos en paralelo y en un orden que no controlas: mientras un fragmento lee su vecino, otro puede estar escribiéndolo. El resultado sería indefinido, así que WebGL lo prohíbe: el dibujo no se ejecuta y se genera <code>INVALID_OPERATION</code> con un aviso explícito (comprobado): <code>glDrawArrays: Feedback loop formed between Framebuffer and active Texture</code>. Solo cuenta si el programa en uso muestrea de verdad esa textura: tenerla enlazada en una unidad que el shader no usa no es un error.</p>
+
+<div class="callout bestiario" data-id="m5-bucle-realimentacion" data-titulo="«Feedback loop formed between Framebuffer and active Texture»">
+  <p><strong>Síntoma:</strong> un efecto que lee una textura y escribe en un framebuffer no hace nada, y la consola dice <code>INVALID_OPERATION: … Feedback loop formed between Framebuffer and active Texture</code>.</p>
+  <p><strong>Causa:</strong> la textura que el shader muestrea está adjunta al framebuffer enlazado como destino. Leer y escribir la misma memoria en un mismo dibujo es indefinido, y WebGL lo bloquea.</p>
+  <p><strong>Solución:</strong> dos texturas y dos FBO: se lee de una y se escribe en la otra, y en el paso siguiente se intercambian. Es la técnica del ping-pong, justo lo que viene ahora.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tienes un FBO con la textura T adjunta. Lo enlazas como destino y dibujas con un programa que muestrea T para aplicarle un desenfoque. ¿Qué pasa?</p>
+  <ul>
+    <li>Funciona, pero con artefactos: unos fragmentos leen valores ya desenfocados y otros no.<div class="explicacion">Eso es lo que <em>pasaría</em> si se permitiera. WebGL no lo permite: detecta el bucle y no ejecuta el dibujo.</div></li>
+    <li data-correcta>No se dibuja nada y se genera <code>INVALID_OPERATION</code>.<div class="explicacion">Correcto. Hay que leer de una textura y escribir en otra (ping-pong).</div></li>
+    <li>WebGL copia T a una textura temporal automáticamente.<div class="explicacion">WebGL no hace copias ocultas: tú decides dónde se lee y dónde se escribe.</div></li>
+  </ul>
+</div>
+
+<h2>GLKit: crearFBO y trianguloPantalla</h2>
+<p>Antes del ping-pong, dos ayudas de GLKit que ahora puedes leer entendiendo cada línea:</p>
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="assets/js/glkit.js (extracto)">
+/* Framebuffer con una textura de color (y opcionalmente profundidad). */
+crearFBO(gl, ancho, alto, o) {
+  o = o || {};
+  const tex = GLKit.crearTextura(gl, null, {
+    ancho, alto, filtro: o.filtro || gl.LINEAR, wrap: o.wrap || gl.CLAMP_TO_EDGE,
+    formatoInterno: o.formatoInterno, formato: o.formato, tipo: o.tipo, flipY: false,
+  });
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  let rbo = null;
+  if (o.profundidad) {
+    rbo = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, rbo);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, ancho, alto);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rbo);
+  }
+  const estado = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (estado !== gl.FRAMEBUFFER_COMPLETE) throw new Error("Framebuffer incompleto: 0x" + estado.toString(16));
+  return { fbo, textura: tex, profundidad: rbo, ancho, alto };
+},
+
+/* VAO con un único triángulo que cubre toda la pantalla (atributo en location 0).
+   Un triángulo gigante en vez de dos: sin diagonal, sin fragmentos duplicados. */
+trianguloPantalla(gl) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  GLKit.crearBuffer(gl, new Float32Array([-1, -1, 3, -1, -1, 3]));
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  return vao;
+},
+</script>
+<p><code>crearFBO</code> es el código del ejemplo anterior empaquetado, con la textura creada por <code>crearTextura</code> (con datos <code>null</code> y sin volteo) y un renderbuffer de profundidad opcional. Devuelve un objeto con el FBO, su textura y su tamaño, justo lo que necesitas para hacer <code>bindFramebuffer</code> + <code>viewport</code>. <code>trianguloPantalla</code> es el triángulo gigante del hack de 5.2, esta vez con un buffer en la location 0 en lugar de <code>gl_VertexID</code>, para las pasadas a pantalla completa. GLKit trae también <code>GLKit.borrarFBO(gl, f)</code>, que libera de una vez el framebuffer, su textura y su renderbuffer (la memoria de la GPU no la recoge el recolector de basura a tiempo); los ejemplos siguientes hacen esas llamadas <code>delete*</code> a mano para que veas qué hay que borrar.</p>
+
+<h2>Ping-pong: la GPU que se alimenta de sí misma</h2>
+<p>Muchas técnicas necesitan que cada frame parta del resultado del anterior: una simulación (el estado de hoy depende del de ayer), una estela (la imagen de hoy es la de ayer, desvanecida, más lo nuevo), un desenfoque en varias pasadas. Como no se puede leer y escribir la misma textura, se usan <strong>dos</strong>, A y B, cada una con su FBO:</p>
+
+<svg class="diagrama" viewBox="0 0 760 200" width="760" role="img" aria-label="La técnica del ping-pong entre dos texturas">
+  <defs>
+    <marker id="m58-fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <text x="130" y="24" text-anchor="middle" style="font-weight:700">frame N</text>
+  <rect class="caja" x="30" y="40" width="90" height="60" rx="8"/><text x="75" y="75" text-anchor="middle">A</text>
+  <rect x="170" y="40" width="90" height="60" rx="8" class="acento" stroke-width="2"/><text x="215" y="75" text-anchor="middle">B</text>
+  <path d="M122 70 L166 70" stroke="currentColor" stroke-width="2" marker-end="url(#m58-fl2)"/>
+  <text x="145" y="122" text-anchor="middle" class="texto-tenue" style="font-size:12px">shader: lee A, escribe B</text>
+  <text x="380" y="75" text-anchor="middle" style="font-size:22px">⇄</text>
+  <text x="380" y="100" text-anchor="middle" class="texto-tenue" style="font-size:12px">[A, B] = [B, A]</text>
+  <text x="620" y="24" text-anchor="middle" style="font-weight:700">frame N+1</text>
+  <rect class="caja" x="520" y="40" width="90" height="60" rx="8"/><text x="565" y="75" text-anchor="middle">B</text>
+  <rect x="660" y="40" width="90" height="60" rx="8" class="acento" stroke-width="2"/><text x="705" y="75" text-anchor="middle">A</text>
+  <path d="M612 70 L656 70" stroke="currentColor" stroke-width="2" marker-end="url(#m58-fl2)"/>
+  <text x="635" y="122" text-anchor="middle" class="texto-tenue" style="font-size:12px">lee el resultado anterior, escribe en la otra</text>
+  <text x="380" y="170" text-anchor="middle" class="texto-tenue">nunca se lee y se escribe la misma textura en el mismo dibujo</text>
+</svg>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.8.2 — El juego de la vida en la GPU</h3>
+  <p>El autómata de Conway: una rejilla de celdas vivas o muertas; en cada generación, una celda viva sobrevive si tiene 2 o 3 vecinas vivas, y una muerta nace si tiene exactamente 3. Cada celda es un texel de una textura; cada generación, un dibujo a pantalla completa en el que cada fragmento calcula el futuro de su celda leyendo sus 8 vecinas con <code>texelFetch</code>. Todas las celdas a la vez, en paralelo. El canal verde guarda un «rastro» que se apaga lentamente tras la muerte de cada celda.</p>
+  <div class="js-playground" data-titulo="Juego de la vida (ping-pong)" data-altura="320" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label>generaciones por segundo <input id="velocidad" type="range" min="1" max="60" value="20"></label>
+  <button id="reiniciar">Reiniciar</button>
+  <span id="info"></span>
+</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 14px; align-items: center; padding: 8px 12px; font: 12px ui-monospace, monospace; color: #b4bccb; }
+button { font: 12px ui-monospace, monospace; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progPaso = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_estado;
+out vec4 color;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);                 // esta celda (el viewport = la rejilla)
+  ivec2 N = textureSize(u_estado, 0);
+  int vecinas = 0;
+  for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+    if (dx == 0 && dy == 0) continue;
+    ivec2 q = (p + ivec2(dx, dy) + N) % N;          // el mundo da la vuelta por los bordes
+    vecinas += int(texelFetch(u_estado, q, 0).r > 0.5);
+  }
+  vec4 antes = texelFetch(u_estado, p, 0);
+  bool viva = antes.r > 0.5;
+  bool despues = viva ? (vecinas == 2 || vecinas == 3) : (vecinas == 3);
+  float rastro = despues ? 1.0 : max(antes.g - 0.03, 0.0);
+  color = vec4(despues ? 1.0 : 0.0, rastro, 0.0, 1.0);
+}`);
+const progMostrar = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_estado;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  vec4 e = texture(u_estado, v_uv);                 // NEAREST: cada celda, un bloque nítido
+  vec3 c = mix(vec3(0.05, 0.05, 0.09), vec3(0.35, 0.2, 0.6), e.g);
+  color = vec4(mix(c, vec3(0.3, 0.95, 0.9), e.r), 1.0);
+}`);
+const vaoPantalla = GLKit.trianguloPantalla(gl);
+let A = null, B = null, COLS = 0, FILAS = 0;         // la rejilla: una celda cada 4 píxeles del búfer
+
+function sembrar() {
+  const datos = new Uint8Array(COLS * FILAS * 4);   // RGBA: filas de 4·COLS bytes, siempre alineadas
+  for (let i = 0; i < COLS * FILAS; i++) {
+    const v = Math.random() < 0.3 ? 255 : 0;
+    datos.set([v, v, 0, 255], i * 4);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, A.textura);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, COLS, FILAS, gl.RGBA, gl.UNSIGNED_BYTE, datos);
+  generacion = 0;
+}
+function prepararRejilla() {                         // al empezar y cada vez que cambie el tamaño del canvas
+  COLS = Math.max(8, Math.floor(gl.drawingBufferWidth / 4));
+  FILAS = Math.max(8, Math.floor(gl.drawingBufferHeight / 4));
+  for (const f of [A, B]) if (f) { gl.deleteFramebuffer(f.fbo); gl.deleteTexture(f.textura); }
+  A = GLKit.crearFBO(gl, COLS, FILAS, { filtro: gl.NEAREST });
+  B = GLKit.crearFBO(gl, COLS, FILAS, { filtro: gl.NEAREST });
+  sembrar();
+}
+document.getElementById('reiniciar').onclick = () => { if (A) sembrar(); };
+const locPaso = gl.getUniformLocation(progPaso, 'u_estado'), locMostrar = gl.getUniformLocation(progMostrar, 'u_estado');
+let acumulado = 0, previo = null, generacion = 0;
+
+function frame(ms) {
+  if (GLKit.ajustarTamaño(canvas) || !A) prepararRejilla();
+  const dt = previo === null ? 0 : Math.min((ms - previo) / 1000, 0.1);
+  previo = ms;
+  acumulado += dt * +document.getElementById('velocidad').value;
+  gl.bindVertexArray(vaoPantalla);
+  gl.activeTexture(gl.TEXTURE0);
+  while (acumulado >= 1) {                           // tantas generaciones como toquen
+    acumulado -= 1;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, B.fbo);
+    gl.viewport(0, 0, COLS, FILAS);                  // un fragmento por celda
+    gl.useProgram(progPaso);
+    gl.bindTexture(gl.TEXTURE_2D, A.textura);        // leer A…
+    gl.uniform1i(locPaso, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);               // …escribir B
+    [A, B] = [B, A];                                 // el ping-pong
+    generacion++;
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.useProgram(progMostrar);
+  gl.bindTexture(gl.TEXTURE_2D, A.textura);          // A tiene siempre el estado más reciente
+  gl.uniform1i(locMostrar, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  document.getElementById('info').textContent = COLS + '×' + FILAS + ' celdas · generación ' + generacion;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Lo que merece atención: la rejilla (y sus dos FBO) se crea en el primer frame, cuando el canvas ya tiene su tamaño, y se recrea si cambia, borrando los FBO viejos. En la pasada de simulación, el viewport mide exactamente <code>COLS × FILAS</code>, así que <code>gl_FragCoord.xy</code> (el centro del píxel, 0.5, 1.5…) convertido a entero es el índice de la celda. Si el viewport no coincidiera con la rejilla, las celdas se leerían y escribirían en el sitio equivocado: el bestiario del viewport otra vez. El módulo <code>% N</code> hace que el mundo dé la vuelta (un toro); la suma de <code>N</code> evita aplicarlo a números negativos, porque en GLSL el resultado de <code>%</code> con operandos negativos no está definido. Y la velocidad es independiente de los fps gracias al acumulador con <code>dt</code> (2.3): a 20 generaciones por segundo, unas veces se hace una por frame y otras ninguna.</p>
+</section>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.8.3 — Estelas con realimentación</h3>
+  <p>El mismo principio aplicado a una imagen: en cada frame, la textura nueva es la anterior ligeramente desvanecida y ampliada hacia el centro, y encima se dibujan tres puntos brillantes que se mueven. El resultado se muestra en el canvas y los papeles se intercambian. Los FBO se recrean si cambia el tamaño del canvas.</p>
+  <div class="js-playground" data-titulo="Estelas (feedback)" data-altura="300" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progDesvanecer = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_anterior;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  vec2 uv = (v_uv - 0.5) * 0.992 + 0.5;               // leer un poco hacia el centro: la estela se expande
+  vec3 c = texture(u_anterior, uv).rgb * 0.955;       // desvanecer
+  color = vec4(max(c - 1.0 / 255.0, 0.0), 1.0);       // (ver el recuadro «Las texturas de 8 bits no llegan a cero»)
+}`);
+const progPuntos = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_t;
+uniform float u_aspecto;
+out vec3 v_color;
+void main() {
+  float i = float(gl_VertexID);
+  vec2 p = vec2(sin(u_t * (0.9 + 0.3 * i) + i * 2.1), cos(u_t * (1.3 - 0.2 * i) + i)) * 0.7;
+  v_color = vec3(i == 0.0, i == 1.0, i == 2.0) * 0.8 + 0.2;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+  gl_PointSize = 14.0;
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { float d = length(gl_PointCoord - 0.5) * 2.0; color = vec4(v_color * max(1.0 - d, 0.0), 1.0); }`);
+const progCopiar = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+const vaoPantalla = GLKit.trianguloPantalla(gl);
+const vaoVacio = gl.createVertexArray();
+let A = null, B = null;
+
+function recrearFBOs() {
+  for (const f of [A, B]) if (f) { gl.deleteFramebuffer(f.fbo); gl.deleteTexture(f.textura); }
+  A = GLKit.crearFBO(gl, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  B = GLKit.crearFBO(gl, gl.drawingBufferWidth, gl.drawingBufferHeight);
+}
+const loc = {
+  anterior: gl.getUniformLocation(progDesvanecer, 'u_anterior'), t: gl.getUniformLocation(progPuntos, 'u_t'),
+  aspecto: gl.getUniformLocation(progPuntos, 'u_aspecto'), tex: gl.getUniformLocation(progCopiar, 'u_tex'),
+};
+
+function frame(ms) {
+  if (GLKit.ajustarTamaño(canvas) || !A) recrearFBOs();
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  // 1) B = A desvanecida…
+  gl.bindFramebuffer(gl.FRAMEBUFFER, B.fbo);
+  gl.viewport(0, 0, w, h);
+  gl.disable(gl.BLEND);
+  gl.useProgram(progDesvanecer);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, A.textura);
+  gl.uniform1i(loc.anterior, 0);
+  gl.bindVertexArray(vaoPantalla);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // 2) …más los puntos nuevos, sumando luz (y sin leer ninguna textura)
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  gl.useProgram(progPuntos);
+  gl.uniform1f(loc.t, ms / 1000);
+  gl.uniform1f(loc.aspecto, h / w);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArrays(gl.POINTS, 0, 3);
+  gl.disable(gl.BLEND);
+  // 3) mostrar B en el canvas
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(progCopiar);
+  gl.bindTexture(gl.TEXTURE_2D, B.textura);
+  gl.uniform1i(loc.tex, 0);
+  gl.bindVertexArray(vaoPantalla);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  [A, B] = [B, A];                                    // lo recién dibujado será "lo anterior"
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>La estela es la suma de todas las posiciones pasadas, cada una multiplicada por 0,955 una vez por frame: una caída exponencial. A 60 fps, la luz de hace un segundo pesa 0,955<sup>60</sup> ≈ 6 %. Fíjate en que eso hace que la longitud de la estela <em>dependa de los fps</em>: en un monitor de 120 Hz, la estela dura la mitad de tiempo. Para que no dependa, el factor por frame debería ser <code>0.955^(dt·60)</code>, la misma idea que en las físicas de 2.5. El paso 2 dibuja en B con blending aditivo mientras B es el destino, y no hay bucle de realimentación porque ese programa no muestrea ninguna textura.</p>
+</section>
+
+<div class="callout senior" data-titulo="Las texturas de 8 bits no llegan a cero">
+  <p>¿Por qué el shader de las estelas resta <code>1.0 / 255.0</code> después de multiplicar? Porque multiplicar por 0,955 un valor guardado en 8 bits acaba atascándose: un canal a 10/255 da 9,55/255, que al guardarse se redondea al entero más próximo y vuelve a ser 10. Lo comprobamos con 400 pasos de desvanecido en una textura <code>RGBA8</code>: los valores de 1 a 11 no bajaron nunca, y los que empezaron en 255 se quedaron en 11 (un 4 % de brillo, una «sombra» permanente que en un fondo negro se ve). Restando además 1/255 en cada paso, todo llegó a 0. La otra solución es una textura <code>RGBA16F</code>, con precisión de sobra para valores pequeños (en la misma prueba, también llegó a 0), que es para lo que existen los formatos float como destino.</p>
+</div>
+
+<h2>Post-proceso: la escena como textura</h2>
+<p>La cadena de post-proceso más simple tiene dos pasadas: la escena normal (con su profundidad) se dibuja en un FBO del tamaño del canvas, y después un triángulo a pantalla completa la muestrea y la escribe en el canvas modificada. El fragment shader del efecto recibe la imagen entera y puede leer cualquier píxel: su vecino (bordes, desenfoque), uno desplazado (distorsiones), o tres canales desde tres sitios distintos (aberración cromática).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.8.4 — Un post-proceso con efectos a elegir</h3>
+  <p>El cubo de ladrillos de 5.6 se dibuja en un FBO con profundidad; el selector elige el efecto de la segunda pasada.</p>
+  <div class="js-playground" data-titulo="Escena → FBO → efecto" data-altura="330" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles"><label>efecto <select id="efecto">
+  <option value="0">ninguno</option><option value="1">escala de grises</option><option value="2">invertir</option>
+  <option value="3">pixelado</option><option value="4">aberración cromática</option><option value="5">viñeta</option>
+  <option value="6" selected>bordes (Sobel)</option>
+</select></label></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { padding: 8px 12px; font: 12px ui-monospace, monospace; color: #b4bccb; }
+select { font: 12px ui-monospace, monospace; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+// --- Escena: cubo texturizado e iluminado
+const progEscena = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+uniform mat4 u_mvp, u_modelo;
+out vec3 v_normal;
+out vec2 v_uv;
+void main() { v_normal = mat3(u_modelo) * a_normal; v_uv = a_uv; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec3 v_normal;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  float luz = 0.25 + 0.75 * max(dot(normalize(v_normal), normalize(vec3(0.5, 0.8, 0.6))), 0.0);
+  color = vec4(texture(u_tex, v_uv).rgb * luz, 1.0);
+}`);
+// --- Efecto: pasada a pantalla completa
+const progEfecto = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform sampler2D u_escena;
+uniform int u_efecto;
+in vec2 v_uv;
+out vec4 color;
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+void main() {
+  vec2 texel = 1.0 / vec2(textureSize(u_escena, 0));        // el tamaño de un píxel en UV
+  vec3 c = texture(u_escena, v_uv).rgb;
+  if (u_efecto == 1) c = vec3(luma(c));
+  else if (u_efecto == 2) c = 1.0 - c;
+  else if (u_efecto == 3) { vec2 bloque = texel * 8.0; c = texture(u_escena, (floor(v_uv / bloque) + 0.5) * bloque).rgb; }
+  else if (u_efecto == 4) {
+    vec2 d = (v_uv - 0.5) * 0.02;
+    c = vec3(texture(u_escena, v_uv + d).r, c.g, texture(u_escena, v_uv - d).b);
+  }
+  else if (u_efecto == 5) c *= 1.0 - smoothstep(0.3, 0.85, length(v_uv - 0.5));
+  else if (u_efecto == 6) {
+    float gx = 0.0, gy = 0.0;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+      float l = luma(texture(u_escena, v_uv + vec2(i, j) * texel).rgb);
+      gx += l * float(i) * (j == 0 ? 2.0 : 1.0);
+      gy += l * float(j) * (i == 0 ? 2.0 : 1.0);
+    }
+    c = vec3(0.25, 0.82, 0.91) * clamp(length(vec2(gx, gy)) * 2.0, 0.0, 1.0);
+  }
+  color = vec4(c, 1.0);
+}`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]),
+                 n[0], n[1], n[2], (su + 1) / 2, (sv + 1) / 2);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vaoCubo = gl.createVertexArray();
+gl.bindVertexArray(vaoCubo);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const vaoPantalla = GLKit.trianguloPantalla(gl);
+const ladrillos = GLKit.crearTextura(gl, Texturas.crear('ladrillos', 512), { mipmaps: true });
+const locE = { mvp: gl.getUniformLocation(progEscena, 'u_mvp'), modelo: gl.getUniformLocation(progEscena, 'u_modelo'), tex: gl.getUniformLocation(progEscena, 'u_tex') };
+const locF = { escena: gl.getUniformLocation(progEfecto, 'u_escena'), efecto: gl.getUniformLocation(progEfecto, 'u_efecto') };
+let destino = null;                                       // el FBO de la escena, del tamaño del canvas
+
+function frame(ms) {
+  const t = ms / 1000;
+  if (GLKit.ajustarTamaño(canvas) || !destino) {
+    if (destino) { gl.deleteFramebuffer(destino.fbo); gl.deleteTexture(destino.textura); gl.deleteRenderbuffer(destino.profundidad); }
+    destino = GLKit.crearFBO(gl, gl.drawingBufferWidth, gl.drawingBufferHeight, { profundidad: true });
+  }
+  // Pasada 1: la escena, al FBO (con su propia profundidad)
+  gl.bindFramebuffer(gl.FRAMEBUFFER, destino.fbo);
+  gl.viewport(0, 0, destino.ancho, destino.alto);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.clearColor(0.12, 0.13, 0.18, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);    // aquí el navegador NO borra por ti
+  const modelo = mat4.producto(mat4.rotacionY(t * 0.6), mat4.rotacionX(t * 0.4));
+  gl.useProgram(progEscena);
+  gl.uniformMatrix4fv(locE.mvp, false, mat4.producto(mat4.perspectiva(Math.PI / 3, destino.ancho / destino.alto, 0.1, 100),
+    mat4.mirarA([0, 0.8, 2.4], [0, 0, 0], [0, 1, 0]), modelo));
+  gl.uniformMatrix4fv(locE.modelo, false, modelo);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, ladrillos);
+  gl.uniform1i(locE.tex, 0);
+  gl.bindVertexArray(vaoCubo);
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  // Pasada 2: el efecto, al canvas
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.disable(gl.DEPTH_TEST);                               // un triángulo a pantalla completa: sin profundidad
+  gl.useProgram(progEfecto);
+  gl.bindTexture(gl.TEXTURE_2D, destino.textura);
+  gl.uniform1i(locF.escena, 0);
+  gl.uniform1i(locF.efecto, +document.getElementById('efecto').value);
+  gl.bindVertexArray(vaoPantalla);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>El FBO de la escena se crea con el tamaño del búfer del canvas y se <strong>recrea cuando cambia</strong>, borrando el anterior (si no, el efecto trabajaría sobre una imagen de otro tamaño, estirada y borrosa, y la memoria de los viejos se acumularía). En la segunda pasada se desactiva el test de profundidad: el triángulo a pantalla completa no tiene que competir con nada, y el canvas ni siquiera necesitaría un búfer de profundidad. El efecto de bordes lee los 9 píxeles vecinos con desplazamientos de un texel (<code>1.0 / textureSize</code>): el filtro de Sobel mide cuánto cambia la luminosidad en horizontal y en vertical.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-fbo-tamano" data-titulo="El post-proceso se ve borroso o estirado">
+  <p><strong>Síntoma:</strong> con el efecto activado, la imagen pierde nitidez, se ve pixelada o deformada; sin el efecto, se ve bien. A menudo empeora al redimensionar la ventana o en pantallas retina.</p>
+  <p><strong>Causa:</strong> el FBO de la escena no tiene el tamaño del búfer del canvas: se creó una vez con un tamaño fijo (o antes de ajustar el canvas, cuando medía 300×150) y no se recrea al cambiar. El efecto amplía una imagen más pequeña.</p>
+  <p><strong>Solución:</strong> crea el FBO con <code>drawingBufferWidth × drawingBufferHeight</code> y recréalo (borrando el viejo) cuando <code>ajustarTamaño</code> devuelva <code>true</code>. Si usas un FBO más pequeño a propósito (efectos a media resolución para ganar rendimiento, 5.10), que sea una decisión consciente.</p>
+</div>
+
+<h2>Destinos float</h2>
+<p>Un FBO con textura <code>RGBA8</code> recorta todo a 0…1 con 256 niveles. Para guardar datos que no son colores (posiciones, velocidades, alturas), valores por encima de 1 (luz HDR) o acumular sin perder precisión, el destino tiene que ser float. En WebGL2 las texturas float existen de serie, pero <strong>renderizar</strong> en ellas exige la extensión <code>EXT_color_buffer_float</code> (comprobado: sin pedirla, un FBO con <code>RGBA16F</code> o <code>RGBA32F</code> da <code>0x8CD6</code>; tras pedirla, es completo). Recuerda también de 5.5 que muestrear una <code>RGBA32F</code> con <code>LINEAR</code> requiere <code>OES_texture_float_linear</code>, y de 5.7 que mezclar en float32 depende de <code>EXT_float_blend</code>.</p>
+<p><code>readPixels</code> sobre un FBO float admite <code>gl.FLOAT</code>: comprobamos que un <code>clear</code> con <code>(2.5, −1, 0.25, 1)</code> se leyó intacto. Pedirlo como <code>UNSIGNED_BYTE</code> da <code>INVALID_OPERATION</code>. Si dudas de qué formato de lectura acepta un FBO, pregúntale: <code>gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT)</code> y <code>IMPLEMENTATION_COLOR_READ_TYPE</code> (para ese FBO, <code>RGBA</code> y <code>FLOAT</code>).</p>
+
+<h2>readPixels y picking</h2>
+<p><code>gl.readPixels(x, y, ancho, alto, formato, tipo, arrayDestino)</code> copia píxeles del framebuffer de lectura enlazado a un array de JavaScript. Tres cosas que hay que tener claras:</p>
+<ul>
+  <li><strong>Las coordenadas son las de GL</strong>: en píxeles del búfer, con el origen abajo a la izquierda. Para leer bajo el ratón hay que convertir: <code>x = (clientX − rect.left) × width / rect.width</code> y <code>y = (rect.bottom − clientY) × height / rect.height</code>.</li>
+  <li><strong>Es síncrona</strong>: tiene que esperar a que la GPU termine todo lo encolado antes de devolverte los datos (el viaje de ida y vuelta del diagrama de 5.1). Lo medimos: sin nada pendiente, una lectura de un píxel costó 0,03 ms; justo después de un dibujo trivial, 0,4 ms (el dibujo solo, 0,004 ms); después de un dibujo pesado, lo que la GPU tarde en terminarlo, 14 ms en nuestra prueba. Una lectura al hacer clic no se nota. Una por frame obliga a la CPU a esperar a la GPU en cada frame, y así ya no pueden trabajar en paralelo (5.10).</li>
+  <li><strong>Del canvas, solo en el mismo task</strong> en que dibujaste: tras la presentación, el búfer está borrado (5.1). Leer de un FBO propio no tiene ese problema. Y de un FBO multimuestreado no se puede leer directamente (<code>Invalid operation on multisampled framebuffer</code>): hay que resolverlo antes con un <em>blit</em>.</li>
+</ul>
+<p>El <strong>picking por color</strong> aprovecha el pipeline para responder «¿qué objeto hay en este píxel?»: se dibuja la escena con un shader que pinta cada objeto con un color que codifica su número, sin luz ni texturas, y se lee el píxel bajo el ratón. La GPU ya resuelve la profundidad por nosotros: el color leído es el del objeto más cercano.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.8.5 — Haz clic en un cubo</h3>
+  <p>Cinco cubos girando. Al hacer clic, la escena se redibuja con el shader de identificadores en un FBO propio, limitada con el scissor a un solo píxel (el del ratón), y se lee ese píxel. Al arrancar, el código simula un clic en el centro.</p>
+  <div class="js-playground" data-titulo="Picking por color con readPixels" data-altura="300" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info">haz clic sobre un cubo</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; cursor: pointer; }
+#info { font: 12px ui-monospace, monospace; color: #3fd0e8; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const VS = `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_mvp, u_modelo;
+out vec3 v_normal;
+void main() { v_normal = mat3(u_modelo) * a_normal; gl_Position = u_mvp * vec4(a_posicion, 1.0); }`;
+const progVer = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform vec3 u_color;
+in vec3 v_normal;
+out vec4 color;
+void main() { color = vec4(u_color * (0.25 + 0.75 * max(dot(normalize(v_normal), normalize(vec3(0.4, 0.8, 0.5))), 0.0)), 1.0); }`);
+const progIds = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform vec3 u_id;             // el número del objeto, codificado como color (sin luz)
+out vec4 color;
+void main() { color = vec4(u_id, 1.0); }`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+const locV = {}, locI = {};
+for (const n of ['u_mvp', 'u_modelo', 'u_color']) locV[n] = gl.getUniformLocation(progVer, n);
+for (const n of ['u_mvp', 'u_modelo', 'u_id']) locI[n] = gl.getUniformLocation(progIds, n);
+
+const cubos = [-2, -1, 0, 1, 2].map((x, i) => ({ id: i + 1, x, giro: 0.4 + 0.25 * i }));
+let seleccionado = 0, fboIds = null;
+const info = document.getElementById('info');
+
+function matrices(c, t, vp) {
+  const modelo = mat4.producto(mat4.traslacion(c.x * 1.1, 0, 0), mat4.rotacionY(t * c.giro), mat4.rotacionX(0.5), mat4.escala(0.7));
+  return { modelo, mvp: mat4.producto(vp, modelo) };
+}
+function vistaProyeccion(w, h) {
+  return mat4.producto(mat4.perspectiva(Math.PI / 4, w / h, 0.1, 100), mat4.mirarA([0, 1.2, 6.5], [0, 0, 0], [0, 1, 0]));
+}
+function elegir(px, py, t) {
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fboIds.fbo);
+  gl.viewport(0, 0, w, h);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(px, py, 1, 1);                          // hack: solo se procesa UN píxel
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(progIds);
+  gl.bindVertexArray(vao);
+  const vp = vistaProyeccion(w, h);
+  for (const c of cubos) {
+    const m = matrices(c, t, vp);
+    gl.uniformMatrix4fv(locI.u_mvp, false, m.mvp);
+    gl.uniformMatrix4fv(locI.u_modelo, false, m.modelo);
+    gl.uniform3f(locI.u_id, c.id / 255, 0, 0);       // id 1…5 en el canal rojo (hasta 255 objetos)
+    gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  }
+  const px4 = new Uint8Array(4);
+  gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px4);   // síncrono: espera a la GPU
+  gl.disable(gl.SCISSOR_TEST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  seleccionado = px4[0];
+  info.textContent = seleccionado ? 'cubo ' + seleccionado + ' (píxel ' + px + ', ' + py + ' → rojo = ' + px4[0] + ')' : 'fondo (rojo = 0)';
+}
+let clicPendiente = null, primero = true;
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect();
+  clicPendiente = [Math.floor((e.clientX - r.left) * canvas.width / r.width),
+                   Math.floor((r.bottom - e.clientY) * canvas.height / r.height)];   // origen abajo
+});
+
+function frame(ms) {
+  const t = ms / 1000;
+  if (GLKit.ajustarTamaño(canvas) || !fboIds) {
+    if (fboIds) { gl.deleteFramebuffer(fboIds.fbo); gl.deleteTexture(fboIds.textura); gl.deleteRenderbuffer(fboIds.profundidad); }
+    fboIds = GLKit.crearFBO(gl, gl.drawingBufferWidth, gl.drawingBufferHeight, { profundidad: true, filtro: gl.NEAREST });
+  }
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  if (primero) { clicPendiente = [Math.floor(w / 2), Math.floor(h / 2)]; primero = false; }
+  if (clicPendiente) { elegir(clicPendiente[0], clicPendiente[1], t); clicPendiente = null; }
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(progVer);
+  gl.bindVertexArray(vao);
+  const vp = vistaProyeccion(w, h);
+  for (const c of cubos) {
+    const m = matrices(c, t, vp);
+    gl.uniformMatrix4fv(locV.u_mvp, false, m.mvp);
+    gl.uniformMatrix4fv(locV.u_modelo, false, m.modelo);
+    gl.uniform3fv(locV.u_color, c.id === seleccionado ? [1.0, 0.72, 0.29] : [0.35, 0.38, 0.55]);
+    gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Varios detalles: el clic solo guarda las coordenadas y el picking se hace dentro del frame, con las mismas matrices del instante del dibujo (el patrón de «encolar y ejecutar en el frame» del ejercicio 5.1.3). El scissor de un píxel deja la pasada de identificadores casi gratis (lo cuenta el recuadro siguiente). El identificador va en el canal rojo como <code>id / 255</code>, que en un búfer de 8 bits se guarda exactamente como <code>id</code> (hasta 255 objetos; con los otros dos canales llegarías a 16,7 millones). Y el FBO de identificadores usa <code>NEAREST</code> y ningún antialiasing: interpolar o promediar identificadores produciría números que no son de nadie.</p>
+</section>
+
+<div class="callout hack" data-titulo="Picking de un solo píxel">
+  <p>Para saber qué hay bajo el ratón no hace falta dibujar la escena de identificadores entera: con <code>gl.enable(gl.SCISSOR_TEST)</code> y <code>gl.scissor(x, y, 1, 1)</code>, todos los fragmentos fuera de ese píxel se descartan antes de ejecutar el fragment shader. Lo medimos con un fragment shader deliberadamente pesado en un búfer de 1024 × 1024: el dibujo completo tardó 14 ms, y con el scissor de un píxel, 0,6 ms. Los vértices se siguen procesando todos, pero en una escena normal el coste está en los fragmentos. No olvides desactivar el scissor después: también limita el <code>clear</code>.</p>
+</div>
+
+<div class="callout senior" data-titulo="Leer sin esperar: PIXEL_PACK_BUFFER y fenceSync">
+  <p>WebGL2 permite que <code>readPixels</code> escriba en un buffer de la GPU (enlazado a <code>PIXEL_PACK_BUFFER</code>, y con un desplazamiento en bytes como último argumento en lugar de un array). Así la llamada no espera: la copia se encola (el reloj marcó 0 ms, por debajo de su resolución, frente a los 14 ms de la versión síncrona tras el mismo dibujo pesado). Luego insertas una valla con <code>const valla = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)</code> y, en los frames siguientes, consultas <code>gl.getSyncParameter(valla, gl.SYNC_STATUS)</code>. Cuando vale <code>gl.SIGNALED</code>, lees el buffer con <code>gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, destino)</code> sin bloquear. En nuestra prueba, con trabajo pesado por delante, la valla se señalizó tres frames después y los datos eran correctos. Llegar unos frames tarde suele ser aceptable para picking o para leer resultados de una simulación, y es la forma profesional de leer de la GPU sin romper el ritmo del frame.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En un programa que hace picking, lees el píxel con <code>readPixels(e.offsetX, e.offsetY, 1, 1, …)</code> directamente, en un canvas con <code>devicePixelRatio = 2</code>. ¿Qué pasa?</p>
+  <ul>
+    <li>Funciona: <code>offsetX</code> y <code>offsetY</code> son coordenadas dentro del canvas.<div class="explicacion">Son coordenadas en píxeles CSS y con el origen arriba. <code>readPixels</code> usa píxeles del búfer con el origen abajo.</div></li>
+    <li data-correcta>Lee otro píxel: hay que multiplicar por el DPR (o por <code>width / rect.width</code>) e invertir la y.<div class="explicacion">Correcto: dos errores a la vez. En x lees a la mitad de distancia del origen, y en y lees reflejado respecto al centro (y escalado). Es el ejercicio 5.8.4.</div></li>
+    <li><code>readPixels</code> lanza una excepción porque las coordenadas no son enteras.<div class="explicacion"><code>offsetX</code> puede tener decimales, pero WebGL los trunca sin quejarse. El problema es de sistema de coordenadas, no de tipos.</div></li>
+  </ul>
+</div>
+
+<h2>Más de un destino y el blit</h2>
+<p>Dos herramientas que conviene conocer aunque no las usemos más en el curso.</p>
+<p><strong>Varios destinos a la vez (MRT).</strong> Un fragment shader puede escribir en varios adjuntos de color en una sola pasada, declarando varias salidas con <code>layout(location = n) out vec4 …</code>: hasta <code>MAX_DRAW_BUFFERS</code>, que vale 8 en la GPU de pruebas (el mínimo garantizado es 4). Pero hay que decirle a WebGL en qué adjuntos escribir con <code>gl.drawBuffers</code>: lo comprobamos, y sin esa llamada solo se escribió el adjunto 0 (el 1 quedó vacío, sin ningún error). Con <code>gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1])</code>, los dos. Así funcionan técnicas como el <em>deferred shading</em>, que guarda en varias texturas el color, la normal y la profundidad de cada píxel para iluminar después.</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Fragment shader con dos salidas">
+layout(location = 0) out vec4 o_color;     // → COLOR_ATTACHMENT0
+layout(location = 1) out vec4 o_normal;    // → COLOR_ATTACHMENT1 (si drawBuffers lo incluye)
+</script>
+<p><strong>Blit y multisampling.</strong> Los FBO con texturas no tienen antialiasing: si post-procesas una escena, pierdes el MSAA del canvas. La solución es dibujar en un renderbuffer multimuestreado (<code>gl.renderbufferStorageMultisample(gl.RENDERBUFFER, 4, gl.RGBA8, ancho, alto)</code>) y después «resolverlo» en una textura normal con <code>gl.blitFramebuffer</code>, que copia (y promedia las muestras) de un framebuffer de lectura a uno de escritura:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fboMSAA);       // origen: el multimuestreado
+gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fboResuelto);   // destino: el de la textura
+gl.blitFramebuffer(0, 0, ancho, alto, 0, 0, ancho, alto, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+</script>
+<p>Lo comprobamos: el borde de un triángulo dibujado en el renderbuffer de 4 muestras apareció suavizado en la textura resuelta (un píxel de borde con valor 191 en lugar de 0 o 255). <code>blitFramebuffer</code> también sirve para copiar o escalar entre FBOs, o del FBO al canvas, sin escribir un shader.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.8.1 — El framebuffer float incompleto</h3>
+  <p>Queremos un destino <code>RGBA32F</code> para guardar valores entre 0 y 4 (que en <code>RGBA8</code> se recortarían a 1), y luego mostrarlos divididos entre 4. <code>crearFBO</code> lanza «Framebuffer incompleto». Arréglalo, comprobando que la extensión existe.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.8.1" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro" data-error-esperado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progValores = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(v_uv.x * 4.0, v_uv.y * 4.0, 2.0, 1.0); }   // valores de 0 a 4
+`);
+const progMostrar = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform highp sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(texture(u_tex, v_uv).rgb / 4.0, 1.0); }`);
+const vao = GLKit.trianguloPantalla(gl);
+
+const destino = GLKit.crearFBO(gl, 256, 256, { formatoInterno: gl.RGBA32F, formato: gl.RGBA, tipo: gl.FLOAT, filtro: gl.NEAREST });
+
+gl.bindFramebuffer(gl.FRAMEBUFFER, destino.fbo);
+gl.viewport(0, 0, 256, 256);
+gl.useProgram(progValores);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const muestra = new Float32Array(4);
+gl.readPixels(255, 255, 1, 1, gl.RGBA, gl.FLOAT, muestra);
+console.log('valor guardado en la esquina superior derecha:', muestra);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(progMostrar);
+gl.bindTexture(gl.TEXTURE_2D, destino.textura);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progValores = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(v_uv.x * 4.0, v_uv.y * 4.0, 2.0, 1.0); }   // valores de 0 a 4
+`);
+const progMostrar = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform highp sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(texture(u_tex, v_uv).rgb / 4.0, 1.0); }`);
+const vao = GLKit.trianguloPantalla(gl);
+
+// Renderizar en texturas float exige esta extensión (y hay que PEDIRLA)
+if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('Esta GPU no puede renderizar en texturas float');
+const destino = GLKit.crearFBO(gl, 256, 256, { formatoInterno: gl.RGBA32F, formato: gl.RGBA, tipo: gl.FLOAT, filtro: gl.NEAREST });
+
+gl.bindFramebuffer(gl.FRAMEBUFFER, destino.fbo);
+gl.viewport(0, 0, 256, 256);
+gl.useProgram(progValores);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const muestra = new Float32Array(4);
+gl.readPixels(255, 255, 1, 1, gl.RGBA, gl.FLOAT, muestra);
+console.log('valor guardado en la esquina superior derecha:', muestra);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(progMostrar);
+gl.bindTexture(gl.TEXTURE_2D, destino.textura);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El código del error es <code>0x8cd6</code>. Busca en la tabla de esta lección qué significa.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Una llamada a <code>getExtension</code> antes de crear el FBO. ¿Por qué el filtro es <code>NEAREST</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>0x8CD6</code> es <code>FRAMEBUFFER_INCOMPLETE_ATTACHMENT</code>: el adjunto <code>RGBA32F</code> no es renderizable hasta que se pide <code>EXT_color_buffer_float</code>. Tras pedirla (y comprobar que no devuelve <code>null</code>), el FBO es completo; <code>readPixels</code> con <code>gl.FLOAT</code> confirma que la esquina guarda valores cercanos a 4, sin recortar. El filtro <code>NEAREST</code> evita el otro requisito, <code>OES_texture_float_linear</code>, para muestrear la textura en la segunda pasada (5.5). Con un destino <code>RGBA8</code>, todo lo que pasara de 1 se habría recortado y la imagen dividida entre 4 no llegaría nunca más allá de 0,25.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.8.2 — El círculo descentrado</h3>
+  <p>La primera pasada dibuja un círculo centrado en una textura de 128×128; la segunda muestra esa textura en un cuadrado. El círculo sale grande, descentrado y recortado. Arréglalo sin tocar los shaders.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.8.2" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progCirculo = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  float d = length(v_uv - 0.5);
+  color = vec4(mix(vec3(0.12, 0.13, 0.2), vec3(1.0, 0.55, 0.2), step(d, 0.35)), 1.0);
+}`);
+const progCuadrado = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID] * 0.8 * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+const vaoPantalla = GLKit.trianguloPantalla(gl);
+const vaoVacio = gl.createVertexArray();
+const destino = GLKit.crearFBO(gl, 128, 128);
+
+// Pasada 1: el círculo, a la textura
+gl.bindFramebuffer(gl.FRAMEBUFFER, destino.fbo);
+gl.useProgram(progCirculo);
+gl.bindVertexArray(vaoPantalla);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+// Pasada 2: la textura, en un cuadrado del canvas
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(progCuadrado);
+gl.uniform1f(gl.getUniformLocation(progCuadrado, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.bindTexture(gl.TEXTURE_2D, destino.textura);
+gl.bindVertexArray(vaoVacio);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('viewport durante la pasada 1:', gl.getParameter(gl.VIEWPORT), '· FBO:', destino.ancho + '×' + destino.alto);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progCirculo = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  float d = length(v_uv - 0.5);
+  color = vec4(mix(vec3(0.12, 0.13, 0.2), vec3(1.0, 0.55, 0.2), step(d, 0.35)), 1.0);
+}`);
+const progCuadrado = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID] * 0.8 * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+const vaoPantalla = GLKit.trianguloPantalla(gl);
+const vaoVacio = gl.createVertexArray();
+const destino = GLKit.crearFBO(gl, 128, 128);
+
+// Pasada 1: el círculo, a la textura
+gl.bindFramebuffer(gl.FRAMEBUFFER, destino.fbo);
+gl.viewport(0, 0, destino.ancho, destino.alto);                    // el viewport del destino
+gl.useProgram(progCirculo);
+gl.bindVertexArray(vaoPantalla);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('viewport durante la pasada 1:', gl.getParameter(gl.VIEWPORT), '· FBO:', destino.ancho + '×' + destino.alto);
+
+// Pasada 2: la textura, en un cuadrado del canvas
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);  // y el del canvas al volver
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(progCuadrado);
+gl.uniform1f(gl.getUniformLocation(progCuadrado, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.bindTexture(gl.TEXTURE_2D, destino.textura);
+gl.bindVertexArray(vaoVacio);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>¿Qué viewport está vigente durante la pasada 1? La consola lo imprime al final.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El único <code>viewport</code> del código es el del canvas, fijado al principio. Durante la pasada 1, el clip space se estira sobre un rectángulo del tamaño del canvas (cientos de píxeles de ancho) anclado en la esquina del FBO, que solo mide 128×128: en la textura cae solo la esquina inferior izquierda de la imagen, con un trozo del círculo enorme. La solución fija el viewport a 128×128 tras enlazar el FBO y lo restaura al del canvas tras volver a él. La regla del bestiario: <code>bindFramebuffer</code> y <code>viewport</code>, siempre juntos.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.8.3 — Desenfocar en su sitio</h3>
+  <p>Queremos aplicar un desenfoque a la textura de un FBO y guardar el resultado… en la misma textura. El desenfoque no se aplica, y la consola del navegador (F12) muestra un aviso. Arréglalo con un segundo FBO.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.8.3" data-altura="240" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progCopiar = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+const progDesenfocar = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  vec2 t = 1.0 / vec2(textureSize(u_tex, 0));
+  vec4 suma = vec4(0.0);
+  for (int j = -3; j <= 3; j++) for (int i = -3; i <= 3; i++) suma += texture(u_tex, v_uv + vec2(i, j) * t * 1.5);
+  color = suma / 49.0;
+}`);
+const vao = GLKit.trianguloPantalla(gl);
+const imagen = GLKit.crearTextura(gl, Texturas.crear('texto', 256));
+const A = GLKit.crearFBO(gl, 256, 256);
+
+// 1) copiar la imagen al FBO A
+gl.bindFramebuffer(gl.FRAMEBUFFER, A.fbo);
+gl.viewport(0, 0, 256, 256);
+gl.useProgram(progCopiar);
+gl.bindVertexArray(vao);
+gl.bindTexture(gl.TEXTURE_2D, imagen);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+// 2) desenfocar A… escribiendo en A
+gl.useProgram(progDesenfocar);
+gl.bindTexture(gl.TEXTURE_2D, A.textura);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError tras desenfocar →', gl.getError());
+// 3) mostrar A
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(progCopiar);
+gl.bindTexture(gl.TEXTURE_2D, A.textura);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progCopiar = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+const progDesenfocar = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  vec2 t = 1.0 / vec2(textureSize(u_tex, 0));
+  vec4 suma = vec4(0.0);
+  for (int j = -3; j <= 3; j++) for (int i = -3; i <= 3; i++) suma += texture(u_tex, v_uv + vec2(i, j) * t * 1.5);
+  color = suma / 49.0;
+}`);
+const vao = GLKit.trianguloPantalla(gl);
+const imagen = GLKit.crearTextura(gl, Texturas.crear('texto', 256));
+const A = GLKit.crearFBO(gl, 256, 256);
+const B = GLKit.crearFBO(gl, 256, 256);                 // el segundo destino
+
+gl.bindFramebuffer(gl.FRAMEBUFFER, A.fbo);
+gl.viewport(0, 0, 256, 256);
+gl.useProgram(progCopiar);
+gl.bindVertexArray(vao);
+gl.bindTexture(gl.TEXTURE_2D, imagen);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+// 2) desenfocar A escribiendo en B (leer de una, escribir en otra)
+gl.bindFramebuffer(gl.FRAMEBUFFER, B.fbo);
+gl.useProgram(progDesenfocar);
+gl.bindTexture(gl.TEXTURE_2D, A.textura);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError tras desenfocar →', gl.getError());
+// 3) mostrar B
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(progCopiar);
+gl.bindTexture(gl.TEXTURE_2D, B.textura);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>getError</code> vale 1282 (<code>INVALID_OPERATION</code>). El aviso habla de un <em>feedback loop</em>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Crea un FBO B del mismo tamaño: el desenfoque lee de A y escribe en B, y lo que se muestra es B.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>En el paso 2, el destino es el FBO A y el shader muestrea <code>A.textura</code>: un bucle de realimentación. WebGL no ejecuta el dibujo (<code>INVALID_OPERATION</code>) y A conserva la imagen sin desenfocar. Con un segundo FBO, el desenfoque lee de A y escribe en B sin conflicto. Si quisieras aplicar el desenfoque varias veces, alternarías: A → B, B → A, A → B… el ping-pong. (Y un desenfoque de 7×7 son 49 lecturas por píxel; separarlo en una pasada horizontal y otra vertical (7 lecturas cada una) lo reduce a 14. Es el ejercicio 5.8.5.)</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.8.4 — El picking que elige mal</h3>
+  <p>En este picking de cinco cuadrados, casi todos los clics responden «fondo» o eligen un cuadrado que no es. Haz clic en varios para comprobarlo y arregla la conversión de coordenadas del ratón.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.8.4" data-altura="280" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info">haz clic sobre un cuadrado</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; cursor: pointer; }
+#info { font: 12px ui-monospace, monospace; color: #3fd0e8; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const progIds = GLKit.crearPrograma(gl, `#version 300 es
+uniform vec2 u_centro;
+uniform float u_aspecto;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  gl_Position = vec4((u_centro + P[gl_VertexID] * 0.12) * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec3 u_color;
+out vec4 color;
+void main() { color = vec4(u_color, 1.0); }`);
+const locC = gl.getUniformLocation(progIds, 'u_centro'), locA = gl.getUniformLocation(progIds, 'u_aspecto'), locCol = gl.getUniformLocation(progIds, 'u_color');
+const vao = gl.createVertexArray();
+// cinco cuadrados en diagonal, así un error en la y se nota
+const cuadrados = [0, 1, 2, 3, 4].map((i) => ({ id: i + 1, x: (i - 2) * 0.55, y: (i - 2) * 0.28 }));
+let seleccionado = 0;
+
+function dibujar(conIds) {
+  gl.clearColor(conIds ? 0 : 0.08, conIds ? 0 : 0.09, conIds ? 0 : 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(progIds);
+  gl.uniform1f(locA, gl.drawingBufferHeight / gl.drawingBufferWidth);
+  gl.bindVertexArray(vao);
+  for (const c of cuadrados) {
+    gl.uniform2f(locC, c.x, c.y);
+    gl.uniform3fv(locCol, conIds ? [c.id / 255, 0, 0] : (c.id === seleccionado ? [1.0, 0.72, 0.29] : [0.35, 0.38, 0.55]));
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+canvas.addEventListener('click', (e) => {
+  // Picking directamente sobre el canvas: dibujar los ids, leer y redibujar (todo en el mismo task)
+  const x = e.offsetX, y = e.offsetY;
+  dibujar(true);
+  const px = new Uint8Array(4);
+  gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  seleccionado = px[0];
+  document.getElementById('info').textContent = seleccionado ? 'cuadrado ' + seleccionado : 'fondo';
+  dibujar(false);
+});
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+dibujar(false);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const progIds = GLKit.crearPrograma(gl, `#version 300 es
+uniform vec2 u_centro;
+uniform float u_aspecto;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  gl_Position = vec4((u_centro + P[gl_VertexID] * 0.12) * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec3 u_color;
+out vec4 color;
+void main() { color = vec4(u_color, 1.0); }`);
+const locC = gl.getUniformLocation(progIds, 'u_centro'), locA = gl.getUniformLocation(progIds, 'u_aspecto'), locCol = gl.getUniformLocation(progIds, 'u_color');
+const vao = gl.createVertexArray();
+const cuadrados = [0, 1, 2, 3, 4].map((i) => ({ id: i + 1, x: (i - 2) * 0.55, y: (i - 2) * 0.28 }));
+let seleccionado = 0;
+
+function dibujar(conIds) {
+  gl.clearColor(conIds ? 0 : 0.08, conIds ? 0 : 0.09, conIds ? 0 : 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(progIds);
+  gl.uniform1f(locA, gl.drawingBufferHeight / gl.drawingBufferWidth);
+  gl.bindVertexArray(vao);
+  for (const c of cuadrados) {
+    gl.uniform2f(locC, c.x, c.y);
+    gl.uniform3fv(locCol, conIds ? [c.id / 255, 0, 0] : (c.id === seleccionado ? [1.0, 0.72, 0.29] : [0.35, 0.38, 0.55]));
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect();
+  // De px CSS con origen arriba a px del búfer con origen abajo
+  const x = Math.floor((e.clientX - r.left) * canvas.width / r.width);
+  const y = Math.floor((r.bottom - e.clientY) * canvas.height / r.height);
+  dibujar(true);
+  const px = new Uint8Array(4);
+  gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  seleccionado = px[0];
+  document.getElementById('info').textContent = seleccionado ? 'cuadrado ' + seleccionado : 'fondo';
+  dibujar(false);
+});
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+dibujar(false);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Dónde está el origen de <code>offsetY</code>? ¿Y el de <code>readPixels</code>?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si el DPR fuera 2, ¿cuántos píxeles del búfer habría por cada píxel CSS? Usa <code>canvas.width / rect.width</code> para que funcione con cualquier DPR.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>offsetX/offsetY</code> están en píxeles CSS con el origen arriba a la izquierda; <code>readPixels</code> espera píxeles del búfer con el origen abajo a la izquierda. Con los cuadrados en diagonal, no invertir la y hace que un clic en uno lea el píxel simétrico respecto a la línea horizontal central, que es fondo. Lo comprobamos simulando clics en los cinco: con DPR 1 solo acertaba el central (el único simétrico); con DPR 2 ni siquiera ese, y un clic en el cuarto elegía el primero. La conversión correcta escala por <code>canvas.width / rect.width</code> (el DPR, y cualquier escalado CSS) e invierte la y con <code>rect.bottom − clientY</code>; con ella acertaron los cinco clics con los dos DPR. Aquí el picking se hace directamente en el canvas y dentro del manejador del clic: funciona porque dibujamos y leemos en el mismo task (5.1), y redibujamos la escena visible justo después. Con un FBO propio, como en el ejemplo, no habría que redibujar la escena visible.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.8.5 — Desenfoque separable en dos pasadas</h3>
+  <p>Un desenfoque gaussiano de radio 6 lee 13 × 13 = 169 texels por píxel. Como el gaussiano es separable, se puede hacer en dos pasadas de 13 lecturas: una horizontal (de la escena a un FBO intermedio) y otra vertical (del intermedio al canvas). El shader de desenfoque ya acepta la dirección como uniform; monta tú la cadena. Resultado esperado: el texto de la textura, desenfocado por igual en las dos direcciones.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.8.5" data-altura="260" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progDesenfoque = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+uniform vec2 u_direccion;          // (1, 0) horizontal o (0, 1) vertical
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  vec2 paso = u_direccion / vec2(textureSize(u_tex, 0));
+  vec4 suma = vec4(0.0);
+  float peso = 0.0;
+  for (int i = -6; i <= 6; i++) {
+    float w = exp(-float(i * i) / 18.0);            // gaussiana con sigma = 3
+    suma += texture(u_tex, v_uv + float(i) * paso) * w;
+    peso += w;
+  }
+  color = suma / peso;
+}`);
+const vao = GLKit.trianguloPantalla(gl);
+const imagen = GLKit.crearTextura(gl, Texturas.crear('texto', 512));
+const locTex = gl.getUniformLocation(progDesenfoque, 'u_tex'), locDir = gl.getUniformLocation(progDesenfoque, 'u_direccion');
+
+// TODO: un FBO intermedio; pasada horizontal (imagen → intermedio); pasada vertical (intermedio → canvas)
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.useProgram(progDesenfoque);
+gl.bindVertexArray(vao);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, imagen);
+gl.uniform1i(locTex, 0);
+gl.uniform2f(locDir, 1, 0);                        // solo la horizontal, directa al canvas
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+GLKit.ajustarTamaño(canvas);
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`;
+const progDesenfoque = GLKit.crearPrograma(gl, VS, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+uniform vec2 u_direccion;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  vec2 paso = u_direccion / vec2(textureSize(u_tex, 0));
+  vec4 suma = vec4(0.0);
+  float peso = 0.0;
+  for (int i = -6; i <= 6; i++) {
+    float w = exp(-float(i * i) / 18.0);
+    suma += texture(u_tex, v_uv + float(i) * paso) * w;
+    peso += w;
+  }
+  color = suma / peso;
+}`);
+const vao = GLKit.trianguloPantalla(gl);
+const imagen = GLKit.crearTextura(gl, Texturas.crear('texto', 512));
+const locTex = gl.getUniformLocation(progDesenfoque, 'u_tex'), locDir = gl.getUniformLocation(progDesenfoque, 'u_direccion');
+const intermedio = GLKit.crearFBO(gl, 512, 512);          // mismo tamaño que la imagen
+
+gl.useProgram(progDesenfoque);
+gl.bindVertexArray(vao);
+gl.activeTexture(gl.TEXTURE0);
+gl.uniform1i(locTex, 0);
+// Pasada 1: horizontal, de la imagen al FBO intermedio
+gl.bindFramebuffer(gl.FRAMEBUFFER, intermedio.fbo);
+gl.viewport(0, 0, intermedio.ancho, intermedio.alto);
+gl.bindTexture(gl.TEXTURE_2D, imagen);
+gl.uniform2f(locDir, 1, 0);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+// Pasada 2: vertical, del intermedio al canvas
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.bindTexture(gl.TEXTURE_2D, intermedio.textura);
+gl.uniform2f(locDir, 0, 1);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>GLKit.crearFBO(gl, 512, 512)</code> te da el intermedio. ¿Qué viewport usa cada pasada?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La pasada vertical muestrea la textura del intermedio, no la imagen original.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La primera pasada lee la imagen y escribe en el FBO intermedio, desenfocando solo en horizontal (cada píxel mezcla 13 vecinos de su fila); la segunda lee el intermedio y escribe en el canvas desenfocando en vertical. Como el núcleo gaussiano 2D es el producto de dos gaussianos 1D, el resultado es el mismo que el desenfoque 2D completo, con 26 lecturas por píxel en lugar de 169. Cada pasada lleva su viewport (el del FBO, luego el del canvas) y ninguna lee lo que escribe. El intermedio tiene el tamaño de la imagen para no perder resolución; en efectos de pantalla completa es habitual hacerlo a media resolución, que emborrona más con menos trabajo (5.10).</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Un FBO agrupa adjuntos (<code>COLOR_ATTACHMENT0…7</code>, <code>DEPTH</code>, <code>STENCIL</code>) conectados a texturas (<code>framebufferTexture2D</code>, se pueden muestrear) o renderbuffers (<code>framebufferRenderbuffer</code>, solo destino: profundidad, MSAA). <code>bindFramebuffer(FRAMEBUFFER, fbo)</code> redirige dibujos, <code>clear</code> y <code>readPixels</code>; <code>null</code> vuelve al canvas.</li>
+    <li>Comprueba <code>checkFramebufferStatus</code>: <code>0x8CD6</code> formato no renderizable (float sin <code>EXT_color_buffer_float</code>), <code>0x8CD7</code> sin adjuntos, <code>0x8CD9</code> tamaños distintos (en WebGL2 deben coincidir). Con un FBO incompleto: <code>INVALID_FRAMEBUFFER_OPERATION</code>.</li>
+    <li><code>bindFramebuffer</code> y <code>viewport</code> siempre juntos. Lo renderizado en una textura no sale al revés. Nadie borra un FBO por ti: <code>clear</code> de color y profundidad en cada pasada.</li>
+    <li>No se puede muestrear la textura en la que se está escribiendo (<code>Feedback loop</code>, <code>INVALID_OPERATION</code>): dos texturas y ping-pong. Así funcionan las simulaciones (juego de la vida), las estelas y los efectos de varias pasadas.</li>
+    <li>Post-proceso: escena → FBO del tamaño del canvas (recreado al redimensionar) → triángulo a pantalla completa con el efecto.</li>
+    <li><code>readPixels</code>: coordenadas del búfer con origen abajo, síncrono (espera a la GPU), del canvas solo en el mismo task, de un FBO multimuestreado nunca. Picking: ids como colores, <code>NEAREST</code>, scissor de un píxel. Para no esperar: <code>PIXEL_PACK_BUFFER</code> + <code>fenceSync</code>.</li>
+    <li>MRT: varias salidas con <code>layout(location)</code> y <code>drawBuffers</code> (sin él, solo el adjunto 0). MSAA en FBO: renderbuffer multimuestreado + <code>blitFramebuffer</code>.</li>
+  </ul>
+</div>
+
+<p>En <a href="09-instancing.html">5.9</a> atacamos el otro gran límite: el número de llamadas de dibujo. Con <em>instancing</em>, una sola llamada dibuja miles de copias de una malla, cada una con sus propios datos.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-render-to-texture.html">WebGL2 Fundamentals: Render to Texture</a> y <a href="https://webgl2fundamentals.org/webgl/lessons/webgl-picking.html">Picking</a>.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/checkFramebufferStatus">MDN: <code>checkFramebufferStatus()</code></a>, con todos los códigos.</li>
+  <li><a href="https://registry.khronos.org/webgl/extensions/EXT_color_buffer_float/">Especificación de <code>EXT_color_buffer_float</code></a>: qué formatos float se pueden usar como destino.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.4 · Color: espacios, gamma y paletas — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/a-estilos.css">
+</head>
+<body data-leccion="06-glsl/color">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>Color: espacios, gamma y paletas</h1>
+  <p class="resumen">En un shader, un color es un <code>vec3</code> de 0 a 1. Pero ¿0.5 de qué? La respuesta (media luz, o un número codificado para el ojo) decide si tus degradados salen limpios o embarrados, si tus mezclas se parecen a la realidad y si tu iluminación convence. Aquí aprendes a mezclar y transformar colores, a fabricar paletas con cuatro vectores, y la regla de oro del color en tiempo real: calcular en luz lineal y mostrar en sRGB.</p>
+  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 6.2, 2.4, 5.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Operarás con colores como vectores: mezclar, filtrar, sumar luz, medir luminancia y ajustar brillo, contraste y saturación.</li>
+      <li>Convertirás entre RGB y HSV (y sabrás por qué la versión suave es mejor para animar) y diseñarás paletas de coseno con un editor.</li>
+      <li>Entenderás la codificación sRGB: por qué 0.5 no es la mitad de la luz, qué recibe el framebuffer, cuándo y cómo convertir, y cómo lo hace WebGL2 gratis con <code>SRGB8_ALPHA8</code>.</li>
+      <li>Evitarás el recorte de las luces intensas con <em>tone mapping</em> y el <em>banding</em> de los degradados con <em>dithering</em>.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Tres números por píxel</h2>
+<p>Una pantalla emite, en cada píxel, luz roja, verde y azul, y nuestros ojos tienen tres tipos de conos que responden más o menos a esas tres bandas. Por eso tres números bastan para describir casi cualquier color: es el modelo <strong>RGB</strong>, aditivo (la luz se suma: rojo + verde = amarillo, los tres = blanco). En GLSL es un <code>vec3</code> con cada canal de 0 a 1, y al escribirse en el framebuffer de 8 bits por canal, cada valor se convierte en un entero de 0 a 255. Lo medimos: la conversión redondea al más cercano (0.5 se guarda como 128), y todo lo que se sale de [0, 1] se recorta.</p>
+<p>Como un color es un vector, las operaciones de <a href="../03-matematicas/01-vectores.html">3.1</a> tienen significado:</p>
+<table>
+  <thead><tr><th>Operación</th><th>Código</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td>Mezclar</td><td><code>mix(a, b, t)</code></td><td>Un fundido: de <code>a</code> a <code>b</code> según <code>t</code>.</td></tr>
+    <tr><td>Multiplicar</td><td><code>a * b</code></td><td>Un filtro o un tinte: cada canal de <code>a</code> atenuado por el de <code>b</code>. Es lo que hace una superficie de color <code>b</code> con la luz <code>a</code>.</td></tr>
+    <tr><td>Sumar</td><td><code>a + b</code></td><td>Sumar luz: dos focos sobre la misma pared. Se recorta al pasar de 1.</td></tr>
+    <tr><td>Pantalla (<em>screen</em>)</td><td><code>1.0 - (1.0 - a) * (1.0 - b)</code></td><td>Aclarar sin pasarse nunca de 1: el complementario de multiplicar los complementarios.</td></tr>
+    <tr><td>Diferencia</td><td><code>abs(a - b)</code></td><td>Negro donde los colores son iguales: útil para comparar dos imágenes.</td></tr>
+    <tr><td>Invertir</td><td><code>1.0 - a</code></td><td>El negativo.</td></tr>
+  </tbody>
+</table>
+
+<div class="glsl-playground" data-titulo="Dos colores y cinco operaciones" data-altura="170" data-apilado data-uniforms='{"u_a":{"tipo":"color","valor":"#e8663a","etiqueta":"color a"},"u_b":{"tipo":"color","valor":"#3aa0e8","etiqueta":"color b"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec3 u_a, u_b;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 a = u_a, b = u_b, c;
+  switch (int(uv.x * 7.0)) {
+    case 0:  c = a; break;                              // a
+    case 1:  c = b; break;                              // b
+    case 2:  c = mix(a, b, 0.5); break;                 // mezcla
+    case 3:  c = a * b; break;                          // multiplicar
+    case 4:  c = a + b; break;                          // sumar (se recorta)
+    case 5:  c = 1.0 - (1.0 - a) * (1.0 - b); break;    // pantalla
+    default: c = abs(a - b); break;                     // diferencia
+  }
+  fragColor = vec4(c, 1.0);
+}
+</script>
+</div>
+
+<p>Las franjas, de izquierda a derecha: <code>a</code>, <code>b</code>, mezcla, multiplicar, sumar, pantalla y diferencia. Cambia los colores y fíjate en dos detalles. La suma de un naranja y un azul intensos sale blanca: con estos dos colores, los tres canales pasan de 1 y se recortan. Y la mezcla al 50 % sale más oscura y apagada de lo que esperarías de dos colores tan vivos. Esa oscuridad no es un error de <code>mix</code>, sino de lo que significan los números, y es el tema central de la lección. Antes, dos herramientas para fabricar colores.</p>
+
+<h2>HSV: tono, saturación y valor</h2>
+<p>Pensar un color en RGB es poco intuitivo: ¿qué tres números dan «un naranja algo apagado»? El modelo <strong>HSV</strong> describe el color con tres magnitudes más humanas: el <strong>tono</strong> (<em>hue</em>, la posición en la rueda de colores, de 0 a 1: rojo, amarillo, verde, cian, azul, magenta y de vuelta al rojo), la <strong>saturación</strong> (cuánto color: 0 es gris) y el <strong>valor</strong> (cuánta intensidad: 0 es negro). Pasar de HSV a RGB en un shader es una línea, sin <code>if</code>:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 hsv2rgb(vec3 c) {
+  vec3 k = mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0);
+  vec3 rgb = clamp(abs(k - 3.0) - 1.0, 0.0, 1.0);
+  rgb = rgb * rgb * (3.0 - 2.0 * rgb);
+  return c.z * mix(vec3(1.0), rgb, c.y);
+}
+</script>
+<ol>
+  <li data-l="2">El tono pasa a «sextos de vuelta» (<code>c.x * 6.0</code>, de 0 a 6), y cada canal se desplaza un tercio de vuelta respecto a los otros (0, 4 y 2 sextos), con <code>mod</code> para que dé la vuelta.</li>
+  <li data-l="3">Una onda trapezoidal: <code>abs(k - 3.0)</code> es una «V» de 3 a 0 y a 3; al restar 1 y recortar a [0, 1], cada canal vale 1 durante dos sextos, baja en uno, vale 0 durante dos y sube en otro. Con los desfases, siempre hay un canal al máximo, uno al mínimo y otro en transición: los tonos puros de la rueda.</li>
+  <li data-l="4">Esta línea es la de Iñigo Quilez: pasa cada canal por la curva de <code>smoothstep</code> (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>), que redondea las esquinas del trapecio. Sin ella, la curva tiene «codos» en los seis colores primarios y secundarios, y un degradado de tono muestra bandas claras en el amarillo, el cian y el magenta (el ojo detecta los cambios bruscos de pendiente). Es la versión que conviene para animar el tono.</li>
+  <li data-l="5">Saturación: mezclar con blanco (<code>vec3(1.0)</code>) cuando <code>c.y</code> es 0. Valor: multiplicar todo por <code>c.z</code>.</li>
+</ol>
+</div>
+
+<p>Compara las curvas. <code>f1</code> y <code>f3</code> son los canales rojo y verde de la versión con codos; <code>f2</code> y <code>f4</code>, los de la versión suave:</p>
+
+<div class="graficador" data-x="-0.05,1.05" data-y="-0.1,1.15" data-titulo="Canales de hsv2rgb: con codos y suave" data-fijo>
+<script type="text/x-exprs">
+hsvCodos(x).r
+hsvSuave(x).r
+hsvCodos(x).g
+hsvSuave(x).g
+</script>
+<script type="text/x-glsl">
+vec3 hsvCodos(float h) {
+  return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+}
+vec3 hsvSuave(float h) { vec3 c = hsvCodos(h); return c * c * (3.0 - 2.0 * c); }
+</script>
+</div>
+
+<div class="glsl-playground" data-titulo="La rueda HSV y el tono con y sin codos" data-altura="260" data-apilado data-uniforms='{"u_valor":{"tipo":"float","min":0,"max":1,"valor":1,"etiqueta":"valor"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_valor;
+out vec4 fragColor;
+const float TAU = 6.2831853;
+
+vec3 hsv2rgb(vec3 c, bool suave) {
+  vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+  if (suave) rgb = rgb * rgb * (3.0 - 2.0 * rgb);
+  return c.z * mix(vec3(1.0), rgb, c.y);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec3 col = vec3(0.09, 0.10, 0.13);
+  // La rueda: tono = ángulo, saturación = radio
+  vec2 q = p - vec2(-1.3, 0.0);
+  float r = length(q);
+  if (r < 0.85 && r > 1e-4) {                       // lejos del centro: atan definido
+    float tono = atan(q.y, q.x) / TAU + 0.5;
+    col = hsv2rgb(vec3(tono, r / 0.85, u_valor), true);
+  }
+  // Dos degradados de tono: arriba con codos, abajo suave
+  vec2 b = vec2(0.0, 2.4);                          // de x = 0 a x = 2.4
+  if (p.x > b.x && p.x < b.y && abs(p.y) < 0.6 && abs(p.y) > 0.05) {
+    float t = (p.x - b.x) / (b.y - b.x);
+    col = hsv2rgb(vec3(t, 1.0, u_valor), p.y < 0.0);
+  }
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>En el degradado de arriba (con codos) se ven líneas más claras en el amarillo, el cian y el magenta; en el de abajo (suave), el paso es continuo. Fíjate también en algo que HSV no resuelve: con la misma saturación y el mismo valor, el amarillo parece mucho más claro que el azul. HSV es una reordenación geométrica de RGB, no un modelo de la percepción. Para transiciones que se vean uniformes existen espacios perceptuales como Oklab, que viste en <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>.</p>
+
+<h2>Paletas de coseno</h2>
+<p>Muchos shaders necesitan convertir un número (una distancia, un ángulo, el tiempo, el ruido) en un color, a lo largo de una gama agradable. Una tabla de colores es incómoda de escribir y de interpolar en GLSL. Iñigo Quilez propuso algo mucho más compacto: una paleta es una onda coseno por canal.</p>
+$$\text{color}(t) = a + b \cdot \cos\big(2\pi\,(c \cdot t + d)\big)$$
+<p>Con <code>a</code>, <code>b</code>, <code>c</code> y <code>d</code> vectores de tres componentes y todas las operaciones componente a componente. Cada parámetro tiene un significado preciso, el de las ondas de <a href="../03-matematicas/03-trigonometria.html">3.3</a>:</p>
+<ul>
+  <li><strong><code>a</code>, el desplazamiento</strong>: el color medio alrededor del que oscila cada canal.</li>
+  <li><strong><code>b</code>, la amplitud</strong>: cuánto se aleja de ese medio (el contraste de la paleta). Para no recortar, en cada canal hay que cumplir <code>a − b ≥ 0</code> y <code>a + b ≤ 1</code>.</li>
+  <li><strong><code>c</code>, la frecuencia</strong>: cuántas oscilaciones hace cada canal mientras <code>t</code> va de 0 a 1. Con 1, la paleta es cíclica (el final empalma con el principio).</li>
+  <li><strong><code>d</code>, la fase</strong>: desplaza la onda de cada canal. Desfasar los tres canales es lo que crea los tonos; con los tres en fase, la paleta es un degradado de grises (o de un solo tono).</li>
+</ul>
+<script type="text/plain" class="codigo" data-lang="glsl">
+vec3 paleta(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+  return a + b * cos(6.2831853 * (c * t + d));
+}
+</script>
+<p>Doce números definen una paleta entera. El editor te deja moverlos, y trae las siete paletas del artículo de Quilez. Arriba ves la paleta de <code>t = 0</code> a <code>t = 1</code>; debajo, la curva de cada canal, con las zonas en las que se recortaría sombreadas en rojo; y al final, la línea de GLSL para copiar.</p>
+
+<div class="demo" id="demo-paleta">
+  <div class="demo-lienzo" style="height:250px"></div>
+  <div class="a-botonera"></div>
+  <div class="demo-controles"></div>
+  <pre class="a-codigo"></pre>
+</div>
+
+<p>Prueba a partir del arcoíris: con <code>d = (0, 0.33, 0.67)</code>, los tres canales están desfasados un tercio de vuelta, justo la rueda de tres cosenos que ya usaste en 3.3. Junta las tres fases (por ejemplo, las tres a 0) y la paleta se vuelve gris. Sube la frecuencia de un solo canal y aparecen bandas de ese color. Y lleva <code>b</code> por encima de <code>a</code> en un canal: la curva se mete en la zona roja y ese tramo de la paleta se aplana, porque el valor se recorta a 0.</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.4.1 — Colorear un campo con una paleta</h3>
+<p>Un campo escalar cualquiera (aquí, una combinación de distancia, ángulo y tiempo) se convierte en una imagen pasando su valor por <code>paleta</code>. Copia una línea del editor y pégala en lugar de la línea 19.</p>
+<div class="glsl-playground" data-titulo="Un campo pasado por una paleta" data-altura="250" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+vec3 paleta(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+  return a + b * cos(6.2831853 * (c * t + d));
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float r = length(p);
+  float a = atan(p.y, p.x);
+  // El campo: anillos que se alejan, torcidos por el ángulo
+  float t = 0.6 * r + 0.08 * sin(5.0 * a + 2.0 * r) - 0.15 * u_time;
+  if (uv.y > 0.88) t = uv.x;                  // arriba: la paleta, de 0 a 1
+  vec3 color = paleta(t, vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.0, 0.33, 0.67));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<ol>
+  <li><strong>El campo</strong> <code>t</code> no tiene por qué estar entre 0 y 1: con <code>c = 1</code> la paleta es periódica (el coseno se repite cada unidad de <code>t</code>), así que un campo que crece sin límite recorre la paleta una y otra vez. Por eso los anillos se suceden sin costuras.</li>
+  <li><strong>La franja de arriba</strong> muestra la paleta sola, con <code>t = uv.x</code>: es tu leyenda.</li>
+  <li><strong>El tiempo</strong> se resta dentro de <code>t</code>: desplaza el campo a lo largo de la paleta y los anillos parecen salir del centro. Es la animación más barata posible: un número que avanza.</li>
+  <li><strong><code>atan</code></strong> en el centro exacto sería indefinido (6.1), pero aquí solo afecta a un píxel (el centro exacto solo existe con tamaños impares) y dentro de un seno que lo atenúa; en un efecto de verdad, protégelo como en los ejercicios de 6.2.</li>
+</ol>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">En una paleta de coseno pones, para el canal rojo, <code>a = 0.5</code> y <code>b = 0.8</code>. ¿Qué pasa?</p>
+  <ul>
+    <li>El rojo oscila entre 0.5 y 0.8<div class="explicacion"><code>b</code> no es un máximo, sino la amplitud: el canal va de <code>a − b</code> a <code>a + b</code>.</div></li>
+    <li data-correcta>El rojo iría de −0.3 a 1.3, así que se recorta a 0 y a 1: la paleta tendrá tramos planos en rojo<div class="explicacion">Correcto. Los valores fuera de [0, 1] se recortan al escribir el color, y la paleta pierde variación en esos tramos. Para aprovechar toda la amplitud sin recortar, <code>b ≤ min(a, 1 − a)</code>.</div></li>
+    <li>El rojo oscila 0.8 veces por unidad de <code>t</code><div class="explicacion">Eso sería la frecuencia, <code>c</code>. <code>b</code> multiplica al coseno, así que escala su amplitud.</div></li>
+  </ul>
+</div>
+
+<h2>El 0.5 que no es la mitad: sRGB</h2>
+<p>Volvamos a la mezcla oscura del principio. En <a href="../02-animacion/04-interpolacion-easing.html">2.4</a> lo viste con colores CSS: el punto medio entre rojo y verde, calculado sobre los números, sale un oliva sucio, <code>rgb(128, 128, 0)</code>, mientras que mezclando la luz de verdad sale <code>rgb(188, 188, 0)</code>. Ahora vamos al fondo del asunto, porque en un shader eres tú quien hace las cuentas.</p>
+<p>El ojo no percibe la luz de forma lineal: distingue muchas más diferencias en los tonos oscuros que en los claros. Si los 256 niveles de un canal de 8 bits se repartieran de forma proporcional a la luz, se malgastarían niveles en los claros (donde el ojo no ve la diferencia) y faltarían en los oscuros (donde se verían escalones). Por eso las imágenes, los colores de CSS y las pantallas usan una <strong>codificación</strong>, <strong>sRGB</strong>: el número guardado no es la luz, sino la luz pasada por una curva que dedica más niveles a los oscuros. Para obtener la luz, hay que decodificar, y la curva es aproximadamente una potencia de 2.2:</p>
+$$\text{luz} \approx \text{valor}^{2.2} \qquad\Longrightarrow\qquad 0.5^{2.2} \approx 0.218$$
+<p>El valor 128 (0.502) emite un <strong>21.6 %</strong> de la luz del blanco, no la mitad. Y la mitad de la luz, decodificada al revés, es el valor 0.735: 188. Puedes comprobarlo con tus propios ojos: el tercio izquierdo de este lienzo tiene líneas de un píxel alternas, negras y blancas, que emiten en promedio exactamente la mitad de la luz del blanco. Entorna los ojos o aléjate hasta que las líneas se fundan en un gris. ¿A cuál de los otros dos se parece: al del centro (128) o al de la derecha (188)?</p>
+
+<div class="glsl-playground" data-titulo="¿Qué gris es la mitad de la luz?" data-altura="200" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  float tercio = floor(gl_FragCoord.x / u_resolution.x * 3.0);
+  float v;
+  if (tercio == 0.0)      v = mod(floor(gl_FragCoord.y), 2.0);  // líneas de 1 px: 50 % de luz
+  else if (tercio == 1.0) v = 0.5;                               // el «50 %» ingenuo: 128
+  else                    v = 0.7354;                            // 50 % de luz codificado: 188
+  fragColor = vec4(vec3(v), 1.0);
+}
+</script>
+</div>
+
+<p>En una pantalla con la codificación sRGB bien ajustada, las rayas se funden con el gris de la derecha. (Si el zoom del navegador o la escala de la pantalla no son enteros, por ejemplo el 125 %, el navegador remuestrea el lienzo y las líneas de un píxel se emborronan: el experimento solo es fiable al 100 % o al 200 %. Y muchas pantallas no están bien ajustadas: el resultado exacto varía, pero casi nunca coincidirá con el 128.)</p>
+
+<h3>Lo que recibe el framebuffer</h3>
+<p>Aquí está la clave práctica. Cuando escribes <code>fragColor = vec4(vec3(0.5), 1.0)</code>, WebGL guarda 128 en el canvas (lo medimos) y el navegador lo muestra como cualquier otro color de la página: como un valor <strong>codificado en sRGB</strong>. Es decir, <strong>los números que escribe tu fragment shader son valores sRGB, no luz</strong>, a menos que tú hagas algo. Y eso tiene una consecuencia enorme: sumar, mezclar, promediar o multiplicar valores codificados no equivale a hacer lo mismo con la luz. Dos focos de intensidad 0.5 sobre la misma pared suman 1.0; pero dos valores 0.5 codificados representan 0.214 de luz cada uno, y su suma codificada, 1.0, representa el 100 %: casi cinco veces la luz de uno solo, en lugar del doble.</p>
+<p>La regla de oro del color en tiempo real:</p>
+<div class="callout nota">
+  <p><strong>Decodifica al entrar, calcula en lineal, codifica al salir.</strong> Los colores escritos a mano (o elegidos en un selector de color, o leídos de una imagen) son sRGB: pásalos a luz lineal. Haz en lineal toda la física: mezclas, iluminación, desenfoques, sumas de luces. Y convierte el resultado a sRGB justo antes de escribir <code>fragColor</code>.</p>
+</div>
+<p>Las conversiones exactas no son una potencia, sino una potencia de 2.4 con un pequeño tramo lineal cerca del negro (para evitar una pendiente infinita en 0). Estas son las funciones exactas, las que usaremos cuando importe la exactitud (los editores de raymarching de <a href="09-raymarching.html">6.9</a> se conforman con la aproximación de más abajo); las comprobamos en la GPU contra los valores de referencia (0.5 → 0.214 al decodificar, 0.5 → 0.735 al codificar):</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 srgbALineal(vec3 c) {
+  vec3 bajo = c / 12.92;
+  vec3 alto = pow((c + 0.055) / 1.055, vec3(2.4));
+  return mix(bajo, alto, step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  vec3 bajo = c * 12.92;
+  vec3 alto = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+  return mix(bajo, alto, step(0.0031308, c));
+}
+</script>
+<ol>
+  <li data-l="1-5"><strong>Decodificar</strong> (sRGB → luz). Por debajo de 0.04045, una recta (el valor dividido entre 12.92); por encima, la potencia 2.4 desplazada. Las dos piezas se unen sin salto.</li>
+  <li data-l="4"><code>step</code> vale 0 o 1 por canal y <code>mix</code> elige la pieza: un <code>if</code> por componente sin ramas. Ojo: <strong>las dos piezas se calculan siempre</strong>, también la que se descarta. Si una de ellas pudiera dar NaN (una potencia de un negativo), el NaN podría colarse aunque su peso sea 0 (NaN · 0 es NaN en IEEE 754).</li>
+  <li data-l="6-11"><strong>Codificar</strong> (luz → sRGB): la inversa, con su tramo lineal por debajo de 0.0031308.</li>
+  <li data-l="7">Y por eso esta línea: la luz calculada puede salir ligeramente negativa (una resta, un contraste), y <code>pow</code> de un negativo es indefinido (6.1). El <code>max</code> lo impide.</li>
+</ol>
+</div>
+
+<p>¿Y la aproximación <code>pow(c, 2.2)</code> / <code>pow(c, 1.0 / 2.2)</code> que verás en muchos shaders? Lo medimos. Al codificar, la diferencia máxima con la curva exacta es 0.034 (cerca del negro), y de los 256 niveles, 209 salen distintos, aunque como mucho por 8 niveles. Al decodificar, el error absoluto es pequeño (como mucho 0.0085), pero relativo en los muy oscuros es enorme: el nivel 10 da 0.0008 de luz con la potencia y 0.0030 con la curva exacta, casi cuatro veces más. Para efectos estilizados, la aproximación basta; para colores que deben coincidir con los de CSS o para sombras profundas, usa la exacta.</p>
+
+<div class="graficador" data-x="-0.05,1.05" data-y="-0.05,1.05" data-titulo="Codificar: curva exacta, potencia 1/2.2 y su diferencia ×10" data-fijo>
+<script type="text/x-exprs">
+aSrgb(x)
+pow(x, 1.0 / 2.2)
+10.0 * abs(aSrgb(x) - pow(x, 1.0 / 2.2))
+x
+</script>
+<script type="text/x-glsl">
+float aSrgb(float c) {
+  c = max(c, 0.0);
+  return c < 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+</script>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu shader escribe <code>fragColor = vec4(vec3(0.5), 1.0);</code> en el canvas. ¿Cuánta luz emite ese píxel respecto al blanco?</p>
+  <ul>
+    <li>El 50 %: 0.5 es la mitad de 1<div class="explicacion">Lo sería si el canvas guardara luz. Guarda valores codificados en sRGB, y el valor 0.5 decodificado es 0.214.</div></li>
+    <li data-correcta>Alrededor del 21 %<div class="explicacion">Correcto: 0.5 se guarda como 128, y el navegador lo interpreta como sRGB; 128 decodificado es 0.216. Para emitir la mitad de la luz, hay que escribir 0.735 (188).</div></li>
+    <li>Depende de la precisión del shader (<code>highp</code> o <code>mediump</code>)<div class="explicacion">La precisión afecta a los cálculos, no a cómo se interpreta el valor escrito. 0.5 es exacto en cualquier precisión.</div></li>
+  </ul>
+</div>
+
+<h3>Mezclar en sRGB o en lineal</h3>
+<p>Cuatro degradados. Los dos de arriba van de negro a blanco; los dos de abajo, entre los dos colores del selector. En cada pareja, el de arriba mezcla los números sRGB tal cual y el de abajo decodifica, mezcla la luz y vuelve a codificar. La marca central señala <code>t = 0.5</code>: lee con el ratón el color de cada degradado en ese punto.</p>
+
+<div class="glsl-playground" data-titulo="Cuatro degradados, dos espacios" data-altura="240" data-apilado data-uniforms='{"u_a":{"tipo":"color","valor":"#ff0000","etiqueta":"color a"},"u_b":{"tipo":"color","valor":"#00ff00","etiqueta":"color b"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec3 u_a, u_b;          // del selector: valores sRGB, como en CSS
+out vec4 fragColor;
+
+vec3 srgbALineal(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float t = uv.x;
+  int fila = 3 - int(uv.y * 4.0);                  // 0 arriba ... 3 abajo
+  vec3 a = fila < 2 ? vec3(0.0) : u_a;
+  vec3 b = fila < 2 ? vec3(1.0) : u_b;
+  vec3 c;
+  if (fila == 0 || fila == 2) c = mix(a, b, t);     // mezclar los números sRGB
+  else c = linealASrgb(mix(srgbALineal(a), srgbALineal(b), t));   // mezclar la luz
+  // marca en t = 0.5 y separación entre filas
+  if (abs(gl_FragCoord.x - 0.5 * u_resolution.x) < 1.0 && fract(uv.y * 4.0) > 0.8) c = vec3(1.0, 0.3, 0.5);
+  if (fract(uv.y * 4.0) < 0.02) c = vec3(0.09, 0.10, 0.13);
+  fragColor = vec4(c, 1.0);
+}
+</script>
+</div>
+
+<p>Con rojo y verde, el punto medio de la mezcla sRGB es (128, 128, 0): el oliva oscuro de 2.4. El de la mezcla lineal es (188, 188, 0): un amarillo con la luz que esperarías de sumar la mitad de un rojo y la mitad de un verde. En el degradado de grises, la mezcla sRGB avanza de forma perceptualmente uniforme (por eso es la elegida para los datos de las imágenes), y la lineal se aclara enseguida: la mitad de la luz ya es un gris claro. Ninguna de las dos es «la correcta» para todo. Para <strong>simular luz</strong> (iluminación, sombras, desenfoques, fundidos de dos imágenes, antialiasing) se usa la lineal; para un <strong>degradado de diseño</strong> que avance parejo a la vista, un espacio perceptual como Oklab (2.4).</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.4.2 — La misma esfera, iluminada en dos espacios</h3>
+<p>Una esfera naranja iluminada con el modelo de Lambert de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>. La mitad izquierda hace la cuenta sobre el color escrito a mano (sRGB) y escribe el resultado tal cual; la derecha decodifica el color, ilumina en lineal y codifica al final.</p>
+<div class="glsl-playground" data-titulo="Lambert en sRGB y en lineal" data-altura="260" data-apilado data-uniforms='{"u_ambiente":{"tipo":"float","min":0,"max":0.2,"valor":0.02,"etiqueta":"luz ambiente"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time, u_ambiente;
+out vec4 fragColor;
+
+vec3 srgbALineal(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+vec3 esfera(vec2 q, bool lineal) {
+  float r = length(q);
+  if (r > 0.75) return vec3(0.09, 0.10, 0.13);
+  vec3 N = vec3(q, sqrt(0.5625 - r * r)) / 0.75;          // normal de la esfera
+  vec3 L = normalize(vec3(cos(u_time * 0.5), 0.6, 0.7));  // luz que gira
+  float lambert = max(dot(N, L), 0.0);
+  vec3 albedo = vec3(0.95, 0.5, 0.2);                     // escrito a mano: sRGB
+  if (lineal) return linealASrgb(srgbALineal(albedo) * (u_ambiente + lambert));
+  return albedo * (u_ambiente + lambert);                 // la cuenta sobre sRGB
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  bool derecha = p.x > 0.0;
+  vec2 q = p - vec2(derecha ? 1.0 : -1.0, 0.0);
+  fragColor = vec4(esfera(q, derecha), 1.0);
+}
+</script>
+</div>
+<ol>
+  <li><strong>La normal</strong> de cada píxel de la esfera se reconstruye con Pitágoras, y <code>lambert</code> es el coseno entre la normal y la luz (recortado a 0 en el lado oscuro). Hasta aquí, las dos mitades son idénticas.</li>
+  <li><strong>A la izquierda</strong>, <code>albedo * lambert</code> se escribe tal cual. Donde <code>lambert</code> vale 0.5 (la luz llega a 60°), el valor escrito es la mitad del naranja… pero la mitad de un valor sRGB es mucho menos que la mitad de su luz: la esfera se oscurece demasiado pronto, el paso de la luz a la sombra es brusco y el objeto parece de plástico duro, con un foco muy concentrado.</li>
+  <li><strong>A la derecha</strong>, el mismo 0.5 multiplica la luz lineal del naranja: el resultado emite la mitad de la luz, que codificado es un naranja todavía brillante. La transición a la sombra es suave y la esfera parece iluminada por una luz de verdad.</li>
+  <li><strong>La luz ambiente</strong> (el deslizador) lo remata: en la mitad izquierda, un 0.02 de ambiente apenas se ve; en la derecha, levanta visiblemente la sombra, porque 0.02 de luz lineal codificado ya es un gris de valor 0.15. Sube el ambiente y compara.</li>
+</ol>
+</section>
+
+<div class="callout bestiario" data-id="m6a-luz-codificada" data-titulo="La iluminación se ve dura: sombras que caen a negro de golpe y focos que deslumbran al sumarse">
+  <p><strong>Síntoma:</strong> los objetos iluminados parecen de plástico, con la transición entre luz y sombra demasiado brusca; la luz ambiente no se nota hasta valores altos; dos focos que se solapan crean una zona muchísimo más brillante que el doble; los degradados de color pasan por tonos sucios.</p>
+  <p><strong>Causa:</strong> la física (multiplicar por la luz, sumar focos, mezclar) se hace sobre valores codificados en sRGB, que no son proporcionales a la luz. Multiplicar un valor sRGB por 0.5 reduce su luz a la cuarta parte, más o menos.</p>
+  <p><strong>Solución:</strong> decodifica los colores de entrada (<code>srgbALineal</code>), calcula en lineal y codifica solo al final (<code>linealASrgb</code>). Si las texturas vienen de imágenes, súbelas como <code>SRGB8_ALPHA8</code> y la decodificación la hará la GPU.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Dos focos iluminan la misma pared gris. Cada uno, solo, la deja con el gris 0.4 (un valor sRGB, como los que escribes en <code>fragColor</code>). ¿Cómo calculas el color donde se solapan?</p>
+  <ul>
+    <li>Sumando los dos colores ya codificados y escribiendo el resultado<div class="explicacion">La suma de valores sRGB no es la suma de luz: el resultado sale mucho más brillante que el doble.</div></li>
+    <li data-correcta>Sumando las contribuciones en luz lineal y codificando la suma al final<div class="explicacion">Correcto. La luz se suma de forma lineal: 0.4 codificado son 0.133 de luz, dos focos suman 0.266, y codificado es 0.552 (141). Sumar los números (0.4 + 0.4 = 0.8) daría 0.604 de luz, 4.5 veces la de un foco.</div></li>
+    <li>Con <code>max</code> de los dos colores, para no pasarse de 1<div class="explicacion"><code>max</code> hace que la zona común brille como un solo foco: la luz de dos focos se suma, no se queda con el mayor.</div></li>
+  </ul>
+</div>
+
+<h3>Texturas y framebuffers sRGB: la GPU convierte gratis</h3>
+<p>Las imágenes (JPG, PNG, el contenido de un canvas) guardan valores sRGB. Si las subes con <code>gl.RGBA8</code> (o con <code>gl.RGBA</code>, que es lo mismo), <code>texture()</code> te devuelve esos valores codificados, y tu iluminación trabaja sobre números que no son luz. WebGL2 tiene un formato interno pensado para esto:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+// La imagen se guarda tal cual (8 bits por canal, codificada)...
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, imagen);
+gl.generateMipmap(gl.TEXTURE_2D);
+// ...pero texture() devuelve luz LINEAL: la GPU decodifica al leer.
+</script>
+<p>Lo medimos en Chrome con un texel de valor 128: con <code>RGBA8</code>, <code>texture()</code> devolvió 0.502; con <code>SRGB8_ALPHA8</code>, <strong>0.2159</strong>, el valor decodificado. La conversión la hace el hardware de texturas, sin coste. Y lo importante: la decodificación ocurre <strong>antes del filtrado</strong>. El filtrado bilineal y los mipmaps promedian luz lineal, que es lo correcto; con una textura <code>RGBA8</code>, promedian valores codificados. Lo comprobamos con un damero negro y blanco de 2 × 2: el nivel de mipmap de 1 × 1 de la versión <code>RGBA8</code> guarda 0.502 (un gris de 128, que emite el 21 % de la luz), mientras que el de la versión <code>SRGB8_ALPHA8</code> devuelve 0.503 de luz lineal (un gris de 188, que emite el 50 %, lo mismo que el damero original visto de lejos). Con <code>RGBA8</code>, una textura con mucho contraste se oscurece al alejarse.</p>
+<p>La otra mitad es escribir: un framebuffer con una textura <code>SRGB8_ALPHA8</code> como destino (<a href="../05-webgl/08-framebuffers.html">5.8</a>) <strong>codifica al escribir</strong>. Medimos que un <code>fragColor</code> de 0.5 se guardaba como 188 (y el blending, si lo activas, se hace en lineal). El canvas, en cambio, guarda por defecto lo que escribes, sin codificar. Por eso el último shader de la cadena, el que dibuja en el canvas, es el que tiene que llamar a <code>linealASrgb</code>. (Chrome reciente permite pedir un canvas sRGB con <code>gl.drawingBufferStorage(gl.SRGB8_ALPHA8, ancho, alto)</code>: lo comprobamos y un <code>clear</code> de 0.5 se guarda como 188. Es una API nueva: comprueba que existe con <code>typeof gl.drawingBufferStorage === "function"</code> antes de depender de ella.)</p>
+
+<div class="callout senior" data-titulo="Qué hacen los editores del curso, y qué es drawingBufferColorSpace">
+  <p>Las texturas de los editores del curso (<code>data-texturas</code>) se suben como <code>RGBA</code> normal, así que dentro de un playground <code>texture(u_tex0, uv)</code> devuelve valores sRGB: decodifícalos tú si vas a hacer cuentas de luz. Y el color final lo interpreta el navegador según la propiedad <code>gl.drawingBufferColorSpace</code> del contexto, que por defecto vale <code>"srgb"</code> (lo comprobamos). En Chrome puedes cambiarla a <code>"display-p3"</code>, un espacio con una gama de colores más amplia que tienen muchas pantallas modernas; los valores siguen estando codificados con la misma curva, pero sus primarios son más saturados. Si no la tocas, tus valores son sRGB.</p>
+</div>
+
+<div class="callout bestiario" data-id="m6a-mipmap-oscuro" data-titulo="Una textura se oscurece al alejarse o al reducirla">
+  <p><strong>Síntoma:</strong> una textura con mucho contraste (un damero, texto blanco sobre negro, hojas contra el cielo) se ve más oscura y apagada cuando se dibuja pequeña o lejos; al acercarla recupera el brillo. Las líneas finas claras parecen desaparecer.</p>
+  <p><strong>Causa:</strong> la textura se subió como <code>RGBA8</code> y la GPU filtra y genera los mipmaps promediando los valores codificados en sRGB. El promedio de 0 y 255 es 128, que emite el 21 % de la luz, cuando el promedio de la luz es el 50 % (188).</p>
+  <p><strong>Solución:</strong> sube las imágenes con formato interno <code>SRGB8_ALPHA8</code>: la GPU decodifica antes de filtrar y los promedios se hacen en luz lineal. Recuerda que entonces <code>texture()</code> devuelve luz lineal, y que tendrás que codificar al escribir en el canvas.</p>
+</div>
+
+<div class="callout bestiario" data-id="m6a-doble-gamma" data-titulo="Todo se ve lavado y sin contraste (o demasiado oscuro y saturado)">
+  <p><strong>Síntoma:</strong> tras «arreglar la gamma», la imagen sale pálida, con los negros grisáceos (o, al revés, oscurísima y con los colores quemados).</p>
+  <p><strong>Causa:</strong> la conversión se aplica dos veces, o ninguna en un sitio donde hacía falta: codificas en el shader y además escribes en un framebuffer <code>SRGB8_ALPHA8</code> que vuelve a codificar (lavado); o decodificas a mano una textura que ya era <code>SRGB8_ALPHA8</code> (demasiado oscuro); o codificas en un shader intermedio cuyo resultado lee otro shader que también codifica.</p>
+  <p><strong>Solución:</strong> dibuja la cadena completa y marca en cada paso en qué espacio están los valores. Una sola decodificación a la entrada (a mano o por el formato de la textura), una sola codificación a la salida (a mano en el último shader o por el formato del framebuffer). Todo lo intermedio, en lineal.</p>
+</div>
+
+<h3>Lineal en 8 bits: el banding</h3>
+<p>Hay una trampa más, y es la razón de fondo por la que existe sRGB. Si guardas luz lineal en 8 bits por canal (en una textura intermedia <code>RGBA8</code>, por ejemplo), los oscuros se quedan con muy pocos niveles: entre 0 y el 10 % de la luz solo hay 26 valores (0 a 25), mientras que codificados en sRGB, ese mismo tramo ocupa 90 niveles. En este lienzo, la franja de arriba es un degradado de luz del 0 al 10 % codificado con toda la precisión del float; la de abajo es el mismo degradado guardado antes en 8 bits lineales y codificado después.</p>
+
+<div class="glsl-playground" data-titulo="Luz lineal en 8 bits: 26 niveles para los oscuros" data-altura="200" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float luz = uv.x * 0.1;                                  // del 0 al 10 % de la luz
+  float guardada = floor(luz * 255.0 + 0.5) / 255.0;       // como en una textura RGBA8
+  float v = uv.y > 0.5 ? luz : guardada;
+  fragColor = vec4(linealASrgb(vec3(v)), 1.0);
+}
+</script>
+</div>
+
+<p>Abajo se ven escalones anchos, sobre todo a la izquierda: el primer nivel por encima de 0, 1/255 de luz, codificado ya es un gris de 13, así que la franja salta de 0 a 13 de golpe. Arriba, el degradado es continuo (los escalones de un nivel que quedan son casi invisibles). Moraleja: los resultados intermedios en luz lineal necesitan más de 8 bits (<code>RGBA16F</code>, con <a href="../05-webgl/08-framebuffers.html">las extensiones de 5.8</a>) o el formato <code>SRGB8_ALPHA8</code>, que guarda 8 bits codificados y te los da en lineal.</p>
+
+<div class="callout bestiario" data-id="m6a-bandas-lineales" data-titulo="Franjas visibles en los degradados oscuros">
+  <p><strong>Síntoma:</strong> un degradado oscuro (un cielo nocturno, una viñeta, una sombra suave) muestra escalones o franjas concéntricas, sobre todo cerca del negro, en lugar de una transición continua.</p>
+  <p><strong>Causa:</strong> la luz lineal se guardó con 8 bits por canal en algún punto de la cadena (una textura <code>RGBA8</code> intermedia, un FBO), y los oscuros se quedaron con muy pocos niveles. También aparece sin error de cadena en degradados muy lentos, porque 256 niveles no alcanzan para una transición larga.</p>
+  <p><strong>Solución:</strong> intermedios en <code>RGBA16F</code> o <code>SRGB8_ALPHA8</code>, nunca luz lineal en <code>RGBA8</code>. Para las bandas que quedan en el resultado final de 8 bits, el <em>dithering</em> del final de la lección.</p>
+</div>
+
+<h2>Luminancia: cuánto brilla un color</h2>
+<p>Un verde puro parece mucho más luminoso que un azul puro de la misma «intensidad»: el ojo es más sensible a la parte central del espectro. La <strong>luminancia</strong> relativa es la luz ponderada por esa sensibilidad, y para los primarios de sRGB (la norma Rec. 709) sus pesos son:</p>
+$$Y = 0.2126\,R + 0.7152\,G + 0.0722\,B \qquad (R, G, B \text{ en luz lineal})$$
+<p>Es la forma correcta de convertir un color en gris que conserve su brillo percibido. En muchos shaders verás otra fórmula, con otros pesos y aplicada directamente a los valores sRGB: <code>dot(c, vec3(0.299, 0.587, 0.114))</code>. Esa es la <strong>luma</strong> de la norma de televisión Rec. 601: más barata (no decodifica) y aceptable para efectos, pero no es una medida de luz. Compara en este lienzo un degradado de tonos puros (arriba) convertido a gris de tres maneras:</p>
+
+<div class="glsl-playground" data-titulo="Tres maneras de pasar a gris" data-altura="220" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+vec3 srgbALineal(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 hsv2rgb(vec3 c) {
+  vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+  rgb = rgb * rgb * (3.0 - 2.0 * rgb);
+  return c.z * mix(vec3(1.0), rgb, c.y);
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 c = hsv2rgb(vec3(uv.x, 1.0, 1.0));              // tonos puros, en sRGB
+  float fila = floor((1.0 - uv.y) * 4.0);              // 0 arriba ... 3 abajo
+  vec3 r = c;                                          // fila 0: los colores
+  if (fila == 1.0) r = vec3((c.r + c.g + c.b) / 3.0);  // media de los canales
+  if (fila == 2.0) r = vec3(dot(c, vec3(0.299, 0.587, 0.114)));   // luma Rec. 601
+  if (fila == 3.0) {                                   // luminancia Rec. 709, en lineal
+    float Y = dot(srgbALineal(c), vec3(0.2126, 0.7152, 0.0722));
+    r = linealASrgb(vec3(Y));
+  }
+  fragColor = vec4(r, 1.0);
+}
+</script>
+</div>
+
+<p>La media (segunda fila) trata igual a todos los canales: el rojo, el verde y el azul puros salen exactamente del mismo gris (un tercio), cuando el verde se ve muchísimo más claro que el azul. La luma (tercera) ya los distingue. La luminancia (cuarta) es la que más se parece a lo que ve el ojo: el azul puro es un gris oscuro (su luminancia es 0.072, que codificada es solo 76 de 255) y el amarillo, casi blanco. Si tu efecto necesita «el brillo de este píxel» (para un umbral, un <em>bloom</em>, una conversión a blanco y negro), usa la luminancia.</p>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué canal pesa más en la luminancia, y por qué?</p>
+  <ul>
+    <li>Los tres igual: un color es la suma de sus tres canales<div class="explicacion">Eso sería la media, que da el mismo gris a colores de brillo muy distinto (el rojo, el verde y el azul puros, por ejemplo).</div></li>
+    <li data-correcta>El verde (0.7152), porque el ojo es mucho más sensible a esas longitudes de onda<div class="explicacion">Correcto. El pico de sensibilidad del ojo a la luz está en el verde-amarillo. El rojo pesa 0.2126 y el azul apenas 0.0722.</div></li>
+    <li>El rojo, porque es el primer componente del <code>vec3</code><div class="explicacion">El orden de los componentes es una convención; los pesos vienen de la visión humana y de los primarios de la norma sRGB.</div></li>
+  </ul>
+</div>
+
+<h2>Brillo, contraste y saturación</h2>
+<p>Los ajustes básicos de cualquier editor de imagen son operaciones de una línea, y conviene saber en qué espacio hacer cada una:</p>
+<ul>
+  <li><strong>Exposición</strong>: multiplicar la luz lineal, <code>lin * exp2(ev)</code>. Es lo que hace una cámara con más tiempo de exposición: +1 EV es el doble de luz. Multiplicar valores sRGB, en cambio, desplaza los tonos de forma poco natural.</li>
+  <li><strong>Saturación</strong>: mezclar el color con el gris de su misma luminancia, <code>mix(vec3(Y), lin, s)</code>. Con <code>s = 0</code>, blanco y negro; con <code>s &gt; 1</code>, colores más intensos (y posibles canales negativos, que el <code>max</code> de <code>linealASrgb</code> recorta).</li>
+  <li><strong>Contraste</strong>: alejar los valores del gris medio, <code>(c - 0.5) * k + 0.5</code>. Aquí conviene hacerlo en sRGB, que es perceptualmente uniforme: estira por igual los oscuros y los claros.</li>
+</ul>
+
+<div class="glsl-playground" data-titulo="Exposición, saturación y contraste" data-altura="260" data-apilado data-texturas="paisaje" data-uniforms='{"u_ev":{"tipo":"float","min":-2,"max":2,"valor":0.5,"etiqueta":"exposición (EV)"},"u_sat":{"tipo":"float","min":0,"max":2,"valor":1.4,"etiqueta":"saturación"},"u_contraste":{"tipo":"float","min":0,"max":2,"valor":1.2,"etiqueta":"contraste"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform sampler2D u_tex0;
+uniform float u_ev, u_sat, u_contraste;
+out vec4 fragColor;
+
+vec3 srgbALineal(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 original = texture(u_tex0, uv).rgb;                  // valores sRGB
+  vec3 lin = srgbALineal(original) * exp2(u_ev);            // exposición, en lineal
+  float Y = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+  lin = mix(vec3(Y), lin, u_sat);                           // saturación, en lineal
+  vec3 c = linealASrgb(lin);
+  c = (c - 0.5) * u_contraste + 0.5;                        // contraste, en sRGB
+  if (gl_FragCoord.x < u_mouse.x) c = original;             // izquierda del ratón: original
+  if (abs(gl_FragCoord.x - u_mouse.x) < 1.0) c = vec3(1.0);
+  fragColor = vec4(c, 1.0);
+}
+</script>
+</div>
+
+<p>A la izquierda del ratón, la imagen original; a la derecha, la ajustada. Mueve la línea con el ratón para comparar zonas concretas.</p>
+
+<h2>Más allá de 1: tone mapping</h2>
+<p>En luz lineal no hay un máximo natural: el sol es miles de veces más intenso que una pared en sombra. Si sumas luces (un halo sobre otro, un reflejo intenso), los valores superan 1, y al escribirlos, cada canal se recorta por separado. Eso no solo quema los detalles: <strong>cambia el tono</strong>. Una luz naranja muy intensa, (6, 2.7, 0.6), se recorta a (1, 1, 0.6): un amarillo pálido. El <strong>tone mapping</strong> es una curva que comprime el rango infinito en [0, 1] con suavidad. La más simple es la de Reinhard:</p>
+$$c' = \frac{c}{1 + c}$$
+<p>Es casi la identidad para valores pequeños (0.1 → 0.09), la mitad para 1 (1 → 0.5) y se acerca a 1 sin alcanzarlo nunca (10 → 0.91). Su variante «extendida» fija un blanco <code>W</code>, el valor que llega exactamente a 1: $c' = c\,(1 + c/W^2) / (1 + c)$. Y puede aplicarse a cada canal (lo que desatura las luces muy intensas hacia el blanco, como en una foto) o a la luminancia (conservando el tono). Compara las curvas y la escena:</p>
+
+<div class="graficador" data-x="-0.2,8" data-y="-0.05,1.2" data-titulo="Recorte, Reinhard y Reinhard extendido (W = 4)" data-fijo>
+<script type="text/x-exprs">
+min(x, 1.0)
+x / (1.0 + x)
+x * (1.0 + x / 16.0) / (1.0 + x)
+</script>
+</div>
+
+<div class="glsl-playground" data-titulo="Luces intensas: recortar o comprimir" data-altura="260" data-apilado data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":3,"valor":0,"etiqueta":"modo"},"u_ev":{"tipo":"float","min":-3,"max":3,"valor":0,"etiqueta":"exposición (EV)"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_modo;     // 0 recortar · 1 Reinhard por canal · 2 Reinhard en luminancia · 3 extendido
+uniform float u_ev;
+out vec4 fragColor;
+
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  // Una escena en luz lineal, sin máximo: tres halos que se suman
+  vec3 luz = vec3(0.01, 0.012, 0.02);
+  luz += vec3(1.0, 0.45, 0.1) * 6.0 * exp(-10.0 * length(p - vec2(-0.9, 0.1)));
+  luz += vec3(0.2, 0.5, 1.0) * 3.0 * exp(-7.0 * length(p - vec2(0.7, -0.1)));
+  luz += vec3(0.3, 1.0, 0.4) * 1.2 * exp(-4.0 * length(p - vec2(0.0, 0.5)));
+  luz *= exp2(u_ev);
+  vec3 c;
+  if (u_modo == 0) c = clamp(luz, 0.0, 1.0);
+  else if (u_modo == 1) c = luz / (1.0 + luz);
+  else if (u_modo == 2) {
+    float Y = dot(luz, vec3(0.2126, 0.7152, 0.0722));
+    c = luz / (1.0 + Y);
+  } else {
+    const float W = 4.0;
+    c = luz * (1.0 + luz / (W * W)) / (1.0 + luz);
+  }
+  fragColor = vec4(linealASrgb(c), 1.0);
+}
+</script>
+</div>
+
+<p>Con el modo 0 (recortar), los centros de los halos son manchas planas y el naranja se vuelve amarillo claro. Con Reinhard por canal (modo 1), los centros conservan la forma y se desaturan hacia el blanco, como en una fotografía; toda la imagen se oscurece un poco (a cambio, nada se recorta: sube la exposición). En luminancia (modo 2), los tonos se conservan, pero algún canal puede seguir pasando de 1 y recortarse. El extendido (modo 3) mantiene los valores medios más cerca del original y lleva a blanco lo que pasa de <code>W</code>. Hay curvas más elaboradas (la ACES que usan los motores de juegos, por ejemplo); todas resuelven el mismo problema.</p>
+
+<div class="callout bestiario" data-id="m6a-recorte-tono" data-titulo="Las luces intensas se vuelven amarillas, blancas o planas">
+  <p><strong>Síntoma:</strong> el centro de una explosión naranja, de un foco o de un halo sale como una mancha plana amarillenta o blanca, sin degradado; el color de una luz cambia al subir su intensidad.</p>
+  <p><strong>Causa:</strong> los valores de luz superan 1 y se recortan canal a canal al escribirse. Los canales que llegan antes al máximo se estancan mientras los demás siguen subiendo: el tono se desplaza hacia el amarillo y el blanco, y los detalles por encima de 1 desaparecen.</p>
+  <p><strong>Solución:</strong> trabaja en lineal sin miedo a pasar de 1, y aplica un tone mapping (Reinhard, Reinhard extendido, ACES) justo antes de codificar a sRGB. Si quieres conservar el tono, aplícalo sobre la luminancia.</p>
+</div>
+
+<h2>Banding y dithering</h2>
+<p>Al final de todo, tu color se guarda en 8 bits por canal: 256 niveles. En un degradado lento y oscuro, cada nivel ocupa una franja ancha de píxeles, y el ojo, que es un detector de bordes excelente, ve los escalones como bandas (en un degradado de 0.1 a 0.3 que cruza un lienzo de 740 píxeles, cada nivel ocupa unos 14). El truco para eliminarlos es contraintuitivo: <strong>añadir ruido</strong>. Si antes de cuantizar sumas a cada píxel un número aleatorio repartido por igual entre −0.5 y +0.5 niveles (medio nivel arriba o abajo: un nivel de ancho en total), unos píxeles redondean hacia arriba y otros hacia abajo, en la proporción justa: en promedio, una zona de valor 100.3 sale con un 30 % de píxeles a 101 y un 70 % a 100, y el ojo, que promedia, ve 100.3. Las bandas se convierten en un grano finísimo casi invisible. Es el <strong>dithering</strong>.</p>
+
+<div class="glsl-playground" data-titulo="Bandas y ruido" data-altura="230" data-apilado data-uniforms='{"u_bits":{"tipo":"float","min":3,"max":8,"valor":5,"paso":1,"etiqueta":"bits por canal"},"u_ruido":{"tipo":"int","min":0,"max":2,"valor":0,"etiqueta":"ruido"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_bits;
+uniform int u_ruido;     // 0 sin ruido · 1 uniforme · 2 triangular
+uniform int u_frame;
+out vec4 fragColor;
+
+// Hash de enteros PCG (3.7): un número «aleatorio» por píxel y por frame
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+float azar(uvec2 q, uint semilla) {
+  uint h = pcg(q.x + pcg(q.y + pcg(semilla)));
+  return float(h >> 8u) * (1.0 / 16777216.0);   // 24 bits: nunca llega a 1.0 (6.6)
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float v = mix(0.1, 0.3, uv.x);                 // un degradado oscuro y lento
+  float N = exp2(u_bits) - 1.0;                  // niveles: 7 con 3 bits ... 255 con 8
+  uvec2 q = uvec2(gl_FragCoord.xy);
+  uint f = uint(u_frame);
+  float n = 0.0;                                 // desplazamiento, en niveles
+  if (u_ruido == 1) n = azar(q, f) - 0.5;                        // uniforme: ±0.5
+  if (u_ruido == 2) n = azar(q, f) + azar(q, f + 7919u) - 1.0;   // triangular: ±1
+  float cuantizado = floor(v * N + 0.5 + n) / N;  // redondear al nivel más cercano
+  fragColor = vec4(vec3(cuantizado), 1.0);
+}
+</script>
+</div>
+
+<p>Con 5 bits (32 niveles, para exagerar) y sin ruido, el degradado es una escalera de siete peldaños. Con ruido uniforme (modo 1: entre −0.5 y +0.5 niveles, como en el párrafo de arriba), los peldaños desaparecen y queda grano. Con ruido triangular (modo 2: la suma de dos números aleatorios menos 1, entre −1 y +1 nivel y más probable cerca de 0), el grano es algo más visible pero uniforme: el ruido uniforme deja un rastro de las bandas (el grano es más intenso en unas zonas que en otras) y el triangular lo elimina. Sube a 8 bits: sin ruido, las bandas de un nivel todavía se ven en una buena pantalla si te fijas; con ruido, desaparecen y el grano es imperceptible. Como el ruido cambia en cada frame (<code>u_frame</code> en la semilla), el ojo además lo promedia en el tiempo.</p>
+
+<div class="callout hack" data-titulo="Dithering en una línea">
+  <p>Para cualquier shader que escriba degradados suaves en el canvas, basta con una línea antes de la salida: <code>color += (azar(uvec2(gl_FragCoord.xy), uint(u_frame)) - 0.5) / 255.0;</code>. Sumar un ruido uniforme de hasta medio nivel de 8 bits arriba o abajo (entre −0.5/255 y +0.5/255) cuesta un hash por píxel y elimina las bandas de cielos, viñetas y fondos. Funciona porque sabes exactamente qué hace la máquina al escribir: redondear al nivel más cercano de 1/255.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.4.1 — Tres filtros</h3>
+  <p>Divide el lienzo en tres tercios verticales y aplica a la imagen un filtro distinto en cada uno: a la izquierda, <strong>blanco y negro</strong> con la luminancia Rec. 709 calculada en lineal; en el centro, <strong>sepia</strong>, con la matriz clásica (cada canal nuevo es una combinación de los tres viejos: R' = 0.393 R + 0.769 G + 0.189 B, G' = 0.349 R + 0.686 G + 0.168 B, B' = 0.272 R + 0.534 G + 0.131 B, aplicada a los valores sRGB); a la derecha, el <strong>negativo</strong>.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.4.1" data-altura="240" data-apilado data-texturas="paisaje">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+out vec4 fragColor;
+
+vec3 srgbALineal(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 c = texture(u_tex0, uv).rgb;       // sRGB
+  // TODO: tres filtros, uno por tercio
+  fragColor = vec4(c, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+out vec4 fragColor;
+
+vec3 srgbALineal(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 c = texture(u_tex0, uv).rgb;       // sRGB
+  if (uv.x < 1.0 / 3.0) {
+    float Y = dot(srgbALineal(c), vec3(0.2126, 0.7152, 0.0722));   // luz percibida
+    c = linealASrgb(vec3(Y));
+  } else if (uv.x < 2.0 / 3.0) {
+    // La matriz, por COLUMNAS: la primera columna es lo que aporta R a (R', G', B')
+    mat3 sepia = mat3(0.393, 0.349, 0.272,
+                      0.769, 0.686, 0.534,
+                      0.189, 0.168, 0.131);
+    c = sepia * c;                        // puede pasar de 1: se recorta al escribir
+  } else {
+    c = 1.0 - c;
+  }
+  fragColor = vec4(c, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La luminancia se calcula sobre luz: decodifica, haz el <code>dot</code> con los pesos y codifica el gris resultante.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Una combinación de los canales es una matriz por un vector. Recuerda que <code>mat3(…)</code> se rellena por columnas (<a href="01-lenguaje.html">6.1</a>): la primera columna son los coeficientes de R en las tres fórmulas.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El blanco y negro correcto es la luminancia: se decodifica la imagen, se ponderan los canales lineales con 0.2126, 0.7152 y 0.0722, y el gris resultante (que es luz) se vuelve a codificar para escribirlo. Si hicieras el <code>dot</code> directamente sobre los valores sRGB, obtendrías una luma: parecida, pero con los colores saturados algo más claros de la cuenta.</p>
+    <p>La sepia es una matriz de mezcla de canales. La trampa está en el orden: las fórmulas del enunciado son las <em>filas</em> de la matriz, y el constructor de GLSL rellena por <em>columnas</em>, así que la primera columna es (0.393, 0.349, 0.272), los coeficientes de R en R', G' y B'. Si la escribieras fila a fila, obtendrías la traspuesta y un tono verdoso (un gris medio pasaría de (0.5, 0.5, 0.5) a (0.51, 0.99, 0.24)). Como las dos primeras filas suman más de 1 (1.351 y 1.203), los blancos se recortan: es parte del aspecto «envejecido» del filtro original, pensado para valores sRGB.</p>
+    <p>El negativo, <code>1.0 - c</code>, se hace sobre los valores sRGB: es la inversión que haría cualquier editor de imagen. Invertir la luz lineal daría un negativo con los medios tonos desplazados.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.4.2 — Un selector de color HSV</h3>
+  <p>Dibuja una rueda HSV (tono = ángulo, saturación = distancia al centro, valor = el deslizador) de radio 0.8, y a su derecha una muestra cuadrada con <strong>el color que hay bajo el ratón</strong> (si el ratón está fuera de la rueda, el color del punto del borde más cercano). Marca con un anillo blanco de un píxel la posición elegida. Sin comportamientos indefinidos en el centro de la rueda.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.4.2" data-altura="260" data-apilado data-uniforms='{"u_valor":{"tipo":"float","min":0,"max":1,"valor":0.9,"etiqueta":"valor"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_valor;
+out vec4 fragColor;
+const float TAU = 6.2831853;
+
+vec3 hsv2rgb(vec3 c) {
+  vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+  rgb = rgb * rgb * (3.0 - 2.0 * rgb);
+  return c.z * mix(vec3(1.0), rgb, c.y);
+}
+// TODO: una función que dé el color de la rueda en un punto q (relativo al centro)
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 centro = vec2(-0.6, 0.0);
+  vec3 col = vec3(0.09, 0.10, 0.13);
+  // TODO: la rueda, la muestra en (0.9, 0.0) y el anillo en la posición elegida
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_valor;
+out vec4 fragColor;
+const float TAU = 6.2831853;
+
+vec3 hsv2rgb(vec3 c) {
+  vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+  rgb = rgb * rgb * (3.0 - 2.0 * rgb);
+  return c.z * mix(vec3(1.0), rgb, c.y);
+}
+// Color de la rueda en q (relativo al centro), recortado al borde
+vec3 rueda(vec2 q) {
+  float r = length(q);
+  if (r < 1e-5) return vec3(u_valor);          // el centro: blanco (atan no definido)
+  if (r > 0.8) q *= 0.8 / r;                   // fuera: el punto del borde más cercano
+  float tono = atan(q.y, q.x) / TAU + 0.5;
+  return hsv2rgb(vec3(tono, length(q) / 0.8, u_valor));
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 centro = vec2(-0.6, 0.0);
+  vec3 col = vec3(0.09, 0.10, 0.13);
+  float dRueda = length(p - centro) - 0.8;
+  col = mix(col, rueda(p - centro), clamp(0.5 - dRueda / px, 0.0, 1.0));
+  // la posición elegida: el ratón, llevado dentro de la rueda
+  vec2 q = m - centro;
+  if (length(q) > 0.8) q *= 0.8 / length(q);
+  vec3 elegido = rueda(q);
+  vec2 d = abs(p - vec2(0.9, 0.0)) - 0.35;      // muestra cuadrada
+  col = mix(col, elegido, clamp(0.5 - max(d.x, d.y) / px, 0.0, 1.0));
+  float anillo = abs(length(p - centro - q) - 0.04) - 0.5 * px;
+  col = mix(col, vec3(1.0), clamp(0.5 - anillo / px, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Escribe una función <code>rueda(q)</code> que devuelva el color para un punto relativo al centro, y úsala dos veces: para pintar cada píxel de la rueda y para el color de la muestra (con <code>q</code> = ratón − centro).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para «el punto del borde más cercano» a un punto de fuera, escala el vector hasta el radio: <code>q * 0.8 / length(q)</code>. Y para el centro exacto, devuelve directamente el gris del valor.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La clave es tener una sola función <code>rueda(q)</code> y llamarla con dos entradas distintas: la posición de cada píxel (para dibujar la rueda) y la posición del ratón (para la muestra). Es el mismo principio de «transformar el espacio» de 6.2: la muestra no copia ningún píxel, recalcula el color del punto elegido. Cada píxel de la muestra hace ese cálculo por su cuenta, y como todos usan el mismo <code>q</code>, todos llegan al mismo color.</p>
+    <p>Los dos casos especiales: fuera de la rueda, el vector se reescala al radio 0.8 (misma dirección, módulo fijo), que es el punto del borde más cercano; y en el centro, <code>atan(0.0, 0.0)</code> es indefinido (6.1), pero con saturación 0 el tono no importa: devolvemos el gris directamente. (La división por <code>length(q)</code> tampoco corre peligro: solo se hace cuando <code>r &gt; 0.8</code>.)</p>
+    <p>El anillo es la SDF de una circunferencia de radio 0.04 alrededor del punto elegido, inflada medio píxel a cada lado: un contorno de un píxel exacto (6.3).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.4.3 — Un fundido sin bache</h3>
+  <p>La mitad izquierda funde un rojo y un cian de ida y vuelta mezclando sus valores sRGB; la barra de abajo mide la luminancia del color en cada instante, y se ve cómo cae a mitad del fundido (el color se oscurece al pasar por el gris). Programa la mitad derecha para que haga el mismo fundido en luz lineal, y comprueba en su barra que el bache desaparece.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.4.3" data-altura="240" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+vec3 srgbALineal(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+float luminancia(vec3 srgb) { return dot(srgbALineal(srgb), vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 a = vec3(1.0, 0.0, 0.0), b = vec3(0.0, 1.0, 1.0);    // sRGB
+  float t = 0.5 - 0.5 * cos(u_time);                        // de 0 a 1 y vuelta
+  vec3 izq = mix(a, b, t);                                  // fundido en sRGB
+  vec3 der = izq;                                           // TODO: en lineal
+  vec3 c = uv.x < 0.5 ? izq : der;
+  // barra de luminancia: su altura es la luminancia del color
+  if (uv.y < 0.2) c = vec3(0.09, 0.10, 0.13) + vec3(0.8) * step(uv.y, 0.2 * luminancia(c));
+  fragColor = vec4(c, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+vec3 srgbALineal(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+float luminancia(vec3 srgb) { return dot(srgbALineal(srgb), vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 a = vec3(1.0, 0.0, 0.0), b = vec3(0.0, 1.0, 1.0);    // sRGB
+  float t = 0.5 - 0.5 * cos(u_time);                        // de 0 a 1 y vuelta
+  vec3 izq = mix(a, b, t);                                  // fundido en sRGB
+  // decodificar, mezclar la luz, codificar
+  vec3 der = linealASrgb(mix(srgbALineal(a), srgbALineal(b), t));
+  vec3 c = uv.x < 0.5 ? izq : der;
+  if (uv.y < 0.2) c = vec3(0.09, 0.10, 0.13) + vec3(0.8) * step(uv.y, 0.2 * luminancia(c));
+  fragColor = vec4(c, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La receta de la lección: decodificar los dos colores, mezclarlos con el mismo <code>t</code> y codificar el resultado.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>En el punto medio del fundido sRGB, el color es (0.5, 0.5, 0.5): un gris de 128, con una luminancia de 0.21. Pero el rojo puro tiene luminancia 0.21 y el cian, 0.79: a mitad de camino esperaríamos 0.5, y el gris sRGB se queda en 0.21, de ahí el bache. En lineal, mezclar al 50 % da exactamente la media de las luces, (0.5, 0.5, 0.5) de luz, cuya luminancia es 0.5: la barra sube de forma continua de 0.21 a 0.79. Codificado, ese color es (188, 188, 188).</p>
+    <p>Es la razón por la que un fundido entre dos fotos hecho en sRGB parece «pasar por una zona oscura», y por la que las transiciones entre imágenes (<a href="../07-integracion/03-transiciones-shader.html#fundido-en-srgb-y-en-luz">7.3</a>) conviene hacerlas en lineal.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.4.4 — Un sol en alto rango dinámico</h3>
+  <p>Monta la cadena completa en luz lineal: un cielo en degradado (de un azul oscuro, 0.02, arriba a un naranja de intensidad 0.6 en el horizonte), un sol en (0, −0.2) de radio 0.25 con intensidad <strong>20</strong> (sí, veinte), un halo alrededor que cae con <code>exp</code>, una exposición controlada por el deslizador, tone mapping de Reinhard extendido con blanco 8, codificación sRGB y dithering de ±medio nivel de 8 bits (un ruido uniforme entre −0.5/255 y +0.5/255). El sol debe verse como un disco blanco rodeado de un halo anaranjado que se desvanece sin manchas planas, y el cielo sin bandas.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.4.4" data-altura="260" data-apilado data-uniforms='{"u_ev":{"tipo":"float","min":-4,"max":2,"valor":-1,"etiqueta":"exposición (EV)"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_ev;
+uniform int u_frame;
+out vec4 fragColor;
+
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+float azar(uvec2 q, uint semilla) {
+  return float(pcg(q.x + pcg(q.y + pcg(semilla))) >> 8u) * (1.0 / 16777216.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 luz = vec3(0.0);   // TODO: cielo + sol + halo, en luz lineal
+  // TODO: exposición, tone mapping, codificación y dithering
+  fragColor = vec4(luz, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_ev;
+uniform int u_frame;
+out vec4 fragColor;
+
+vec3 linealASrgb(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+float azar(uvec2 q, uint semilla) {
+  return float(pcg(q.x + pcg(q.y + pcg(semilla))) >> 8u) * (1.0 / 16777216.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float px = 2.0 / u_resolution.y;
+  // 1) La escena, en luz lineal (sin máximo)
+  vec3 cielo = mix(vec3(1.0, 0.45, 0.15) * 0.6, vec3(0.02, 0.03, 0.08), uv.y);
+  float d = length(p - vec2(0.0, -0.2)) - 0.25;                 // SDF del sol
+  vec3 sol = vec3(1.0, 0.85, 0.6) * 20.0 * clamp(0.5 - d / px, 0.0, 1.0);
+  vec3 halo = vec3(1.0, 0.5, 0.2) * 3.0 * exp(-6.0 * max(d, 0.0));
+  vec3 luz = cielo + halo + sol;
+  // 2) Exposición, en lineal
+  luz *= exp2(u_ev);
+  // 3) Tone mapping: Reinhard extendido, blanco = 8
+  const float W = 8.0;
+  luz = luz * (1.0 + luz / (W * W)) / (1.0 + luz);
+  // 4) Codificar a sRGB para el canvas
+  vec3 c = linealASrgb(luz);
+  // 5) Dithering: ruido uniforme de ±medio nivel de 8 bits (entre -0.5/255 y +0.5/255)
+  c += (azar(uvec2(gl_FragCoord.xy), uint(u_frame)) - 0.5) / 255.0;
+  fragColor = vec4(c, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Sigue el orden: construye la luz sumando capas (no mezclando: la luz se suma), multiplica por <code>exp2(u_ev)</code>, aplica la curva, codifica y, por último, suma el ruido.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El sol puede ser una SDF de círculo con cobertura de un píxel multiplicada por su intensidad; el halo, <code>exp(-k * max(d, 0.0))</code> con la misma <code>d</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Todo el trabajo físico se hace en luz lineal y con sumas: el cielo es una luz de fondo, el halo y el sol se añaden encima. Nada se recorta durante la construcción; el disco del sol vale 20 veces más que un blanco.</p>
+    <p>La exposición multiplica la luz: con −1 EV, la mitad. El tone mapping de Reinhard extendido con <code>W = 8</code> comprime ese rango. El disco del sol (sol + halo + cielo) queda en unos (11.7, 9.3, 6.3) tras la exposición: el rojo y el verde pasan del blanco <code>W</code>, así que la curva los lleva un poco por encima de 1 (1.09 y 1.04, medido) y se recortan, y el azul se queda en 0.95: el disco sale blanco, que es lo que se busca (<code>W</code> es justo el valor a partir del cual todo es blanco). Lo que la curva salva es el halo: justo fuera del borde vale (0.62, 0.44, 0.24) y cae suavemente hacia el cielo; recortando sin más, su canal rojo pasaría de 1 en un anillo de unas 0.1 unidades alrededor del disco, y ese anillo saldría como una mancha plana. Como la curva se aplica a cada canal por separado, las luces muy intensas se desaturan hacia el blanco y las moderadas conservan su tono naranja. La codificación va después (la curva se diseña sobre luz, no sobre valores codificados) y el dithering el último, justo antes de la cuantización a 8 bits que hará el framebuffer. Si pusieras el ruido antes de la codificación, su amplitud en los oscuros se multiplicaría por la pendiente de la curva sRGB y el grano se vería.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un color es un <code>vec3</code>: <code>mix</code> funde, <code>*</code> filtra, <code>+</code> suma luz; al escribirse se redondea a 8 bits y se recorta a [0, 1].</li>
+    <li>HSV (tono, saturación, valor) se convierte a RGB con una línea sin ramas; la versión suave de Quilez evita las bandas en los secundarios. No es perceptual.</li>
+    <li>Paleta de coseno: <code>a + b * cos(2π(c t + d))</code>: desplazamiento, amplitud (sin recortar si <code>a ± b</code> está en [0, 1]), frecuencia y fase por canal.</li>
+    <li>Lo que escribes en el canvas se interpreta como sRGB: 0.5 emite el 21.6 % de la luz; la mitad de la luz es 0.735 (188).</li>
+    <li>Decodifica al entrar, calcula en lineal, codifica al salir. Curva exacta: potencia 2.4 con tramo lineal; <code>pow 2.2</code> es una aproximación con errores grandes en los muy oscuros.</li>
+    <li><code>SRGB8_ALPHA8</code>: la textura decodifica al leer (antes de filtrar y en los mipmaps) y el framebuffer codifica al escribir. El canvas, por defecto, no: codifica en el último shader. Nunca luz lineal en 8 bits.</li>
+    <li>Luminancia Rec. 709 en lineal: <code>0.2126 R + 0.7152 G + 0.0722 B</code>. La luma 601 sobre sRGB es una aproximación.</li>
+    <li>Exposición y saturación en lineal; contraste en sRGB. Por encima de 1, tone mapping (Reinhard: <code>c / (1 + c)</code>) antes de codificar.</li>
+    <li>Dithering: sumar antes de cuantizar un ruido uniforme de ±medio nivel (un nivel de ancho en total) convierte las bandas en grano imperceptible.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://iquilezles.org/articles/palettes/">Iñigo Quilez — Palettes</a>: las paletas de coseno, con sus ejemplos.</li>
+  <li><a href="https://blog.johnnovak.net/2016/09/21/what-every-coder-should-know-about-gamma/">John Novak — What every coder should know about gamma</a>: la mejor explicación práctica de sRGB, con ejemplos visuales.</li>
+  <li><a href="https://bottosson.github.io/posts/oklab/">Björn Ottosson — A perceptual color space for image processing</a>: el artículo original de Oklab.</li>
+  <li><a href="https://www.khronos.org/opengl/wiki/Image_Format#sRGB_colorspace">OpenGL Wiki — sRGB colorspace</a>: cómo funcionan los formatos sRGB de texturas y framebuffers.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/a-demos.js"></script>
+</body>
+</html>

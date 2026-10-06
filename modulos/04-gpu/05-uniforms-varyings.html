@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4.5 · Atributos, uniforms y varyings — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m4.css">
+</head>
+<body data-leccion="04-gpu/uniforms-varyings">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 4 · La GPU por dentro</p>
+  <h1>Atributos, uniforms y varyings</h1>
+  <p class="resumen">Los tres canales por los que viajan los datos hacia y dentro de la GPU, cada uno con su frecuencia: por vértice, por dibujo y por fragmento. Sus reglas exactas, sus silencios (un uniform mal escrito no da error) y la matemática de la interpolación con corrección de perspectiva, con el temblor de la PlayStation como contraejemplo.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 3.2, 4.2, 4.4</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás elegir el canal adecuado para cada dato según su frecuencia de cambio.</li>
+      <li>Dominarás los uniforms: que son estado del programa, que valen 0 hasta que los asignas, cómo se buscan sus ubicaciones (incluidos arrays y structs) y por qué algunos «desaparecen».</li>
+      <li>Deducirás la fórmula de la interpolación con corrección de perspectiva y verás qué pasa sin ella.</li>
+      <li>Usarás <code>flat</code> y sabrás qué vértice decide su valor.</li>
+      <li>Dibujarás sin buffers con <code>gl_VertexID</code> y usarás atributos constantes.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Tres canales, tres frecuencias</h2>
+<p>Un shader es una función que se ejecuta millones de veces. Unas entradas cambian en cada ejecución y otras son iguales para todas. La API tiene un canal distinto para cada frecuencia, y elegir bien el canal es la primera decisión de diseño de cualquier efecto:</p>
+
+<svg class="diagrama" viewBox="0 0 760 240" width="760" role="img" aria-label="Atributos, uniforms y varyings">
+  <defs><marker id="m45-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <rect class="caja" x="10" y="30" width="150" height="70" rx="8"/><text x="85" y="58" text-anchor="middle" style="font-weight:700">buffers</text><text x="85" y="80" text-anchor="middle" class="texto-tenue" style="font-size:12px">un valor por vértice</text>
+  <rect class="acento" x="240" y="30" width="180" height="70" rx="8"/><text x="330" y="58" text-anchor="middle" style="font-weight:700">vertex shader</text><text x="330" y="80" text-anchor="middle" class="texto-tenue" style="font-size:12px">in (atributos)</text>
+  <rect class="caja" x="470" y="30" width="110" height="70" rx="8"/><text x="525" y="58" text-anchor="middle" style="font-weight:700">rasterizador</text><text x="525" y="80" text-anchor="middle" class="texto-tenue" style="font-size:12px">interpola</text>
+  <rect class="acento" x="610" y="30" width="140" height="70" rx="8"/><text x="680" y="58" text-anchor="middle" style="font-weight:700">fragment shader</text><text x="680" y="80" text-anchor="middle" class="texto-tenue" style="font-size:12px">in (varyings)</text>
+  <path d="M162 65 L236 65" stroke="currentColor" stroke-width="2" marker-end="url(#m45-fl)"/><text x="199" y="56" text-anchor="middle" style="font-size:12px">atributos</text>
+  <path d="M422 65 L466 65" stroke="currentColor" stroke-width="2" marker-end="url(#m45-fl)"/><text x="444" y="56" text-anchor="middle" style="font-size:11px">out</text>
+  <path d="M582 65 L606 65" stroke="currentColor" stroke-width="2" marker-end="url(#m45-fl)"/>
+  <text x="525" y="120" text-anchor="middle" class="texto-tenue" style="font-size:12px">varyings: uno por vértice → uno por fragmento</text>
+  <rect class="acento2" x="240" y="160" width="510" height="54" rx="8"/><text x="495" y="184" text-anchor="middle" style="font-weight:700">uniforms: un valor por DIBUJO, igual para todos los vértices y fragmentos</text>
+  <text x="495" y="204" text-anchor="middle" class="texto-tenue" style="font-size:12px">gl.uniform* desde JavaScript, entre draw calls</text>
+  <path d="M330 158 L330 104" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#m45-fl)"/>
+  <path d="M680 158 L680 104" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#m45-fl)"/>
+</svg>
+
+<table class="m4-compacta">
+  <thead><tr><th>Canal</th><th>Lo escribe</th><th>Lo lee</th><th>Cambia</th><th>Ejemplos</th><th>Límite (nuestra máquina)</th></tr></thead>
+  <tbody>
+    <tr><td><strong>atributo</strong> (<code>in</code> del vertex shader)</td><td>los buffers, vía VAO</td><td>vertex shader</td><td>en cada vértice</td><td>posición, normal, uv, color de vértice</td><td class="num">16 atributos</td></tr>
+    <tr><td><strong>uniform</strong></td><td>JavaScript (<code>gl.uniform*</code>)</td><td>los dos shaders</td><td>entre dibujos</td><td>matrices, tiempo, ratón, color de un material</td><td class="num">1 024 vec4 por shader</td></tr>
+    <tr><td><strong>varying</strong> (<code>out</code> → <code>in</code>)</td><td>vertex shader</td><td>fragment shader</td><td>en cada fragmento (interpolado)</td><td>uv, normal, color interpolado</td><td class="num">30 vec4</td></tr>
+    <tr><td><strong>textura</strong></td><td>JavaScript o un dibujo previo</td><td>los dos shaders</td><td>entre dibujos</td><td>imágenes, tablas de datos grandes</td><td class="num">16 por shader</td></tr>
+  </tbody>
+</table>
+<p>Los límites salen de <code>gl.getParameter</code>: <code>MAX_VERTEX_ATTRIBS</code> (16), <code>MAX_VERTEX_UNIFORM_VECTORS</code> y <code>MAX_FRAGMENT_UNIFORM_VECTORS</code> (1 024 cada uno), <code>MAX_VARYING_VECTORS</code> (30) y <code>MAX_TEXTURE_IMAGE_UNITS</code> (16), en Chrome sobre el M1. La especificación de WebGL2 solo garantiza bastante menos (por ejemplo, 256 vectores de uniforms en el vertex shader, 224 en el fragment y 15 de varyings): si tu código tiene que funcionar en cualquier móvil, no cuentes con los números de tu máquina. Las texturas tienen su propia lección (<a href="../05-webgl/05-texturas.html">5.5</a>); aquí nos ocupamos de los otros tres.</p>
+
+<h2>Atributos: repaso, y el truco del valor constante</h2>
+<p>Los atributos los desmontamos a fondo en <a href="04-vbo-vao.html">4.4</a>: bytes en un buffer, descritos por el VAO, convertidos al tipo del shader. Queda una pieza que casi nadie conoce: ¿qué recibe el shader si el atributo está <strong>deshabilitado</strong>?</p>
+<p>Recibe un <strong>valor constante</strong>, el mismo para todos los vértices, que se fija con <code>gl.vertexAttrib4f(location, x, y, z, w)</code> (y sus variantes <code>vertexAttrib1f</code>…<code>vertexAttrib4fv</code>, más <code>vertexAttribI4i</code>/<code>vertexAttribI4ui</code> para atributos enteros). Si nunca lo fijaste, vale $(0, 0, 0, 1)$. Lo comprobamos en Chrome: un triángulo cuyo color sale de un atributo deshabilitado se pinta negro opaco; tras <code>vertexAttrib4f(3, 1.0, 0.5, 0.25, 1.0)</code>, se pinta de ese color. Y como vimos en 4.4, ese valor es estado del <strong>contexto</strong>, no del VAO.</p>
+
+<div class="callout hack" data-titulo="Un atributo que a veces es constante">
+  <p>Imagina un shader que usa un color por vértice, y una malla que no tiene colores. En lugar de escribir otro shader o de rellenar un buffer con el mismo color repetido mil veces, deshabilita el atributo y fija su valor: <code>gl.disableVertexAttribArray(locColor); gl.vertexAttrib4f(locColor, 1, 0.5, 0.2, 1);</code>. El mismo shader sirve para las dos mallas, sin tocar una línea de GLSL ni gastar un byte de buffer. Funciona porque el vertex fetch no lee memoria para ese atributo. (Recuerda que <code>disableVertexAttribArray</code> sí es estado del VAO: deshabilítalo con el VAO de esa malla enlazado.)</p>
+</div>
+
+<h2>Uniforms: estado del programa</h2>
+<p>Un uniform es una variable del shader que vale lo mismo en todas las invocaciones de un dibujo. En GLSL se declara con <code>uniform</code>; en JavaScript se le da valor con la familia <code>gl.uniform*</code>. Ese es el modelo de uso. El modelo mental exacto tiene más matices, y cada uno es la explicación de algún comportamiento raro:</p>
+
+<h3>1. Pertenecen al programa, no al contexto</h3>
+<p>Cada programa enlazado tiene su propio almacén de uniforms. Si dos programas declaran un <code>uniform vec3 u_color</code>, son dos variables distintas. Por eso <code>gl.uniform*</code> no recibe el programa como argumento: actúa sobre <strong>el programa en uso</strong> (el de <code>gl.useProgram</code>). Otra vez la máquina de estados de <a href="01-cpu-vs-gpu.html">4.1</a>.</p>
+<ul>
+  <li>Sin programa en uso, <code>gl.uniform1f(loc, 2.0)</code> da <code>INVALID_OPERATION</code> (lo medimos; Chrome escribe en la consola <code>location is not from the associated program</code>).</li>
+  <li>Con una ubicación obtenida de otro programa, también <code>INVALID_OPERATION</code>: una ubicación es un «ticket» ligado a un programa concreto, aunque el nombre coincida.</li>
+  <li>Los valores <strong>persisten</strong>: si asignas <code>u_color</code> en el programa A, cambias al B y vuelves al A, <code>u_color</code> sigue teniendo su valor. No hace falta reasignar cada frame lo que no cambia (y no hacerlo ahorra llamadas).</li>
+  <li>Volver a enlazar el programa (<code>linkProgram</code> otra vez) los <strong>reinicia a 0</strong> (medido).</li>
+</ul>
+
+<h3>2. Valen 0 hasta que los asignas</h3>
+<p>Todo uniform empieza a cero: <code>0.0</code>, <code>vec3(0.0)</code>, <code>0</code>, <code>false</code>, una matriz llena de ceros. Lo comprobamos leyendo los valores con <code>gl.getUniform</code> nada más enlazar. Consecuencias: un uniform de escala que olvidas asignar hace que la geometría desaparezca (todo se multiplica por 0); una matriz sin asignar colapsa todos los vértices en el origen; un sampler sin asignar lee de la unidad de textura 0 (que casualmente suele ser la correcta, y por eso el olvido pasa inadvertido… hasta que usas dos texturas).</p>
+
+<h3>3. Las ubicaciones, y los uniforms que desaparecen</h3>
+<p>Para asignar un uniform hace falta su <strong>ubicación</strong> (<em>location</em>): <code>gl.getUniformLocation(programa, "u_color")</code>. En WebGL es un objeto opaco (<code>WebGLUniformLocation</code>); en OpenGL de escritorio es un entero. Y aquí está la trampa más famosa de todas: si el uniform no existe, <code>getUniformLocation</code> devuelve <code>null</code>… y <code>gl.uniform3f(null, …)</code> <strong>no hace nada y no da error</strong>. Ni siquiera sin programa en uso (medido). Hay dos formas de caer en ello:</p>
+<ul>
+  <li><strong>Una errata</strong> en el nombre (<code>"u_colour"</code> por <code>"u_color"</code>).</li>
+  <li><strong>El compilador eliminó el uniform</strong> porque no influye en ninguna salida del shader: lo declaraste pero no lo usas, o lo usas en un cálculo cuyo resultado nunca llega a <code>gl_Position</code> ni al color. Un uniform eliminado no es «activo»: no aparece en <code>gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS)</code> y su ubicación es <code>null</code>. En moderngl, <code>programa["u_noUsado"]</code> lanza <code>KeyError</code>; en OpenGL de escritorio, <code>glGetUniformLocation</code> devuelve −1, que también se ignora en silencio (lo verás en <a href="06-opengl-python.html">4.6</a>).</li>
+</ul>
+
+<div class="callout bestiario" data-id="m4-uniform-silencioso" data-titulo="Cambio un uniform y no pasa nada (ni error, ni aviso)">
+  <p><strong>Síntoma:</strong> llamas a <code>gl.uniform1f(loc, valor)</code> cada frame y el shader se comporta como si el uniform valiera 0 (o su valor anterior). No hay ningún error en la consola ni en <code>getError</code>.</p>
+  <p><strong>Causa:</strong> <code>loc</code> es <code>null</code>: el nombre está mal escrito, o el compilador eliminó el uniform por no usarse (a veces porque comentaste la línea que lo usaba mientras depurabas). <code>uniform*(null, …)</code> se ignora por diseño, sin error. Otra causa silenciosa: asignaste el valor con otro programa en uso… en el suyo, que sí lo tenía, pero dibujas con un programa distinto cuyo <code>u_color</code> nunca asignaste (cada programa tiene el suyo).</p>
+  <p><strong>Solución:</strong> al crear el programa, comprueba las ubicaciones: <code>if (loc === null) console.warn('u_tiempo no existe o no se usa')</code>. Lista los uniforms activos con <code>getActiveUniform</code> (como hace <code>GLKit.uniforms</code>). Y recuerda que el aviso también salta cuando el uniform no se usa: no siempre es un error.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.5.1 — ¿Por qué mi u_tiempo es null?</h3>
+  <p>Este fragment shader declara dos uniforms, pero <code>getUniformLocation(p, "u_tiempo")</code> devuelve <code>null</code> y el de <code>"u_color"</code> no. ¿Por qué?</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+#version 300 es
+precision highp float;
+uniform float u_tiempo;
+uniform vec3 u_color;
+out vec4 fragColor;
+void main() {
+  float onda = sin(u_tiempo);        // se calcula...
+  fragColor = vec4(u_color, 1.0);    // ...pero no se usa en ninguna salida
+}
+</script>
+  <ol>
+    <li><strong>El compilador trabaja hacia atrás</strong> desde las salidas (<code>fragColor</code>, <code>gl_Position</code>, <code>gl_FragDepth</code>): todo lo que no contribuye a ellas es código muerto y se elimina.</li>
+    <li><code>onda</code> no se usa en <code>fragColor</code>, así que la línea de <code>sin</code> desaparece, y con ella el único uso de <code>u_tiempo</code>. El uniform queda inactivo.</li>
+    <li><strong>Diagnóstico</strong>: lista los uniforms activos. Solo aparece <code>u_color</code>:</li>
+  </ol>
+<script type="text/plain" class="codigo" data-lang="js">
+const n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
+for (let i = 0; i < n; i++) {
+  const info = gl.getActiveUniform(prog, i);        // { name, size, type }
+  console.log(info.name, info.size, info.type);     // → "u_color" 1 35665 (FLOAT_VEC3)
+}
+</script>
+  <p>Es exactamente lo que vimos en <a href="01-cpu-vs-gpu.html">4.1</a> al leer el shader traducido por ANGLE: el <code>struct</code> de uniforms solo contenía los que se usaban. Cuando el shader use <code>onda</code> (por ejemplo, <code>fragColor = vec4(u_color * onda, 1.0)</code>), <code>u_tiempo</code> volverá a existir.</p>
+</section>
+
+<h3>4. La función tiene que coincidir con el tipo</h3>
+<p>El nombre de cada función de la familia dice cuántos componentes y de qué tipo: <code>uniform1f</code> (un float), <code>uniform3fv</code> (vec3 desde un array), <code>uniform1i</code> (int, bool o sampler), <code>uniform2ui</code>, <code>uniformMatrix4fv</code>… Si no coincide con la declaración del shader, <code>INVALID_OPERATION</code>: <code>uniform1i</code> sobre un float, <code>uniform1f</code> sobre un <code>vec3</code> (medido: <code>Uniform size does not match uniform method</code>). Dos excepciones: los <code>bool</code> admiten tanto <code>uniform1i</code> como <code>uniform1f</code>, y los <em>samplers</em> se asignan con <code>uniform1i</code> con el número de unidad de textura (un valor fuera de rango da <code>INVALID_VALUE</code>: medido con 100).</p>
+<p>Las matrices: <code>gl.uniformMatrix4fv(loc, false, m)</code>. El segundo argumento, <code>transpose</code>, dice si <code>m</code> viene por filas; en WebGL1 tenía que ser <code>false</code> obligatoriamente, en WebGL2 se admite <code>true</code> (medido). El formato habitual, el de <code>mat4</code> de <code>glkit.js</code> y el de toda la industria, es <em>column-major</em> con <code>false</code> (<a href="../03-matematicas/05-matrices.html">3.5</a>).</p>
+
+<h3>5. Arrays y structs: los nombres</h3>
+<p>Con arrays y structs, <code>getUniformLocation</code> acepta la sintaxis de GLSL. Lo que medimos en Chrome con <code>uniform float u_arr[8];</code> y <code>uniform Luz u_luces[2];</code> (con <code>struct Luz { vec3 color; vec3 pos; float intensidad; }</code>):</p>
+<table class="m4-compacta">
+  <thead><tr><th>Nombre pedido</th><th>¿Ubicación?</th><th>Nota</th></tr></thead>
+  <tbody>
+    <tr><td><code>"u_arr"</code> o <code>"u_arr[0]"</code></td><td>sí (la misma)</td><td><code>uniform1fv(loc, [a, b, c])</code> rellena los elementos 0, 1 y 2</td></tr>
+    <tr><td><code>"u_arr[2]"</code></td><td>sí</td><td><code>uniform1fv(loc2, [9, 9])</code> rellena el 2 y el 3</td></tr>
+    <tr><td><code>"u_arr[8]"</code></td><td><code>null</code></td><td>fuera del array</td></tr>
+    <tr><td><code>"u_luces[1].color"</code></td><td>sí</td><td>cada miembro de cada elemento tiene su propia ubicación</td></tr>
+    <tr><td><code>"u_luces"</code> o <code>"u_luces[0]"</code></td><td><code>null</code></td><td>un struct no se asigna de golpe: miembro a miembro</td></tr>
+  </tbody>
+</table>
+<p><code>getActiveUniform</code> describe el array como un solo uniform llamado <code>"u_arr[0]"</code> con <code>size = 8</code>, y el struct como seis uniforms sueltos (<code>"u_luces[0].color"</code>, <code>"u_luces[0].pos"</code>…). Si pasas a <code>uniform1fv</code> más valores de los que caben, los que sobran se ignoran sin error (medido). En moderngl pasa lo mismo: <code>programa["u_centros"].value = [...]</code> asigna el array entero y <code>programa["u_circulos[0].color"]</code>, un miembro (lo verás en <code>moderngl/03_uniforms.py</code>).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.5.2 — Tres luces en un array de structs</h3>
+  <p>El shader declara <code>uniform Luz u_luces[3];</code> con <code>struct Luz { vec3 color; vec3 pos; float intensidad; };</code>. Escribe el código que busca las ubicaciones una sola vez y asigna las tres luces en cada frame.</p>
+<script type="text/plain" class="codigo" data-lang="js">
+// Una vez, al crear el programa: 3 luces × 3 miembros = 9 ubicaciones
+const ubicaciones = [0, 1, 2].map((i) => ({
+  color: gl.getUniformLocation(prog, `u_luces[${i}].color`),
+  pos: gl.getUniformLocation(prog, `u_luces[${i}].pos`),
+  intensidad: gl.getUniformLocation(prog, `u_luces[${i}].intensidad`),
+}));
+// Cada frame (con prog en uso):
+luces.forEach((luz, i) => {
+  gl.uniform3fv(ubicaciones[i].color, luz.color);
+  gl.uniform3fv(ubicaciones[i].pos, luz.pos);
+  gl.uniform1f(ubicaciones[i].intensidad, luz.intensidad);
+});
+</script>
+  <ol>
+    <li><strong>Las ubicaciones se buscan una vez</strong>: <code>getUniformLocation</code> hace una búsqueda por nombre y no tiene sentido repetirla cada frame. Además, solo cambian si vuelves a enlazar el programa.</li>
+    <li><strong>Cada miembro, su ubicación</strong>: con un array de structs no hay atajo en WebGL. (Con un array de un tipo simple, sí: un solo <code>uniform3fv</code> con los 3 colores seguidos.)</li>
+    <li><strong>Cuidado con el compilador</strong>: si el shader no usa <code>intensidad</code> de ninguna luz, esas tres ubicaciones son <code>null</code> y las llamadas se ignoran. Y si solo usa las dos primeras luces porque un bucle se desenrolla con un límite fijo menor, la tercera también puede desaparecer. Si eso te pasa, las ubicaciones <code>null</code> te lo dirán.</li>
+    <li><strong>Cuando hay muchos uniforms compartidos</strong> entre programas (las matrices de la cámara, las luces), WebGL2 ofrece los <em>uniform buffer objects</em> (UBO): un buffer con todos los valores que varios programas leen a la vez. En nuestra máquina, un bloque puede ocupar hasta 16 KB (<code>MAX_UNIFORM_BLOCK_SIZE</code>). No los usaremos en el curso, pero conviene saber que existen.</li>
+  </ol>
+</section>
+
+<div class="js-playground" data-titulo="Uniforms bajo el microscopio" data-altura="56" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:10px 16px;font:14px monospace">resultado en la consola ↓ <button id="errores" style="margin-left:12px">provocar los errores</button></p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+function programa(fs) {
+  const p = gl.createProgram();
+  for (const [tipo, src] of [[gl.VERTEX_SHADER, '#version 300 es\nvoid main() { gl_Position = vec4(0.0); }'], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  return p;
+}
+const FS = `#version 300 es
+precision highp float;
+uniform float u_escala;
+uniform vec3 u_color;
+uniform float u_arr[8];
+uniform float u_noUsado;                     // declarado, pero no llega a fragColor
+out vec4 fragColor;
+void main() { fragColor = vec4(u_color * u_escala + u_arr[0] + u_arr[2], 1.0); }`;
+const A = programa(FS), B = programa(FS);
+
+console.log('uniforms activos de A:');
+for (let i = 0; i < gl.getProgramParameter(A, gl.ACTIVE_UNIFORMS); i++) {
+  const u = gl.getActiveUniform(A, i);
+  console.log(`   ${u.name}  size=${u.size}`);
+}
+console.log('ubicación de u_noUsado:', gl.getUniformLocation(A, 'u_noUsado'), '· de "u_colr":', gl.getUniformLocation(A, 'u_colr'));
+console.log('valor inicial de u_color:', gl.getUniform(A, gl.getUniformLocation(A, 'u_color')));
+
+gl.useProgram(A);
+gl.uniform3f(gl.getUniformLocation(A, 'u_color'), 1, 0.5, 0.2);
+gl.uniform1f(null, 3.0);                                      // silencio absoluto
+console.log('uniform1f(null, …) → error:', gl.getError());   // 0 = NO_ERROR
+gl.useProgram(B);                                             // B tiene SU PROPIO u_color...
+console.log('u_color en B:', gl.getUniform(B, gl.getUniformLocation(B, 'u_color')));
+console.log('u_color en A (persiste):', gl.getUniform(A, gl.getUniformLocation(A, 'u_color')));
+
+gl.useProgram(A);
+gl.uniform1fv(gl.getUniformLocation(A, 'u_arr'), [1, 2, 3]);
+console.log('u_arr[0..3] tras uniform1fv([1, 2, 3]):', [0, 1, 2, 3].map((i) => gl.getUniform(A, gl.getUniformLocation(A, `u_arr[${i}]`))));
+
+document.getElementById('errores').addEventListener('click', () => {
+  const nombres = { [gl.NO_ERROR]: 'NO_ERROR', [gl.INVALID_OPERATION]: 'INVALID_OPERATION', [gl.INVALID_VALUE]: 'INVALID_VALUE' };
+  gl.useProgram(null);
+  gl.uniform3f(gl.getUniformLocation(A, 'u_color'), 1, 1, 1);
+  console.log('sin programa en uso →', nombres[gl.getError()]);
+  gl.useProgram(B);
+  gl.uniform3f(gl.getUniformLocation(A, 'u_color'), 1, 1, 1);  // ubicación de A con B en uso
+  console.log('ubicación de otro programa →', nombres[gl.getError()]);
+  gl.uniform1i(gl.getUniformLocation(B, 'u_escala'), 2);         // int sobre un float
+  console.log('uniform1i sobre un float →', nombres[gl.getError()]);
+});
+</script>
+</div>
+
+<div class="callout bestiario" data-id="m4-precision-uniform" data-titulo="«Precisions of uniform 'u_x' differ between VERTEX and FRAGMENT shaders»">
+  <p><strong>Síntoma:</strong> los dos shaders compilan, pero el programa no enlaza y el registro dice que la precisión de un uniform difiere entre los shaders.</p>
+  <p><strong>Causa:</strong> el mismo uniform declarado en los dos shaders es <em>una sola</em> variable y tiene que declararse igual en ambos, precisión incluida. El vertex shader tiene <code>highp</code> por defecto para los floats; si el fragment shader dice <code>precision mediump float;</code>, su <code>uniform float u_x</code> es <code>mediump</code> y no coincide (lo reprodujimos en Chrome). Lo mismo pasa con tipos distintos: <code>Types of uniform 'u_x' differ</code>.</p>
+  <p><strong>Solución:</strong> declara la precisión explícitamente en el uniform (<code>uniform highp float u_x;</code>) en los dos shaders, o usa <code>precision highp float;</code> también en el fragment shader (<a href="../03-matematicas/07-precision.html">3.7</a>).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tienes dos programas, A y B, que declaran <code>uniform float u_tiempo</code>. Cada frame haces: <code>gl.useProgram(A); gl.uniform1f(locA, t); dibujar(); gl.useProgram(B); dibujar();</code>. ¿Qué valor de <code>u_tiempo</code> ve B?</p>
+  <ul>
+    <li><code>t</code>, porque se asignó justo antes.<div class="explicacion">Se asignó en A. Cada programa tiene su propio almacén de uniforms, aunque los nombres coincidan.</div></li>
+    <li data-correcta>0, o lo último que se le asignara a B: nunca se le asigna en este código.<div class="explicacion">Exacto. B necesita su propia llamada con su propia ubicación (<code>gl.uniform1f(locB, t)</code>) con B en uso. Si nunca se hizo, vale 0: la animación de B estará congelada, sin ningún error.</div></li>
+    <li>Da <code>INVALID_OPERATION</code> al dibujar con B.<div class="explicacion">Dibujar con un uniform sin asignar es perfectamente legal: el uniform vale 0.</div></li>
+  </ul>
+</div>
+
+<h2>Varyings: del vértice al fragmento</h2>
+<p>Un varying es un <code>out</code> del vertex shader que se convierte en un <code>in</code> del fragment shader con el mismo nombre. El vertex shader lo escribe una vez por vértice; el rasterizador calcula su valor en cada fragmento interpolando los de los tres vértices; el fragment shader lo lee. El enlazador comprueba que la interfaz case, y lo medimos en Chrome:</p>
+<ul>
+  <li>Un <code>in</code> del fragment shader sin su <code>out</code> en el vertex shader: error de enlazado (<code>FRAGMENT varying v_falta does not match any VERTEX varying</code>). Al revés (un <code>out</code> que nadie lee) no es error: se descarta.</li>
+  <li>Tipo y calificador de interpolación deben coincidir: <code>flat out</code> con <code>smooth in</code> da <code>Interpolation types of varying 'v_x' differ</code>.</li>
+  <li>Los varyings enteros (<code>int</code>, <code>ivec</code>, <code>uint</code>…) tienen que ser <code>flat</code>: no tiene sentido interpolar un entero (<code>'out' : must use 'flat' interpolation here</code>, error de compilación).</li>
+  <li>Un varying que el vertex shader no escribe vale 0 en WebGL (ANGLE inicializa las salidas, como viste en 4.1). En OpenGL nativo su valor es indefinido.</li>
+</ul>
+
+<h3>La interpolación con corrección de perspectiva, deducida</h3>
+<p>En <a href="02-pipeline-grafico.html">4.2</a> dimos la fórmula; ahora vamos a deducirla, porque es corta y es el momento más elegante del pipeline. Tomemos un segmento entre dos vértices con coordenadas de clip $P_0$ y $P_1$ y un varying que vale $v_0$ y $v_1$ en ellos. Un punto del segmento <em>en 3D</em> es</p>
+$$P(t) = (1-t)\,P_0 + t\,P_1, \qquad v(t) = (1-t)\,v_0 + t\,v_1$$
+<p>porque antes de la división de perspectiva todo es lineal. Su $x$ en pantalla (en NDC) es $x(t)/w(t)$:</p>
+$$s(t) = \frac{(1-t)\,x_0 + t\,x_1}{(1-t)\,w_0 + t\,w_1}$$
+<p>Ahora llamemos $u$ a la fracción del segmento <em>en la pantalla</em>: $s = (1-u)\,s_0 + u\,s_1$, con $s_i = x_i / w_i$. Igualando y despejando (un par de líneas de álgebra) se obtiene la relación entre las dos fracciones:</p>
+$$t = \frac{u / w_1}{(1-u)/w_0 + u/w_1}$$
+<p>Sustituyendo en $v(t)$ y simplificando:</p>
+$$v = \frac{(1-u)\,\dfrac{v_0}{w_0} + u\,\dfrac{v_1}{w_1}}{(1-u)\,\dfrac{1}{w_0} + u\,\dfrac{1}{w_1}}$$
+<p>Esta es la clave: <strong>$v/w$ y $1/w$ sí son lineales en la pantalla</strong>. El rasterizador puede interpolarlos con las coordenadas de pantalla (las baricéntricas $\lambda$, en un triángulo) y dividir al final. Es exactamente lo que hace la línea de pesos corregidos de la GPU de juguete (<a href="03-gpu-de-juguete.html">4.3</a>): $\lambda_i (1/w_i) / \sum_j \lambda_j (1/w_j)$. Mueve el punto y cambia la razón entre las $w$:</p>
+
+<div class="demo" id="demo-curva-w">
+  <div class="demo-lienzo" style="height:360px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Con $w_1 / w_0 = 3$ y $u = 0{,}5$, la curva da $t = 0{,}25$: el resultado del ejemplo 4.2.3. Cuando las dos $w$ son iguales (un objeto paralelo a la pantalla, o una proyección ortográfica), la curva es la diagonal: no hay nada que corregir.</p>
+
+<h3>Sin corrección: el temblor de la PlayStation</h3>
+<p>La PlayStation original (1994) no corregía la perspectiva al interpolar las coordenadas de textura: usaba $u$ directamente, lo que se llama interpolación <strong>afín</strong>. Tampoco tenía z-buffer ni coordenadas de subpíxel: los vértices se redondeaban al píxel entero. El resultado es inconfundible: texturas que se doblan y «nadan» al moverse la cámara, y vértices que tiemblan. La GPU de juguete puede reproducirlo (es el interruptor <code>correccion_perspectiva</code>, más una transformación de viewport que redondea):</p>
+
+<div class="demo" id="demo-ps1">
+  <div class="demo-lienzo" style="height:330px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Sin corrección, el damero se dobla por la diagonal del quad (cada triángulo interpola por su cuenta) y se deforma al girar. Los juegos de la época lo disimulaban <strong>subdividiendo</strong> los polígonos grandes, sobre todo los cercanos a la cámara: en triángulos pequeños, la diferencia entre $u$ y $t$ es menor (activa «subdividir» y compruébalo). Las imágenes de <a href="03-gpu-de-juguete.html">4.3</a> lo muestran con un suelo en perspectiva:</p>
+<figure class="m4-figura">
+  <div class="m4-fila">
+    <div><img src="img/juguete-suelo-correcto.png" width="320" height="240" alt="Suelo de damero correcto"><small>corregido (una GPU moderna)</small></div>
+    <div><img src="img/juguete-suelo-afin.png" width="320" height="240" alt="Suelo afín totalmente deformado"><small>afín, 1 quad</small></div>
+    <div><img src="img/juguete-suelo-afin-subdividido.png" width="320" height="240" alt="Suelo afín subdividido, casi correcto"><small>afín, 4 × 14 quads</small></div>
+  </div>
+  <figcaption>Generadas por la GPU de juguete (<code>ejemplo_04_perspectiva.py</code>). La versión afín de un solo quad está además recortada contra el plano cercano, lo que hace el error enorme.</figcaption>
+</figure>
+
+<h3>Calificadores: smooth, flat y noperspective</h3>
+<p>El calificador de interpolación va delante de <code>out</code>/<code>in</code>, igual en los dos shaders:</p>
+<ul>
+  <li><code>smooth</code> (el de por defecto): interpolación con corrección de perspectiva.</li>
+  <li><code>flat</code>: sin interpolar. Todos los fragmentos del triángulo reciben el valor de <strong>un</strong> vértice, el <em>vértice provocador</em>. En OpenGL y WebGL es, por defecto, el <strong>último</strong> vértice de cada primitiva: el tercero en <code>TRIANGLES</code>, el $i + 2$ en el triángulo $i$ de una tira. Lo medimos: un triángulo con vértices rojo, verde y azul y un varying <code>flat</code> sale azul entero; en una tira de 4 vértices, el primer triángulo sale del color del vértice 2 y el segundo del vértice 3. La extensión <code>WEBGL_provoking_vertex</code> (disponible en Chrome) permite cambiar al <em>primero</em> (<code>ext.provokingVertexWEBGL(ext.FIRST_VERTEX_CONVENTION_WEBGL)</code>), que es el convenio de Direct3D: con ella, el mismo triángulo sale rojo.</li>
+  <li><code>centroid</code>: solo afecta con MSAA; evalúa el varying en un punto garantizado dentro del triángulo en lugar de en el centro del píxel. Rara vez lo necesitarás.</li>
+  <li><code>noperspective</code>: interpolación afín, sin corregir. Existe en el GLSL de escritorio (lo usa <code>moderngl/04_interpolacion.py</code>), pero no en GLSL ES 3.00: en WebGL2 solo está con la extensión <code>NV_shader_noperspective_interpolation</code>, que Chrome ofrece sobre Metal (medido) pero no está garantizada en todas partes.</li>
+</ul>
+<figure class="m4-figura">
+  <img src="img/moderngl-interpolacion.png" width="670" height="160" alt="Cuatro paneles: triángulo con franjas corregidas, con franjas afines, azul entero y rojo entero">
+  <figcaption>La GPU real (<code>moderngl/04_interpolacion.py</code>): <code>smooth</code>, <code>noperspective</code>, <code>flat</code> con el último vértice y <code>flat</code> con el primero. El mismo script comprueba que es idéntica, píxel a píxel, a la imagen de la GPU de juguete (<code>ejemplo_08_varyings.py</code>).</figcaption>
+</figure>
+
+<div class="callout hack" data-titulo="Interpolación afín sin extensiones">
+  <p>Si necesitas interpolación afín en WebGL (para un efecto retro, o para coordenadas que deben ser lineales en pantalla) y no tienes la extensión, puedes «deshacer» la corrección tú: en el vertex shader, multiplica el varying por $w$ y pasa también $w$; en el fragment shader, divide. Como la GPU interpola $\frac{v \cdot w}{w} = v$ y $\frac{w}{w} = 1$ linealmente en pantalla y divide por el $1/w$ interpolado, el cociente de los dos varyings es la interpolación afín de $v$:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+// vertex shader
+gl_Position = u_mvp * vec4(a_pos, 1.0);
+v_uvw = vec3(a_uv * gl_Position.w, gl_Position.w);
+// fragment shader
+vec2 uv_afin = v_uvw.xy / v_uvw.z;
+</script>
+  <p>Lo comprobamos en Chrome: la imagen resultante es idéntica, píxel a píxel (0 diferencias en 65 536), a la de <code>noperspective</code> con la extensión. Lo usarás en el ejercicio 4.5.4.</p>
+</div>
+
+<h3>Lo que el fragment shader recibe sin pedirlo</h3>
+<p>Además de tus varyings, el fragment shader tiene entradas predefinidas: <code>gl_FragCoord</code> (el centro del píxel en coordenadas de ventana, $x + 0{,}5$ e $y + 0{,}5$, su profundidad $z$ en $[0, 1]$ y $1/w$), <code>gl_FrontFacing</code> (<code>true</code> si el triángulo está de frente, útil para colorear distinto las caras traseras) y <code>gl_PointCoord</code> (la posición dentro de un punto, de 0 a 1). Y recuerda el límite: 30 vectores de varyings en nuestra máquina (<code>MAX_VARYING_VECTORS</code>), 15 garantizados; cada varying ocupa al menos un «slot» de <code>vec4</code> según cómo los empaquete el compilador.</p>
+
+<div class="quiz">
+  <p class="pregunta">Un triángulo tiene sus vértices en el orden A (rojo), B (verde), C (azul), y el color se pasa como <code>flat out vec3 v_color</code>. Lo dibujas con <code>gl.drawArrays(gl.TRIANGLES, 0, 3)</code>. ¿De qué color sale, sin extensiones?</p>
+  <ul>
+    <li>Rojo: el primer vértice decide.<div class="explicacion">Ese es el convenio de Direct3D (y el de WebGL con <code>WEBGL_provoking_vertex</code> en modo FIRST). En GL, por defecto, decide el último.</div></li>
+    <li data-correcta>Azul: el vértice provocador por defecto es el último.<div class="explicacion">Correcto, y lo medimos en Chrome. Si cambias el orden de los vértices (C, A, B), el mismo triángulo sale verde.</div></li>
+    <li>Una mezcla de los tres, porque la GPU interpola.<div class="explicacion">Eso es lo que hace <code>smooth</code>. <code>flat</code> desactiva la interpolación: un único valor para todo el triángulo.</div></li>
+  </ul>
+</div>
+
+<h2>gl_VertexID: dibujar sin buffers</h2>
+<p>El vertex shader también tiene entradas predefinidas: <code>gl_VertexID</code> (el índice del vértice que se está procesando: <code>primero</code>, <code>primero + 1</code>… en <code>drawArrays</code>, o el valor del índice en <code>drawElements</code>) y <code>gl_InstanceID</code> (el número de instancia; 0 si no usas instancing, medido). Con ellas se puede generar geometría sin leer ningún buffer. El caso más útil es el triángulo que tapa toda la pantalla, la base de cualquier efecto de posproceso (y de los editores de shaders de este curso):</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+#version 300 es
+out vec2 v_uv;
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  v_uv = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+</script>
+<ol>
+  <li data-l="2">Ni un solo <code>in</code>: el shader no tiene atributos.</li>
+  <li data-l="4">Aritmética de bits con el índice: para 0, <code>(0 &lt;&lt; 1) &amp; 2 = 0</code> y <code>0 &amp; 2 = 0</code> → (0, 0). Para 1: <code>(1 &lt;&lt; 1) &amp; 2 = 2</code> y <code>1 &amp; 2 = 0</code> → (2, 0). Para 2: <code>(2 &lt;&lt; 1) &amp; 2 = 0</code> (4 &amp; 2 = 0) y <code>2 &amp; 2 = 2</code> → (0, 2). Tres puntos: (0, 0), (2, 0), (0, 2).</li>
+  <li data-l="5">Como varying, sirven de coordenadas de textura: valen de 0 a 1 dentro de la pantalla (y hasta 2 en la parte del triángulo que queda fuera).</li>
+  <li data-l="6">Llevados a NDC: (−1, −1), (3, −1) y (−1, 3). Un triángulo enorme cuya parte visible es exactamente el cuadrado de −1 a 1. Lo que sobra lo elimina el viewport, sin coste de sombreado.</li>
+</ol>
+</div>
+
+<p>Para dibujarlo basta un VAO vacío (sin ningún atributo habilitado) y <code>gl.drawArrays(gl.TRIANGLES, 0, 3)</code>. En WebGL2 es perfectamente legal (lo comprobamos: <code>NO_ERROR</code>, y en las esquinas el <code>v_uv</code> interpolado vale $0{,}5/64$ y $63{,}5/64$ en un lienzo de 64 píxeles, justo lo que corresponde a los centros de píxel). ¿Por qué un triángulo gigante y no un quad de dos? Porque con dos triángulos, los píxeles de la diagonal pertenecen a quads de 2 × 2 partidos entre los dos triángulos, y la GPU ejecuta el fragment shader en píxeles «de relleno» a ambos lados (las <em>helper invocations</em> de <a href="01-cpu-vs-gpu.html">4.1</a>). Un solo triángulo no tiene diagonal. La GPU de juguete (<code>ejemplo_08_varyings.py</code>) y la real (<code>moderngl/05_sin_buffers.py</code>) dibujan la misma imagen, píxel a píxel; en las dos, el color sale además de un <em>atributo constante</em> (deshabilitado, con <code>vertexAttrib4f</code>):</p>
+<figure class="m4-figura">
+  <div class="m4-fila">
+    <div><img src="img/juguete-vertexid.png" width="160" height="120" alt="Degradado de negro a rojo y amarillo"><small>GPU de juguete</small></div>
+    <div><img src="img/moderngl-vertexid.png" width="160" height="120" alt="El mismo degradado"><small>GPU real (moderngl)</small></div>
+  </div>
+  <figcaption>Un triángulo de pantalla completa sin buffers: posición a partir de <code>gl_VertexID</code>, color a partir de un atributo deshabilitado con valor constante $(1, 0{,}5, 0{,}2, 1)$.</figcaption>
+</figure>
+
+<div class="callout senior" data-titulo="Geometría procedural">
+  <p>El mismo truco escala: un vertex shader puede generar una rejilla de $N \times N$ quads, un círculo o una tira de partículas a partir de <code>gl_VertexID</code> (fila = <code>id / N</code>, columna = <code>id % N</code>…), leyendo los datos que necesite de uniforms o de texturas. Es la base de muchas técnicas de partículas en GPU (<a href="../07-integracion/05-particulas-gpu.html">7.5</a>) y de las mallas que se deforman en el shader (<a href="../07-integracion/04-vertex-animacion.html">7.4</a>): sin buffers que subir, sin memoria de vértices, solo índices.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 4.5.1 — ¿Cuánto vale el varying?</h3>
+  <p>Un segmento en pantalla une el vértice $P$ ($w = 2$, $v = 10$) y el $Q$ ($w = 6$, $v = 30$). ¿Cuánto vale el varying en el punto que está al 50 % del segmento en la pantalla, (a) sin corregir, (b) con corrección de perspectiva? ¿Y al 75 %? ¿Qué pasaría si las dos $w$ fueran 4?</p>
+  <details class="pista"><summary>Pista</summary><p>Usa la fórmula con $v/w$ y $1/w$, o calcula primero $t = \frac{u/w_1}{(1-u)/w_0 + u/w_1}$ y luego $v = (1-t)\,v_0 + t\,v_1$.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>(a) Sin corregir, al 50 %: $v = 20$. Al 75 %: $v = 25$. (b) Con corrección, al 50 %: $t = \frac{0{,}5/6}{0{,}5/2 + 0{,}5/6} = \frac{0{,}0833}{0{,}3333} = 0{,}25$, así que $v = 0{,}75 \cdot 10 + 0{,}25 \cdot 30 = 15$. Al 75 %: $t = \frac{0{,}75/6}{0{,}25/2 + 0{,}75/6} = \frac{0{,}125}{0{,}25} = 0{,}5$ y $v = 20$: ¡hay que llegar al 75 % de la pantalla para alcanzar la mitad del segmento en 3D! Si las dos $w$ valen 4, $t = u$: con la misma profundidad no hay nada que corregir, y la interpolación corregida y la afín coinciden. Por eso el error afín solo se ve en superficies inclinadas respecto a la cámara.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.5.2 — El color que no llega</h3>
+  <p>Este programa quiere dibujar dos triángulos con el mismo color, asignado desde JavaScript, pero salen negros, y no hay ni un error. Tiene dos fallos independientes, los dos silenciosos. Arréglalos para que los dos triángulos salgan naranjas <code>(1.0, 0.55, 0.2)</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.5.2" data-altura="200" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = 360; canvas.height = 200;
+const gl = canvas.getContext('webgl2');
+function programa(desplazamiento) {             // el mismo shader, desplazado a izquierda o derecha
+  const p = gl.createProgram();
+  const vs = `#version 300 es
+void main() {
+  vec2 v[3] = vec2[3](vec2(-0.35, -0.6), vec2(0.35, -0.6), vec2(0.0, 0.6));
+  gl_Position = vec4(v[gl_VertexID] + vec2(${desplazamiento}, 0.0), 0.0, 1.0);
+}`;
+  const fs = `#version 300 es
+precision mediump float;
+uniform vec3 u_color;
+out vec4 fragColor;
+void main() { fragColor = vec4(u_color, 1.0); }`;
+  for (const [tipo, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  return p;
+}
+const izquierda = programa('-0.5'), derecha = programa('0.5');
+gl.bindVertexArray(gl.createVertexArray());
+
+// Asignar el color (una vez)
+gl.useProgram(izquierda);
+gl.uniform3f(gl.getUniformLocation(izquierda, 'u_colour'), 1.0, 0.55, 0.2);
+
+// Dibujar
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(izquierda); gl.drawArrays(gl.TRIANGLES, 0, 3);
+gl.useProgram(derecha);   gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('error:', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+canvas.width = 360; canvas.height = 200;
+const gl = canvas.getContext('webgl2');
+function programa(desplazamiento) {
+  const p = gl.createProgram();
+  const vs = `#version 300 es
+void main() {
+  vec2 v[3] = vec2[3](vec2(-0.35, -0.6), vec2(0.35, -0.6), vec2(0.0, 0.6));
+  gl_Position = vec4(v[gl_VertexID] + vec2(${desplazamiento}, 0.0), 0.0, 1.0);
+}`;
+  const fs = `#version 300 es
+precision mediump float;
+uniform vec3 u_color;
+out vec4 fragColor;
+void main() { fragColor = vec4(u_color, 1.0); }`;
+  for (const [tipo, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  return p;
+}
+const izquierda = programa('-0.5'), derecha = programa('0.5');
+gl.bindVertexArray(gl.createVertexArray());
+
+// Cada programa tiene SU u_color: hay que asignarlo en los dos, con su ubicación y en uso
+for (const p of [izquierda, derecha]) {
+  gl.useProgram(p);
+  const loc = gl.getUniformLocation(p, 'u_color');        // "u_color", no "u_colour"
+  if (loc === null) console.warn('u_color no existe o no se usa');
+  gl.uniform3f(loc, 1.0, 0.55, 0.2);
+}
+
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(izquierda); gl.drawArrays(gl.TRIANGLES, 0, 3);
+gl.useProgram(derecha);   gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('error:', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Imprime el resultado de <code>gl.getUniformLocation(izquierda, 'u_colour')</code>. ¿Qué devuelve, y qué hace <code>uniform3f</code> con eso?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Aunque los dos programas usan el mismo código fuente, son dos programas distintos. ¿Cuántos <code>u_color</code> hay?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>Fallo 1</strong>: la errata <code>'u_colour'</code>. <code>getUniformLocation</code> devuelve <code>null</code> y <code>uniform3f(null, …)</code> se ignora sin error: el triángulo izquierdo sale con <code>u_color = (0, 0, 0)</code>, negro. <strong>Fallo 2</strong>: aunque arregles el nombre, solo se asigna el color en el programa <code>izquierda</code>. <code>derecha</code> tiene su propio <code>u_color</code>, que vale 0: negro.</p>
+    <p>La solución asigna el uniform en cada programa, con la ubicación de <em>ese</em> programa y con él en uso, y comprueba que la ubicación no es <code>null</code>. Esa comprobación, hecha una vez al crear el programa, habría delatado el primer fallo al instante. El segundo solo se evita entendiendo que los uniforms son estado del programa.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.5.3 — Un triángulo de pantalla completa, sin buffers</h3>
+  <p>Completa el vertex shader para que, con un VAO vacío y <code>drawArrays(gl.TRIANGLES, 0, 3)</code>, dibuje un triángulo que tape todo el lienzo. Pasa también unas coordenadas <code>v_uv</code> que valgan (0, 0) en la esquina inferior izquierda y (1, 1) en la superior derecha: el fragment shader ya las pinta como un degradado rojo-verde. La consola comprueba el color de las cuatro esquinas.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.5.3" data-altura="200" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = 256; canvas.height = 160;
+const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
+const VS = `#version 300 es
+out vec2 v_uv;
+void main() {
+  // TODO: calcula la posición del vértice gl_VertexID (0, 1 o 2) y su v_uv
+  v_uv = vec2(0.0);
+  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+void main() { fragColor = vec4(v_uv, 0.3, 1.0); }`;
+const prog = gl.createProgram();
+for (const [tipo, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, FS]]) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  gl.attachShader(prog, s);
+}
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());      // un VAO sin ningún atributo
+gl.clearColor(0, 0, 0, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const px = new Uint8Array(4);
+const esquina = (x, y) => { gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return `(${px[0]}, ${px[1]}, ${px[2]})`; };
+console.log('abajo-izq', esquina(0, 0), '· abajo-der', esquina(255, 0), '· arriba-izq', esquina(0, 159), '· arriba-der', esquina(255, 159));
+console.log('esperado: (0, 1, 77) · (255, 1, 77) · (0, 254, 77) · (255, 254, 77)');
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+canvas.width = 256; canvas.height = 160;
+const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
+const VS = `#version 300 es
+out vec2 v_uv;
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);   // (0,0), (2,0), (0,2)
+  v_uv = p;                                                // 0..1 en la parte visible
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);             // (−1,−1), (3,−1), (−1,3)
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+void main() { fragColor = vec4(v_uv, 0.3, 1.0); }`;
+const prog = gl.createProgram();
+for (const [tipo, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, FS]]) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  gl.attachShader(prog, s);
+}
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+gl.clearColor(0, 0, 0, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const px = new Uint8Array(4);
+const esquina = (x, y) => { gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return `(${px[0]}, ${px[1]}, ${px[2]})`; };
+console.log('abajo-izq', esquina(0, 0), '· abajo-der', esquina(255, 0), '· arriba-izq', esquina(0, 159), '· arriba-der', esquina(255, 159));
+console.log('esperado: (0, 1, 77) · (255, 1, 77) · (0, 254, 77) · (255, 254, 77)');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Necesitas tres puntos cuyo triángulo contenga todo el cuadrado de −1 a 1. Por ejemplo: (−1, −1), (3, −1) y (−1, 3).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Puedes indexar un array constante (<code>vec2 P[3] = vec2[3](…); P[gl_VertexID]</code>) o usar la versión con bits de la sección anterior. Las <code>v_uv</code> son la posición NDC llevada de $[-1, 1]$ a $[0, 1]$: <code>(pos + 1.0) / 2.0</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La versión con bits convierte 0, 1, 2 en (0, 0), (2, 0), (0, 2), y de ahí salen la posición (×2 − 1) y las <code>v_uv</code> (tal cual). Las esquinas lo confirman, con la aritmética de los centros de píxel: en el píxel (0, 0), cuyo centro es (0,5; 0,5), el rojo es $0{,}5/256 \cdot 255 \approx 0{,}498 \to 0$ y el verde $0{,}5/160 \cdot 255 \approx 0{,}797 \to 1$; en el (255, 159), $255{,}5/256 \cdot 255 \approx 254{,}502 \to 255$ y $159{,}5/160 \cdot 255 \approx 254{,}2 \to 254$. El azul, 0,3, da 76,5, que se redondea a 77. Si en tu versión las esquinas salen negras, tu triángulo no llega a cubrirlas.</p>
+    <p>Con un array constante también funciona: <code>vec2 P[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3)); gl_Position = vec4(P[gl_VertexID], 0.0, 1.0); v_uv = (P[gl_VertexID] + 1.0) / 2.0;</code>. Las dos variantes producen exactamente los mismos píxeles.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 4.5.4 — Una PlayStation dentro de WebGL</h3>
+  <p>Un quad con damero gira en perspectiva. Añade un modo «afín» (el uniform <code>u_afin</code> ya se alterna cada 2 segundos desde JavaScript) usando el truco de la caja <em>hack</em>: pasa <code>v_uv * w</code> y <code>w</code> como varyings y divide en el fragment shader cuando <code>u_afin</code> esté activo. Debe verse cómo el damero se tuerce por la diagonal en el modo afín y se endereza en el corregido.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.5.4" data-altura="240" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = 320; canvas.height = 240;
+const gl = canvas.getContext('webgl2');
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_pos;
+uniform mat4 u_mvp;
+out vec2 v_uv;
+// TODO: declara aquí el varying extra
+void main() {
+  gl_Position = u_mvp * vec4(a_pos, 0.0, 1.0);
+  v_uv = a_pos * 0.5 + 0.5;
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform bool u_afin;
+in vec2 v_uv;
+out vec4 fragColor;
+void main() {
+  vec2 uv = v_uv;                          // TODO: si u_afin, usa la versión afín
+  float c = mod(floor(uv.x * 8.0) + floor(uv.y * 8.0), 2.0);
+  fragColor = vec4(mix(vec3(0.2, 0.23, 0.34), vec3(0.93, 0.9, 0.8), c), 1.0);
+}`;
+const prog = gl.createProgram();
+for (const [tipo, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, FS]]) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  gl.attachShader(prog, s);
+}
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const uMvp = gl.getUniformLocation(prog, 'u_mvp'), uAfin = gl.getUniformLocation(prog, 'u_afin');
+const mul = (a, b) => { const o = []; for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; };
+const f = 1 / Math.tan(0.5), nf = 1 / (0.1 - 50);
+const P = [f / (4 / 3), 0, 0, 0, 0, f, 0, 0, 0, 0, (50 + 0.1) * nf, -1, 0, 0, 2 * 50 * 0.1 * nf, 0];
+function frame(ms) {
+  const t = ms / 1000, a = 0.9 * Math.sin(t * 0.6);
+  const R = [Math.cos(a), 0, -Math.sin(a), 0, 0, 1, 0, 0, Math.sin(a), 0, Math.cos(a), 0, 0, 0, -2.4, 1];
+  gl.uniformMatrix4fv(uMvp, false, new Float32Array(mul(P, R)));
+  gl.uniform1i(uAfin, Math.floor(t / 2) % 2);
+  gl.clearColor(0.06, 0.07, 0.09, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+canvas.width = 320; canvas.height = 240;
+const gl = canvas.getContext('webgl2');
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_pos;
+uniform mat4 u_mvp;
+out vec2 v_uv;
+out vec3 v_uvw;                            // (uv · w, w): lo que la GPU interpola "bien" en pantalla
+void main() {
+  gl_Position = u_mvp * vec4(a_pos, 0.0, 1.0);
+  v_uv = a_pos * 0.5 + 0.5;
+  v_uvw = vec3(v_uv * gl_Position.w, gl_Position.w);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform bool u_afin;
+in vec2 v_uv;
+in vec3 v_uvw;
+out vec4 fragColor;
+void main() {
+  vec2 uv = u_afin ? v_uvw.xy / v_uvw.z : v_uv;     // afín = interpolación lineal en pantalla
+  float c = mod(floor(uv.x * 8.0) + floor(uv.y * 8.0), 2.0);
+  fragColor = vec4(mix(vec3(0.2, 0.23, 0.34), vec3(0.93, 0.9, 0.8), c), 1.0);
+}`;
+const prog = gl.createProgram();
+for (const [tipo, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, FS]]) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  gl.attachShader(prog, s);
+}
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const uMvp = gl.getUniformLocation(prog, 'u_mvp'), uAfin = gl.getUniformLocation(prog, 'u_afin');
+const mul = (a, b) => { const o = []; for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; };
+const f = 1 / Math.tan(0.5), nf = 1 / (0.1 - 50);
+const P = [f / (4 / 3), 0, 0, 0, 0, f, 0, 0, 0, 0, (50 + 0.1) * nf, -1, 0, 0, 2 * 50 * 0.1 * nf, 0];
+function frame(ms) {
+  const t = ms / 1000, a = 0.9 * Math.sin(t * 0.6);
+  const R = [Math.cos(a), 0, -Math.sin(a), 0, 0, 1, 0, 0, Math.sin(a), 0, Math.cos(a), 0, 0, 0, -2.4, 1];
+  gl.uniformMatrix4fv(uMvp, false, new Float32Array(mul(P, R)));
+  gl.uniform1i(uAfin, Math.floor(t / 2) % 2);
+  gl.clearColor(0.06, 0.07, 0.09, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En el vertex shader, después de calcular <code>gl_Position</code>, su cuarta componente es la $w$ de clip del vértice. Pasa <code>vec3(v_uv * gl_Position.w, gl_Position.w)</code> en un varying nuevo.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En el fragment shader, el varying nuevo llega interpolado con corrección de perspectiva; dividir sus dos primeras componentes por la tercera deshace la corrección. Declara el <code>in</code> con el mismo nombre y tipo que el <code>out</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La GPU interpola cada varying $q$ como $\frac{\sum \lambda_i q_i / w_i}{\sum \lambda_i / w_i}$. Con $q_i = v_i w_i$, el numerador es $\sum \lambda_i v_i$ (¡lo afín!) dividido por $\sum \lambda_i / w_i$; con $q_i = w_i$, el resultado es $1 / \sum \lambda_i / w_i$. Su cociente cancela el denominador y deja $\sum \lambda_i v_i$: la interpolación lineal en pantalla. Por eso <code>v_uvw.xy / v_uvw.z</code> es exactamente lo que haría <code>noperspective</code> (lo comprobamos en Chrome: 0 píxeles distintos).</p>
+    <p>Al girar, el modo afín dobla el damero por la diagonal: los dos triángulos del quad interpolan cada uno por su lado. Cuando el quad está de cara a la cámara (las cuatro $w$ iguales), los dos modos coinciden. Ese «respirar» de la textura es el temblor característico de los juegos de PlayStation.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Tres canales, tres frecuencias: <strong>atributos</strong> (por vértice, de los buffers), <strong>uniforms</strong> (por dibujo, desde JavaScript) y <strong>varyings</strong> (del vertex al fragment shader, interpolados por fragmento). Límites en nuestra máquina: 16 atributos, 1 024 vec4 de uniforms por shader, 30 vec4 de varyings; los garantizados son menos.</li>
+    <li>Un atributo deshabilitado recibe un valor constante (<code>vertexAttrib4f</code>, por defecto $(0, 0, 0, 1)$), que es estado del contexto.</li>
+    <li>Los uniforms son <strong>estado del programa</strong>: se asignan con el programa en uso, persisten, valen 0 al principio y se reinician al volver a enlazar. La función debe coincidir con el tipo.</li>
+    <li><code>getUniformLocation</code> devuelve <code>null</code> si el nombre no existe <em>o</em> el compilador eliminó el uniform por no usarse, y <code>uniform*(null)</code> no hace nada ni da error. Arrays: <code>"u_arr[2]"</code>; structs: miembro a miembro.</li>
+    <li>Un uniform compartido entre los dos shaders debe tener la misma precisión y tipo en ambos, o el programa no enlaza.</li>
+    <li>Los varyings deben casar en nombre, tipo y calificador. $v/w$ y $1/w$ son lineales en pantalla: de ahí la <strong>corrección de perspectiva</strong>. Sin ella (interpolación afín) las texturas se doblan: la PS1. El truco <code>v·w</code> / <code>w</code> da interpolación afín sin extensiones.</li>
+    <li><code>flat</code> toma el valor del vértice provocador: el último en GL (el primero con <code>WEBGL_provoking_vertex</code>). Los varyings enteros tienen que ser <code>flat</code>.</li>
+    <li><code>gl_VertexID</code> permite dibujar sin buffers: el triángulo de pantalla completa sale de tres vértices generados con aritmética de bits.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li>Khronos, <a href="https://www.khronos.org/opengl/wiki/Uniform_(GLSL)">Uniform (GLSL)</a> y <a href="https://www.khronos.org/opengl/wiki/Type_Qualifier_(GLSL)#Interpolation_qualifiers">calificadores de interpolación</a> (OpenGL Wiki).</li>
+  <li>Kok-Lim Low, <a href="https://www.comp.nus.edu.sg/~lowkl/publications/lowk_persp_interp_techrep.pdf">Perspective-Correct Interpolation</a>: la derivación completa, para triángulos.</li>
+  <li>MDN, <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/getUniformLocation"><code>getUniformLocation</code></a> y <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/uniform"><code>uniform*</code></a>.</li>
+  <li>Fabien Sanglard, artículos sobre el <a href="https://fabiensanglard.net/">hardware de la PlayStation</a> y por qué sus texturas «bailan».</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/gpu-juguete.js"></script>
+<script src="recursos/demos-45.js"></script>
+</body>
+</html>

@@ -1,0 +1,944 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3.1 · Vectores y coordenadas — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m3.css">
+</head>
+<body data-leccion="03-matematicas/vectores">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 3 · Matemáticas para gráficos</p>
+  <h1>Vectores y coordenadas</h1>
+  <p class="resumen">Toda pregunta de animación o de shaders es, en el fondo, una pregunta sobre posiciones y desplazamientos: dónde está algo, hacia dónde va, a qué distancia queda. Aquí aprendes a responderlas con vectores, y a no perderte entre los distintos sistemas de coordenadas del navegador y de la GPU.</p>
+  <div class="meta"><span class="chip">⏱ 80 min</span><span class="chip">Requisitos: 1.4, 2.3, 2.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Distinguirás un <strong>punto</strong> de un <strong>vector</strong> y sabrás qué operaciones tienen sentido con cada uno.</li>
+      <li>Sabrás en qué sistema de coordenadas está cada número (pantalla, matemático, GL, NDC) y cómo pasar de uno a otro.</li>
+      <li>Sumarás, restarás, escalarás, medirás y normalizarás vectores, entendiendo qué significa cada operación en el dibujo.</li>
+      <li>Leerás <code>vec2</code>/<code>vec3</code>/<code>vec4</code> y los <em>swizzles</em> de GLSL, y escribirás tu propia mini librería <code>vec2</code> en JavaScript.</li>
+      <li>Resolverás problemas clásicos: ir hacia un objetivo a velocidad constante, limitar una velocidad e interpolar entre dos puntos.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El problema: números sin contexto</h2>
+<p>Imagina que el ratón está en <code>(412, 187)</code> y una nave en <code>(300, 250)</code>. Quieres que la nave vaya hacia el ratón a 200 píxeles por segundo. ¿Cuánto tienes que sumar a <code>x</code> y a <code>y</code> en este frame? ¿Y si el ratón se queda quieto justo encima de la nave? Ahora pasa la misma pregunta a un shader: cada píxel quiere saber a qué distancia está del ratón para pintarse más o menos brillante. Pero el shader mide la <code>y</code> hacia arriba y el evento del ratón hacia abajo, y la pantalla tiene el doble de píxeles físicos que de píxeles CSS.</p>
+<p>Las dos preguntas son la misma: <strong>posiciones, desplazamientos y distancias</strong>, expresados en algún <strong>sistema de coordenadas</strong>. La herramienta para hablar de ellas con precisión es el vector. No hace falta más álgebra que sumar, multiplicar y el teorema de Pitágoras; lo que sí hace falta es disciplina: saber en cada línea si tienes un punto o un vector, y en qué sistema está.</p>
+
+<div class="callout porque">
+  <p>¿Por qué no basta con manejar <code>x</code> e <code>y</code> por separado, como en la lección <a href="../02-animacion/05-fisica-muelles.html">2.5</a>? Funciona, pero duplica cada fórmula y esconde la geometría. Con vectores escribes <code>pos += dir * velocidad * dt</code> y la misma línea vale en 2D, en 3D y dentro de un shader. Además, casi todas las funciones de GLSL (<code>length</code>, <code>normalize</code>, <code>dot</code>, <code>mix</code>…) trabajan directamente con vectores.</p>
+</div>
+
+<h2>Puntos y vectores: la misma pinta, distinto significado</h2>
+<p>Un <strong>punto</strong> es un <em>lugar</em>: «la esquina de la mesa», «donde está el ratón». Un <strong>vector</strong> es un <em>desplazamiento</em>: «tres pasos a la derecha y dos hacia arriba». Un vector tiene dirección y longitud, pero <strong>no tiene posición</strong>: el desplazamiento «3 a la derecha, 2 arriba» es el mismo empieces donde empieces. Por eso lo dibujamos como una flecha que puedes trasladar a donde quieras sin cambiarlo.</p>
+<p>El problema es que los dos se escriben igual, como un par de números $(x, y)$. La diferencia está en qué operaciones tienen sentido:</p>
+<table>
+  <thead><tr><th>Operación</th><th>Resultado</th><th>Ejemplo en animación</th></tr></thead>
+  <tbody>
+    <tr><td>punto − punto</td><td>vector (el desplazamiento de uno a otro)</td><td><code>raton - nave</code>: hacia dónde y cuánto tiene que moverse la nave</td></tr>
+    <tr><td>punto + vector</td><td>punto (el lugar al que llegas)</td><td><code>pos + velocidad * dt</code>: la posición del frame siguiente</td></tr>
+    <tr><td>vector + vector</td><td>vector (dos desplazamientos seguidos)</td><td><code>viento + empuje</code></td></tr>
+    <tr><td>número × vector</td><td>vector (más largo, más corto o dado la vuelta)</td><td><code>dir * 200</code></td></tr>
+    <tr><td>punto + punto</td><td><strong>sin sentido</strong>… salvo una media ponderada cuyos pesos suman 1</td><td><code>0.5*A + 0.5*B</code>: el punto medio</td></tr>
+  </tbody>
+</table>
+<p>¿Por qué «punto + punto» no tiene sentido? Porque el resultado depende de dónde pongas el origen, y el origen es una elección arbitraria. En cambio, la diferencia entre dos puntos y su punto medio son los mismos para cualquier observador. Compruébalo: arrastra <strong>O′</strong>, el origen de un segundo observador, y mira qué resultados cambian de sitio.</p>
+
+<div class="demo" id="demo-origen">
+  <div class="demo-lienzo"></div>
+  <div class="m3-leyenda"><span style="--c:var(--c-hack)">Q − P (vector)</span><span style="--c:var(--c-resumen)">½P + ½Q (punto medio)</span><span style="--c:var(--c-cuidado)">P + Q calculado desde O</span><span style="--c:var(--c-bestiario)">P + Q calculado desde O′</span></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>La flecha verde $Q - P$ y el punto medio amarillo no se mueven cuando cambias de observador: son geometría de verdad. Los dos «$P + Q$» caen en sitios distintos: dependen del sistema de referencia, así que no significan nada por sí solos. El punto medio funciona porque es una <strong>combinación afín</strong>: una suma de puntos con pesos que suman 1. Escríbelo así y se ve por qué:</p>
+$$\tfrac12 P + \tfrac12 Q = P + \tfrac12\,(Q - P)$$
+<p>Es un punto más medio vector: una operación legal. Cualquier combinación $\alpha P + \beta Q$ con $\alpha + \beta = 1$ se puede reescribir igual, y es exactamente la interpolación lineal que verás al final de la lección.</p>
+
+<div class="callout senior">
+  <p>En GLSL y en casi todas las librerías, puntos y vectores son el mismo tipo (<code>vec2</code>, <code>vec3</code>): el compilador no te protege. La distinción vive en tu cabeza y en los nombres (<code>pos</code>, <code>dir</code>, <code>vel</code>). En la lección <a href="05-matrices.html">3.5</a> verás que las matrices 4×4 sí la hacen explícita con una cuarta coordenada: $w = 1$ para puntos y $w = 0$ para direcciones, y eso decide si una traslación les afecta.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">A y B son dos puntos (posiciones en pantalla). ¿Cuál de estas expresiones da un punto cuyo significado no depende de dónde esté el origen?</p>
+  <ul>
+    <li>A + B<div class="explicacion">Si mueves el origen una distancia $\vec o$, cada punto cambia de coordenadas en $-\vec o$, y la suma cambia en $-2\vec o$: el resultado «se mueve» respecto a A y B. No es un lugar con sentido geométrico.</div></li>
+    <li data-correcta>0.25·A + 0.75·B<div class="explicacion">Sí: los pesos suman 1, así que es $A + 0.75\,(B - A)$, un punto más un vector. Está en el segmento AB, a tres cuartos del camino hacia B, lo mire quien lo mire.</div></li>
+    <li>0.5·A + 0.25·B<div class="explicacion">Los pesos suman 0.75, no 1. Al mover el origen, el resultado se desplaza un 25&nbsp;% del movimiento del origen: depende del observador. Es un error típico al «promediar» mal (por ejemplo, olvidar un término al hacer la media de tres puntos).</div></li>
+    <li>A·B componente a componente: (Ax·Bx, Ay·By)<div class="explicacion">Multiplicar coordenadas de dos puntos no tiene significado geométrico: el resultado cambia por completo al mover el origen. Con vectores sí tiene usos (escalar por ejes, lo verás en GLSL), pero no con dos posiciones.</div></li>
+  </ul>
+</div>
+
+<h2>Sistemas de coordenadas: ¿hacia dónde crece la y?</h2>
+<p>Un par de números es una posición solo si sabes <strong>dónde está el origen</strong>, <strong>hacia dónde apuntan los ejes</strong> y <strong>en qué unidades</strong> se mide. En este curso conviven cinco sistemas, y confundirlos es la fuente número uno de imágenes volteadas y ratones que van al revés:</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Cinco sistemas de coordenadas: pantalla, matemático, gl_FragCoord, uv y NDC">
+  <defs>
+    <marker id="m31-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <!-- Pantalla -->
+  <rect class="caja" x="10" y="40" width="130" height="110" rx="4"/>
+  <circle cx="10" cy="40" r="4" fill="currentColor"/>
+  <path d="M10 40 L70 40" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <path d="M10 40 L10 100" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <text x="76" y="36" style="font-size:12px">x</text><text x="16" y="112" style="font-size:12px">y</text>
+  <text x="75" y="175" text-anchor="middle" style="font-weight:700">Pantalla</text>
+  <text x="75" y="193" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">CSS, eventos, Canvas 2D</text>
+  <text x="75" y="209" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">origen arriba-izq., y ↓</text>
+  <text x="75" y="225" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">px CSS</text>
+  <!-- Matemático -->
+  <rect class="caja" x="165" y="40" width="130" height="110" rx="4"/>
+  <circle cx="230" cy="95" r="4" fill="currentColor"/>
+  <path d="M230 95 L285 95" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <path d="M230 95 L230 45" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <text x="280" y="110" style="font-size:12px">x</text><text x="237" y="54" style="font-size:12px">y</text>
+  <text x="230" y="175" text-anchor="middle" style="font-weight:700">Matemático</text>
+  <text x="230" y="193" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">papel, estas demos</text>
+  <text x="230" y="209" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">origen donde quieras, y ↑</text>
+  <text x="230" y="225" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">unidades libres</text>
+  <!-- GL -->
+  <rect class="caja" x="320" y="40" width="130" height="110" rx="4"/>
+  <circle cx="320" cy="150" r="4" fill="currentColor"/>
+  <path d="M320 150 L380 150" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <path d="M320 150 L320 90" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <text x="384" y="146" style="font-size:12px">x</text><text x="326" y="98" style="font-size:12px">y</text>
+  <text x="385" y="175" text-anchor="middle" style="font-weight:700">gl_FragCoord</text>
+  <text x="385" y="193" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">fragment shader</text>
+  <text x="385" y="209" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">origen abajo-izq., y ↑</text>
+  <text x="385" y="225" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">px físicos, centros en .5</text>
+  <!-- uv -->
+  <rect class="caja" x="475" y="40" width="130" height="110" rx="4"/>
+  <circle cx="475" cy="150" r="4" fill="currentColor"/>
+  <text x="480" y="146" class="texto-tenue" style="font-size:11px">(0,0)</text>
+  <text x="600" y="54" text-anchor="end" class="texto-tenue" style="font-size:11px">(1,1)</text>
+  <path d="M475 150 L535 150" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <path d="M475 150 L475 90" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <text x="540" y="175" text-anchor="middle" style="font-weight:700">uv</text>
+  <text x="540" y="193" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">texturas, v_uv</text>
+  <text x="540" y="209" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">de 0 a 1, y ↑</text>
+  <text x="540" y="225" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">sin unidades</text>
+  <!-- NDC -->
+  <rect class="caja" x="630" y="40" width="120" height="110" rx="4"/>
+  <circle cx="690" cy="95" r="4" fill="currentColor"/>
+  <path d="M690 95 L745 95" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <path d="M690 95 L690 45" stroke="currentColor" stroke-width="2" marker-end="url(#m31-fl)"/>
+  <text x="634" y="146" class="texto-tenue" style="font-size:11px">(−1,−1)</text>
+  <text x="746" y="56" text-anchor="end" class="texto-tenue" style="font-size:11px">(1,1)</text>
+  <text x="690" y="175" text-anchor="middle" style="font-weight:700">NDC</text>
+  <text x="690" y="193" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">salida del vertex shader</text>
+  <text x="690" y="209" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">de −1 a 1, centro, y ↑</text>
+  <text x="690" y="225" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">(adelanto de 3.6)</text>
+</svg>
+
+<ul>
+  <li><strong>Pantalla</strong>: el de CSS, <code>clientX</code>/<code>clientY</code> y Canvas 2D (lecciones <a href="../01-web/04-js-dom-eventos.html">1.4</a> y <a href="../02-animacion/06-canvas2d.html">2.6</a>). Origen arriba a la izquierda, <strong>y hacia abajo</strong>, medido en px CSS. Viene de la tradición de la escritura y de los monitores de tubo, que barrían la imagen de arriba abajo.</li>
+  <li><strong>Matemático</strong>: el de los libros y el de las demos de este módulo. <strong>y hacia arriba</strong>, el origen donde convenga. Los ángulos positivos giran en sentido antihorario.</li>
+  <li><strong><code>gl_FragCoord</code></strong>: la posición del píxel que está calculando un fragment shader. Origen <strong>abajo</strong> a la izquierda, <strong>y hacia arriba</strong>, en <strong>píxeles físicos</strong>, y cada píxel se mide en su centro: el de abajo a la izquierda es $(0.5,\,0.5)$.</li>
+  <li><strong>uv</strong>: coordenadas normalizadas de 0 a 1 en cada eje, con la y hacia arriba. Son las de las texturas (lección <a href="../05-webgl/05-texturas.html">5.5</a>) y las del <em>varying</em> <code>v_uv</code> de nuestros editores.</li>
+  <li><strong>NDC</strong> (<em>Normalized Device Coordinates</em>): de −1 a 1 en cada eje, con el origen en el centro y la y hacia arriba. Es el espacio al que la GPU lleva todo lo que dibuja antes de convertirlo en píxeles. Aquí solo lo presentamos: su historia completa, con la tercera coordenada y la división por <em>w</em>, está en <a href="06-espacios-coordenadas.html">3.6</a>.</li>
+</ul>
+
+<p>Mueve el ratón por el lienzo: el mismo punto físico tiene coordenadas distintas en cada sistema. El selector dibuja los ejes del sistema elegido y la casilla simula una pantalla de alta densidad (<code>devicePixelRatio</code> = 2), como la de un portátil moderno o un móvil.</p>
+
+<div class="demo" id="demo-sistemas">
+  <div class="demo-lienzo" style="height:300px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<h3>Pasar de un sistema a otro</h3>
+<p>Todas las conversiones son <strong>funciones lineales</strong> por eje: una escala y un desplazamiento, $x' = a\,x + b$. Para encontrar $a$ y $b$ basta con dos puntos que conozcas. Por ejemplo, para pasar la x de pantalla (de $0$ a $W$) a NDC (de $-1$ a $1$):</p>
+$$x = 0 \mapsto -1 \;\Rightarrow\; b = -1, \qquad x = W \mapsto 1 \;\Rightarrow\; aW - 1 = 1 \;\Rightarrow\; a = \frac{2}{W}$$
+$$x_{ndc} = \frac{2x}{W} - 1, \qquad y_{ndc} = 1 - \frac{2y}{H}$$
+<p>En la y el signo cambia porque los ejes apuntan en sentidos opuestos: $y = 0$ (arriba en pantalla) debe ir a $+1$ (arriba en NDC). Con el mismo razonamiento, de un evento del ratón a <code>gl_FragCoord</code>:</p>
+$$x_{gl} = x_{css}\cdot \mathrm{dpr}, \qquad y_{gl} = (H_{css} - y_{css})\cdot \mathrm{dpr}$$
+<p>donde dpr es <code>window.devicePixelRatio</code>, el número de píxeles físicos por px CSS (lección <a href="../02-animacion/06-canvas2d.html">2.6</a>). Los editores de shaders de este curso ya hacen esta conversión por ti: el uniform <code>u_mouse</code> llega en el mismo espacio que <code>gl_FragCoord</code>. Cuando escribas tu propio código WebGL en el <a href="../05-webgl/04-uniforms-animacion.html">módulo 5</a>, la harás tú.</p>
+
+<div class="callout bestiario" data-id="m3-raton-y-invertida" data-titulo="El efecto del ratón va al revés en vertical">
+  <p><strong>Síntoma:</strong> mueves el ratón hacia arriba y el círculo que debería seguirlo baja; en horizontal va bien. O bien el efecto sigue al ratón solo si el lienzo ocupa toda la ventana, y se desplaza cuando hay algo encima.</p>
+  <p><strong>Causa:</strong> <code>clientY</code> crece hacia abajo y <code>gl_FragCoord.y</code> hacia arriba. Si pasas <code>clientY</code> tal cual al shader, la y queda reflejada. El segundo síntoma es otro olvido: <code>clientY</code> se mide desde la ventana, no desde el lienzo; hay que restar <code>getBoundingClientRect().top</code>.</p>
+  <p><strong>Solución:</strong> <code>y = (rect.bottom - e.clientY) * dpr</code>, que resta el borde del lienzo y da la vuelta al eje en una sola operación. Y multiplica por el dpr, o el efecto irá a la mitad de camino en pantallas de alta densidad. En la demo de arriba puedes comparar los valores de pantalla y GL.</p>
+</div>
+
+<div class="callout senior">
+  <p>Dos detalles que separan a quien «hace que funcione» de quien sabe por qué funciona. Primero, <code>gl_FragCoord</code> apunta al <strong>centro</strong> del píxel: en un lienzo de 800 píxeles, la x va de 0.5 a 799.5, nunca vale 0 ni 800. Por eso <code>gl_FragCoord.xy / u_resolution</code> nunca llega exactamente a 0 ni a 1, y si comparas con igualdad (<code>uv.x == 0.0</code>) no se cumplirá nunca. Segundo, un píxel CSS no es un píxel: con dpr = 2, un rectángulo de 400 px CSS ocupa 800 píxeles físicos, y el shader trabaja en los físicos.</p>
+</div>
+
+<h3>El idioma de los shaders: coordenadas centradas</h3>
+<p>En casi todos los shaders de este curso verás esta línea, que es una conversión de sistema como las anteriores:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+</script>
+<p>Léela de dentro afuera: <code>2.0 * gl_FragCoord.xy - u_resolution</code> lleva el origen al centro del lienzo (en el centro, <code>gl_FragCoord.xy</code> vale la mitad de la resolución) y duplica la escala; al dividir por la altura, la y va de −1 (abajo) a 1 (arriba) y la x va de −aspecto a +aspecto, donde aspecto = ancho / alto. Dividir los dos ejes <strong>por el mismo número</strong> es lo importante: una unidad mide lo mismo en horizontal que en vertical, así que <code>length(p) &lt; 0.5</code> es un círculo y no una elipse. Si dividieras cada eje por su propio tamaño (<code>gl_FragCoord.xy / u_resolution</code>, las uv) tendrías coordenadas de 0 a 1 en los dos ejes, pero estiradas en cuanto el lienzo no fuera cuadrado.</p>
+
+<div class="quiz">
+  <p class="pregunta">Un evento te da <code>clientY - rect.top = 100</code> sobre un lienzo de 400 px CSS de alto, en una pantalla con <code>devicePixelRatio = 2</code>. ¿Qué <code>gl_FragCoord.y</code> tiene (aproximadamente) el píxel que está bajo el puntero?</p>
+  <ul>
+    <li>100<div class="explicacion">Es el valor en pantalla, con la y hacia abajo y en px CSS. El shader mide desde abajo y en píxeles físicos.</div></li>
+    <li>300<div class="explicacion">Has invertido el eje (400 − 100 = 300), pero te falta el dpr: el lienzo tiene 800 filas físicas, no 400.</div></li>
+    <li data-correcta>600<div class="explicacion">(400 − 100) × 2 = 600. Primero das la vuelta al eje en px CSS y después pasas a físicos. (Con más precisión, el centro de esa fila física será 599.5 o 600.5, según hacia dónde redondees.)</div></li>
+    <li>700<div class="explicacion">Sale de 400 × 2 − 100: mezclas unidades, restando px CSS a una altura en físicos. Es un error muy común cuando la conversión se hace en dos sitios distintos del código.</div></li>
+  </ul>
+</div>
+
+<h2>Operaciones con vectores</h2>
+<p>Con la notación clara, las operaciones son pocas y todas tienen un dibujo. Escribiremos los vectores con flecha, $\vec a = (a_x, a_y)$, y los puntos con mayúscula, $P$.</p>
+
+<h3>Suma: un desplazamiento detrás de otro</h3>
+<p>$\vec a + \vec b = (a_x + b_x,\; a_y + b_y)$. En el dibujo: pon la cola de $\vec b$ en la punta de $\vec a$ («cabeza con cola»); la suma va del inicio de $\vec a$ al final de $\vec b$. Si lo haces en el otro orden obtienes el mismo punto final: los dos caminos forman un paralelogramo, y por eso $\vec a + \vec b = \vec b + \vec a$. En animación, la suma es la acumulación de influencias: velocidad = empuje del jugador + viento + corriente.</p>
+
+<h3>Resta: de dónde a dónde</h3>
+<p>$\vec b - \vec a = (b_x - a_x,\; b_y - a_y)$ es el vector que <strong>va de la punta de $\vec a$ a la punta de $\vec b$</strong>. Con puntos: $B - A$ es el desplazamiento que te lleva de $A$ a $B$. Recuerda la regla <strong>«destino menos origen»</strong>: si la escribes al revés, todo irá en la dirección contraria (la nave huirá del ratón en lugar de perseguirlo).</p>
+
+<h3>Producto por un número: estirar, encoger, dar la vuelta</h3>
+<p>$k\,\vec a = (k\,a_x,\; k\,a_y)$. Si $k > 1$ el vector se alarga, si $0 &lt; k &lt; 1$ se acorta, si $k &lt; 0$ además se da la vuelta, y $k = 0$ da el vector nulo $(0, 0)$, que no tiene dirección. A los números sueltos se les llama <strong>escalares</strong>, porque eso es lo que hacen: escalar vectores.</p>
+
+<div class="demo" id="demo-operaciones">
+  <div class="demo-lienzo"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<h3>Longitud: Pitágoras</h3>
+<p>El vector $\vec v = (v_x, v_y)$ es la hipotenusa de un triángulo rectángulo de catetos $v_x$ y $v_y$. Por el teorema de Pitágoras:</p>
+$$|\vec v| = \sqrt{v_x^2 + v_y^2}$$
+<p>En 3D aplicas Pitágoras dos veces: primero en el plano $xy$, que da una hipotenusa $h$ con $h^2 = v_x^2 + v_y^2$; después, $h$ y $v_z$ son los catetos de otro triángulo rectángulo, así que $|\vec v|^2 = h^2 + v_z^2 = v_x^2 + v_y^2 + v_z^2$. La fórmula se generaliza a cualquier número de componentes. A la longitud también se le llama <strong>módulo</strong> o <strong>norma</strong>; en GLSL es <code>length(v)</code> y en JavaScript <code>Math.hypot(x, y)</code> o <code>Math.sqrt(x*x + y*y)</code>.</p>
+
+<div class="callout senior" data-titulo="Math.hypot contra Math.sqrt">
+  <p><code>Math.hypot</code> no es solo azúcar sintáctico: está pensada para no desbordar. <code>Math.sqrt(1e200*1e200 + 1e200*1e200)</code> da <code>Infinity</code>, porque $10^{400}$ no cabe en un double, mientras que <code>Math.hypot(1e200, 1e200)</code> da <code>1.414e200</code>, correcto (y lo mismo en el otro extremo: con <code>1e-200</code>, la versión con raíz da 0). El precio es la velocidad: en nuestra prueba con Chrome 154 en un Apple M1, cinco millones de llamadas tardaron 57&nbsp;ms con <code>hypot</code> y 7&nbsp;ms con la raíz, unas ocho veces más. En coordenadas de pantalla nunca vas a desbordar, así que en un bucle caliente (miles de partículas por frame) usa la raíz. Y mejor aún, el truco siguiente.</p>
+</div>
+
+<div class="callout hack">
+  <p><strong>Compara distancias al cuadrado.</strong> Para saber si una partícula está a menos de <code>r</code> del ratón no necesitas la raíz: como las dos cantidades son positivas, $|\vec d| &lt; r \iff |\vec d|^2 &lt; r^2$. En código: <code>dx*dx + dy*dy &lt; r*r</code>. Te ahorras la raíz en cada comparación, y en las colisiones de muchos objetos esa raíz se paga millones de veces. En GLSL el equivalente es <code>dot(d, d)</code>, que verás en la lección siguiente.</p>
+</div>
+
+<h3>Normalizar: quedarse solo con la dirección</h3>
+<p>Un <strong>vector unitario</strong> mide exactamente 1. Sirve para representar una dirección pura: «hacia allí», sin «cuánto». Se obtiene dividiendo el vector por su longitud, y se escribe con sombrero:</p>
+$$\hat v = \frac{\vec v}{|\vec v|} = \left(\frac{v_x}{|\vec v|},\; \frac{v_y}{|\vec v|}\right)$$
+<p>¿Por qué mide 1? Porque dividir las dos componentes por el mismo número $L$ divide la longitud por $L$: $|\vec v / L| = |\vec v|/L = 1$. El patrón más útil de la animación es <strong>dirección × velocidad</strong>: normalizas para quedarte con la dirección y multiplicas por la rapidez que tú eliges, en lugar de la que traía el vector. En GLSL es <code>normalize(v)</code>.</p>
+
+<div class="demo" id="demo-longitud">
+  <div class="demo-lienzo"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Arrastra la punta del vector hasta el origen exacto (el punto se ajusta a una rejilla de 0.25 para que puedas conseguirlo). La longitud vale 0 y la normalización se convierte en $0/0$. En JavaScript, <code>0 / 0</code> es <code>NaN</code> (<em>Not a Number</em>); en la GPU, <code>normalize(vec2(0.0))</code> también da <code>NaN</code> en las dos componentes (lo comprobamos en un M1: la especificación de GLSL no garantiza nada, y otras GPU podrían devolver otra cosa). Y NaN es contagioso: cualquier cuenta en la que participe da NaN.</p>
+
+<div class="callout bestiario" data-id="m3-normalizar-cero" data-titulo="La partícula desaparece al llegar a su objetivo">
+  <p><strong>Síntoma:</strong> un objeto que persigue un punto funciona perfectamente… hasta que lo alcanza. Entonces desaparece para siempre, sin ningún error en la consola. A veces solo pasa «de vez en cuando».</p>
+  <p><strong>Causa:</strong> cuando la posición coincide exactamente con el objetivo, el vector entre ambos es $(0,0)$ y normalizarlo divide 0 entre 0: <code>NaN</code>. La posición se vuelve <code>NaN</code> y ya no sale de ahí (<code>NaN + lo_que_sea</code> es <code>NaN</code>). Canvas 2D no lanza ningún error con coordenadas NaN: <code>ctx.arc(NaN, NaN, …)</code> no dibuja nada. Es intermitente porque solo ocurre cuando los números caen <em>exactamente</em> en el objetivo.</p>
+  <p><strong>Solución:</strong> antes de dividir, comprueba la longitud: si es menor que el paso de este frame, coloca el objeto en el objetivo y no normalices (es el ejemplo 3.1.2). En una librería, decide qué devuelve <code>normalizar</code> para el vector nulo y documéntalo: <code>glkit.js</code>, la librería del curso, devuelve $(0,0,0)$, lo que esconde el NaN pero puede ocultar también el error. Para cazar el problema, <code>Number.isNaN(pos.x)</code> en un <code>console.assert</code>.</p>
+</div>
+
+<p>Provócalo tú. La bola va hacia el objetivo a 4 px por frame y parte a 200 px exactos, así que en el frame 50 cae justo encima:</p>
+
+<div class="js-playground" data-titulo="La bola que desaparece (NaN)" data-altura="200" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth;      // sin devicePixelRatio para no distraer (lo viste en 2.6)
+canvas.height = canvas.clientHeight;
+
+const objetivo = { x: 300, y: 100 };    // un PUNTO
+const bola = { x: 100, y: 100 };        // otro PUNTO
+const velocidad = 4;                    // px por frame (a propósito sin dt: ver ejemplo 3.1.2)
+let frame = 0;
+
+function paso() {
+  frame++;
+  const dx = objetivo.x - bola.x;       // vector bola → objetivo (destino − origen)
+  const dy = objetivo.y - bola.y;
+  const l = Math.hypot(dx, dy);         // su longitud
+  bola.x += dx / l * velocidad;         // dirección unitaria × velocidad...
+  bola.y += dy / l * velocidad;         // ...¿y si l vale 0?
+
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#3fd0e8';
+  ctx.strokeRect(objetivo.x - 8, objetivo.y - 8, 16, 16);
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath();
+  ctx.arc(bola.x, bola.y, 10, 0, Math.PI * 2);   // con NaN no dibuja nada (y no avisa)
+  ctx.fill();
+
+  if (frame % 10 === 0 || frame >= 49) console.log('frame', frame, '→ bola en', bola.x, bola.y);
+  if (Number.isNaN(bola.x)) {
+    console.log('⚠ La posición es NaN: la bola ya no se dibujará nunca más.');
+    return;                             // paramos el bucle para no inundar la consola
+  }
+  requestAnimationFrame(paso);
+}
+requestAnimationFrame(paso);
+</script>
+</div>
+
+<h3>Distancia y dirección de A a B</h3>
+<p>Con resta, longitud y normalización tienes las dos preguntas más frecuentes de la geometría de juegos:</p>
+$$d(A, B) = |B - A|, \qquad \text{dirección de } A \text{ a } B = \frac{B - A}{|B - A|}$$
+<p>En GLSL: <code>distance(a, b)</code>, que es lo mismo que <code>length(b - a)</code>, y <code>normalize(b - a)</code>. La distancia es simétrica ($d(A,B) = d(B,A)$); la dirección no: la de B a A es la opuesta.</p>
+
+<div class="callout cuidado">
+  <p>En JavaScript, los arrays no se suman. <code>[1, 2] + [3, 4]</code> no da <code>[4, 6]</code> ni un error: da la cadena <code>"1,23,4"</code>, porque el operador <code>+</code> convierte los dos arrays a texto y los concatena (lección <a href="../01-web/03-js-lenguaje.html">1.3</a>). JavaScript no tiene operadores para vectores: por eso existen librerías como la que escribirás más abajo, y por eso en GLSL, que sí los tiene, el código queda tan compacto.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tienes la posición del jugador <code>J</code> y la de un enemigo <code>E</code>. ¿Qué expresión da la dirección, como vector unitario, en la que debe moverse el enemigo para perseguir al jugador?</p>
+  <ul>
+    <li><code>normalize(E - J)</code><div class="explicacion">Es la dirección contraria: va del jugador hacia el enemigo. Con ella el enemigo huiría. Recuerda: destino menos origen.</div></li>
+    <li data-correcta><code>normalize(J - E)</code><div class="explicacion">Destino (el jugador) menos origen (el enemigo): el desplazamiento que lleva de E a J. Normalizado, es la dirección pura; multiplícala por la velocidad que quieras.</div></li>
+    <li><code>J - E</code><div class="explicacion">Apunta bien, pero no es unitario: mide la distancia entre ambos. Si lo usas como velocidad, el enemigo irá rapidísimo cuando esté lejos y lentísimo cuando esté cerca. (A veces se busca ese efecto, pero entonces no es «la dirección».)</div></li>
+    <li><code>normalize(J) - normalize(E)</code><div class="explicacion">Normalizar puntos no tiene sentido: el resultado depende del origen. Primero se resta (se obtiene un vector) y después se normaliza.</div></li>
+  </ul>
+</div>
+
+<h2>Vectores en GLSL</h2>
+<p>Aún no has visto WebGL (llegará en los módulos <a href="../04-gpu/01-cpu-vs-gpu.html">4</a> y <a href="../05-webgl/01-contexto.html">5</a>), pero en este módulo usaremos <strong>fragment shaders</strong> en el editor para tocar las matemáticas: un pequeño programa que la GPU ejecuta <strong>una vez por píxel</strong>, en paralelo, y que devuelve el color de ese píxel. Esto es lo mínimo que necesitas saber del lenguaje; la referencia completa está en la lección <a href="../06-glsl/01-lenguaje.html">6.1</a>.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+#version 300 es
+precision highp float;
+
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = 0.5;
+  vec3 color = length(p) < r ? vec3(1.0, 0.8, 0.2) : vec3(0.1);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<ol>
+  <li data-l="1">La versión del lenguaje: GLSL ES 3.00, el de WebGL2. Tiene que ser literalmente la primera línea.</li>
+  <li data-l="2">Precisión de los <code>float</code>: <code>highp</code> es un float de 32 bits. En el fragment shader es obligatorio declararla. Qué significa exactamente, y por qué a veces importa mucho, lo verás en <a href="07-precision.html">3.7</a>.</li>
+  <li data-l="4-6">Los <em>uniforms</em>: valores que pone JavaScript y que valen lo mismo para todos los píxeles. El editor rellena estos tres si los declaras: tamaño del lienzo en píxeles físicos, ratón en el mismo espacio que <code>gl_FragCoord</code> y segundos desde el inicio.</li>
+  <li data-l="7">La salida: el color de este píxel, RGBA, cada canal de 0 a 1.</li>
+  <li data-l="9">Se ejecuta una vez por píxel. Ningún píxel sabe nada de los demás.</li>
+  <li data-l="10">Coordenadas centradas (sección anterior). <code>gl_FragCoord.xy</code> es un <code>vec2</code> con la posición de este píxel.</li>
+  <li data-l="11">Los números con decimales se escriben siempre con punto: <code>0.5</code>, <code>1.0</code>, nunca <code>1</code>. GLSL ES no convierte enteros en float automáticamente: <code>float r = 1;</code> es un error de compilación («cannot convert from 'const int' to 'highp float'»).</li>
+  <li data-l="12"><code>length(p)</code> es la distancia del píxel al centro. El operador <code>?:</code> funciona como en JavaScript. <code>vec3(0.1)</code> repite el valor en las tres componentes.</li>
+  <li data-l="13"><code>vec4(color, 1.0)</code>: se construye un vec4 con un vec3 y un float. El alfa se ignora en nuestros editores.</li>
+</ol>
+</div>
+
+<h3>vec2, vec3, vec4 y los swizzles</h3>
+<p>GLSL tiene vectores de 2, 3 y 4 componentes como tipos nativos. Se construyen con mucha libertad: <code>vec3(1.0)</code> es <code>(1, 1, 1)</code>, <code>vec3(p, 0.5)</code> pega un <code>vec2</code> y un float, <code>vec2(v4)</code> se queda con las dos primeras componentes de un <code>vec4</code>. Las componentes se leen con <code>.x .y .z .w</code>, o con los alias <code>.r .g .b .a</code> (colores) y <code>.s .t .p .q</code> (texturas), que son exactamente lo mismo.</p>
+<p>Lo potente son los <strong>swizzles</strong>: puedes pedir varias componentes a la vez, en cualquier orden y repitiéndolas. <code>v.yx</code> intercambia x e y, <code>v.xxx</code> es un <code>vec3</code> con tres copias de x, <code>color.bgr</code> invierte el orden de los canales. También puedes asignar a un swizzle (<code>v.xy = vec2(1.0, 2.0);</code>) con dos límites que el compilador comprueba: a la izquierda del <code>=</code> no puedes repetir componentes (<code>v.xx = …</code> da «l-value of swizzle cannot have duplicate components») y no puedes mezclar familias (<code>v.xg</code> da «vector component fields not from the same set»).</p>
+
+<h3>Componente a componente</h3>
+<p>En GLSL los operadores aritméticos entre vectores actúan <strong>componente a componente</strong>: <code>vec2(2.0, 3.0) * vec2(4.0, 5.0)</code> vale <code>vec2(8.0, 15.0)</code>, y la división igual. No es ningún «producto de vectores» de los libros (esos son <code>dot</code> y <code>cross</code>, en la lección siguiente). Es justo lo que quieres para escalar cada eje por separado: <code>p * vec2(aspecto, 1.0)</code> corrige el aspecto, <code>color * vec3(1.0, 0.5, 0.5)</code> tiñe de rojo. Un escalar por un vector multiplica todas las componentes. Mezclar tamaños distintos es un error de compilación: <code>vec2 * vec3</code> no existe.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.1.1 — Cada píxel es un punto</h3>
+  <p>Vamos a pintar, en cada píxel, el <strong>vector que va del ratón a ese píxel</strong>: su dirección como color y su longitud como brillo, más un círculo de radio 0.3 alrededor del ratón. Mueve el ratón sobre el lienzo.</p>
+  <div class="glsl-playground" data-titulo="Del ratón a cada píxel" data-altura="380" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+
+void main() {
+  // El PUNTO que calcula esta invocación: el píxel, en coordenadas centradas
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  // Otro PUNTO: el ratón, convertido al MISMO sistema (si no, no se pueden restar)
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+
+  vec2 d = p - m;                       // VECTOR del ratón al píxel: destino − origen
+  float dist = length(d);               // su longitud
+  vec2 dir = d / max(dist, 1e-6);       // su dirección, sin dividir nunca por 0
+
+  vec3 color = vec3(0.5 + 0.5 * dir, 0.6);        // dirección → color: de [-1,1] a [0,1]
+  color *= 1.0 - 0.7 * min(dist / 1.5, 1.0);      // más oscuro cuanto más lejos
+  if (abs(dist - 0.3) < 0.01) color = vec3(1.0);  // anillo: los píxeles a distancia ≈ 0.3
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <p>Paso a paso:</p>
+  <ol>
+    <li><strong>Mismo sistema para todo.</strong> <code>u_mouse</code> llega en píxeles físicos, igual que <code>gl_FragCoord</code>, así que le aplicamos la misma conversión. Restar un punto en píxeles de otro en coordenadas centradas daría basura.</li>
+    <li><strong>Destino menos origen.</strong> <code>p - m</code> apunta del ratón hacia el píxel. Si escribes <code>m - p</code>, todos los colores se invierten (cada dirección pasa a su opuesta).</li>
+    <li><strong>Normalizar con red.</strong> En el píxel exacto del ratón, <code>dist</code> puede ser 0. Dividir por <code>max(dist, 1e-6)</code> garantiza que nunca dividimos por 0: allí <code>d</code> es <code>(0, 0)</code> y la dirección sale <code>(0, 0)</code> en lugar de NaN. Es el bestiario de arriba, versión GPU.</li>
+    <li><strong>De dirección a color.</strong> Las componentes de un vector unitario están entre −1 y 1, y un color entre 0 y 1: <code>0.5 + 0.5 * dir</code> es la conversión lineal entre ambos intervalos. A la derecha del ratón (dir = (1, 0)) el color es (1, 0.5, 0.6), un rosa salmón; arriba (0, 1), (0.5, 1, 0.6), un verde claro; a la izquierda, (0, 0.5, 0.6), un azul verdoso. La componente azul fija (0.6) evita que el color caiga a negro.</li>
+    <li><strong>El anillo</strong> es el conjunto de píxeles cuya distancia al ratón está a menos de 0.01 de 0.3. Como las coordenadas están centradas y divididas por la altura en los dos ejes, es un círculo perfecto aunque el lienzo no sea cuadrado. En <a href="04-funciones-forma.html">3.4</a> suavizarás ese borde con <code>smoothstep</code>.</li>
+  </ol>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué vale <code>vec2(2.0, 3.0) * vec2(4.0, 5.0)</code> en GLSL?</p>
+  <ul>
+    <li><code>23.0</code><div class="explicacion">Eso sería el producto punto (2·4 + 3·5), que en GLSL se escribe <code>dot(a, b)</code>. El operador <code>*</code> entre vectores no suma nada.</div></li>
+    <li data-correcta><code>vec2(8.0, 15.0)</code><div class="explicacion">Componente a componente: (2·4, 3·5). Es la operación que usas para escalar cada eje o cada canal de color por separado.</div></li>
+    <li>Un error de compilación: no se pueden multiplicar dos vectores<div class="explicacion">Sí se puede, siempre que tengan el mismo tamaño. Lo que da error es mezclar tamaños (<code>vec2 * vec3</code>) o escribir enteros donde van floats.</div></li>
+  </ul>
+</div>
+
+<h2>Tu mini librería vec2 en JavaScript</h2>
+<p>Como JavaScript no tiene vectores, vamos a escribir las operaciones como funciones. Es poco código, pero cada decisión de diseño tiene consecuencias.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const v2 = (x, y) => ({ x, y });
+
+const sumar   = (a, b) => v2(a.x + b.x, a.y + b.y);
+const restar  = (a, b) => v2(a.x - b.x, a.y - b.y);
+const escalar = (a, k) => v2(a.x * k, a.y * k);
+
+const longitud  = (a) => Math.sqrt(a.x * a.x + a.y * a.y);
+const distancia = (a, b) => longitud(restar(b, a));
+
+function normalizar(a) {
+  const l = longitud(a);
+  if (l < 1e-12) return v2(0, 0);
+  return escalar(a, 1 / l);
+}
+
+const lerp = (a, b, t) => v2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+</script>
+<ol>
+  <li data-l="1">Un vector es un objeto <code>{x, y}</code>. Alternativas: arrays <code>[x, y]</code> (compactos, pero <code>v[0]</code> se lee peor) o <code>Float32Array</code> (lo que espera WebGL, lección <a href="../01-web/06-binario.html">1.6</a>). Los objetos con la misma forma son rápidos en V8 porque comparten «clase oculta».</li>
+  <li data-l="3-5">Cada operación devuelve un vector <strong>nuevo</strong> y no modifica sus argumentos. Es fácil de razonar: <code>sumar(a, b)</code> nunca cambia <code>a</code>. El coste se discute en la caja de abajo.</li>
+  <li data-l="7">Raíz directa en lugar de <code>Math.hypot</code>: más rápida, y con coordenadas de pantalla no hay riesgo de desbordar.</li>
+  <li data-l="8">Distancia = longitud de la resta. El orden de la resta aquí da igual (la longitud es simétrica), pero escribimos «destino menos origen» por costumbre.</li>
+  <li data-l="10-14">La decisión importante: ¿qué hacer con el vector nulo? Aquí devolvemos <code>(0, 0)</code>, silencioso. Otra opción es devolver <code>null</code> o lanzar un error, que te obliga a tratar el caso. Lo imperdonable es no decidir y dejar que salga NaN.</li>
+  <li data-l="12">Umbral 1e-12 y no <code>=== 0</code>: un vector que sale de restar dos posiciones casi iguales (por ejemplo <code>(3e-17, −1e-17)</code>, un simple residuo de redondeo) no es exactamente nulo, pero su dirección es ruido puro. Normalizarlo daría un vector unitario perfectamente válido… y sin ningún significado.</li>
+  <li data-l="16">Interpolación lineal entre dos puntos. Su historia completa está en la sección siguiente.</li>
+</ol>
+</div>
+
+<div class="js-playground" data-titulo="Pruebas de la mini librería" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+const v2 = (x, y) => ({ x, y });
+const sumar = (a, b) => v2(a.x + b.x, a.y + b.y);
+const restar = (a, b) => v2(a.x - b.x, a.y - b.y);
+const escalar = (a, k) => v2(a.x * k, a.y * k);
+const longitud = (a) => Math.sqrt(a.x * a.x + a.y * a.y);
+const distancia = (a, b) => longitud(restar(b, a));
+function normalizar(a) {
+  const l = longitud(a);
+  if (l < 1e-12) return v2(0, 0);
+  return escalar(a, 1 / l);
+}
+const lerp = (a, b, t) => v2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+
+const A = v2(1, 2), B = v2(4, 6);
+console.log('B − A =', restar(B, A));                     // { x: 3, y: 4 }
+console.log('distancia =', distancia(A, B));              // 5 (triángulo 3-4-5)
+console.log('dirección A→B =', normalizar(restar(B, A))); // ¿0.6000000000000001? (ver la nota)
+console.log('longitud de la dirección =', longitud(normalizar(restar(B, A))));
+console.log('punto medio =', lerp(A, B, 0.5));            // { x: 2.5, y: 4 }
+console.log('normalizar(0, 0) =', normalizar(v2(0, 0)));  // decisión documentada
+console.log('sumar no modifica A:', A);
+</script>
+</div>
+
+<div class="callout senior" data-titulo="¿0.6000000000000001?">
+  <p>Mira la tercera línea de la consola: la dirección de A a B sale <code>0.6000000000000001</code>, no <code>0.6</code>. <code>normalizar</code> multiplica por <code>1 / l</code> (una división y dos multiplicaciones, más barato que dos divisiones), y 1/5 = 0.2 no tiene representación exacta en binario: <code>3 * 0.2</code> redondea a <code>0.6000000000000001</code>, mientras que <code>3 / 5</code> redondea a <code>0.6</code>. La diferencia está en el último bit (en <a href="07-precision.html">3.7</a> verás qué significa eso exactamente). Para dibujar da igual, pero es la razón por la que nunca debes comparar floats con <code>===</code>. Y los compiladores de GLSL hacen esta sustitución por su cuenta: la especificación les permite cambiar <code>a / b</code> por <code>a * (1.0 / b)</code>.</p>
+</div>
+
+<div class="callout senior" data-titulo="El coste de crear objetos">
+  <p>Cada <code>v2(...)</code> crea un objeto nuevo. Con diez sprites da igual; con diez mil partículas y cinco operaciones por partícula son cincuenta mil objetos por frame, tres millones por segundo, y el recolector de basura acabará haciendo pausas que se ven como tirones. Las librerías serias (por ejemplo <em>gl-matrix</em>) usan el estilo <code>vec2.add(out, a, b)</code>: escriben el resultado en un objeto que ya existe y no crean nada. Para muchísimas partículas, lo más rápido es no tener objetos: un único <code>Float32Array</code> con todas las x e y (una «estructura de arrays», lección <a href="../01-web/06-binario.html">1.6</a>), que además se puede enviar tal cual a la GPU.</p>
+</div>
+
+<h2>Interpolación lineal entre puntos</h2>
+<p>La interpolación lineal, <strong>lerp</strong> (de <em>linear interpolation</em>), responde a «¿dónde estoy si he recorrido una fracción $t$ del camino de $A$ a $B$?». Es un punto más una fracción del desplazamiento:</p>
+$$\operatorname{lerp}(A, B, t) = A + (B - A)\,t = (1 - t)\,A + t\,B$$
+<p>Las dos formas son iguales algebraicamente (reparte el paréntesis de la primera y agrupa). La segunda muestra que es una combinación afín: los pesos $(1-t)$ y $t$ suman 1, así que el resultado es un punto legítimo. Con $t = 0$ estás en $A$, con $t = 1$ en $B$, con $t = 0.5$ en el punto medio. Si $t$ sale de $[0, 1]$ <strong>extrapolas</strong>: sigues la recta más allá de los extremos. En GLSL, lerp se llama <code>mix(a, b, t)</code> y funciona con floats, con vectores y hasta con un <code>t</code> distinto para cada componente.</p>
+
+<div class="demo" id="demo-lerp">
+  <div class="demo-lienzo"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>En la lección <a href="../02-animacion/04-interpolacion-easing.html">2.4</a> interpolaste valores en el tiempo; con puntos es lo mismo, componente a componente. Si en lugar de avanzar $t$ a velocidad constante lo pasas por una función de easing, $A$ y $B$ no cambian, pero el recorrido acelera y frena: <code>lerp(A, B, ease(progreso))</code>.</p>
+
+<div class="callout senior" data-titulo="Las dos fórmulas no son iguales en un ordenador">
+  <p>Ya lo viste en <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>: en coma flotante, $A + (B - A)t$ y $(1-t)A + tB$ no dan exactamente lo mismo, y ninguna es perfecta. La primera no garantiza llegar a $B$ con $t = 1$; el caso extremo es <code>a = 1e16</code> y <code>b = 1</code>, donde <code>a + (b - a) * 1</code> da <code>0</code>, porque al calcular <code>1 - 1e16</code> el 1 se pierde (un double no tiene dígitos para guardar los dos a la vez). La segunda sí devuelve exactamente los extremos, pero puede no devolver <code>a</code> cuando <code>a</code> y <code>b</code> son iguales. Con puntos pasa lo mismo, componente a componente. Si una animación debe terminar <em>exactamente</em> en su destino (para compararla con <code>===</code>, o para que no quede un píxel de temblor), asigna el destino al terminar. El porqué profundo de estas pérdidas está en <a href="07-precision.html">3.7</a>.</p>
+</div>
+
+<div class="callout senior" data-titulo="El lerp que depende de los fps">
+  <p>Un patrón muy extendido es acercarse a un objetivo con <code>pos = lerp(pos, objetivo, 0.1)</code> en cada frame: se recorre el 10&nbsp;% de lo que falta y queda un movimiento suave que frena al llegar. Pero ese 10&nbsp;% es <em>por frame</em>: a 120 Hz el objeto llega el doble de rápido que a 60 Hz. En <a href="../02-animacion/04-interpolacion-easing.html">2.4</a> viste la versión independiente de los fps, <code>1 - Math.exp(-lambda * dt)</code> como fracción de cada frame. Con puntos es idéntico: <code>pos = lerp(pos, objetivo, 1 - Math.exp(-lambda * dt))</code> aplica la misma fracción a las dos componentes, así que el punto se acerca en línea recta hacia el objetivo, frenando, a la misma velocidad en cualquier pantalla.</p>
+</div>
+
+<h2>Aplicaciones en animación</h2>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.1.2 — Ir hacia un objetivo a velocidad constante</h3>
+  <p>Queremos que un seguidor vaya hacia el ratón a 180 px por segundo, en línea recta, sin pasarse, sin temblar al llegar y sin NaN. Es la versión correcta de la bola que desaparecía.</p>
+  <div class="js-playground" data-titulo="Seguidor a velocidad constante" data-altura="280" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+canvas.width = canvas.clientWidth * dpr;
+canvas.height = canvas.clientHeight * dpr;
+ctx.scale(dpr, dpr);                          // dibujamos en px CSS (lección 2.6)
+
+const pos = { x: 40, y: 40 };                 // PUNTO: dónde está el seguidor
+const objetivo = { x: 260, y: 170 };          // PUNTO: adónde va (luego, el ratón)
+const VELOCIDAD = 180;                        // px por SEGUNDO
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  objetivo.x = e.clientX - r.left;            // pantalla → lienzo. El canvas 2D también
+  objetivo.y = e.clientY - r.top;             // tiene la y hacia abajo: nada que invertir
+});
+
+function moverHacia(p, obj, maxPaso) {
+  const dx = obj.x - p.x, dy = obj.y - p.y;   // vector p → obj
+  const dist = Math.sqrt(dx * dx + dy * dy);  // cuánto falta
+  if (dist <= maxPaso) {                      // en este frame llegamos (o nos pasaríamos):
+    p.x = obj.x; p.y = obj.y;                 // aterrizamos exactamente
+    return true;                              // y nunca hemos dividido por 0
+  }
+  p.x += dx / dist * maxPaso;                 // dirección unitaria × longitud del paso
+  p.y += dy / dist * maxPaso;
+  return false;
+}
+
+let previo = null, llegado = false;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min(0.1, (ms - previo) / 1000);
+  previo = ms;
+  const ahora = moverHacia(pos, objetivo, VELOCIDAD * dt);
+  if (ahora && !llegado) console.log('Llegado a', objetivo.x.toFixed(1), objetivo.y.toFixed(1));
+  llegado = ahora;
+
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  ctx.setLineDash([5, 5]);
+  ctx.strokeStyle = '#8791a5';
+  ctx.beginPath(); ctx.moveTo(pos.x, pos.y); ctx.lineTo(objetivo.x, objetivo.y); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#3fd0e8';
+  ctx.strokeRect(objetivo.x - 7, objetivo.y - 7, 14, 14);
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath(); ctx.arc(pos.x, pos.y, 10, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Lo que hace cada pieza de <code>moverHacia</code>:</p>
+  <ol>
+    <li><strong>El vector que falta</strong>: <code>obj - p</code>, destino menos origen. Su longitud es la distancia restante.</li>
+    <li><strong>El paso de este frame</strong> es <code>VELOCIDAD * dt</code>: píxeles por segundo por segundos que ha durado el frame. Con <code>dt</code> el seguidor va igual de rápido a 60 que a 144 Hz. Limitamos <code>dt</code> a 0.1 s para que, al volver de otra pestaña, no dé un salto enorme (lección <a href="../02-animacion/03-raf.html">2.3</a>).</li>
+    <li><strong>La condición de llegada</strong> hace tres cosas a la vez: evita pasarse (si el paso es mayor que lo que falta, avanzar el paso completo nos dejaría al otro lado, y en el frame siguiente volveríamos: el seguidor temblaría alrededor del objetivo), termina en la posición exacta y, como ya no normalizamos cuando la distancia es 0, elimina el NaN.</li>
+    <li><strong>El avance</strong>: <code>dx / dist</code> y <code>dy / dist</code> son las componentes de la dirección unitaria; multiplicadas por el paso dan un desplazamiento de longitud exactamente <code>maxPaso</code>. Es el patrón <em>dirección × rapidez</em>.</li>
+  </ol>
+  <p>Fíjate también en lo que <em>no</em> hay: ningún ángulo, ni un seno, ni un coseno. Mucha gente resolvería esto con <code>Math.atan2</code> para sacar el ángulo y después <code>cos</code> y <code>sin</code> para volver a las componentes. Funciona, pero da un rodeo innecesario: la dirección ya estaba en el vector.</p>
+</section>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.1.3 — Limitar la longitud: el bug de la diagonal</h3>
+  <p>Un personaje se mueve con las flechas: derecha suma <code>(1, 0)</code> a la entrada, arriba suma <code>(0, 1)</code>, y la velocidad es <code>entrada * 300</code> px/s. Con una sola tecla va a 300 px/s. Con dos a la vez, la entrada es <code>(1, 1)</code>, cuya longitud es $\sqrt{2} \approx 1.414$: ¡va un 41&nbsp;% más rápido en diagonal! En el ejercicio de la nave de <a href="../01-web/04-js-dom-eventos.html">1.4</a> lo corregiste multiplicando por $1/\sqrt{2}$, que es normalizar ese vector concreto. Con un joystick analógico no basta: la entrada puede ser cualquier vector del cuadrado, y hay que tratarla en general. En la demo, arrastra la entrada <strong>J</strong> por el cuadrado: el punto rojo usa la entrada tal cual y se sale del círculo de alcance; el verde usa la entrada limitada a longitud 1.</p>
+  <div class="demo" id="demo-diagonal">
+    <div class="demo-lienzo"></div>
+    <div class="demo-info"></div>
+  </div>
+  <p>La solución es <strong>limitar la longitud</strong> del vector sin cambiar su dirección: si mide más que el máximo, se normaliza y se multiplica por el máximo; si no, se deja como está (así, un joystick a medio recorrido sigue dando media velocidad).</p>
+  <div class="anotado" data-lang="js">
+<script type="text/plain">
+function limitar(v, max) {
+  const l2 = v.x * v.x + v.y * v.y;
+  if (l2 <= max * max) return v;
+  const k = max / Math.sqrt(l2);
+  return { x: v.x * k, y: v.y * k };
+}
+</script>
+<ol>
+  <li data-l="2">Longitud al cuadrado: todavía sin raíz.</li>
+  <li data-l="3">El caso más frecuente (el vector ya cabe) sale sin pagar ninguna raíz: comparamos cuadrados, el truco de la caja «hack».</li>
+  <li data-l="4">Solo aquí calculamos la raíz. <code>k</code> combina en un único factor «normalizar» (dividir por la longitud) y «escalar» (multiplicar por el máximo).</li>
+  <li data-l="5">Misma dirección, longitud exactamente <code>max</code>. Además, nunca dividimos por 0: si la longitud fuera 0, la línea 3 ya habría devuelto el vector.</li>
+</ol>
+  </div>
+</section>
+
+<div class="callout bestiario" data-id="m3-diagonal-rapida" data-titulo="En diagonal el personaje va más rápido">
+  <p><strong>Síntoma:</strong> con dos teclas de dirección pulsadas, o con el joystick en una esquina, el personaje recorre más distancia por segundo que en horizontal o vertical. En los juegos de carreras de antes, correr en diagonal era un «truco» conocido.</p>
+  <p><strong>Causa:</strong> la entrada $(1, 1)$ mide $\sqrt{2}$, no 1. Sumar ejes independientes produce vectores cuyo recorrido es un cuadrado, y las esquinas del cuadrado están más lejos del centro que sus lados.</p>
+  <p><strong>Solución:</strong> limita la longitud de la entrada a 1 antes de multiplicar por la velocidad (<code>limitar(entrada, 1)</code>). No la normalices sin más: rompería la media velocidad de un joystick analógico y daría NaN con la entrada <code>(0, 0)</code>.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 3.1.1 — Conversores de coordenadas</h3>
+  <p>Completa <code>aNDC</code> (de px CSS de un lienzo a NDC) y <code>aGL</code> (de px CSS a píxeles físicos con la y hacia arriba, como <code>gl_FragCoord</code>). Al ejecutar, las seis pruebas deben salir con ✓.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.1.1" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+// (x, y): posición en px CSS desde la esquina superior izquierda del lienzo.
+function aNDC(x, y, ancho, alto) {
+  // TODO: NDC va de -1 a 1 en cada eje, con el origen en el centro y la y hacia ARRIBA
+  return { x: 0, y: 0 };
+}
+function aGL(x, y, alto, dpr) {
+  // TODO: píxeles físicos, origen ABAJO a la izquierda, y hacia arriba
+  return { x: 0, y: 0 };
+}
+
+// --- pruebas (no hace falta tocarlas) ---
+function comprobar(nombre, obtenido, esperado) {
+  const ok = Math.abs(obtenido.x - esperado.x) < 1e-9 && Math.abs(obtenido.y - esperado.y) < 1e-9;
+  console.log((ok ? '✓ ' : '✗ ') + nombre + ' → ' + JSON.stringify(obtenido) + (ok ? '' : '   (esperaba ' + JSON.stringify(esperado) + ')'));
+}
+comprobar('centro → NDC', aNDC(200, 150, 400, 300), { x: 0, y: 0 });
+comprobar('arriba-izquierda → NDC', aNDC(0, 0, 400, 300), { x: -1, y: 1 });
+comprobar('abajo-derecha → NDC', aNDC(400, 300, 400, 300), { x: 1, y: -1 });
+comprobar('(100, 75) → NDC', aNDC(100, 75, 400, 300), { x: -0.5, y: 0.5 });
+comprobar('arriba-izquierda → GL', aGL(0, 0, 300, 2), { x: 0, y: 600 });
+comprobar('(10, 290) → GL', aGL(10, 290, 300, 2), { x: 20, y: 20 });
+</script>
+<script type="text/x-js" data-solucion>
+function aNDC(x, y, ancho, alto) {
+  return {
+    x: 2 * x / ancho - 1,     // 0 → -1, ancho → 1
+    y: 1 - 2 * y / alto,      // 0 (arriba) → +1, alto (abajo) → -1: el eje se invierte
+  };
+}
+function aGL(x, y, alto, dpr) {
+  return {
+    x: x * dpr,               // solo cambia la unidad
+    y: (alto - y) * dpr,      // primero se invierte el eje (en px CSS), luego se escala
+  };
+}
+
+function comprobar(nombre, obtenido, esperado) {
+  const ok = Math.abs(obtenido.x - esperado.x) < 1e-9 && Math.abs(obtenido.y - esperado.y) < 1e-9;
+  console.log((ok ? '✓ ' : '✗ ') + nombre + ' → ' + JSON.stringify(obtenido) + (ok ? '' : '   (esperaba ' + JSON.stringify(esperado) + ')'));
+}
+comprobar('centro → NDC', aNDC(200, 150, 400, 300), { x: 0, y: 0 });
+comprobar('arriba-izquierda → NDC', aNDC(0, 0, 400, 300), { x: -1, y: 1 });
+comprobar('abajo-derecha → NDC', aNDC(400, 300, 400, 300), { x: 1, y: -1 });
+comprobar('(100, 75) → NDC', aNDC(100, 75, 400, 300), { x: -0.5, y: 0.5 });
+comprobar('arriba-izquierda → GL', aGL(0, 0, 300, 2), { x: 0, y: 600 });
+comprobar('(10, 290) → GL', aGL(10, 290, 300, 2), { x: 20, y: 20 });
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Cada eje es una función lineal $a\,x + b$. Busca dos puntos que conozcas: ¿a qué valor NDC va <code>x = 0</code>? ¿Y <code>x = ancho</code>?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para la y, el valor de pantalla 0 (arriba) tiene que acabar en el máximo del otro sistema. Algo como <code>alto - y</code> hace esa vuelta.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Para NDC, la x debe cumplir $0 \mapsto -1$ y $\text{ancho} \mapsto 1$: la pendiente es $2/\text{ancho}$ y el término independiente $-1$, así que $x_{ndc} = 2x/\text{ancho} - 1$. En la y, los sentidos son opuestos: $0 \mapsto 1$ y $\text{alto} \mapsto -1$, lo que da $y_{ndc} = 1 - 2y/\text{alto}$ (pendiente negativa: ahí está la inversión del eje).</p>
+    <p>Para GL, la x solo cambia de unidad (multiplicar por el dpr). La y hay que invertirla <em>antes</em> de escalar, con la altura en px CSS: <code>(alto - y) * dpr</code>. Escribir <code>alto * dpr - y</code> mezclaría unidades (el error del último distractor del quiz). Si alguna prueba sale con ✗, compara el número obtenido con el esperado: un signo cambiado delata un eje sin invertir, y un factor 2 un dpr olvidado.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.1.2 — Un anillo redondo y su reflejo</h3>
+  <p>El shader de partida dibuja un anillo alrededor del ratón, pero trabaja en uv (0 a 1 en cada eje) y en cuanto el lienzo no es cuadrado el anillo sale ovalado. Corrígelo para que sea un círculo perfecto de radio 0.3 (en unidades de «media altura», las coordenadas centradas) y añade un punto relleno de radio 0.06 en el <strong>simétrico del ratón respecto al centro</strong> del lienzo: si el ratón está arriba a la derecha, el punto debe aparecer abajo a la izquierda. Mueve el ratón sobre el lienzo para comprobarlo: al principio ratón y reflejo coinciden en el centro.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.1.2" data-altura="300" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;   // 0..1 en cada eje: ¡estirado!
+  vec2 m = u_mouse / u_resolution;
+
+  float dist = length(uv - m);
+  vec3 color = vec3(0.08, 0.09, 0.12);
+  if (abs(dist - 0.3) < 0.01) color = vec3(1.0, 0.8, 0.2);
+  // TODO: el punto simétrico del ratón respecto al centro
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+
+void main() {
+  // Mismo divisor (la altura) en los dos ejes: una unidad mide igual en x que en y
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+
+  vec3 color = vec3(0.08, 0.09, 0.12);
+  if (abs(length(p - m) - 0.3) < 0.01) color = vec3(1.0, 0.8, 0.2);
+  // Con el origen en el centro, el simétrico de m es -m
+  vec2 reflejo = -m;
+  if (length(p - reflejo) < 0.06) color = vec3(0.25, 0.8, 0.9);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El problema es dividir cada eje por un número distinto. Usa la línea de coordenadas centradas de la lección, y aplícasela también al ratón.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con el origen en el centro del lienzo, ¿qué punto es el simétrico de $M$ respecto al origen? Piensa en el vector que va del centro a $M$ y dale la vuelta.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>En uv, una unidad horizontal mide <code>u_resolution.x</code> píxeles y una vertical <code>u_resolution.y</code>: la «distancia» 0.3 no mide lo mismo en cada dirección, y el conjunto de puntos a distancia 0.3 es una elipse. Las coordenadas centradas dividen los dos ejes por la altura, así que la unidad es la misma y <code>length</code> vuelve a medir distancias de verdad. El ratón tiene que pasar por la misma conversión: si restas un punto en uv de otro en coordenadas centradas, el resultado no significa nada.</p>
+    <p>Para el reflejo: con el origen en el centro, $M$ es a la vez un punto y el vector que va del centro a $M$. El simétrico está al otro lado del centro, a la misma distancia: el vector opuesto, <code>-m</code>. (Si el origen no fuera el centro $C$, sería $C - (M - C) = 2C - M$: una combinación con pesos $2$ y $-1$, que suman 1, así que es un punto legítimo.)</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.1.3 — Persecución con velocidad máxima</h3>
+  <p>Esta partícula acelera hacia el ratón (la aceleración apunta al ratón y crece con la distancia, como un muelle de la lección <a href="../02-animacion/05-fisica-muelles.html">2.5</a>), pero su velocidad no tiene tope: si alejas el ratón, sale disparada. Implementa <code>limitar(v, max)</code> y úsala para que la velocidad nunca pase de 250 px/s. La consola muestra cada segundo la rapidez máxima alcanzada: con tu arreglo no debe superar 250.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.1.3" data-altura="280" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+
+const pos = { x: 30, y: 30 }, vel = { x: 0, y: 0 };
+const raton = { x: canvas.width - 40, y: canvas.height - 40 };
+const VMAX = 250;          // px/s
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = e.clientX - r.left; raton.y = e.clientY - r.top;
+});
+
+function limitar(v, max) {
+  // TODO: si |v| > max, devuelve un vector con la misma dirección y longitud max
+  return v;
+}
+
+let previo = null, maxVisto = 0, tInforme = 0;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min(0.05, (ms - previo) / 1000);
+  previo = ms;
+  const acc = { x: (raton.x - pos.x) * 8, y: (raton.y - pos.y) * 8 };  // hacia el ratón
+  vel.x = (vel.x + acc.x * dt) * 0.99;   // integración de Euler (2.5) con un poco de rozamiento
+  vel.y = (vel.y + acc.y * dt) * 0.99;
+  const v = limitar(vel, VMAX);          // ← aquí actúa el límite
+  vel.x = v.x; vel.y = v.y;
+  pos.x += vel.x * dt; pos.y += vel.y * dt;
+
+  maxVisto = Math.max(maxVisto, Math.hypot(vel.x, vel.y));
+  tInforme += dt;
+  if (tInforme > 1) { console.log('rapidez máxima en el último segundo:', maxVisto.toFixed(1), 'px/s'); maxVisto = 0; tInforme = 0; }
+
+  ctx.fillStyle = 'rgba(14,16,20,0.25)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#3fd0e8'; ctx.strokeRect(raton.x - 6, raton.y - 6, 12, 12);
+  ctx.fillStyle = '#8b7bff'; ctx.beginPath(); ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+
+const pos = { x: 30, y: 30 }, vel = { x: 0, y: 0 };
+const raton = { x: canvas.width - 40, y: canvas.height - 40 };
+const VMAX = 250;
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = e.clientX - r.left; raton.y = e.clientY - r.top;
+});
+
+function limitar(v, max) {
+  const l2 = v.x * v.x + v.y * v.y;       // longitud al cuadrado
+  if (l2 <= max * max) return v;          // ya cabe: sin raíz, sin tocarlo
+  const k = max / Math.sqrt(l2);          // normalizar y escalar en un solo factor
+  return { x: v.x * k, y: v.y * k };
+}
+
+let previo = null, maxVisto = 0, tInforme = 0;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min(0.05, (ms - previo) / 1000);
+  previo = ms;
+  const acc = { x: (raton.x - pos.x) * 8, y: (raton.y - pos.y) * 8 };
+  vel.x = (vel.x + acc.x * dt) * 0.99;
+  vel.y = (vel.y + acc.y * dt) * 0.99;
+  const v = limitar(vel, VMAX);
+  vel.x = v.x; vel.y = v.y;
+  pos.x += vel.x * dt; pos.y += vel.y * dt;
+
+  maxVisto = Math.max(maxVisto, Math.hypot(vel.x, vel.y));
+  tInforme += dt;
+  if (tInforme > 1) { console.log('rapidez máxima en el último segundo:', maxVisto.toFixed(1), 'px/s'); maxVisto = 0; tInforme = 0; }
+
+  ctx.fillStyle = 'rgba(14,16,20,0.25)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#3fd0e8'; ctx.strokeRect(raton.x - 6, raton.y - 6, 12, 12);
+  ctx.fillStyle = '#8b7bff'; ctx.beginPath(); ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Tienes la función escrita en el ejemplo 3.1.3. Intenta reescribirla sin mirarla: compara longitudes al cuadrado y calcula la raíz solo si hace falta.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si la rapidez sigue pasando de 250, comprueba que devuelves un vector de longitud <code>max</code> (no de longitud 1) y que el resultado se copia de vuelta a <code>vel</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>limitar</code> conserva la dirección de la velocidad y recorta solo su longitud. Si la velocidad ya cabe en el círculo de radio 250, la devolvemos intacta; si no, la multiplicamos por <code>max / |v|</code>, que la deja con longitud exactamente 250. Nota que el límite se aplica <em>después</em> de integrar la aceleración y <em>antes</em> de mover: así ningún frame avanza más de <code>VMAX · dt</code>.</p>
+    <p>Fíjate en el efecto visual: sin límite, la partícula se comporta como un muelle que acumula energía y se pasa de largo con violencia; con límite, persigue al ratón con aspecto de «vehículo» que tiene una velocidad punta. Es la base de los comportamientos de dirección (<em>steering behaviors</em>) de Craig Reynolds, muy usados para bandadas y enemigos.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 3.1.4 — La serpiente</h3>
+  <p>Una cadena de 30 segmentos: la cabeza persigue al ratón con <code>moverHacia</code> y cada segmento debe quedar <strong>exactamente a 12 px</strong> del anterior, en la dirección en la que ya estaba (así la cola «se arrastra» detrás). Completa <code>actualizar()</code>. Cuidado con el caso en que dos segmentos coinciden en el mismo punto.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.1.4" data-altura="300" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+
+const N = 30, L = 12, VEL = 260;
+const seg = [];
+for (let i = 0; i < N; i++) seg.push({ x: 60, y: 60 });   // ¡todos en el mismo punto!
+const raton = { x: canvas.width * 0.7, y: canvas.height * 0.6 };
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = e.clientX - r.left; raton.y = e.clientY - r.top;
+});
+
+function moverHacia(p, obj, maxPaso) {
+  const dx = obj.x - p.x, dy = obj.y - p.y, d = Math.hypot(dx, dy);
+  if (d <= maxPaso) { p.x = obj.x; p.y = obj.y; return; }
+  p.x += dx / d * maxPaso; p.y += dy / d * maxPaso;
+}
+
+function actualizar(dt) {
+  moverHacia(seg[0], raton, VEL * dt);
+  for (let i = 1; i < N; i++) {
+    // TODO: coloca seg[i] a distancia L de seg[i-1], en la dirección seg[i-1] → seg[i]
+  }
+}
+
+let previo = null;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min(0.05, (ms - previo) / 1000);
+  previo = ms;
+  actualizar(dt);
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let i = N - 1; i >= 0; i--) {
+    ctx.fillStyle = `hsl(${250 - i * 4}, 80%, ${70 - i}%)`;
+    ctx.beginPath(); ctx.arc(seg[i].x, seg[i].y, 9 - i * 0.2, 0, Math.PI * 2); ctx.fill();
+  }
+  if (Number.isNaN(seg[N - 1].x)) { console.log('⚠ ¡NaN en la cola!'); return; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+
+const N = 30, L = 12, VEL = 260;
+const seg = [];
+for (let i = 0; i < N; i++) seg.push({ x: 60, y: 60 });
+const raton = { x: canvas.width * 0.7, y: canvas.height * 0.6 };
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = e.clientX - r.left; raton.y = e.clientY - r.top;
+});
+
+function moverHacia(p, obj, maxPaso) {
+  const dx = obj.x - p.x, dy = obj.y - p.y, d = Math.hypot(dx, dy);
+  if (d <= maxPaso) { p.x = obj.x; p.y = obj.y; return; }
+  p.x += dx / d * maxPaso; p.y += dy / d * maxPaso;
+}
+
+function actualizar(dt) {
+  moverHacia(seg[0], raton, VEL * dt);
+  for (let i = 1; i < N; i++) {
+    const a = seg[i - 1], b = seg[i];
+    let dx = b.x - a.x, dy = b.y - a.y;       // vector del anterior a este (destino − origen)
+    let d = Math.hypot(dx, dy);
+    if (d < 1e-9) { dx = -1; dy = 0; d = 1; } // coinciden: elegimos una dirección cualquiera
+    b.x = a.x + dx / d * L;                   // punto + dirección unitaria × L
+    b.y = a.y + dy / d * L;
+  }
+}
+
+let previo = null;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min(0.05, (ms - previo) / 1000);
+  previo = ms;
+  actualizar(dt);
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let i = N - 1; i >= 0; i--) {
+    ctx.fillStyle = `hsl(${250 - i * 4}, 80%, ${70 - i}%)`;
+    ctx.beginPath(); ctx.arc(seg[i].x, seg[i].y, 9 - i * 0.2, 0, Math.PI * 2); ctx.fill();
+  }
+  if (Number.isNaN(seg[N - 1].x)) { console.log('⚠ ¡NaN en la cola!'); return; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Para el segmento <code>i</code>: calcula el vector que va de <code>seg[i-1]</code> a <code>seg[i]</code>, normalízalo y colócate en <code>seg[i-1] + dirección · L</code>. Es «punto + vector».</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Al empezar, todos los segmentos están en el mismo punto: la distancia entre ellos es 0 y normalizar daría NaN (la consola te avisará). Si la distancia es casi 0, elige tú una dirección, por ejemplo <code>(-1, 0)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada segmento conserva su <em>dirección</em> respecto al anterior pero corrige su <em>distancia</em>: tomamos el vector del segmento anterior a este, lo normalizamos y lo multiplicamos por <code>L</code>. Como el anterior ya se ha movido en este frame, cada segmento arrastra al siguiente: la corrección se propaga de la cabeza a la cola en una sola pasada. Es una versión mínima de la técnica <em>follow-the-leader</em>, pariente de la cinemática inversa FABRIK que se usa para brazos y tentáculos.</p>
+    <p>El caso degenerado no es teórico: la cadena empieza con todos los segmentos apilados, así que el primer frame ya normalizaría vectores nulos. Sin la guarda, <code>0/0</code> da NaN, la cola entera se vuelve NaN y desaparece (la consola avisa). Elegir una dirección arbitraria es correcto porque cualquier dirección es tan buena como otra cuando dos puntos coinciden. La guarda solo actúa en el primer frame (con <code>dt = 0</code> la cabeza aún no se ha movido y la cadena queda plegada sobre sí misma, con los segmentos alternando entre dos posiciones); a partir del segundo frame ningún par coincide y la cadena se va estirando sola conforme la cabeza se aleja, en un segundo o dos.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un <strong>punto</strong> es un lugar; un <strong>vector</strong>, un desplazamiento. Punto − punto = vector; punto + vector = punto; punto + punto solo tiene sentido si los pesos suman 1 (combinación afín, como el punto medio o <code>lerp</code>).</li>
+    <li>Cada número vive en un <strong>sistema de coordenadas</strong>: pantalla (y ↓, px CSS), matemático (y ↑), <code>gl_FragCoord</code> (y ↑, px físicos, centros en .5), uv (0–1) y NDC (−1–1). Las conversiones son lineales por eje; en la y hay que invertir.</li>
+    <li>Suma = desplazamientos encadenados; resta = <strong>destino menos origen</strong>; escalar = estirar o dar la vuelta; longitud = Pitágoras; normalizar = dividir por la longitud (y <strong>nunca</strong> por cero: 0/0 = NaN, en JS y en la GPU).</li>
+    <li>Compara <strong>distancias al cuadrado</strong> para ahorrarte raíces. <code>Math.hypot</code> evita desbordamientos, pero es varias veces más lenta.</li>
+    <li>En GLSL, <code>vec2 * vec2</code> es <strong>componente a componente</strong>; los swizzles (<code>.xy</code>, <code>.bgr</code>) leen y reordenan componentes; los floats se escriben con punto decimal.</li>
+    <li><code>lerp(A, B, t) = A + (B − A)t = (1 − t)A + tB</code>; en GLSL, <code>mix</code>. Patrones clave: moverse hacia un objetivo con <em>dirección × rapidez × dt</em> sin pasarse, y <strong>limitar la longitud</strong> de velocidades y entradas.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://www.3blue1brown.com/topics/linear-algebra">3Blue1Brown — Essence of linear algebra</a>: los primeros capítulos son la mejor intuición visual de vectores que existe.</li>
+  <li><a href="https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Global_Objects/Math/hypot">MDN — Math.hypot()</a>, con sus casos especiales.</li>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">Especificación de GLSL ES 3.00</a>, sección 5.5 (componentes de vectores y swizzles).</li>
+  <li><a href="https://www.red3d.com/cwr/steer/">Craig Reynolds — Steering Behaviors For Autonomous Characters</a>: perseguir, huir y llegar, todo con vectores.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m3.js"></script>
+<script src="recursos/demos-01.js"></script>
+</body>
+</html>

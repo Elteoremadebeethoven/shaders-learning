@@ -1,0 +1,1241 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.4 · Uniforms y animación — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/uniforms-animacion">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>Uniforms y animación</h1>
+  <p class="resumen">Los atributos cambian en cada vértice; los uniforms valen lo mismo en todo un dibujo. Con ellos pasamos el tiempo, la resolución, el ratón, colores y transformaciones a la GPU, y montamos el bucle de animación completo sin tocar un solo buffer.</p>
+  <div class="meta"><span class="chip">⏱ 80 min</span><span class="chip">Requisitos: 5.3, 2.3, 3.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Usarás <code>getUniformLocation</code> y la familia <code>uniform*</code> sabiendo qué variante corresponde a cada tipo de GLSL y qué pasa si te equivocas.</li>
+      <li>Subirás matrices con <code>uniformMatrix4fv</code> entendiendo el orden por columnas y el parámetro <code>transpose</code>.</li>
+      <li>Entenderás que los uniforms son estado de cada programa: por qué hace falta <code>useProgram</code>, qué es una location <code>null</code> y qué ocurre al volver a enlazar.</li>
+      <li>Escribirás un bucle de animación que alimenta <code>u_time</code> en segundos, redimensiona, y se pausa cuando nadie lo ve, sabiendo por qué el tiempo pierde precisión.</li>
+      <li>Dibujarás varios objetos con uniforms distintos y sabrás cuándo mover geometría con un uniform en lugar de reescribir el buffer.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Un valor para todo el dibujo</h2>
+<p>En <a href="03-buffers-atributos.html">5.3</a> cada vértice traía sus propios datos. Pero muchos valores son iguales para todos los vértices y todos los píxeles de un dibujo: el instante actual, el tamaño del canvas, la posición del ratón, el color de un objeto, dónde está colocado. Repetirlos en cada vértice sería absurdo, y cambiarlos implicaría reescribir el buffer entero. Para eso existen los <strong>uniforms</strong>, el segundo canal entre JavaScript y la GPU que viste en <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>: constantes que JavaScript fija antes de dibujar y que todas las invocaciones de los shaders leen.</p>
+<p>Con ellos llega la animación de verdad: en lugar de recalcular vértices, cambiamos cuatro números por frame y dejamos que la GPU haga el resto. Además, verás cómo funcionan por dentro los editores de shaders de este curso: no son más que un triángulo y unos cuantos uniforms.</p>
+
+<h2>De la declaración al valor</h2>
+<p>En el shader, un uniform se declara con la palabra <code>uniform</code>, fuera de <code>main</code>, y se lee como cualquier variable (no se puede escribir). En JavaScript hay que hacer dos cosas: averiguar su <em>location</em> y asignarle un valor.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform vec2 u_desplazamiento;
+void main() {
+  gl_Position = vec4(a_posicion + u_desplazamiento, 0.0, 1.0);
+}`, fuenteFS);
+
+const locDesp = gl.getUniformLocation(programa, 'u_desplazamiento');
+
+gl.useProgram(programa);
+gl.uniform2f(locDesp, 0.3, -0.1);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<ol>
+  <li data-l="3">La declaración: tipo y nombre. Por convención, prefijo <code>u_</code>. Vale lo mismo para los tres vértices de este dibujo.</li>
+  <li data-l="5">Se usa como una variable normal: aquí desplaza todos los vértices.</li>
+  <li data-l="8"><code>getUniformLocation(programa, nombre)</code> devuelve un objeto <code>WebGLUniformLocation</code> (opaco: no es un número como las de los atributos) o <code>null</code>. Se pide una vez, tras enlazar, y se guarda.</li>
+  <li data-l="10">Imprescindible: las funciones <code>uniform*</code> actúan sobre el programa <strong>en uso</strong>.</li>
+  <li data-l="11"><code>uniform2f(location, x, y)</code>: dos floats para un <code>vec2</code>. El número y la letra del nombre dicen cuántos valores y de qué tipo.</li>
+  <li data-l="12">El dibujo usa el valor que tenga el uniform en ese momento.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.4.1 — Un triángulo que sigue al ratón</h3>
+  <p>Un uniform <code>u_desplazamiento</code> para mover el triángulo y otro <code>u_color</code> para colorearlo. El buffer no se toca nunca: se escribe una vez al principio. Mueve el ratón sobre el lienzo.</p>
+  <div class="js-playground" data-titulo="Uniforms: desplazamiento y color" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform vec2 u_desplazamiento;
+void main() { gl_Position = vec4(a_posicion + u_desplazamiento, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec3 u_color;
+out vec4 color;
+void main() { color = vec4(u_color, 1.0); }`);
+
+const locDesp = gl.getUniformLocation(programa, 'u_desplazamiento');
+const locColor = gl.getUniformLocation(programa, 'u_color');
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.15, -0.2, 0.15, -0.2, 0.0, 0.2]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+function dibujar(x, y) {
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform2f(locDesp, x, y);
+  gl.uniform3f(locColor, 0.5 + 0.5 * x, 0.55, 0.5 - 0.5 * x);   // el color depende de la x
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width * 2 - 1;     // de px CSS a clip space
+  const y = 1 - (e.clientY - r.top) / r.height * 2;     // la y del DOM crece hacia abajo
+  dibujar(x, y);
+});
+dibujar(0, 0);
+</script>
+  </div>
+  <p>La conversión del ratón es la del ejercicio 5.2.5, con la y invertida porque en el DOM crece hacia abajo. Fíjate en lo barato que es mover el objeto: dos llamadas <code>uniform*</code> y un dibujo. Y en que el programa solo redibuja cuando el ratón se mueve: no hay bucle, y no hace falta.</p>
+</section>
+
+<h2>La familia uniform*</h2>
+<p>El nombre de cada función codifica lo que espera: <code>uniform</code> + número de componentes (1 a 4) + tipo (<code>f</code> float, <code>i</code> int, <code>ui</code> uint) + opcionalmente <code>v</code> (los valores llegan en un array). Las matrices tienen su propia rama: <code>uniformMatrix2fv</code>, <code>3fv</code>, <code>4fv</code> (y en WebGL2 las rectangulares, como <code>uniformMatrix3x4fv</code>).</p>
+<table>
+  <thead><tr><th>Tipo en GLSL</th><th>Función</th><th>Notas comprobadas</th></tr></thead>
+  <tbody>
+    <tr><td><code>float</code></td><td><code>uniform1f(loc, x)</code></td><td></td></tr>
+    <tr><td><code>vec2</code>, <code>vec3</code>, <code>vec4</code></td><td><code>uniform2f</code> … <code>uniform4f</code>, o <code>uniform4fv(loc, array)</code></td><td>Con 3 argumentos donde van 4, <strong>excepción</strong> <code>TypeError</code>. Con un array de tamaño incorrecto en la versión <code>fv</code>: <code>INVALID_VALUE</code>.</td></tr>
+    <tr><td><code>int</code>, <code>ivec2…4</code></td><td><code>uniform1i</code> … <code>uniform4i</code></td><td><code>uniform1f</code> sobre un <code>int</code>: <code>INVALID_OPERATION</code>.</td></tr>
+    <tr><td><code>uint</code>, <code>uvec2…4</code></td><td><code>uniform1ui</code> … (WebGL2)</td><td><code>uniform1i</code> sobre un <code>uint</code>: <code>INVALID_OPERATION</code>.</td></tr>
+    <tr><td><code>bool</code></td><td><code>uniform1i</code> o <code>uniform1f</code></td><td>Las dos valen: 0 es <code>false</code>, cualquier otro valor es <code>true</code>.</td></tr>
+    <tr><td><code>sampler2D</code> y demás samplers</td><td><code>uniform1i(loc, unidad)</code></td><td>Solo <code>1i</code>; <code>uniform1f</code> da <code>INVALID_OPERATION</code>. El valor es un número de <em>unidad de textura</em>, no una textura (5.5).</td></tr>
+    <tr><td><code>mat2</code>, <code>mat3</code>, <code>mat4</code></td><td><code>uniformMatrix4fv(loc, transpose, array)</code></td><td>Array de 16 floats en orden por columnas; con 12: <code>INVALID_VALUE</code>.</td></tr>
+  </tbody>
+</table>
+<p>Los avisos que salen en la consola del navegador (F12) delatan la función usada; los medimos: <code>uniform1i</code> sobre un <code>uint</code> da <code>GL_INVALID_OPERATION: glUniform1i: Uniform type does not match uniform method</code>, y <code>uniform1f</code> sobre un <code>int</code> da <code>GL_INVALID_OPERATION: glUniform1f: Uniform size does not match uniform method</code> (ANGLE dice «size» aunque el problema sea el tipo: no te fíes de la palabra, fíjate en la función). Fíjate en que no hay conversión automática: un <code>uniform int</code> no acepta <code>uniform1f(loc, 2.0)</code> aunque el 2.0 sea entero. Es la misma rigidez de tipos de GLSL, que no convierte <code>int</code> en <code>float</code> ni al revés (lo viste con el error <code>cannot convert from 'const int' to 'highp float'</code> en 5.2).</p>
+
+<div class="quiz">
+  <p class="pregunta">El shader declara <code>uniform int u_modo;</code> y en JavaScript haces <code>gl.uniform1f(loc, 2.0)</code>. ¿Qué pasa?</p>
+  <ul>
+    <li>Funciona: 2.0 se convierte en 2.<div class="explicacion">WebGL no convierte: la función tiene que coincidir con el tipo declarado.</div></li>
+    <li data-correcta>No cambia nada y se activa <code>INVALID_OPERATION</code>: hay que usar <code>uniform1i</code>.<div class="explicacion">Correcto. La llamada se ignora y <code>u_modo</code> conserva su valor anterior (0 si nunca lo asignaste). El aviso en la consola del navegador lo dice: <code>glUniform1f: Uniform size does not match uniform method</code> (menciona la función que usaste, <code>glUniform1f</code>, que es la pista).</div></li>
+    <li>Lanza una excepción <code>TypeError</code>.<div class="explicacion">Las excepciones solo aparecen cuando la llamada de JavaScript en sí es incorrecta (número de argumentos, tipos de JS). Aquí la llamada es válida para JavaScript; el problema es de GL y se señala con <code>getError</code>.</div></li>
+  </ul>
+</div>
+
+<h3>Arrays y structs</h3>
+<p>Un array de uniforms, como <code>uniform float u_valores[4];</code>, se asigna de una vez con la variante <code>v</code>: <code>gl.uniform1fv(loc, [1, 2, 3, 4])</code>. Detalles comprobados:</p>
+<ul>
+  <li>La location de <code>'u_valores'</code> es la misma que la de <code>'u_valores[0]'</code>. La de <code>'u_valores[2]'</code> apunta al tercer elemento: <code>uniform1fv(locDel2, [30, 40])</code> escribe los elementos 2 y 3.</li>
+  <li>Si pasas más valores que elementos tiene el array, los sobrantes se ignoran sin error. Si pasas un número que no es múltiplo del tamaño del tipo (3 floats para un <code>vec4</code>), <code>INVALID_VALUE: invalid size</code>.</li>
+  <li>WebGL2 añade dos argumentos para subir un trozo de un array más grande sin copiarlo: <code>uniform1fv(loc, datos, inicio, cuantos)</code>, en elementos del array.</li>
+  <li><code>getActiveUniform</code> lista el array como <code>u_valores[0]</code> con <code>size = 4</code>.</li>
+</ul>
+<p>Los structs (<code>uniform Luz u_luz;</code>) no tienen una location propia (<code>getUniformLocation(p, 'u_luz')</code> devuelve <code>null</code>): se asigna miembro a miembro, con el nombre completo: <code>getUniformLocation(p, 'u_luz.color')</code>.</p>
+
+<h2>uniformMatrix4fv y el parámetro transpose</h2>
+<p>Las matrices viajan como arrays de 16 floats (<code>mat4</code>) o 9 (<code>mat3</code>) en orden <strong>por columnas</strong> (<em>column-major</em>): primero los cuatro números de la primera columna, luego los de la segunda… Es el formato de <code>mat4</code> en GLKit (<a href="../03-matematicas/05-matrices.html">3.5</a>): el elemento de la fila <em>r</em> y la columna <em>c</em> vive en <code>m[c*4 + r]</code>, y la traslación ocupa las posiciones 12, 13 y 14.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const locMatriz = gl.getUniformLocation(programa, 'u_matriz');
+const m = mat4.producto(
+  mat4.traslacion(0.4, 0.1, 0),
+  mat4.rotacionZ(t),
+  mat4.escala(0.5)
+);
+gl.useProgram(programa);
+gl.uniformMatrix4fv(locMatriz, false, m);
+</script>
+<ol>
+  <li data-l="1">En el shader: <code>uniform mat4 u_matriz;</code> y <code>gl_Position = u_matriz * vec4(a_posicion, 0.0, 1.0);</code>.</li>
+  <li data-l="2-6">Traslación × rotación × escala: se aplica primero la escala, luego la rotación y por último la traslación (el orden de <a href="../03-matematicas/05-matrices.html">3.5</a>). El resultado es un <code>Float32Array(16)</code> por columnas.</li>
+  <li data-l="8"><strong><code>false</code></strong>: el array ya está por columnas, súbelo tal cual. Si fuera <code>true</code>, WebGL2 lo trasponería al subirlo.</li>
+</ol>
+</div>
+
+<p>¿Para qué sirve entonces <code>transpose</code>? Para las matrices que están en orden <strong>por filas</strong>, que es como se escriben en papel y como las devuelven algunas librerías. Comprobamos qué guarda la GPU: con <code>transpose = false</code>, <code>getUniform</code> devolvió exactamente el array que pasamos; con <code>true</code>, su traspuesta. En WebGL1 no existía esa opción: <code>transpose = true</code> daba <code>INVALID_VALUE: uniformMatrix4fv: transpose not FALSE</code>, y por eso verás mucho código antiguo que traspone a mano.</p>
+
+<div class="callout senior" data-titulo="Por qué el array «parece» traspuesto">
+  <p>Si escribes una matriz de traslación como la verías en papel, fila a fila, en un array literal, la traslación queda en las posiciones 3, 7 y 11. Pero la GPU lee por columnas, así que para ella esas posiciones son la <em>cuarta fila</em>: los números de la traslación acaban multiplicando la <code>w</code> y producen una deformación proyectiva en vez de un desplazamiento (el ejercicio 5.4.6 te la deja ver). Por eso <code>mat4.texto(m)</code> de GLKit imprime la matriz «como en papel» recorriendo el array por columnas, y por eso el array de una traslación correcta tiene los números al final: <code>[1,0,0,0, 0,1,0,0, 0,0,1,0, tx,ty,tz,1]</code>.</p>
+</div>
+
+<h2>Los uniforms son estado del programa</h2>
+<p>Esta es la parte que confunde a casi todo el mundo. El modelo ya lo conoces de <a href="../04-gpu/05-uniforms-varyings.html#uniforms-estado-del-programa">4.5</a>: cada programa tiene su propia memoria de uniforms. Aquí lo repasamos con las llamadas y los mensajes exactos de WebGL. Consecuencias, todas comprobadas:</p>
+<ul>
+  <li><strong>Hay que usar el programa antes de asignar.</strong> Las funciones <code>uniform*</code> no reciben el programa: escriben en el que está en uso. Sin programa en uso, o con una location que pertenece a otro programa, dan <code>INVALID_OPERATION: uniform4f: location is not from the associated program</code>.</li>
+  <li><strong>Los valores persisten.</strong> Si asignas <code>u_color</code> en el programa A, cambias a B, y vuelves a A, <code>u_color</code> sigue teniendo el valor que le diste. No hace falta reasignar en cada frame lo que no cambia.</li>
+  <li><strong>El valor inicial es 0</strong> (o <code>false</code>, o una matriz de ceros). Un uniform que olvidaste asignar vale 0: un color negro, una matriz que colapsa todo en un punto, un tiempo congelado.</li>
+  <li><strong>Volver a enlazar lo resetea todo.</strong> Tras un nuevo <code>linkProgram</code>, los valores vuelven a 0 y las locations viejas dejan de valer: usarlas da <code>INVALID_OPERATION: uniform4f: location has been invalidated</code>. Si recargas shaders en caliente, vuelve a pedir las locations y a asignar los valores.</li>
+  <li><strong>Cada dibujo se queda con los valores del momento.</strong> Aunque la GPU ejecute el dibujo más tarde (las llamadas solo encolan, 5.1), usará los valores que había cuando llamaste a <code>drawArrays</code>. Puedes cambiar un uniform justo después de dibujar sin afectar al dibujo anterior: así se dibujan varios objetos con el mismo programa.</li>
+</ul>
+
+<div class="callout nota" id="m5-uniform-null">
+  <p><strong>Location <code>null</code>: el uniform que no llega.</strong> Si <code>getUniformLocation</code> devuelve <code>null</code> (un nombre mal escrito, o un uniform <strong>inactivo</strong> que el compilador eliminó porque no influye en el resultado: pasa mucho al comentar la línea que lo usaba mientras depuras), todas las funciones <code>uniform*</code> lo aceptan y no hacen nada, sin error (comprobado). Es el comportamiento raro <a href="../04-gpu/05-uniforms-varyings.html#m4-uniform-silencioso">«Cambio un uniform y no pasa nada»</a> de 4.5. La defensa: comprobar las locations al obtenerlas y, para ver qué uniforms sobrevivieron, recorrer <code>getProgramParameter(p, gl.ACTIVE_UNIFORMS)</code> con <code>getActiveUniform(p, i)</code>, que es lo que hace <code>GLKit.uniforms</code> al final de esta lección.</p>
+</div>
+
+<div class="callout bestiario" data-id="m5-uniform-otro-programa" data-titulo="«location is not from the associated program»">
+  <p><strong>Síntoma:</strong> un uniform no se actualiza y la consola del navegador dice <code>INVALID_OPERATION: uniform4f: location is not from the associated program</code>.</p>
+  <p><strong>Causa:</strong> estás asignando con otro programa en uso (o ninguno). Típico con varios programas: asignas los uniforms del objeto B y el <code>useProgram(programaB)</code> está unas líneas más abajo, o te quedó en uso el programa del objeto anterior. La variante silenciosa: dos programas con un uniform del mismo nombre, y solo actualizas el del programa A; el del B se queda en su último valor (o en 0).</p>
+  <p><strong>Solución:</strong> el patrón por objeto es siempre <code>useProgram</code> → uniforms → <code>bindVertexArray</code> → dibujar. Y las locations son de un programa concreto: guárdalas junto a él (por ejemplo, en un objeto <code>{ programa, locs }</code>).</p>
+</div>
+
+<div class="callout hack" data-titulo="Pregúntale al programa qué valor tiene">
+  <p>Cuando dudes de si una asignación llegó a su destino, no adivines: <code>gl.getUniform(programa, location)</code> devuelve el valor que el programa tiene guardado ahora mismo, y no necesita que ese programa esté en uso. Lo comprobamos con dos programas que declaran <code>u_time</code>: tras asignar 2,5 con A en uso, <code>getUniform</code> devolvió 2,5 para A y 0 para B, el caso del quiz siguiente. El tipo del resultado depende del uniform: un número para <code>float</code>, <code>int</code> y samplers (la unidad de textura), un booleano para <code>bool</code> y un <code>Float32Array</code> para vectores y matrices (una <code>mat4</code> sin asignar, 16 ceros). Es una consulta que espera al proceso de la GPU, como <code>getError</code>: 2000 llamadas tardaron 80 ms, unos 40 µs cada una. Para depurar, no para el bucle de animación.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tienes dos programas, A y B, y los dos declaran <code>uniform float u_time</code>. En cada frame haces <code>useProgram(A)</code>, <code>uniform1f(locA, t)</code>, dibujas; <code>useProgram(B)</code>, dibujas. ¿Qué le pasa al objeto de B?</p>
+  <ul>
+    <li>Se anima igual que A, porque <code>u_time</code> es el mismo uniform.<div class="explicacion">Cada programa tiene su propia copia de cada uniform, aunque se llamen igual. Asignar el de A no toca el de B.</div></li>
+    <li data-correcta>Se queda congelado: su <code>u_time</code> vale 0 (o su último valor) para siempre.<div class="explicacion">Correcto, y sin ningún error: es una asignación que nunca hiciste. Hay que pedir la location de B y asignar <code>u_time</code> con B en uso. Es el ejercicio 5.4.3.</div></li>
+    <li>Da <code>INVALID_OPERATION</code> al dibujar porque falta un uniform.<div class="explicacion">Dibujar con uniforms sin asignar es legal: valen su valor inicial, 0.</div></li>
+  </ul>
+</div>
+
+<h2>El bucle de animación</h2>
+<p>Juntemos lo que sabemos con el bucle de <a href="../02-animacion/03-raf.html">2.3</a>. Este es el esqueleto de toda animación WebGL del curso:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const locTiempo = gl.getUniformLocation(programa, 'u_time');
+const locRes = gl.getUniformLocation(programa, 'u_resolution');
+let previo = null;
+
+function frame(ms) {
+  const t = ms / 1000;
+  const dt = previo === null ? 0 : Math.min(t - previo, 0.1);
+  previo = t;
+
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+  gl.useProgram(programa);
+  gl.uniform1f(locTiempo, t);
+  gl.uniform2f(locRes, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<ol>
+  <li data-l="1-2">Las locations se piden una vez, fuera del bucle.</li>
+  <li data-l="5-6"><code>requestAnimationFrame</code> pasa el instante del frame en <strong>milisegundos</strong> desde que se cargó la página (la misma base que <code>performance.now()</code>). Lo pasamos a <strong>segundos</strong> (por qué, en la sección siguiente).</li>
+  <li data-l="7-8">El <code>dt</code> entre frames, limitado a 0,1 s: al volver de otra pestaña, el siguiente frame puede llegar segundos después, y un salto así rompería cualquier física (2.3, 2.5).</li>
+  <li data-l="10-11">Redimensionar dentro del bucle: <code>ajustarTamaño</code> solo toca el canvas si cambió, y el viewport se fija cada frame (5.1).</li>
+  <li data-l="13-15">Uniforms del frame. Como el tamaño puede haber cambiado, <code>u_resolution</code> se actualiza siempre, con el tamaño real del búfer.</li>
+  <li data-l="17-20">Borrar, dibujar y pedir el siguiente frame.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.4.2 — Así funcionan por dentro los editores de shaders</h3>
+  <p>Un triángulo que cubre la pantalla (el truco de <code>gl_VertexID</code> de 4.5 y 5.2), un fragment shader que colorea cada píxel, y tres uniforms: <code>u_time</code>, <code>u_resolution</code> y <code>u_mouse</code>, con los mismos nombres y significados que en los editores GLSL del curso (el ratón en píxeles del búfer, con el origen abajo a la izquierda). Esto es, en esencia, lo que hace cada <code>glsl-playground</code>.</p>
+  <div class="js-playground" data-titulo="Un mini editor de shaders" data-altura="300" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 color;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float d = distance(gl_FragCoord.xy, u_mouse);
+  float ondas = 0.5 + 0.5 * sin(d * 0.06 - u_time * 4.0);
+  vec3 fondo = vec3(uv, 0.5 + 0.5 * sin(u_time));
+  color = vec4(mix(fondo * 0.35, vec3(0.55, 0.48, 1.0), ondas * (1.0 - smoothstep(0.0, 350.0, d))), 1.0);
+}`);
+const loc = {
+  tiempo: gl.getUniformLocation(programa, 'u_time'),
+  resolucion: gl.getUniformLocation(programa, 'u_resolution'),
+  raton: gl.getUniformLocation(programa, 'u_mouse'),
+};
+const vaoVacio = gl.createVertexArray();          // sin atributos: gl_VertexID basta
+
+let raton = [0, 0];
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton = [(e.clientX - r.left) * canvas.width / r.width,    // px CSS → px del búfer
+           (r.bottom - e.clientY) * canvas.height / r.height]; // origen abajo
+});
+
+function frame(ms) {
+  if (GLKit.ajustarTamaño(canvas) && raton[0] === 0) raton = [canvas.width / 2, canvas.height / 2];
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.useProgram(programa);
+  gl.uniform1f(loc.tiempo, ms / 1000);
+  gl.uniform2f(loc.resolucion, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.uniform2f(loc.raton, raton[0], raton[1]);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>No hay <code>clear</code>: el triángulo cubre todos los píxeles, así que no hace falta (aunque, como vimos en 5.1, en GPUs por teselas un <code>clear</code> al principio sigue siendo buena idea). El ratón se convierte de píxeles CSS a píxeles del búfer multiplicando por <code>canvas.width / r.width</code>, que incluye el DPR, y con la y invertida para que coincida con <code>gl_FragCoord</code>. Si alguna vez un efecto «sigue al ratón» con un desfase o en espejo, revisa esas dos líneas.</p>
+</section>
+
+<h2>El tiempo en segundos, y por qué pierde precisión</h2>
+<p>Dos razones para mandar el tiempo en segundos, y una advertencia que casi nadie conoce.</p>
+<p><strong>Convención.</strong> Los shaders que encontrarás (Shadertoy, los de este curso) esperan segundos: <code>sin(u_time)</code> da una oscilación cada 6,28 segundos. Si les das milisegundos, oscilan mil veces más rápido: unas 160 veces por segundo, muy por encima de los 60 frames que ves. El resultado no parece una animación rápida, sino un parpadeo aleatorio (aliasing temporal). Es el error del ejercicio 5.4.2.</p>
+<p><strong>Precisión.</strong> <code>uniform1f</code> convierte tu número de JavaScript (64 bits) en un float de 32 bits, que tiene 24 bits de mantisa (<a href="../03-matematicas/07-precision.html">3.7</a>). Cuanto más grande es el número, más separados están los valores representables. Lo medimos en la GPU, enviando 60 instantes separados 1/60 s y leyendo lo que el shader recibe:</p>
+<table>
+  <thead><tr><th>Tiempo transcurrido</th><th>Separación entre floats de 32 bits</th><th>De 60 frames seguidos, valores distintos que ve el shader</th></tr></thead>
+  <tbody>
+    <tr><td>1000 s (17 min)</td><td>0,00006 s</td><td>60</td></tr>
+    <tr><td>100 000 s (28 h)</td><td>0,0078 s</td><td>60, pero cuantizados a 1/128 s</td></tr>
+    <tr><td>1 000 000 s (11,6 días)</td><td>0,0625 s</td><td><strong>16</strong>: la animación va a saltos</td></tr>
+    <tr><td>10 000 000 s (116 días)</td><td>1 s</td><td><strong>1</strong>: congelada</td></tr>
+  </tbody>
+</table>
+<p>Ojo: la unidad no cambia esto. Un float de 32 bits tiene la misma precisión <em>relativa</em> a cualquier escala: un día en milisegundos (86 400 000) tiene una separación de 8 ms, igual que un día en segundos (86 400) tiene 7,8 ms. El problema es el <em>tamaño</em> del número. Y hay dos casos en los que la unidad sí es decisiva:</p>
+<ul>
+  <li><strong><code>Date.now()</code></strong> son milisegundos desde 1970 (unos 1,79 billones). Convertido a float de 32 bits, sus valores representables están separados 2¹⁷ ms (131 s), así que se desvía hasta 65 segundos (la mitad de la separación); y contarlo en segundos no lo arregla: la separación sigue siendo de 128 s. Un uniform con la hora del sistema es una animación congelada.</li>
+  <li><strong>Precisión media (<code>mediump</code>) en móviles.</strong> En la GPU de pruebas <code>mediump</code> es un float de 32 bits (<code>getShaderPrecisionFormat</code> devuelve 23 bits de precisión para <code>mediump</code> y para <code>highp</code>), pero en muchas GPU móviles es un float de 16 bits: 10 bits de mantisa y un máximo de 65 504. Emulándolo con <code>Math.f16round</code>: con 16 s ya solo se distinguen pasos de 1/64 s, con 100 s de 1/16 s… y en milisegundos, a los 65,5 s el valor pasa a infinito y la animación muere. Por eso los shaders de este curso declaran <code>precision highp float</code>.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.4.3 — El reloj que se estropea con el tiempo</h3>
+  <p>Una aguja que da una vuelta por segundo, calculada en el fragment shader a partir de <code>u_tiempo</code>. El selector suma un tiempo ya transcurrido (como si la página llevara horas abierta) y elige la unidad. Observa la aguja y la línea de información, que calcula la separación entre floats de 32 y de 16 bits para el valor actual.</p>
+  <div class="js-playground" data-titulo="Precisión del tiempo en float32" data-altura="300" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label>ya transcurrido
+    <select id="offset">
+      <option value="0">0 s</option><option value="3600">1 hora</option><option value="86400">1 día</option>
+      <option value="604800">1 semana</option><option value="2592000" selected>30 días</option><option value="epoch">Date.now()</option>
+    </select></label>
+  <label>unidad <select id="unidad"><option value="s">segundos</option><option value="ms">milisegundos</option></select></label>
+</div>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 18px; padding: 6px 10px 0; font: 13px ui-monospace, monospace; color: #b4bccb; }
+select { font: 13px ui-monospace, monospace; }
+#info { font: 12px ui-monospace, monospace; color: #3fd0e8; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform float u_tiempo;      // en las unidades elegidas, ya convertido a float32
+uniform float u_aSegundos;   // 1.0 si son segundos, 0.001 si son milisegundos
+uniform vec2 u_resolution;
+out vec4 color;
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;   // centrado, sin deformar
+  float ang = fract(u_tiempo * u_aSegundos) * 6.2831853;              // una vuelta por segundo
+  vec2 dir = vec2(sin(ang), cos(ang));
+  float r = length(p);
+  float aguja = step(abs(dot(p, vec2(dir.y, -dir.x))), 0.01) * step(0.0, dot(p, dir)) * step(r, 0.38);
+  float esfera = 0.12 * step(r, 0.42) + 0.5 * step(abs(r - 0.42), 0.006);
+  color = vec4(vec3(esfera) + aguja * vec3(0.25, 0.82, 0.91), 1.0);
+}`);
+const loc = {
+  tiempo: gl.getUniformLocation(programa, 'u_tiempo'),
+  aSegundos: gl.getUniformLocation(programa, 'u_aSegundos'),
+  res: gl.getUniformLocation(programa, 'u_resolution'),
+};
+const vaoVacio = gl.createVertexArray();
+
+function separacion32(v) {             // distancia al siguiente float32
+  const b = new Float32Array([v]), u = new Uint32Array(b.buffer), a = b[0];
+  u[0] += 1;
+  return b[0] - a;
+}
+function separacion16(v) {             // distancia al siguiente float16 (si existe Math.f16round)
+  if (!Math.f16round) return NaN;
+  const a = Math.f16round(v);
+  if (!isFinite(a)) return Infinity;
+  let paso = Math.pow(2, Math.floor(Math.log2(Math.max(Math.abs(a), 6.1e-5))) - 10);
+  return paso;
+}
+const selOffset = document.getElementById('offset'), selUnidad = document.getElementById('unidad');
+const info = document.getElementById('info');
+let inicio = null, cuenta = 0;
+
+function frame(ms) {
+  if (inicio === null) inicio = ms;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  const t = (ms - inicio) / 1000;                              // segundos desde el arranque
+  const base = selOffset.value === 'epoch' ? Date.now() / 1000 - t : +selOffset.value;
+  const enSegundos = base + t;                                  // double en JS
+  const ms_ = selUnidad.value === 'ms';
+  const valor = ms_ ? enSegundos * 1000 : enSegundos;
+  gl.useProgram(programa);
+  gl.uniform1f(loc.tiempo, valor);                              // aquí se pierde precisión
+  gl.uniform1f(loc.aSegundos, ms_ ? 0.001 : 1.0);
+  gl.uniform2f(loc.res, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  if (cuenta++ % 15 === 0) {
+    const u = ms_ ? ' ms' : ' s';
+    const s16 = separacion16(valor);
+    info.textContent = 'u_tiempo = ' + valor.toExponential(4) + u + ' · separación float32: ' +
+      separacion32(valor).toPrecision(3) + u + ' · float16: ' + (isFinite(s16) ? s16.toPrecision(3) + u : '¡infinito!');
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Con 30 días en segundos, la separación es de 0,25 s: la aguja avanza a saltos de un cuarto de vuelta. Cambia a milisegundos: ¡salta igual! Es la precisión relativa en acción. Con <code>Date.now()</code> la aguja no se mueve. Y con 0 s todo es perfecto, que es el caso normal: el tiempo de <code>requestAnimationFrame</code> empieza a contar al cargar la página. La columna de float16 muestra lo que pasaría con <code>mediump</code> en un móvil.</p>
+</section>
+
+<div class="callout nota" id="m5-tiempo-float32">
+  <p><strong>La animación que va a saltos después de horas (o en el móvil, tras un minuto).</strong> El tiempo viaja a la GPU como float de 32 bits (o de 16, con <code>mediump</code> en muchas GPU móviles), y la separación entre valores representables crece con el número: 0,06 s a los 11 días en float32, 1/16 s a los 100 segundos en float16, y más de dos minutos desde el primer frame con <code>Date.now()</code>. Son los comportamientos raros <a href="../03-matematicas/07-precision.html#m3-tiempo-horas">«La animación va a saltos tras horas con la página abierta»</a> y <a href="../03-matematicas/07-precision.html#m3-mediump-movil">«Funciona en el ordenador y falla en el móvil»</a> de 3.7. La receta: segundos desde el arranque de la animación, nunca desde 1970; envolver en JavaScript (64 bits) lo que sea periódico, <code>(t % periodo)</code>; <code>highp</code> en todo lo que dependa del tiempo; y, para relojes de muy larga duración, enviar por separado la parte entera y la fracción.</p>
+</div>
+
+<h2>Pausar cuando nadie mira</h2>
+<p>Una animación que nadie ve gasta batería y le roba GPU al resto de la página. Tres situaciones:</p>
+<ul>
+  <li><strong>Pestaña en segundo plano.</strong> Los navegadores dejan de llamar a los callbacks de <code>requestAnimationFrame</code> en pestañas ocultas (MDN lo documenta). Tu bucle se detiene solo; lo que debes gestionar es la vuelta: el siguiente <code>ms</code> llegará segundos después. Por eso limitamos <code>dt</code>. Si quieres enterarte, escucha <code>document.addEventListener('visibilitychange', …)</code> y consulta <code>document.hidden</code>.</li>
+  <li><strong>Canvas fuera de la pantalla, en una pestaña visible.</strong> <code>requestAnimationFrame</code> es del documento, no del elemento: si el usuario hace scroll y el canvas queda fuera de la vista, tu bucle sigue ejecutándose a 60 fps para nada. Aquí sí tienes que pararlo tú, con un <code>IntersectionObserver</code>.</li>
+  <li><strong>Iframes de otro origen fuera de pantalla.</strong> Chrome ralentiza por su cuenta sus callbacks. Lo medimos con un iframe como los de estos playgrounds: 59 frames por segundo a la vista, 1 frame en un segundo tras hacer scroll para ocultarlo. No cuentes con ello en tu propio documento.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.4.4 — Un bucle que se pausa solo</h3>
+  <p>El bucle se detiene cuando el canvas sale de la vista (o la pestaña se oculta) y se reanuda al volver, reiniciando la referencia de tiempo para que no haya salto. Haz scroll hasta que el playground desaparezca y vuelve: el contador de pausas aumenta y la animación continúa donde estaba.</p>
+  <div class="js-playground" data-titulo="Pausa con IntersectionObserver" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+#info { font: 12px ui-monospace, monospace; color: #b4bccb; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform float u_angulo;
+uniform float u_aspecto;       // alto / ancho, para no deformar
+void main() {
+  float c = cos(u_angulo), s = sin(u_angulo);
+  vec2 p = vec2(c * a_posicion.x - s * a_posicion.y, s * a_posicion.x + c * a_posicion.y);
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const locAngulo = gl.getUniformLocation(programa, 'u_angulo');
+const locAspecto = gl.getUniformLocation(programa, 'u_aspecto');
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.4, 0.5, -0.4, 0.0, 0.6]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+let angulo = 0, previo = null, idRaf = 0, frames = 0, pausas = 0;
+let enPantalla = true;
+const info = document.getElementById('info');
+
+function frame(ms) {
+  const t = ms / 1000;
+  const dt = previo === null ? 0 : Math.min(t - previo, 0.1);
+  previo = t;
+  angulo += dt * 1.5;                        // 1,5 rad/s, independiente de los fps
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform1f(locAngulo, angulo);
+  gl.uniform1f(locAspecto, gl.drawingBufferHeight / gl.drawingBufferWidth);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  info.textContent = 'frames dibujados: ' + (++frames) + ' · pausas: ' + pausas;
+  idRaf = requestAnimationFrame(frame);
+}
+function arrancar() { if (!idRaf) { previo = null; idRaf = requestAnimationFrame(frame); } }
+function parar() { if (idRaf) { cancelAnimationFrame(idRaf); idRaf = 0; pausas++; info.textContent += ' (en pausa)'; } }
+function decidir() { (enPantalla && !document.hidden) ? arrancar() : parar(); }
+
+new IntersectionObserver((entradas) => { enPantalla = entradas[0].isIntersecting; decidir(); }).observe(canvas);
+document.addEventListener('visibilitychange', decidir);
+arrancar();
+</script>
+  </div>
+  <p>Tres detalles: el ángulo se acumula con <code>dt</code>, así que la velocidad no depende de los fps (2.3); al reanudar, <code>previo = null</code> hace que el primer <code>dt</code> sea 0 en lugar de los segundos que estuvo pausado; y <code>idRaf</code> sirve a la vez de identificador para <code>cancelAnimationFrame</code> y de indicador de «el bucle está vivo», para no arrancar dos bucles a la vez (un error clásico: cada llamada extra a <code>arrancar</code> duplicaría la velocidad).</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Tu página tiene una animación WebGL arriba del todo y el usuario hace scroll hasta el pie, de modo que el canvas queda fuera de la vista. La pestaña sigue visible. ¿Qué hace tu bucle de <code>requestAnimationFrame</code>?</p>
+  <ul>
+    <li>Se detiene solo, porque el navegador no pinta lo que no se ve.<div class="explicacion">El navegador no pinta el canvas, pero los callbacks de rAF son del documento entero: siguen llegando a 60 por segundo mientras la pestaña sea visible.</div></li>
+    <li data-correcta>Sigue ejecutándose a la frecuencia de la pantalla, gastando CPU y GPU para nada, hasta que lo pares tú.<div class="explicacion">Correcto. Por eso se usa un <code>IntersectionObserver</code> sobre el canvas. El bucle solo se detiene por sí mismo en pestañas ocultas (y Chrome frena por su cuenta los iframes de otro origen fuera de pantalla).</div></li>
+    <li>Pasa a ejecutarse una vez por segundo.<div class="explicacion">Eso es lo que observamos en un iframe de otro origen fuera de pantalla, no en tu propio documento.</div></li>
+  </ul>
+</div>
+
+<h2>Mover con un uniform o reescribir el buffer</h2>
+<p>Hay dos formas de mover un objeto de 100 000 vértices: recalcular todas sus posiciones en JavaScript y subirlas con <code>bufferSubData</code> (5.3), o dejar el buffer quieto y sumar un desplazamiento en el vertex shader con un uniform. Las medimos:</p>
+<table>
+  <thead><tr><th>Estrategia (100 000 vértices)</th><th>Trabajo de JavaScript por frame</th><th>Datos enviados por frame</th></tr></thead>
+  <tbody>
+    <tr><td>Recalcular + <code>bufferSubData</code></td><td>0,16–0,33 ms</td><td>800 KB</td></tr>
+    <tr><td><code>uniform2f</code> + suma en el shader</td><td>≈ 0,001 ms</td><td>8 bytes</td></tr>
+  </tbody>
+</table>
+<p>Unas doscientas veces menos trabajo para la CPU, y la GPU no lo nota: sumar un <code>vec2</code> en el vertex shader es gratis comparado con lo que ya hace. La regla que se deduce: <strong>lo que es igual para todo el objeto va en uniforms</strong> (posición, rotación, escala, color, tiempo); lo que cambia por vértice va en atributos; y si el cambio por vértice se puede calcular (una onda, un viento), se calcula en el vertex shader a partir del tiempo (7.4). Reescribir buffers queda para lo que de verdad no se puede calcular en la GPU.</p>
+
+<div class="callout senior" data-titulo="¿Cuánto cuesta una llamada uniform*?">
+  <p>Muy poco, pero no nada. Medimos 10 000 llamadas a <code>uniform4f</code>: 0,6 ms (60 ns cada una, porque solo se anotan en la cola de órdenes). Y 10 000 <code>getUniformLocation</code>: 1,8 ms. Moraleja: pide las locations una vez; asigna en cada frame solo lo que cambia (los valores persisten); y cuando tengas miles de objetos, el cuello de botella no serán los uniforms en sí sino las miles de llamadas de dibujo que los acompañan. Esa es la motivación de <a href="09-instancing.html">5.9</a>. (WebGL2 tiene además <em>uniform buffer objects</em>, bloques de uniforms guardados en un buffer y compartidos entre programas; son una optimización avanzada que no necesitaremos.)</p>
+</div>
+
+<h2>Varios objetos, un programa, distintos uniforms</h2>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.4.5 — Seis estrellas, seis juegos de uniforms</h3>
+  <p>Una única malla (una estrella de cinco puntas como <code>TRIANGLE_FAN</code>), un único programa y un único VAO. Seis objetos, cada uno con su posición, escala, velocidad de giro y color. En cada frame, el bucle asigna los uniforms de un objeto y lo dibuja; luego los del siguiente. Seis llamadas de dibujo, cada una con sus valores.</p>
+  <div class="js-playground" data-titulo="Varios objetos con uniforms por dibujo" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform vec2 u_desplazamiento;
+uniform float u_angulo;
+uniform float u_escala;
+uniform float u_aspecto;
+void main() {
+  float c = cos(u_angulo), s = sin(u_angulo);
+  vec2 p = u_escala * vec2(c * a_posicion.x - s * a_posicion.y, s * a_posicion.x + c * a_posicion.y);
+  p += u_desplazamiento;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec3 u_color;
+out vec4 color;
+void main() { color = vec4(u_color, 1.0); }`);
+const loc = {};
+for (const n of ['u_desplazamiento', 'u_angulo', 'u_escala', 'u_aspecto', 'u_color']) loc[n] = gl.getUniformLocation(programa, n);
+
+// Una estrella: centro + 10 vértices alternando radio exterior e interior (+1 para cerrar)
+const v = [0, 0];
+for (let i = 0; i <= 10; i++) {
+  const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 === 0 ? 1 : 0.45;
+  v.push(r * Math.cos(a), r * Math.sin(a));
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const nVertices = v.length / 2;
+
+const objetos = [
+  { x: -1.6, y: 0.2, escala: 0.30, giro: 0.6, color: [1.0, 0.42, 0.48] },
+  { x: -1.0, y: -0.3, escala: 0.22, giro: -1.2, color: [1.0, 0.72, 0.29] },
+  { x: -0.35, y: 0.3, escala: 0.35, giro: 0.9, color: [0.24, 0.81, 0.56] },
+  { x: 0.35, y: -0.25, escala: 0.25, giro: -0.5, color: [0.25, 0.82, 0.91] },
+  { x: 1.0, y: 0.25, escala: 0.32, giro: 1.6, color: [0.55, 0.48, 1.0] },
+  { x: 1.6, y: -0.2, escala: 0.20, giro: -2.2, color: [1.0, 0.42, 0.71] },
+];
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  gl.uniform1f(loc.u_aspecto, gl.drawingBufferHeight / gl.drawingBufferWidth);   // igual para todos
+  for (const o of objetos) {
+    gl.uniform2f(loc.u_desplazamiento, o.x, o.y + 0.08 * Math.sin(t * 2 + o.x * 3));
+    gl.uniform1f(loc.u_angulo, t * o.giro);
+    gl.uniform1f(loc.u_escala, o.escala);
+    gl.uniform3fv(loc.u_color, o.color);
+    gl.drawArrays(gl.TRIANGLE_FAN, 0, nVertices);   // este dibujo se queda con ESTOS valores
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Observa qué se asigna dónde: <code>useProgram</code>, <code>bindVertexArray</code> y <code>u_aspecto</code> una vez por frame, porque son iguales para todos; lo propio de cada objeto, dentro del bucle, justo antes de su dibujo. Las posiciones x van de −1,6 a 1,6 porque luego se multiplican por <code>u_aspecto</code> (alto/ancho): en un canvas apaisado, el clip space cubre más unidades «reales» en horizontal. Es la corrección de proporción a mano; en 5.6 la hará una matriz de proyección.</p>
+</section>
+
+<h2>GLKit: uniforms, ponerUniform y bucle</h2>
+<p>Con lo visto ya puedes leer y usar tres funciones más de GLKit:</p>
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="assets/js/glkit.js (extracto)">
+/* Devuelve { nombre: {loc, tipo, tamaño} } con todos los uniforms activos. */
+uniforms(gl, programa) {
+  const n = gl.getProgramParameter(programa, gl.ACTIVE_UNIFORMS), res = {};
+  for (let i = 0; i < n; i++) {
+    const info = gl.getActiveUniform(programa, i);
+    const nombre = info.name.replace(/\[0\]$/, "");
+    res[nombre] = { loc: gl.getUniformLocation(programa, info.name), tipo: info.type, tamaño: info.size };
+  }
+  return res;
+},
+
+/* Asigna un uniform según su tipo real (consultado con getActiveUniform).
+   OJO: afecta al programa en uso (gl.useProgram) — los uniforms son estado del programa. */
+ponerUniform(gl, u, v) { /* elige uniform1f, uniform3fv, uniform1i, uniformMatrix4fv… según u.tipo */ },
+
+/* Bucle de animación: fn(t, dt, frame) con t y dt en SEGUNDOS.
+   dt se limita a 0.1 s para que volver de otra pestaña no provoque un salto. */
+bucle(fn) { /* … */ return { parar(), reanudar(), get t() }; },
+</script>
+<ul>
+  <li><code>GLKit.uniforms(gl, p)</code> recorre los uniforms activos con <code>getActiveUniform</code> y devuelve un objeto con la location, el tipo y el tamaño de cada uno. Los inactivos no aparecen: si esperabas uno y no está, el compilador lo eliminó. Quita el <code>[0]</code> del nombre de los arrays para que puedas escribir <code>u.u_valores</code>.</li>
+  <li><code>GLKit.ponerUniform(gl, u, valor)</code> elige la función correcta según el tipo real del uniform (<code>uniform1f</code>, <code>uniform3fv</code>, <code>uniform1i</code> para samplers y booleanos, <code>uniformMatrix4fv</code> con <code>transpose = false</code>…), así que no puedes equivocarte de variante. Sigue actuando sobre el programa en uso.</li>
+  <li><code>GLKit.bucle(fn)</code> es el bucle de esta lección: llama a <code>fn(t, dt, frame)</code> con tiempos en segundos y <code>dt</code> limitado a 0,1 s. A diferencia del nuestro, <code>t</code> es un acumulador de <code>dt</code>: tras una pausa larga, el tiempo avanza como mucho 0,1 s, en lugar de saltar. Devuelve un objeto con <code>parar()</code> y <code>reanudar()</code>, que puedes conectar a un <code>IntersectionObserver</code> como en el ejemplo 5.4.4.</li>
+</ul>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.4.1 — El uniform que no llega</h3>
+  <p>El fragment shader tiene un uniform de color y JavaScript le asigna un naranja, pero el triángulo sale negro. No hay errores. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.4.1" data-altura="200" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec3 u_colour;
+out vec4 color;
+void main() { color = vec4(u_colour, 1.0); }`);
+const locColor = gl.getUniformLocation(programa, 'u_color');
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform3f(locColor, 1.0, 0.55, 0.2);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+uniform vec3 u_colour;
+out vec4 color;
+void main() { color = vec4(u_colour, 1.0); }`);
+const locColor = gl.getUniformLocation(programa, 'u_colour');   // el nombre EXACTO del shader
+if (locColor === null) console.log('¡Ojo! u_colour no existe o es inactivo');
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform3f(locColor, 1.0, 0.55, 0.2);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Imprime <code>locColor</code>. ¿Qué es?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Compara letra a letra el nombre del shader y el de <code>getUniformLocation</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El shader declara <code>u_colour</code> (con «u» británica) y JavaScript pide <code>u_color</code>: la location es <code>null</code>, <code>uniform3f(null, …)</code> no hace nada ni da error, y el uniform conserva su valor inicial, (0, 0, 0): negro. Basta con usar el mismo nombre. La línea extra de la solución es un buen hábito: avisar si una location sale <code>null</code>. El error contrario (el nombre bien, pero el uniform sin usar en el shader) produce exactamente el mismo síntoma.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.4.2 — Milisegundos</h3>
+  <p>Este shader debería hacer latir suavemente el tamaño y el color del círculo, una vez cada 3 segundos aproximadamente. En cambio, parpadea como loco. Arréglalo sin tocar el shader.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.4.2" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 color;
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  float latido = 0.5 + 0.5 * sin(u_time * 2.0);         // periodo: 3,14 s
+  float radio = 0.2 + 0.1 * latido;
+  vec3 c = mix(vec3(0.55, 0.48, 1.0), vec3(1.0, 0.42, 0.71), latido);
+  color = vec4(c * step(length(p), radio), 1.0);
+}`);
+const locT = gl.getUniformLocation(programa, 'u_time');
+const locR = gl.getUniformLocation(programa, 'u_resolution');
+const vaoVacio = gl.createVertexArray();
+
+function frame(ms) {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.useProgram(programa);
+  gl.uniform1f(locT, ms);
+  gl.uniform2f(locR, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 color;
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  float latido = 0.5 + 0.5 * sin(u_time * 2.0);         // periodo: 3,14 s
+  float radio = 0.2 + 0.1 * latido;
+  vec3 c = mix(vec3(0.55, 0.48, 1.0), vec3(1.0, 0.42, 0.71), latido);
+  color = vec4(c * step(length(p), radio), 1.0);
+}`);
+const locT = gl.getUniformLocation(programa, 'u_time');
+const locR = gl.getUniformLocation(programa, 'u_resolution');
+const vaoVacio = gl.createVertexArray();
+
+function frame(ms) {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.useProgram(programa);
+  gl.uniform1f(locT, ms / 1000);                    // segundos, como espera el shader
+  gl.uniform2f(locR, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>¿En qué unidad llega <code>ms</code>? ¿En cuál la espera el shader? ¿Cuánto avanza <code>u_time * 2.0</code> entre dos frames?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El shader espera segundos (<code>sin(u_time * 2.0)</code> tiene periodo π ≈ 3,14 s), pero recibe milisegundos. Entre dos frames (16,7 ms) el argumento del seno avanza 33 radianes, unas cinco vueltas: cada frame cae en una fase casi aleatoria de la oscilación y lo que ves es ruido. Es aliasing temporal: una señal que oscila mucho más deprisa que la frecuencia a la que la muestreas. Dividir entre 1000 lo arregla. Fíjate en que no hay forma de que WebGL detecte este error: <code>u_time</code> es un float cualquiera.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.4.3 — El segundo objeto no se mueve</h3>
+  <p>Dos triángulos con dos programas distintos (uno naranja y otro turquesa). Los dos deberían oscilar de lado a lado según <code>u_time</code>, pero el turquesa está quieto. Sin errores. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.4.3" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const fuenteVS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform float u_time;
+uniform float u_y;
+void main() { gl_Position = vec4(a_posicion + vec2(0.6 * sin(u_time * 1.5), u_y), 0.0, 1.0); }`;
+const fs = (r, g, b) => `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(${r}, ${g}, ${b}, 1.0); }`;
+const naranja = GLKit.crearPrograma(gl, fuenteVS, fs(1.0, 0.55, 0.2));
+const turquesa = GLKit.crearPrograma(gl, fuenteVS, fs(0.25, 0.82, 0.91));
+const locTiempo = gl.getUniformLocation(naranja, 'u_time');
+const locY = gl.getUniformLocation(naranja, 'u_y');
+const locYTurquesa = gl.getUniformLocation(turquesa, 'u_y');
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.2, -0.2, 0.2, -0.2, 0.0, 0.2]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+function frame(ms) {
+  const t = ms / 1000;
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindVertexArray(vao);
+
+  gl.useProgram(naranja);
+  gl.uniform1f(locTiempo, t);
+  gl.uniform1f(locY, 0.4);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.useProgram(turquesa);
+  gl.uniform1f(locYTurquesa, -0.4);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const fuenteVS = `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform float u_time;
+uniform float u_y;
+void main() { gl_Position = vec4(a_posicion + vec2(0.6 * sin(u_time * 1.5), u_y), 0.0, 1.0); }`;
+const fs = (r, g, b) => `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(${r}, ${g}, ${b}, 1.0); }`;
+const naranja = GLKit.crearPrograma(gl, fuenteVS, fs(1.0, 0.55, 0.2));
+const turquesa = GLKit.crearPrograma(gl, fuenteVS, fs(0.25, 0.82, 0.91));
+// Cada programa tiene SUS locations y SUS valores
+const objetos = [
+  { programa: naranja, y: 0.4 },
+  { programa: turquesa, y: -0.4 },
+].map((o) => ({ ...o, locTiempo: gl.getUniformLocation(o.programa, 'u_time'), locY: gl.getUniformLocation(o.programa, 'u_y') }));
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.2, -0.2, 0.2, -0.2, 0.0, 0.2]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+function frame(ms) {
+  const t = ms / 1000;
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindVertexArray(vao);
+  for (const o of objetos) {
+    gl.useProgram(o.programa);         // primero el programa…
+    gl.uniform1f(o.locTiempo, t);      // …luego SUS uniforms
+    gl.uniform1f(o.locY, o.y);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Cuántas veces se llama a <code>getUniformLocation</code> con <code>'u_time'</code>? ¿Para qué programa?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Los dos programas comparten el código del vertex shader, pero no la memoria de sus uniforms.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El <code>u_time</code> del programa turquesa nunca se asigna: vale 0 para siempre y <code>sin(0) = 0</code>, así que no se mueve. Que los dos shaders tengan el mismo texto no significa que compartan uniforms: cada programa enlazado es independiente, con sus locations y sus valores. La solución guarda, para cada objeto, su programa y sus locations, y en el bucle hace siempre <code>useProgram</code> → uniforms → dibujar. Ese «objeto con su programa y sus locations» es la semilla de la arquitectura de 7.1.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.4.4 — Un círculo que no se deforme</h3>
+  <p>La malla es un círculo de radio 0,5 (un abanico de 64 triángulos) en clip space. En un canvas apaisado sale como una elipse. Añade un uniform <code>u_aspecto</code> al vertex shader, multiplica la x por él y asígnalo en el bucle con el valor adecuado para que el círculo sea redondo en cualquier tamaño (prueba a cambiar el ancho de la ventana).</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.4.4" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() {
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(0.55, 0.48, 1.0, 1.0); }`);
+
+const v = [0, 0];
+for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI * 2; v.push(0.5 * Math.cos(a), 0.5 * Math.sin(a)); }
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+function frame() {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLE_FAN, 0, v.length / 2);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform float u_aspecto;               // alto / ancho del búfer
+void main() {
+  gl_Position = vec4(a_posicion.x * u_aspecto, a_posicion.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(0.55, 0.48, 1.0, 1.0); }`);
+const locAspecto = gl.getUniformLocation(programa, 'u_aspecto');
+
+const v = [0, 0];
+for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI * 2; v.push(0.5 * Math.cos(a), 0.5 * Math.sin(a)); }
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+function frame() {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform1f(locAspecto, gl.drawingBufferHeight / gl.drawingBufferWidth);   // cada frame: puede cambiar
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLE_FAN, 0, v.length / 2);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En un búfer de 800×200, una unidad de clip space en x mide 400 píxeles y en y, 100. ¿Por cuánto hay que multiplicar la x para que midan lo mismo?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Asígnalo dentro del bucle, después de <code>ajustarTamaño</code>, con el tamaño real del búfer.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El clip space va de −1 a 1 en los dos ejes, pero el viewport lo estira a un rectángulo de <code>ancho × alto</code> píxeles: una unidad en x mide <code>ancho/2</code> píxeles y en y <code>alto/2</code>. Multiplicando la x por <code>alto/ancho</code>, las dos unidades miden lo mismo y el círculo sale redondo. Se asigna en cada frame porque el tamaño puede cambiar (el uniform persiste, así que bastaría con asignarlo cuando <code>ajustarTamaño</code> devuelva <code>true</code>; hacerlo siempre es más simple y cuesta 60 ns). Es la misma corrección que usaban los ejemplos de estrellas; en 5.6 la matriz de proyección la incluye.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.4.5 — Una rejilla de relojes</h3>
+  <p>Con una sola malla (un rectángulo estrecho, la «aguja») y un solo programa, dibuja una rejilla de 5 × 3 agujas que giren, cada una a una velocidad distinta (por ejemplo, <code>0.5 + 0.2 * índice</code> rad/s). Usa uniforms por dibujo para la posición y el ángulo; el ejemplo de las estrellas es tu modelo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.4.5" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform vec2 u_desplazamiento;
+uniform float u_angulo;
+uniform float u_aspecto;
+void main() {
+  float c = cos(u_angulo), s = sin(u_angulo);
+  vec2 p = vec2(c * a_posicion.x - s * a_posicion.y, s * a_posicion.x + c * a_posicion.y) + u_desplazamiento;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(0.25, 0.82, 0.91, 1.0); }`);
+// La aguja: un rectángulo de 0.03 × 0.22 que sale del origen hacia arriba
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.015, 0, 0.015, 0, -0.015, 0.22, 0.015, 0.22]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// TODO: locations de los uniforms
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  // TODO: 15 dibujos (TRIANGLE_STRIP, 4 vértices), cada uno con su posición y ángulo
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform vec2 u_desplazamiento;
+uniform float u_angulo;
+uniform float u_aspecto;
+void main() {
+  float c = cos(u_angulo), s = sin(u_angulo);
+  vec2 p = vec2(c * a_posicion.x - s * a_posicion.y, s * a_posicion.x + c * a_posicion.y) + u_desplazamiento;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(0.25, 0.82, 0.91, 1.0); }`);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.015, 0, 0.015, 0, -0.015, 0.22, 0.015, 0.22]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const locDesp = gl.getUniformLocation(programa, 'u_desplazamiento');
+const locAngulo = gl.getUniformLocation(programa, 'u_angulo');
+const locAspecto = gl.getUniformLocation(programa, 'u_aspecto');
+
+function frame(ms) {
+  const t = ms / 1000;
+  GLKit.ajustarTamaño(canvas);
+  const aspecto = gl.drawingBufferHeight / gl.drawingBufferWidth;
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  gl.uniform1f(locAspecto, aspecto);
+  const anchoUtil = 0.8 / aspecto;             // hasta dónde llega x antes de multiplicar por el aspecto
+  for (let fila = 0; fila < 3; fila++) {
+    for (let col = 0; col < 5; col++) {
+      const i = fila * 5 + col;
+      const x = (col / 4 * 2 - 1) * anchoUtil;
+      const y = 0.55 - fila * 0.55;
+      gl.uniform2f(locDesp, x, y);
+      gl.uniform1f(locAngulo, -t * (0.5 + 0.2 * i));   // negativo: sentido horario, como un reloj
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Pide las tres locations una vez, fuera del bucle. <code>u_aspecto</code> es igual para todas las agujas.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Dos bucles <code>for</code> anidados (filas y columnas). Para repartir las columnas por todo el ancho, recuerda que la x se multiplica después por el aspecto: las posiciones útiles van de <code>−1/aspecto</code> a <code>1/aspecto</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Quince dibujos por frame con la misma malla, el mismo programa y el mismo VAO; lo único que cambia entre ellos son dos uniforms. Cada <code>drawArrays</code> se queda con los valores vigentes en su momento, aunque la GPU lo ejecute después. El ángulo negativo gira en sentido horario, porque en clip space los ángulos positivos giran en sentido antihorario (x a la derecha, y hacia arriba). Quince llamadas es poco; en 5.9 verás qué pasa cuando son quince mil, y cómo el <em>instancing</em> lo resuelve con una sola.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.4.6 — La matriz escrita en papel</h3>
+  <p>Alguien ha escrito a mano una matriz de traslación que mueve el triángulo 0,4 a la derecha y 0,2 hacia arriba, <strong>fila a fila</strong>, como en un libro. En vez de desplazarse, el triángulo sale deformado (con la esquina izquierda estirada) y casi en el mismo sitio. Arréglalo de dos formas: cambiando un solo argumento, y reordenando el array (deja la segunda comentada).</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.4.6" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform mat4 u_matriz;
+void main() { gl_Position = u_matriz * vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const locMatriz = gl.getUniformLocation(programa, 'u_matriz');
+
+// Traslación (0.4, 0.2), escrita como en papel: fila a fila
+const traslacion = new Float32Array([
+  1, 0, 0, 0.4,
+  0, 1, 0, 0.2,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0.3, -0.5, -0.1, 0.3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniformMatrix4fv(locMatriz, false, traslacion);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('Lo que recibe la GPU, como en papel:\n' + mat4.texto(gl.getUniform(programa, locMatriz), 1));
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+uniform mat4 u_matriz;
+void main() { gl_Position = u_matriz * vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+const locMatriz = gl.getUniformLocation(programa, 'u_matriz');
+
+// Traslación (0.4, 0.2), escrita como en papel: fila a fila
+const traslacion = new Float32Array([
+  1, 0, 0, 0.4,
+  0, 1, 0, 0.2,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]);
+// Forma 2 (equivalente): el array por columnas, con la traslación al final
+// const traslacion = new Float32Array([1,0,0,0,  0,1,0,0,  0,0,1,0,  0.4,0.2,0,1]);   // y transpose = false
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0.3, -0.5, -0.1, 0.3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniformMatrix4fv(locMatriz, true, traslacion);    // forma 1: que WebGL2 la trasponga
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('Lo que recibe la GPU, como en papel:\n' + mat4.texto(gl.getUniform(programa, locMatriz), 1));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Lee la matriz que imprime la consola: ¿dónde han acabado el 0.4 y el 0.2? ¿Qué componente de <code>gl_Position</code> calcula esa fila?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El segundo argumento de <code>uniformMatrix4fv</code>. En WebGL2 puede ser <code>true</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La GPU lee el array por columnas, así que la fila que escribiste como <code>1, 0, 0, 0.4</code> es para ella la primera <em>columna</em>, y el 0.4 y el 0.2 acaban en la cuarta <em>fila</em>: la que calcula <code>w</code>. El resultado es <code>w = 0.4x + 0.2y + 1</code>, distinto en cada vértice, y la división por <code>w</code> deforma el triángulo en perspectiva en lugar de trasladarlo. <strong>Forma 1</strong>: <code>transpose = true</code>, y WebGL2 traspone al subir (en WebGL1 daría <code>INVALID_VALUE</code>). <strong>Forma 2</strong>: escribir el array por columnas, con la traslación en las posiciones 12 y 13, que es lo que devuelve <code>mat4.traslacion(0.4, 0.2, 0)</code>. Imprime siempre las matrices con <code>mat4.texto</code> cuando algo se deforme de forma rara.</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Un uniform vale lo mismo en todo un dibujo. Location con <code>getUniformLocation</code> una vez tras enlazar (objeto opaco o <code>null</code>); valor con <code>uniform*</code> sobre el programa <strong>en uso</strong>.</li>
+    <li>La función debe coincidir con el tipo: <code>1f</code>/<code>2f</code>… para float, <code>1i</code> para int, bool y samplers, <code>1ui</code> para uint, <code>v</code> para arrays; si no, <code>INVALID_OPERATION</code>. Número de argumentos erróneo: <code>TypeError</code>. Arrays con <code>fv</code> (sobrantes ignorados); structs miembro a miembro.</li>
+    <li>Matrices por columnas con <code>uniformMatrix4fv(loc, false, m)</code>; <code>transpose = true</code> (solo WebGL2) traspone matrices escritas por filas.</li>
+    <li>Estado por programa: valores iniciales a 0, persisten entre frames, cada dibujo usa los valores del momento, y un nuevo <code>linkProgram</code> los resetea e invalida las locations. <code>null</code> se acepta en silencio.</li>
+    <li>Bucle: tiempo de rAF en ms → segundos; <code>dt</code> limitado; redimensionar y viewport en cada frame; <code>u_resolution</code> con el tamaño real.</li>
+    <li>Precisión: el tiempo viaja en float32 (o float16 con <code>mediump</code> en móviles); la separación crece con el tamaño del número. Tiempos pequeños (desde el arranque), envolver en JS los periódicos, nunca <code>Date.now()</code>, siempre <code>highp</code>.</li>
+    <li>Pausa: rAF se detiene solo en pestañas ocultas, pero no con el canvas fuera de la vista: <code>IntersectionObserver</code> + <code>visibilitychange</code>, reiniciando la referencia de tiempo.</li>
+    <li>Mover con uniforms cuesta cientos de veces menos que reescribir el buffer. Varios objetos: por cada uno, <code>useProgram</code> → uniforms → VAO → dibujar.</li>
+  </ul>
+</div>
+
+<p>En <a href="05-texturas.html">5.5</a> llega el tercer canal de datos: las texturas, tablas que el fragment shader puede consultar. Y con ellas, el uniform más traicionero de todos: el <code>sampler2D</code>, que se asigna con un entero que no es la textura.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/uniform">MDN: la familia <code>uniform[1234][fi][v]()</code></a> y <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext/uniformMatrix">MDN: <code>uniformMatrix[234]x[234]fv()</code></a>.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Page_Visibility_API">MDN: Page Visibility API</a>, para pausar en pestañas ocultas.</li>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-precision-issues.html">WebGL2 Fundamentals: Precision Issues</a>, sobre <code>mediump</code>, <code>highp</code> y lo que pasa en móviles.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+/* =====================================================================
+   m2.css — estilos propios del módulo 2 (Animación con CSS y JavaScript)
+   Solo variables del tema: funciona en claro y en oscuro.
+   ===================================================================== */
+
+/* Escenario para demos con elementos DOM reales dentro de la página */
+.m2-escena {
+  position: relative; overflow: hidden;
+  height: 180px; margin: 0;
+  background: var(--code-bg);
+  border-bottom: 1px solid var(--border);
+}
+.m2-escena .m2-carril {
+  position: absolute; left: 0; right: 0; height: 1px;
+  background: var(--border);
+}
+.m2-escena .m2-etq {
+  position: absolute; left: 10px; font: 12px/1.2 var(--mono); color: var(--muted);
+}
+
+/* Tablas de datos medidos */
+table.m2-medidas td, table.m2-medidas th { font-size: 14px; }
+table.m2-medidas td.num { text-align: right; font-family: var(--mono); white-space: nowrap; }
+table.m2-medidas th.num { text-align: right; }
+table.m2-medidas td.c { text-align: center; font-family: var(--mono); }
+.leccion .m2-si { color: var(--err); font-weight: 600; }
+.leccion .m2-no { color: var(--ok); font-weight: 600; }
+.leccion .m2-mas { color: var(--warn); font-weight: 600; }
+
+/* Fila de «pantalla» con medidas en vivo */
+.m2-cifras { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 13px/1.5 var(--mono); color: var(--text-2); }
+.m2-cifras b { color: var(--text); font-weight: 600; }
+
+/* Pequeñas etiquetas de color para leyendas */
+.m2-muestra { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: baseline; }
+
+/* Fórmula o dato destacado en una línea */
+.m2-destacado {
+  border-left: 3px solid var(--accent); background: var(--accent-soft);
+  padding: 10px 14px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; margin: 1.2rem 0;
+}
+
+/* Caja DOM real que se anima con la curva del editor de cubic-bezier (2.2) */
+.m2-bezier-caja {
+  position: absolute; width: 22px; height: 22px; border-radius: 6px;
+  background: var(--accent-2); box-shadow: 0 0 0 2px var(--code-bg);
+  pointer-events: none; left: 0; top: 0; z-index: 2;
+}

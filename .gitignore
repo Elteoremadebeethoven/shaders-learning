@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Dependencias (se recrean con `npm install` y `python -m venv`; ver herramientas/ y python/README.md)
+node_modules/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Cola global de Chrome headless (herramientas/.chrome-turno) y registros del vigilante
+herramientas/.chrome-turno
+*.log
+
+# Capturas y temporales de verificación
+capturas/
+*.tmp
+
+# Claude Code: configuración local y supervisor de otro proyecto (Manim), no es del curso
+.claude/settings.local.json
+.claude/supervisor/

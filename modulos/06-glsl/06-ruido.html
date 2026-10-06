@@ -1,0 +1,1483 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.6 · Aleatoriedad y ruido — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/b-m6.css">
+</head>
+<body data-leccion="06-glsl/ruido">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>Aleatoriedad y ruido</h1>
+  <p class="resumen">Nubes, fuego, mármol, terreno, grano de película: casi todo lo que parece «natural» en un shader sale de una función de ruido. Pero en GLSL no existe <code>random()</code>. En esta lección construyes el azar desde cero: funciones hash deterministas, ruido de valor y de gradiente, fbm, turbulencia, domain warping, ruido animado y los hacks de los profesionales, con cada detalle que hace que funcione (o que se rompa).</p>
+  <div class="meta"><span class="chip">⏱ 130 min</span><span class="chip">Requisitos: 3.4, 3.7, 6.3–6.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Entenderás por qué el azar de un shader es una función pura de su entrada, y sabrás elegir un hash (seno, Hoskins, PCG) sabiendo lo que cuesta y cuándo se rompe cada uno.</li>
+      <li>Escribirás de memoria el ruido de valor y el de gradiente en 1D, 2D y 3D, y sabrás qué cambia al elegir el suavizado lineal, cúbico o quíntico.</li>
+      <li>Combinarás octavas (fbm) controlando lacunaridad, ganancia y coste, y derivarás turbulencia, ruido ridged y domain warping.</li>
+      <li>Animarás ruido sin que parpadee, harás ruido que se repite sin costuras y lo leerás de una textura cuando el rendimiento lo pida, conociendo sus trampas.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El problema: pedirle azar a una función pura</h2>
+<p>En JavaScript, <code>Math.random()</code> devuelve un número distinto cada vez que lo llamas. Para eso guarda un <strong>estado</strong> interno (una semilla) que cambia en cada llamada: el número de ahora depende de todos los que se generaron antes. Un fragment shader no puede hacer eso. Recuerda el modelo de <a href="02-pensar-en-paralelo.html">6.2</a>: cada invocación calcula el color de un píxel sin memoria, sin saber qué hicieron las demás, y millones de invocaciones corren a la vez en un orden que nadie garantiza. Un generador con estado compartido sería una carrera entre millones de hilos; uno con estado por píxel no sobrevive de un frame al siguiente.</p>
+<p>La salida es cambiar la pregunta. En vez de «dame un número aleatorio», el shader pregunta «¿qué número aleatorio le corresponde a <em>esta</em> entrada?». Buscamos una función</p>
+$$h : \text{entrada} \longrightarrow [0, 1)$$
+<p>que sea <strong>determinista</strong> (la misma entrada da siempre el mismo número) pero que <strong>parezca</strong> aleatoria: que entradas vecinas, como las celdas (3, 7) y (4, 7), den números sin relación aparente. Eso es una <strong>función hash</strong>. La entrada suele ser una posición (la del píxel, la de una celda, la de un punto de una retícula), a veces combinada con el tiempo o con un número de objeto.</p>
+
+<div class="callout porque">
+  <p>¿Por qué el determinismo es una ventaja y no una limitación? Porque es justo lo que quieres casi siempre. Si el «azar» cambiara en cada frame, un cielo de estrellas parpadearía como la nieve de una tele: cada estrella tiene que seguir en su sitio en el frame siguiente. Con un hash, la estrella de la celda (3, 7) está siempre en el mismo lugar porque su posición es <code>hash(3, 7)</code>. Además, puedes saltar a cualquier instante (como el botón <em>t=0</em> del editor), reproducir exactamente la misma imagen o calcular el valor en cualquier punto sin haber calculado los anteriores. El azar «de verdad» (distinto en cada frame) se consigue metiendo el tiempo en la entrada, cuando lo quieras y solo entonces.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Cuál es la razón de fondo por la que GLSL no ofrece una función <code>random()</code> como la de JavaScript?</p>
+  <ul>
+    <li>Porque la GPU no tiene instrucciones para multiplicar enteros grandes.<div class="explicacion">Las GPU con GLSL ES 3.00 tienen enteros de 32 bits, desplazamientos y XOR: con eso se escriben generadores excelentes (lo verás en esta lección con PCG). El problema no es de instrucciones.</div></li>
+    <li>Porque el azar en la GPU haría que la imagen parpadease.<div class="explicacion">Eso sería una consecuencia de usar un azar distinto en cada frame, no la razón técnica. De hecho, con un hash también puedes hacer que la imagen parpadee a propósito, metiendo el tiempo en la entrada.</div></li>
+    <li data-correcta>Porque un generador como <code>Math.random</code> necesita un estado que cambia en cada llamada, y las invocaciones de un shader no comparten ni conservan estado.<div class="explicacion">Exacto. Cada invocación es independiente, corre en paralelo con millones de otras y olvida todo al terminar. La solución es un hash: una función sin estado cuya salida depende solo de su entrada.</div></li>
+  </ul>
+</div>
+
+<h2>Funciones hash: desordenar números a propósito</h2>
+
+<h3>Qué le pedimos a un hash</h3>
+<p>Un hash para gráficos no necesita ser criptográfico (nadie va a intentar adivinar tus estrellas), pero sí cumplir cinco cosas, y conviene tenerlas en mente porque cada hash de esta sección falla en alguna:</p>
+<ol>
+  <li><strong>Determinista</strong>: la misma entrada, la misma salida. Idealmente, también en otra GPU.</li>
+  <li><strong>Uniforme</strong>: las salidas se reparten por igual en $[0, 1)$. Si el 1,5&nbsp;% de las celdas deben tener estrella, que sea el 1,5&nbsp;% y no el 0,6&nbsp;%.</li>
+  <li><strong>Sin correlación visible</strong>: ni entre vecinos, ni en diagonal, ni a lo largo de una fila. El ojo humano es un detector de patrones implacable.</li>
+  <li><strong>Robusto</strong>: que siga funcionando con entradas grandes (un mundo que se desplaza), negativas o con poca precisión.</li>
+  <li><strong>Barato</strong>: un ruido de 8 octavas en 3D llama al hash 64 veces por píxel. En una pantalla 4K son más de 500 millones de llamadas por frame.</li>
+</ol>
+
+<h3>El hash del seno, visto otra vez</h3>
+<p>Ya lo conoces de <a href="../03-matematicas/07-precision.html">3.7</a>: la línea más copiada de internet.</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="El hash clásico">
+float hashSeno(vec2 p) {
+  return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+</script>
+<p>En 3.7 viste cómo funciona (el seno desordena, multiplicar por 43 758 sube a la vista las cifras decimales bajas, <code>fract</code> se queda con ellas) y por qué se rompe: con coordenadas grandes, con <code>mediump</code> en float16 y entre GPU distintas. Aquí te toca un cuarto problema que no aparece en ningún tutorial, y que se entiende con lo que aprendiste allí sobre el <em>fast math</em>: <strong>el resultado del hash depende de qué otras cosas haya en el shader</strong>.</p>
+<p>Los dos editores de abajo son idénticos (pulsa «Ver código» en cada uno) salvo por una línea al final del segundo: un <code>isnan</code> sobre un uniform que vale 0 y que, por tanto, nunca se cumple. Ambos pintan el hash de celdas de 4 píxeles desplazadas 20 000 celdas desde el origen, como si la cámara se hubiera alejado.</p>
+
+<div class="b-dos">
+<div class="glsl-playground" data-titulo="Seno, lejos del origen" data-altura="200" data-editor="oculto">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_nunca;   // vale 0: el isnan del otro editor nunca se cumple
+out vec4 fragColor;
+
+float hashSeno(vec2 p) {
+  return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+  vec2 celda = floor(gl_FragCoord.xy / 4.0) + 20000.0;
+  fragColor = vec4(vec3(hashSeno(celda)), 1.0);
+}
+</script>
+</div>
+<div class="glsl-playground" data-titulo="El mismo + un isnan" data-altura="200" data-editor="oculto">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_nunca;   // vale 0: el isnan de abajo nunca se cumple
+out vec4 fragColor;
+
+float hashSeno(vec2 p) {
+  return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+  vec2 celda = floor(gl_FragCoord.xy / 4.0) + 20000.0;
+  fragColor = vec4(vec3(hashSeno(celda)), 1.0);
+  if (isnan(u_nunca)) fragColor = vec4(1.0, 0.0, 1.0, 1.0);
+}
+</script>
+</div>
+</div>
+
+<p>En el primero, rayas diagonales y muy pocos niveles de gris. En el segundo, ruido correcto. Lo medimos en un bloque de 128 × 128 celdas en Chrome sobre un Apple M1: sin <code>isnan</code>, el hash dio <strong>17 valores distintos</strong> (redondeando a 4 decimales) y una correlación de 0,55 entre cada celda y su vecina de la derecha; con el <code>isnan</code>, más de 1 000 valores distintos y correlación 0. Y los dos shaders dieron un valor diferente en 16 344 de las 16 384 celdas: <strong>son dos ruidos distintos</strong>, incluso cerca del origen, donde los dos «funcionan».</p>
+<p>La explicación es la de 3.7 (el bicho de <a href="../03-matematicas/07-precision.html#m3-isnan-heisenbug">añadir isnan cambia el resultado</a>): ANGLE compila los shaders para Metal con las optimizaciones <em>fast math</em>, y las desactiva si el shader usa <code>isnan</code> o <code>isinf</code>. Con fast math, <code>sin</code> se calcula con una aproximación rápida que pierde precisión con argumentos grandes (aquí el argumento del seno vale unos 1,8 millones); sin fast math, se usa la versión precisa. El hash del seno vive de las cifras menos significativas del seno, así que cualquier diferencia en la aproximación cambia por completo la salida. Por la misma razón, el hash del seno se ve distinto en el graficador del curso, que usa <code>isnan</code> por dentro (para dejar huecos donde la función no está definida): allí siempre sale el seno preciso, y en un editor sin <code>isnan</code>, el rápido.</p>
+<p>Y una vuelta de tuerca que no cuenta ningún tutorial: fuera de los editores del curso, el <code>isnan</code> solo hace efecto <strong>la primera vez</strong> que el navegador compila ese texto exacto. Chrome guarda los programas compilados en una caché (en memoria y en el disco del perfil) y, cuando vuelve a recibir el mismo código fuente, reutiliza el binario guardado, que se comporta como si el <code>isnan</code> no estuviera. Lo medimos en el M1 con WebGL crudo, compilando dos veces el mismo shader con <code>isnan</code>: la primera vez, 2 069 valores distintos (seno preciso); la segunda, 17, idénticos a los del shader sin <code>isnan</code>. Pasó igual al recargar la página, en otra pestaña y al cerrar Chrome y volver a abrirlo con el mismo perfil, y bastó con cambiar un carácter de un comentario para que se compilara de verdad otra vez. Los editores de este curso y el graficador usan justo ese truco: a todo shader que contiene <code>isnan</code> o <code>isinf</code> le añaden al final un comentario distinto en cada compilación (<code>// sin-cache …</code>, invisible en el editor), así que la caché nunca acierta y los dos editores de arriba se comportan igual en cada visita (lo comprobamos: el segundo dio 256 niveles de gris distintos en la primera carga y también al recargar; el primero, 17 las dos veces). En tu propia página no tendrás esa red: un shader con <code>isnan</code> se verá de una manera la primera vez que alguien lo cargue y de otra en las siguientes. Un comportamiento que depende de lo que el navegador compiló ayer es la definición de algo en lo que no debes confiar: no uses <code>isnan</code> como interruptor de precisión y elimina de raíz la dependencia del fast math (el hash sin seno de abajo, el <code>mod</code> blindado de <a href="05-patrones.html#cuando-falla-mod">6.5</a>, <code>max</code> antes de <code>pow</code>).</p>
+
+<div class="callout bestiario" data-id="m6b-hash-fastmath" data-titulo="El arreglo con isnan funciona la primera vez y deja de funcionar al recargar la página">
+  <p><strong>Síntoma:</strong> añades un <code>isnan</code> a tu shader (para depurar, o porque viste que con él el hash del seno, un <code>mod</code> o un <code>pow</code> dan el resultado «bueno») y en tu página funciona; recargas, la abres en otra pestaña o vuelves otro día, y el resultado es el de antes, como si el <code>isnan</code> no estuviera. En los editores y el graficador del curso, en cambio, el mismo shader se comporta igual siempre.</p>
+  <p><strong>Causa:</strong> en Chrome sobre Metal, <code>isnan</code>/<code>isinf</code> desactiva el fast math de todo el shader (el comportamiento raro <a href="../03-matematicas/07-precision.html#m3-isnan-heisenbug">«Añadir isnan() para depurar cambia el resultado»</a> de 3.7), pero solo cuando ANGLE compila de verdad ese texto. Chrome guarda los programas compilados en una caché de memoria y de disco, y la segunda vez que recibe exactamente el mismo código reutiliza el binario guardado, que se comporta como compilado <em>con</em> fast math. Medido en el M1: <code>mod(x, 7.0)</code> falló en 0 de 4 096 múltiplos negativos de 7 la primera vez y en 2 071 la segunda, al recargar y en otra pestaña. Los editores del curso añaden un comentario distinto en cada compilación de los shaders con <code>isnan</code>, y por eso no lo sufren.</p>
+  <p><strong>Solución:</strong> no uses <code>isnan</code> como interruptor de precisión: elimina la dependencia del fast math con fórmulas robustas (un hash sin funciones trascendentes, como el de Hoskins de abajo, en lugar del hash del seno, que además se rompe por otros motivos: <a href="../03-matematicas/07-precision.html#m3-hash-roto">3.7</a>; el <code>mod</code> blindado de 6.5; <code>max(x, 0.0)</code> antes de <code>pow</code>). Si depuras con <code>isnan</code> en tu página, cambia un comentario en cada prueba (o añade uno único al compilar, como los editores) y comprueba el arreglo final sin él.</p>
+</div>
+
+<h3>Un hash sin seno</h3>
+<p>En 2014, Dave Hoskins publicó en Shadertoy una familia de hashes llamada <em>Hash without Sine</em> (con licencia MIT) que resuelve casi todos los problemas del seno usando solo multiplicaciones, sumas y <code>fract</code>. Es, con diferencia, el hash que más verás en shaders modernos, y es el <code>hash12</code> que usaste como caja negra en <a href="05-patrones.html">6.5</a>. Toca abrirla:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+// «Hash without Sine», © 2014 David Hoskins, licencia MIT
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+</script>
+<ol>
+  <li data-l="1">La atribución: la licencia MIT permite usar este código en cualquier proyecto, incluso comercial, a condición de conservar el aviso de copyright (lo verás en <a href="10-codigo-ajeno.html">6.10</a>).</li>
+  <li data-l="2">El nombre sigue la convención de Hoskins: <strong>1 salida, 2 entradas</strong> (<code>hash12</code>). Verás <code>hash11</code>, <code>hash13</code>, <code>hash22</code>, <code>hash33</code>… Cuidado: otros autores usan el orden contrario (<code>hash21</code> para «2 entradas, 1 salida»). Mira siempre la firma.</li>
+  <li data-l="3">Copia la entrada en tres componentes (<code>p.xyx</code>), multiplica por un número pequeño e irracional y se queda con la parte fraccionaria. Así cualquier entrada, por grande que sea, queda reducida a tres números en $[0, 1)$ <strong>antes</strong> de hacer nada más: esa es la clave de su robustez. Con el seno, el número grande llegaba entero a una función que no sabe tratarlo.</li>
+  <li data-l="4">Mezcla las componentes entre sí: cada una recibe un término que depende de las tres (<code>dot</code> con una versión permutada, <code>yzx</code>, desplazada 33.33 para que los valores pequeños no se queden pequeños). Es un paso de «difusión»: un cambio en <code>p.x</code> afecta ya a las tres componentes.</li>
+  <li data-l="5">Un producto de números del orden de decenas, del que <code>fract</code> se queda la parte fraccionaria: las cifras bajas, que tras la mezcla ya no tienen relación visible con la entrada.</li>
+</ol>
+</div>
+
+<p>Lo pusimos a prueba con las mismas celdas que el seno: la distribución fue uniforme (media 0,497, varianza 0,0832 frente a la teórica 0,0833 de una uniforme) y la correlación entre vecinos, prácticamente 0, con desplazamientos de 0, 1 000, 20 000, −5 000 y hasta 300 000 celdas (donde el seno ya devolvía 0 en <strong>todas</strong> las celdas). Y como no usa funciones trascendentes, dio exactamente lo mismo con y sin <code>isnan</code>. Dos limitaciones honestas:</p>
+<ul>
+  <li>Su resolución es menor que la de un hash de enteros: en 16 384 celdas dio unos 5 000 valores distintos a 4 decimales, frente a los ~8 000 que se esperan de números aleatorios de verdad. Para ruido visual no importa; para decidir «1 de cada 100 000 celdas», sí.</li>
+  <li>No hay garantía de que dos GPU den los mismos bits: <code>fract</code> amplifica las últimas cifras, y una GPU que funda multiplicación y suma en una sola instrucción (FMA) redondea distinto que otra que no. Es mucho más estable que el seno, pero no es exacto.</li>
+</ul>
+
+<h3>Hashes de enteros: exactos en cualquier GPU</h3>
+<p>GLSL ES 3.00 trae <code>uint</code>: enteros de 32 bits sin signo cuyas operaciones están definidas bit a bit. La multiplicación que se desborda da el resultado módulo $2^{32}$, como <code>Math.imul</code> en JavaScript, y los desplazamientos y el XOR son exactos. Con eso se escriben hashes que dan <strong>los mismos bits en cualquier GPU</strong>. En 3.7 usaste uno sin mirarlo por dentro; ahora sí:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+
+float hashPCG(vec2 celda) {
+  uvec2 q = uvec2(ivec2(celda));
+  uint h = pcg(q.x + pcg(q.y));
+  return float(h >> 8u) * (1.0 / 16777216.0);
+}
+</script>
+<ol>
+  <li data-l="1-4">PCG («permuted congruential generator»), en la versión de hash que recomiendan Jarzynski y Olano en su comparativa de hashes para GPU (2020). Toma 32 bits y devuelve 32 bits.</li>
+  <li data-l="2">Un paso de <strong>generador congruencial lineal</strong>: multiplicar por una constante grande y sumar otra, módulo $2^{32}$ (el módulo es gratis: es el desbordamiento del <code>uint</code>). Los bits altos quedan bien mezclados; los bajos, poco (el bit 0 solo alterna). La <code>u</code> final de los literales los hace <code>uint</code>; sin ella serían <code>int</code> y GLSL no mezcla tipos sin conversión explícita.</li>
+  <li data-l="3">La «permutación» que da nombre a PCG: desplaza <code>s</code> a la derecha una cantidad que depende de sus propios 4 bits más altos (<code>s &gt;&gt; 28u</code> vale de 0 a 15, más 4). Los bits bajos, los malos, reciben información de los altos, los buenos. Luego multiplica otra vez para volver a mezclar.</li>
+  <li data-l="4">Un último XOR de la mitad alta sobre la baja: ahora todos los bits de la salida dependen de todos los de la entrada (lo que se llama <em>avalancha</em>).</li>
+  <li data-l="8"><code>ivec2(celda)</code> convierte el float a entero (truncando: por eso la celda debe salir de un <code>floor</code>), y <code>uvec2(…)</code> reinterpreta ese entero con signo como sin signo <strong>conservando los bits</strong>: −1 se convierte en 4 294 967 295. Así las coordenadas negativas funcionan sin ningún caso especial.</li>
+  <li data-l="9">Para dos dimensiones se encadenan llamadas: <code>pcg(q.x + pcg(q.y))</code>. Si sumaras sin más, <code>pcg(q.x + q.y)</code>, las celdas (1, 2) y (2, 1) darían el mismo número y aparecerían diagonales repetidas.</li>
+  <li data-l="10">De 32 bits a un float en $[0, 1)$: se quedan los 24 bits altos (<code>h &gt;&gt; 8u</code>) y se multiplican por $2^{-24}$. Un float32 tiene 24 bits significativos, así que cualquier entero de 24 bits se convierte sin redondeo y el resultado máximo es $1 - 2^{-24}$: nunca llega a 1. Ahora verás por qué importa.</li>
+</ol>
+</div>
+
+<div class="callout senior" data-titulo="¿Y la precisión de los enteros?">
+  <p>Un requisito que el código de arriba da por hecho: PCG necesita enteros de <strong>32 bits</strong> de verdad, y en un fragment shader <code>int</code> y <code>uint</code> son <code>mediump</code> por defecto, una precisión que la especificación permite implementar con solo 16 bits (rango mínimo de $\pm 2^{15}$). En nuestro M1 no se nota (<code>getShaderPrecisionFormat</code> da 32 bits también para <code>mediump int</code>, como verás en <a href="10-codigo-ajeno.html">6.10</a>), pero una GPU móvil que use 16 bits daría resultados distintos e incorrectos. Por eso el editor de los tres hashes lleva <code>precision highp int;</code> junto a <code>precision highp float;</code>: GLSL ES 3.00 obliga a que <code>highp</code> exista también en el fragment shader, así que pedirlo es seguro. Sin esa línea, el «mismos bits en cualquier GPU» de PCG no está garantizado.</p>
+</div>
+
+<div class="callout senior" data-titulo="float(h) / 4294967295.0 puede dar 1.0">
+  <p>Mucho código (incluido el editor de 3.7) convierte así: <code>float(h) / 4294967295.0</code>. Parece que da un número en $[0, 1]$ que casi nunca es 1. Pero <code>float(h)</code> tiene que redondear un entero de 32 bits a 24 bits significativos: todos los valores desde <code>0xFFFFFF80u</code> hasta <code>0xFFFFFFFFu</code> se redondean a $2^{32}$, y $2^{32} / (2^{32} - 1)$ se redondea a 1.0 exacto. Lo comprobamos en la GPU: <code>float(0xFFFFFF80u) / 4294967295.0</code> dio 1.0. La probabilidad es de 128 entre $2^{32}$ (unas 3 veces en cien millones), y en una pantalla 4K son unos 8 millones de píxeles por frame: tarde o temprano, un píxel obtiene exactamente 1.0. Si usas el hash como índice (<code>int(h * 8.0)</code> para elegir uno de 8 colores), ese píxel lee el color número 8, que no existe. Con <code>float(h &gt;&gt; 8u) * (1.0 / 16777216.0)</code> el máximo es 0.99999994 y el problema desaparece.</p>
+</div>
+
+<p>¿Y si la entrada no es una celda entera, sino una posición continua? <code>floatBitsToUint(x)</code> (también de GLSL ES 3.00) devuelve los 32 bits del float sin convertir el valor, y se los puedes pasar a <code>pcg</code>. Pero piensa en lo que significa la avalancha: cambiar un solo bit de la entrada cambia la salida por completo. <code>0.0</code> y <code>-0.0</code> son iguales para <code>==</code> y tienen bits distintos (lo medimos: 0 y 2 147 483 648), y dos cálculos que deberían dar la misma posición pero difieren en el último bit darán hashes sin ninguna relación. Solo tiene sentido hacer hash de valores <strong>exactos</strong>: celdas enteras, identificadores, o posiciones que antes has cuantizado con <code>floor</code>.</p>
+
+<h3>¿Cuál uso?</h3>
+<p>El editor siguiente pinta el mismo bloque de celdas con los tres hashes. Mueve el deslizador <code>desplaz.</code> (el desplazamiento del bloque de celdas, hasta 300 000) para simular que te alejas del origen y cambia de hash con el deslizador <code>hash</code> (0 = seno, 1 = Hoskins, 2 = PCG).</p>
+
+<div class="glsl-playground" data-titulo="Tres hashes, lejos del origen" data-altura="260" data-apilado
+     data-uniforms='{"u_hash":{"tipo":"int","min":0,"max":2,"valor":0,"etiqueta":"hash"},"u_desplazamiento":{"tipo":"float","min":0,"max":300000,"valor":0,"paso":1000,"etiqueta":"desplaz."}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+precision highp int;             // PCG necesita enteros de 32 bits de verdad (ver el senior de arriba)
+uniform vec2 u_resolution;
+uniform int u_hash;
+uniform float u_desplazamiento;
+out vec4 fragColor;
+
+float hashSeno(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// «Hash without Sine», © 2014 David Hoskins, licencia MIT
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+float hashPCG(vec2 celda) {
+  uvec2 q = uvec2(ivec2(celda));
+  return float(pcg(q.x + pcg(q.y)) >> 8u) * (1.0 / 16777216.0);
+}
+
+void main() {
+  vec2 celda = floor(gl_FragCoord.xy / 5.0) + u_desplazamiento;
+  float h = u_hash == 0 ? hashSeno(celda) : (u_hash == 1 ? hash12(celda) : hashPCG(celda));
+  fragColor = vec4(vec3(h), 1.0);
+}
+</script>
+</div>
+
+<p>Con el seno, las rayas empiezan hacia los 5 000 y con 300 000 la imagen es negra (medimos 0 en todas las celdas). Hoskins y PCG no cambian. Para decidir, estas son las medidas de nuestro M1 (256 hashes 2D por píxel en un lienzo de 2048 × 2048, restando el coste del mismo bucle sin hash: unos 16 ms el seno, 14 ms Hoskins y 47 ms PCG):</p>
+<table>
+  <thead><tr><th>Hash</th><th>Coste relativo</th><th>Entradas grandes</th><th>Mismos bits en otra GPU</th><th>GLSL ES 1.00</th></tr></thead>
+  <tbody>
+    <tr><td>Seno</td><td>1×</td><td>se rompe hacia 5 000</td><td>no (ni siquiera en la misma GPU)</td><td>sí</td></tr>
+    <tr><td>Hoskins (<code>hash12</code>)</td><td>≈ 0,9×</td><td>aguanta (probado hasta 300 000)</td><td>casi, sin garantía</td><td>sí</td></tr>
+    <tr><td>PCG (2 llamadas)</td><td>≈ 3×</td><td>exacto mientras la celda sea un entero exacto (hasta $2^{24}$)</td><td>sí, bit a bit (con <code>precision highp int</code>)</td><td>no (no hay <code>uint</code>)</td></tr>
+  </tbody>
+</table>
+<p>En la práctica: <strong>Hoskins para ruido visual</strong> (es el que usaremos en el resto de la lección), <strong>PCG cuando la exactitud importa</strong> (simulaciones que deben coincidir en todos los equipos, decisiones raras, semillas reproducibles), y el seno solo para leerlo en código ajeno. ¿Por qué PCG sale tres veces más caro? No parece que los enteros sean lentos en sí: en esta misma GPU, una cadena de 256 multiplicaciones-sumas con <code>uint</code> costó lo mismo que con <code>float</code> (6,2 ms a 2048 × 2048). Lo más probable es que PCG, sencillamente, haga más trabajo por celda (dos llamadas encadenadas, cada una con dos multiplicaciones, desplazamientos variables y XOR, más las conversiones de float a entero y vuelta) que las pocas multiplicaciones y <code>fract</code> de Hoskins. En otras arquitecturas la proporción cambia; mídelo si te importa.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.6.1 — Un cielo de estrellas: varios números aleatorios por celda</h3>
+  <p>Queremos un cielo con estrellas repartidas sin patrón, cada una con su brillo y su parpadeo, y que no cambien de sitio de un frame a otro. El truco de fondo es el de los patrones de <a href="05-patrones.html">6.5</a>: dividir el plano en celdas y decidir, <strong>por celda</strong>, qué hay dentro. El hash pone el «azar»: ¿hay estrella?, ¿dónde exactamente?, ¿cómo de brillante?, ¿con qué fase parpadea?</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.6.1 — Estrellas" data-altura="300"
+       data-uniforms='{"u_densidad":{"tipo":"float","min":0,"max":1,"valor":0.35,"etiqueta":"densidad"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_densidad;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / 24.0;          // celdas de 24 px
+  vec2 celda = floor(p);
+  vec2 f = fract(p);
+
+  float hay    = hash12(celda);                    // ¿hay estrella?
+  vec2  centro = vec2(hash12(celda + 17.0), hash12(celda + 41.0)) * 0.7 + 0.15;
+  float brillo = hash12(celda + 73.0);
+  float fase   = hash12(celda + 97.0) * 6.2832;
+
+  vec3 color = vec3(0.01, 0.015, 0.04);
+  if (hay < u_densidad) {
+    float d = length(f - centro) * 24.0;           // distancia en píxeles
+    float parpadeo = 0.6 + 0.4 * sin(u_time * 3.0 + fase);
+    color += vec3(1.0, 0.92, 0.8) * brillo * parpadeo * exp(-d * d * 0.35);
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <p>Paso a paso:</p>
+  <ol>
+    <li><strong>Las celdas.</strong> <code>floor(p)</code> numera la celda; <code>fract(p)</code> da la posición del píxel dentro de ella, de 0 a 1. Todo píxel de la misma celda calcula los mismos hashes, así que se ponen de acuerdo sobre la estrella sin comunicarse.</li>
+    <li><strong>Varios números por celda.</strong> Necesitamos cinco números independientes. Como viste en 6.5, llamar a <code>hash12(celda)</code> cinco veces daría cinco veces el mismo, y <code>hash12(celda + 17.0)</code> es otra entrada y por tanto otro número: sumar un desplazamiento distinto a cada llamada es la forma más simple de tener «varios dados». Tiene una pega que conviene conocer: <code>hash12(celda + 17.0)</code> es exactamente el valor que <code>hash12</code> da a <em>otra celda</em> (la que está 17 celdas en diagonal), así que la coordenada x del centro de la estrella de una celda es, antes de escalarla, el mismo número que decide si hay estrella en aquella. Para un cielo no se nota, pero para algo que requiera independencia de verdad, usa hashes que devuelven 2 o 3 números de una vez, como <code>hash22</code> o <code>hash33</code>, que además son más baratos que varias llamadas.</li>
+    <li><strong>¿Hay estrella?</strong> <code>hay &lt; u_densidad</code> es cierto en esa proporción de celdas, porque el hash es uniforme: con 0.35, un 35&nbsp;% de las celdas tienen estrella.</li>
+    <li><strong>Dónde.</strong> El centro se elige entre 0.15 y 0.85 dentro de la celda. Si lo dejaras en todo el rango 0–1, una estrella cerca del borde se cortaría: el píxel de la celda vecina no la dibuja, porque solo mira su propia celda. (La solución general es mirar también las 8 celdas vecinas; con estrellas pequeñas no hace falta.)</li>
+    <li><strong>El parpadeo.</strong> La fase aleatoria hace que cada estrella oscile desfasada de las demás. El tiempo entra en el <code>sin</code>, <strong>no</strong> en el hash: la estrella sigue en su sitio y solo cambia su brillo. Si metieras <code>u_time</code> dentro del hash, en cada frame habría un cielo distinto.</li>
+    <li><strong>La forma.</strong> <code>exp(-d²·k)</code> es una campana gaussiana: un punto brillante que se desvanece sin borde duro. Como <code>d</code> está en píxeles, el tamaño de la estrella no depende del tamaño del lienzo (sí de la densidad de píxeles de la pantalla: son píxeles físicos, así que en una pantalla retina se verá a la mitad de tamaño en pantalla).</li>
+  </ol>
+</section>
+
+<h2>Ruido blanco: azar sin memoria espacial</h2>
+<p>Si le das a cada píxel (o a cada celda) su propio hash, obtienes <strong>ruido blanco</strong>: valores independientes entre sí, como la nieve de una televisión sin señal. Es útil tal cual para el grano de película (lo harás en <a href="08-texturas-efectos.html">6.8</a>) o para romper el <em>banding</em> de un degradado (el <em>dithering</em>, que viste en <a href="04-color.html">6.4</a>). Pero no sirve para nada que tenga forma: una nube, una montaña o una llama tienen <strong>coherencia espacial</strong>, es decir, dos puntos cercanos tienen valores parecidos, y dos lejanos, independientes. El ruido blanco no tiene ninguna: el píxel de al lado es tan distinto como uno del otro extremo de la pantalla.</p>
+<p>Lo que buscamos es un ruido que varíe <strong>suavemente</strong> a escala pequeña y sea <strong>aleatorio</strong> a escala grande. La idea que lo consigue, y en la que se basan casi todos los ruidos, es poner el azar solo en una retícula de puntos (las esquinas de las celdas enteras) e <strong>interpolar</strong> entre ellos.</p>
+
+<div class="callout bestiario" data-id="m6b-ruido-parpadea" data-titulo="Quiero que el ruido se mueva y lo que hace es parpadear">
+  <p><strong>Síntoma:</strong> para animar un ruido escribes algo como <code>hash12(celda + u_time)</code> o <code>ruido(p) * u_time</code>, y en lugar de desplazarse suavemente, la imagen hierve, parpadea en cada frame o cambia a saltos.</p>
+  <p><strong>Causa:</strong> un hash no es continuo: <code>hash12(celda + 0.016)</code> no se parece en nada a <code>hash12(celda)</code>. Si el tiempo entra en la entrada del hash, cada frame es un sorteo nuevo.</p>
+  <p><strong>Solución:</strong> el tiempo debe entrar en la <strong>posición</strong> que le pasas a un ruido continuo (<code>ruido(p + vec2(u_time, 0.0))</code> lo desplaza), en una tercera dimensión del ruido (<code>ruido3(vec3(p, u_time))</code> lo hace evolucionar), o en funciones continuas de valores aleatorios fijos (la fase de las estrellas del ejemplo 6.6.1). Si quieres cambios discretos a propósito, cuantiza el tiempo: <code>hash12(celda + floor(u_time * 2.0))</code> cambia dos veces por segundo, a saltos limpios.</p>
+</div>
+
+<h2>Value noise: azar en la retícula, suavidad entre medias</h2>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.6.2 — Value noise en 1D, paso a paso en el graficador</h3>
+  <p>En una dimensión se ve todo. Tomamos los enteros como retícula: en cada entero $i$ hay un valor aleatorio $h(i)$. Para un $x$ cualquiera, buscamos sus dos enteros vecinos, $i = \lfloor x \rfloor$ e $i + 1$, y mezclamos sus valores según lo cerca que esté de cada uno, $f = x - i$:</p>
+  $$\text{ruido}(x) = \operatorname{mix}\big(h(i),\ h(i+1),\ \text{fade}(f)\big)$$
+  <p>La función <code>fade</code> decide <em>cómo</em> se pasa de un valor al otro. Con $\text{fade}(f) = f$ es una interpolación lineal; con $3f^2 - 2f^3$, la de <code>smoothstep</code>; con $6f^5 - 15f^4 + 10f^3$, la «quíntica». Las tres curvas del graficador son el hash escalonado y dos interpolaciones (lineal y quíntica):</p>
+  <div class="graficador" data-x="-0.5,8.5" data-y="-0.3,1.3" data-titulo="Value noise 1D">
+<script type="text/x-exprs">
+hash11(floor(x))
+mix(hash11(floor(x)), hash11(floor(x) + 1.0), fract(x))
+ruidoValor(x)
+</script>
+<script type="text/x-glsl">
+// Hash de Hoskins de 1 entrada y 1 salida
+float hash11(float p) {
+  p = fract(p * 0.1031);
+  p *= p + 33.33;
+  p *= p + p;
+  return fract(p);
+}
+float fade(float f) { return f * f * f * (f * (f * 6.0 - 15.0) + 10.0); }
+float ruidoValor(float x) {
+  float i = floor(x), f = fract(x);
+  return mix(hash11(i), hash11(i + 1.0), fade(f));
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>El hash de la parte entera</strong> (primera curva) es una escalera: constante dentro de cada intervalo, con saltos en los enteros. Es ruido blanco en 1D.</li>
+    <li><strong>La interpolación lineal</strong> (segunda) une los peldaños con segmentos rectos: la curva es continua, pero tiene <strong>picos</strong> en cada entero, donde la pendiente cambia de golpe.</li>
+    <li><strong>Con el fade quíntico</strong> (tercera), la curva pasa por los mismos valores en los enteros (porque $\text{fade}(0) = 0$ y $\text{fade}(1) = 1$), pero llega a cada uno con pendiente cero: los picos desaparecen.</li>
+  </ol>
+  <p>Cambia <code>fade</code> en las funciones auxiliares por <code>f</code> o por <code>f * f * (3.0 - 2.0 * f)</code> y observa. En el siguiente apartado verás qué se gana exactamente con cada grado.</p>
+</section>
+
+<h3>Continuidad: por qué el grado del fade importa</h3>
+<p>Una curva puede ser suave «a la vista» y aun así tener defectos que salen a la luz, literalmente, cuando la usas para iluminar. Se habla de continuidad $C^0$, $C^1$, $C^2$: la función, su primera derivada (la pendiente) y su segunda derivada (la curvatura) no dan saltos.</p>
+<table>
+  <thead><tr><th>fade(f)</th><th>fade′ en 0 y 1</th><th>fade″ en 0 y 1</th><th>El ruido es…</th><th>Se nota en…</th></tr></thead>
+  <tbody>
+    <tr><td>$f$</td><td>1 y 1</td><td>0 y 0</td><td>$C^0$: continuo, con esquinas</td><td>el propio ruido: se ve la rejilla en forma de estrellas</td></tr>
+    <tr><td>$3f^2 - 2f^3$</td><td>0 y 0</td><td>6 y −6</td><td>$C^1$: pendiente continua</td><td>la luz: la normal es continua, pero la curvatura salta en las líneas de la rejilla</td></tr>
+    <tr><td>$6f^5 - 15f^4 + 10f^3$</td><td>0 y 0</td><td>0 y 0</td><td>$C^2$: también la curvatura</td><td>nada a simple vista</td></tr>
+  </tbody>
+</table>
+<p>El graficador lo muestra: la primera curva es el ruido con fade cúbico; la segunda, su derivada (calculada con diferencias centrales, como harías en un shader), y la tercera, la segunda derivada. La derivada no salta, pero tiene esquinas en los enteros; la segunda derivada da saltos verticales. Cambia <code>fade</code> por la quíntica y los saltos de la tercera curva desaparecen.</p>
+<div class="graficador" data-x="-0.5,6.5" data-y="-6,6" data-titulo="Derivadas del value noise 1D (fade cúbico)">
+<script type="text/x-exprs">
+ruido(x) * 4.0
+d1(x)
+d2(x) * 0.25
+</script>
+<script type="text/x-glsl">
+float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float fade(float f) { return f * f * (3.0 - 2.0 * f); }   // prueba: f*f*f*(f*(f*6.0-15.0)+10.0)
+float ruido(float x) { float i = floor(x); return mix(hash11(i), hash11(i + 1.0), fade(x - i)); }
+float d1(float x) { const float e = 0.002; return (ruido(x + e) - ruido(x - e)) / (2.0 * e); }
+float d2(float x) { const float e = 0.01; return (ruido(x + e) - 2.0 * ruido(x) + ruido(x - e)) / (e * e); }
+</script>
+</div>
+<p>¿Por qué habría de importarte la segunda derivada? Porque en cuanto usas un ruido como <strong>altura</strong> (un terreno, un relieve, olas) calculas normales con su pendiente, y la iluminación, sobre todo el brillo especular, es sensible a cómo cambia esa pendiente. Mira el mismo ruido usado como relieve e iluminado desde la izquierda, con los tres fades (deslizador <code>fade</code>: 0 = lineal, 1 = cúbico, 2 = quíntico):</p>
+
+<div class="glsl-playground" data-titulo="El fade, visto con luz" data-altura="300"
+     data-uniforms='{"u_fade":{"tipo":"int","min":0,"max":2,"valor":1,"etiqueta":"fade"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_fade;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+vec2 fade(vec2 f) {
+  if (u_fade == 0) return f;
+  if (u_fade == 1) return f * f * (3.0 - 2.0 * f);
+  return f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+}
+
+float ruidoValor(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = hash12(i);
+  float b = hash12(i + vec2(1.0, 0.0));
+  float c = hash12(i + vec2(0.0, 1.0));
+  float d = hash12(i + vec2(1.0, 1.0));
+  vec2 u = fade(f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 4.0;
+  // Normal de la superficie z = altura(x, y), por diferencias centrales
+  float e = 0.002, k = 0.6;
+  float dx = ruidoValor(p + vec2(e, 0.0)) - ruidoValor(p - vec2(e, 0.0));
+  float dy = ruidoValor(p + vec2(0.0, e)) - ruidoValor(p - vec2(0.0, e));
+  vec3 n = normalize(vec3(-dx * k, -dy * k, 2.0 * e));
+  vec3 luz = normalize(vec3(-0.6, 0.5, 0.6));
+  float difusa = max(dot(n, luz), 0.0);
+  float brillo = pow(max(reflect(-luz, n).z, 0.0), 60.0);   // especular hacia la cámara (0,0,1)
+  fragColor = vec4(vec3(0.12 + 0.7 * difusa + 0.6 * brillo), 1.0);
+}
+</script>
+</div>
+<p>Con el fade lineal se ven las celdas como baldosas facetadas: la normal salta en cada línea de la rejilla. Con el cúbico, las facetas desaparecen, pero si te fijas se adivinan líneas rectas horizontales y verticales cruzando el relieve: son los saltos de curvatura. Con el quíntico, nada. Por eso Ken Perlin, en su artículo <em>Improving Noise</em> de 2002, cambió el $3f^2 - 2f^3$ de su ruido original de 1985 por el polinomio quíntico: el de 1985 dejaba esas marcas en las superficies desplazadas con ruido. El precio es poco: un par de multiplicaciones más por eje (5 frente a 3 al escribirlos en forma de Horner).</p>
+
+<h3>En 2D: cuatro esquinas</h3>
+<p>En 2D, la celda es un cuadrado con cuatro esquinas, cada una con su valor aleatorio, y la interpolación se hace en dos pasos: primero en x a lo largo del borde de abajo y del de arriba, y luego en y entre esos dos resultados (interpolación <strong>bilineal</strong>, la misma que hace el hardware al filtrar una textura con <code>LINEAR</code>, como viste en <a href="../05-webgl/05-texturas.html">5.5</a>).</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+float ruidoValor(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float a = hash12(i);
+  float b = hash12(i + vec2(1.0, 0.0));
+  float c = hash12(i + vec2(0.0, 1.0));
+  float d = hash12(i + vec2(1.0, 1.0));
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+</script>
+<ol>
+  <li data-l="2">La esquina inferior izquierda de la celda que contiene a <code>p</code>. Funciona con negativos: <code>floor(-0.3)</code> es −1, así que la celda de −0.3 va de −1 a 0, como debe ser.</li>
+  <li data-l="3">La posición dentro de la celda, de 0 a 1 en cada eje. En GLSL, <code>fract(x)</code> es <code>x - floor(x)</code>, en $[0, 1)$ también para negativos (a diferencia de <code>x % 1</code> en JavaScript; lo viste en <a href="../03-matematicas/04-funciones-forma.html">3.4</a>), con la letra pequeña de float32 que viste en <a href="05-patrones.html">6.5</a>: un negativo diminuto, como −1e−9, da <code>floor</code> = −1 y <code>fract</code> = 1.0 exacto. Aquí no hace daño: con <code>f</code> = 1 la interpolación devuelve el valor de la esquina de la derecha, que es justo el que toca en ese punto, así que el ruido sigue siendo continuo.</li>
+  <li data-l="4-7">Los valores de las cuatro esquinas. Dos píxeles de celdas vecinas que comparten una esquina calculan el mismo hash para ella: por eso el ruido es continuo entre celdas sin que nadie se comunique.</li>
+  <li data-l="8">El fade quíntico en los dos ejes a la vez (GLSL opera componente a componente). Escrito en forma de Horner, $f^3(f(6f - 15) + 10)$, con menos multiplicaciones que expandido.</li>
+  <li data-l="9">La bilineal: dos <code>mix</code> horizontales (abajo: a→b; arriba: c→d) y uno vertical entre ellos. Da lo mismo empezar por el eje y.</li>
+</ol>
+</div>
+<p>El value noise tiene un defecto propio que no arregla ningún fade: se ve «cuadriculado». Los máximos y mínimos solo pueden estar en las esquinas de las celdas (entre ellas, la interpolación nunca sale del rango de las cuatro esquinas), así que las formas se alinean con los ejes. Para un ruido de aspecto orgánico hace falta otra idea.</p>
+
+<div class="quiz">
+  <p class="pregunta">En un value noise 2D, ¿dónde puede estar el valor más alto de una celda?</p>
+  <ul>
+    <li data-correcta>En una de sus cuatro esquinas.<div class="explicacion">Exacto. La interpolación es una media ponderada de las esquinas, con pesos positivos que suman 1, así que su máximo se alcanza en una esquina. Por eso las manchas del value noise se alinean con la rejilla y parecen «cuadradas».</div></li>
+    <li>En cualquier punto: depende del fade.<div class="explicacion">El fade cambia la forma de la transición, pero sigue siendo una mezcla de los cuatro valores de las esquinas con pesos entre 0 y 1. Una mezcla así nunca supera al mayor de los cuatro.</div></li>
+    <li>En el centro de la celda, donde el fade vale 0,5.<div class="explicacion">En el centro los cuatro pesos valen 0,25: el valor es la media de las esquinas, que nunca es mayor que la mayor de ellas.</div></li>
+  </ul>
+</div>
+
+<div class="callout bestiario" data-id="m6b-ruido-rejilla" data-titulo="Se ve la cuadrícula a través del ruido">
+  <p><strong>Síntoma:</strong> el ruido muestra estrellas de cuatro puntas, formas alineadas con los ejes o, al usarlo como relieve iluminado, facetas y líneas rectas que forman una rejilla.</p>
+  <p><strong>Causa:</strong> la retícula sale a la luz. Con interpolación lineal, la pendiente salta en cada línea de la rejilla ($C^0$); con el fade cúbico, la que salta es la curvatura ($C^1$), visible con iluminación especular; y el value noise, por construcción, pone sus extremos en las esquinas.</p>
+  <p><strong>Solución:</strong> fade quíntico si usas el ruido como altura o para calcular normales; ruido de gradiente en lugar de value noise si la forma debe parecer orgánica; y en fbm, rota o desplaza cada octava (lo verás enseguida) para que las rejillas de las octavas no coincidan.</p>
+</div>
+
+<h2>Gradient noise: pendientes en lugar de valores</h2>
+<p>El ruido que Ken Perlin inventó a principios de los 80 (y que le valió un premio de la Academia de Hollywood en 1997) cambia lo que se guarda en cada esquina: en lugar de un <strong>valor</strong> aleatorio, una <strong>dirección</strong> aleatoria, un gradiente. Cada esquina aporta el producto punto de su gradiente con el vector que va de la esquina al punto:</p>
+$$n_{\text{esquina}} = \vec g_{\text{esquina}} \cdot (\vec p - \vec{\text{esquina}})$$
+<p>y esas cuatro aportaciones se interpolan con el fade, como antes. Piensa en cada esquina como un plano inclinado que pasa por altura 0 en la propia esquina y sube en la dirección de su flecha; el ruido mezcla los cuatro planos. Consecuencias:</p>
+<ul>
+  <li>En las esquinas el ruido vale <strong>exactamente 0</strong> (la distancia a la esquina es cero). Los máximos y mínimos quedan <em>entre</em> las esquinas, en posiciones que dependen de las flechas: se acabó la alineación con la rejilla.</li>
+  <li>El resultado es de signo variable, alrededor de 0: con gradientes de longitud 1, en 2D está acotado por $\pm\sqrt{2}/2 \approx \pm 0{,}707$. Con el ruido del editor de abajo medimos −0,695 y 0,691 en 4,2 millones de muestras: los extremos teóricos casi nunca se alcanzan (y el valor medio de |ruido| fue solo 0,18). Para pintarlo, se remapea con <code>0.5 + 0.5 * n / 0.707</code> o, más habitual, a ojo.</li>
+</ul>
+<p>El editor dibuja las flechas de las esquinas sobre el ruido. Observa cómo cada zona clara está «delante» de las flechas que apuntan hacia ella y cada zona oscura, detrás.</p>
+
+<div class="glsl-playground" data-titulo="Ruido de gradiente, con sus flechas" data-altura="320"
+     data-uniforms='{"u_escala":{"tipo":"float","min":2,"max":12,"valor":5,"etiqueta":"celdas"},"u_flechas":{"tipo":"bool","valor":true,"etiqueta":"ver gradientes"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_escala;
+uniform bool u_flechas;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// Gradiente de longitud 1 con dirección aleatoria
+vec2 gradiente(vec2 esquina) {
+  float a = 6.2831853 * hash12(esquina);
+  return vec2(cos(a), sin(a));
+}
+
+float ruidoGradiente(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = dot(gradiente(i),                   f);
+  float b = dot(gradiente(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0));
+  float c = dot(gradiente(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0));
+  float d = dot(gradiente(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0));
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Distancia de p al segmento a-b (SDF de 6.3)
+float segmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolution.y * u_escala;
+  float n = ruidoGradiente(p);
+  vec3 color = vec3(0.5 + 0.5 * n / 0.7071);
+  if (u_flechas) {
+    vec2 esquina = floor(p + 0.5);                // la esquina más cercana
+    vec2 g = gradiente(esquina);
+    float px = u_escala / u_resolution.y;         // tamaño de un píxel en unidades de celda
+    float d = segmento(p, esquina, esquina + 0.35 * g);
+    color = mix(color, vec3(1.0, 0.35, 0.3), 1.0 - smoothstep(px, 2.5 * px, d));
+    float punta = length(p - (esquina + 0.35 * g));
+    color = mix(color, vec3(1.0, 0.35, 0.3), 1.0 - smoothstep(3.0 * px, 4.5 * px, punta));
+    float base = length(p - esquina);
+    color = mix(color, vec3(0.1), 1.0 - smoothstep(2.0 * px, 3.0 * px, base));
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Comparado con el value noise, el de gradiente parece hecho de manchas redondeadas y entrelazadas sin dirección preferente. En 1D se ve la idea completa: en cada entero, la curva cruza el 0 con la pendiente que dice su «gradiente» (aquí, un número entre −1 y 1).</p>
+<div class="graficador" data-x="-0.5,8.5" data-y="-0.8,0.8" data-titulo="Gradient noise 1D">
+<script type="text/x-exprs">
+ruidoGradiente(x)
+pendiente(floor(x + 0.5)) * (x - floor(x + 0.5))
+</script>
+<script type="text/x-glsl">
+float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float pendiente(float i) { return hash11(i) * 2.0 - 1.0; }
+float ruidoGradiente(float x) {
+  float i = floor(x), f = fract(x);
+  float u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  return mix(pendiente(i) * f, pendiente(i + 1.0) * (f - 1.0), u);
+}
+</script>
+</div>
+<p>La segunda curva dibuja, alrededor de cada entero, la recta tangente que le corresponde: el ruido la sigue al salir de cada entero y se va doblando hacia la del entero siguiente.</p>
+
+<div class="callout nota" data-titulo="Simplex, en una mención">
+  <p>En 2001, Perlin presentó el <strong>simplex noise</strong>: en lugar de una rejilla de cuadrados (o cubos), usa una de triángulos (o tetraedros), el «símplex» de cada dimensión. Un punto queda dentro de un triángulo de 3 esquinas en vez de un cuadrado de 4; en 3D, 4 esquinas en vez de 8, y en 4D, 5 en vez de 16. Se evalúa más rápido en dimensiones altas, tiene menos artefactos direccionales y no necesita interpolación (cada esquina aporta un núcleo radial que se desvanece). Su implementación es bastante más enrevesada, por eso aquí nos quedamos con el de gradiente clásico. Un detalle histórico que explica por qué verás variantes como <em>OpenSimplex</em>: el uso del simplex para sintetizar texturas 3D estuvo patentado en Estados Unidos hasta enero de 2022.</p>
+</div>
+
+<h2>fbm: sumar octavas</h2>
+<p>Un solo ruido tiene un tamaño característico: el de su celda. La naturaleza, en cambio, tiene detalle a todas las escalas: una costa vista desde un avión tiene bahías, y cada bahía tiene calas, y cada cala tiene rocas. El <strong>fbm</strong> (<em>fractional Brownian motion</em>, movimiento browniano fraccionario) imita eso sumando copias del mismo ruido, cada una con el doble de frecuencia y la mitad de amplitud que la anterior. Cada copia es una <strong>octava</strong>, por analogía con la música, donde subir una octava es doblar la frecuencia de la nota.</p>
+$$\text{fbm}(\vec p) = \sum_{k=0}^{N-1} g^k\,\text{ruido}\!\left(\ell^k\,\vec p\right)$$
+<p>Tres parámetros:</p>
+<ul>
+  <li>$N$, el número de <strong>octavas</strong>: cuántas escalas de detalle. Cada una cuesta una evaluación completa del ruido.</li>
+  <li>$\ell$, la <strong>lacunaridad</strong>: cuánto se multiplica la frecuencia de una octava a la siguiente. Casi siempre ≈ 2.</li>
+  <li>$g$, la <strong>ganancia</strong> (o persistencia): cuánto se multiplica la amplitud. Con 0,5, cada octava aporta la mitad que la anterior; con valores mayores, el detalle fino pesa más y el resultado es más áspero; con menores, más suave. Iñigo Quilez lo relaciona con el exponente de Hurst $H$ de la geometría fractal: $g = 2^{-H}$, y $g = 0{,}5$ ($H = 1$) es el valor que casi todo el mundo deja fijo.</li>
+</ul>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+
+float fbm(vec2 p, int octavas, float lacunaridad, float ganancia) {
+  float suma = 0.0;
+  float amplitud = 0.5;
+  for (int k = 0; k < 10; k++) {
+    if (k >= octavas) break;
+    suma += amplitud * ruidoGradiente(p);
+    p = ROTAR * p * lacunaridad + vec2(17.3, 5.9);
+    amplitud *= ganancia;
+  }
+  return suma;
+}
+</script>
+<ol>
+  <li data-l="1">Una matriz de rotación de unos 37° (0.8 y 0.6 son el coseno y el seno de ese ángulo: $0{,}8^2 + 0{,}6^2 = 1$, así que no escala). Se declara <code>const</code> y global para poder reutilizarla en varias funciones: el compilador conoce su valor y no hay nada que calcular en tiempo de ejecución. Recuerda de <a href="../03-matematicas/05-matrices.html">3.5</a> que el constructor <code>mat2</code> se rellena por columnas.</li>
+  <li data-l="5">Amplitud inicial 0,5 y no 1: con ganancia 0,5 la suma de amplitudes es $0{,}5 + 0{,}25 + 0{,}125 + \dots &lt; 1$, así que el fbm de un ruido acotado por 1 queda acotado por 1 sin tener que normalizar. Si cambias la ganancia, cambia también esa cota.</li>
+  <li data-l="6-7">Un bucle con límite <strong>constante</strong> y una salida anticipada. En GLSL ES 3.00 podrías escribir <code>k &lt; octavas</code> directamente; esta forma, además, compila en GLSL ES 1.00, donde el límite de un bucle tiene que ser una constante (lo verás en <a href="10-codigo-ajeno.html">6.10</a>), y le dice al compilador cuántas vueltas como máximo puede dar.</li>
+  <li data-l="8">Suma la octava actual con su amplitud.</li>
+  <li data-l="9">Prepara la siguiente octava: más frecuencia (<code>* lacunaridad</code>), una rotación y un desplazamiento. Las dos últimas no cambian la estadística del ruido, pero evitan que las rejillas de todas las octavas coincidan: mira el bicho de abajo.</li>
+  <li data-l="10">Menos amplitud para la siguiente.</li>
+</ol>
+</div>
+
+<p>En el editor, el deslizador <code>arreglo</code> elige qué se hace entre una octava y la siguiente además de multiplicar por la lacunaridad: 0 = nada, 1 = rotar, 2 = rotar y desplazar (lo que hace la función de arriba).</p>
+
+<div class="glsl-playground" data-titulo="fbm: octavas, lacunaridad y ganancia" data-altura="340" data-apilado
+     data-uniforms='{"u_octavas":{"tipo":"int","min":1,"max":10,"valor":6,"etiqueta":"octavas"},"u_lacunaridad":{"tipo":"float","min":1.2,"max":3.5,"valor":2.0,"etiqueta":"lacunaridad"},"u_ganancia":{"tipo":"float","min":0.2,"max":0.9,"valor":0.5,"etiqueta":"ganancia"},"u_arreglo":{"tipo":"int","min":0,"max":2,"valor":2,"etiqueta":"arreglo"},"u_valor":{"tipo":"bool","valor":false,"etiqueta":"usar value noise"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_octavas;
+uniform float u_lacunaridad, u_ganancia;
+uniform int u_arreglo;
+uniform bool u_valor;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 fade(vec2 f) { return f * f * f * (f * (f * 6.0 - 15.0) + 10.0); }
+
+float ruidoValor(vec2 p) {          // centrado en 0 para sumarlo como el de gradiente
+  vec2 i = floor(p), f = fract(p), u = fade(f);
+  float a = hash12(i), b = hash12(i + vec2(1, 0)), c = hash12(i + vec2(0, 1)), d = hash12(i + vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) - 0.5;
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruidoGradiente(vec2 p) {
+  vec2 i = floor(p), f = fract(p), u = fade(f);
+  float a = dot(gradiente(i), f);
+  float b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1));
+  float d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+
+float fbm(vec2 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 10; k++) {
+    if (k >= u_octavas) break;
+    suma += amplitud * (u_valor ? ruidoValor(p) : ruidoGradiente(p));
+    if (u_arreglo == 0)      p = p * u_lacunaridad;
+    else if (u_arreglo == 1) p = ROTAR * p * u_lacunaridad;
+    else                     p = ROTAR * p * u_lacunaridad + vec2(17.3, 5.9);
+    amplitud *= u_ganancia;
+  }
+  return suma;
+}
+
+void main() {
+  // El origen (0, 0) queda en el centro del lienzo
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y * 2.5;
+  fragColor = vec4(vec3(0.5 + fbm(p)), 1.0);
+}
+</script>
+</div>
+<p>Experimenta: con una octava tienes el ruido de gradiente «liso»; cada octava añade una capa de detalle más fino, y a partir de 6 u 7 apenas se nota nada nuevo a este tamaño de lienzo. Sube la ganancia a 0,8 y el resultado se vuelve granuloso (el detalle fino pesa casi tanto como el grueso); bájala a 0,3 y se suaviza. Con lacunaridad 1,3 las octavas se parecen demasiado entre sí y el resultado es blando; con 3,5 se nota que son capas separadas.</p>
+
+<div class="callout bestiario" data-id="m6b-fbm-origen" data-titulo="Una mancha o una costura recta en el centro del fbm">
+  <p><strong>Síntoma:</strong> el fbm tiene una mancha muy oscura (o muy clara) justo en el origen de coordenadas, o una línea recta que lo cruza a lo largo de un eje. Pon <code>arreglo</code> a 0 y activa «usar value noise»: mancha negra en el centro. Con el ruido de gradiente, una costura vertical por el centro.</p>
+  <p><strong>Causa:</strong> con lacunaridad 2 exacta y sin nada más, las rejillas de todas las octavas coinciden en el origen y a lo largo de los ejes: el punto (0, 0) es esquina de celda en todas las escalas. En el origen, todas las octavas del value noise leen el valor de la misma esquina, <code>hash12(vec2(0.0))</code> (que en el hash de Hoskins vale exactamente 0: los tres pasos multiplican cero por algo), y en lugar de promediarse, se suman en la misma dirección. Rotar no basta (la rotación deja el origen donde está: pon <code>arreglo</code> a 1 y la mancha sigue ahí).</p>
+  <p><strong>Solución:</strong> además de rotar, desplaza cada octava (<code>+ vec2(17.3, 5.9)</code>) o usa una lacunaridad ligeramente distinta de 2 (Quilez usa 2,01 y 1,99, por ejemplo). Así ninguna esquina de retícula coincide entre octavas.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En un fbm de 6 octavas con lacunaridad 2 y ganancia 0,5, ¿qué aporta la sexta octava?</p>
+  <ul>
+    <li>Detalle 6 veces más fino que la primera, con 1/6 de su amplitud.<div class="explicacion">La frecuencia y la amplitud cambian de forma geométrica, no lineal: se multiplican por la lacunaridad y la ganancia en cada octava.</div></li>
+    <li data-correcta>Detalle 32 veces más fino que la primera ($2^5$), con 1/32 de su amplitud ($0{,}5^5$).<div class="explicacion">Correcto. La octava k (contando desde 0) tiene frecuencia $\ell^k$ y amplitud $g^k$; la sexta es k = 5. Si la primera tiene celdas de 200 píxeles, la sexta las tiene de unos 6 píxeles.</div></li>
+    <li>Nada: a partir de la cuarta octava las siguientes se anulan entre sí.<div class="explicacion">Las octavas no se anulan; lo que ocurre es que dejan de <em>verse</em> cuando su celda es más pequeña que un píxel (y entonces solo añaden parpadeo al moverse, ver la caja siguiente).</div></li>
+  </ul>
+</div>
+
+<div class="callout senior" data-titulo="¿Cuántas octavas tienen sentido?">
+  <p>Cada octava divide por 2 el tamaño de su celda. Cuando ese tamaño baja de unos 2 píxeles, la octava ya no puede representarse (es el límite de Nyquist: para ver una oscilación hacen falta al menos dos muestras por periodo) y lo único que aporta es <em>aliasing</em>: un grano que no parece ruido y que centellea en cuanto la imagen se mueve (el muaré de los patrones demasiado finos de <a href="05-patrones.html#m6a-muare-procedural">6.5</a>). Si la primera octava tiene celdas de $C$ píxeles, la última útil es la $k$ con $C / 2^k \approx 2$, es decir, $k \approx \log_2(C/2)$. Con celdas de 400 píxeles salen unas 8 octavas; poner 12 cuesta un 50&nbsp;% más y solo empeora la imagen. Los shaders profesionales calculan el número de octavas a partir de la resolución (o del tamaño del píxel en el mundo, que en un shader 3D te dan las derivadas: <code>fwidth</code>, de <a href="03-formas-sdf.html">6.3</a>) y atenúan la última con un factor fraccionario para que no «aparezca» de golpe al hacer zoom.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.6.3 — Nubes que pasan</h3>
+  <p>Con un fbm y tres decisiones de color tienes un cielo nublado. El planteamiento: el fbm da una «densidad de nube» en cada punto; un umbral suave decide dónde hay nube; el color mezcla un cielo en degradado con un blanco que se sombrea donde la nube es más densa.</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.6.3 — Nubes" data-altura="300"
+       data-uniforms='{"u_cobertura":{"tipo":"float","min":0,"max":1,"valor":0.5,"etiqueta":"cobertura"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_cobertura;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruidoGradiente(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f);
+  float b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1));
+  float d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+float fbm(vec2 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 6; k++) {
+    suma += amplitud * ruidoGradiente(p);
+    p = ROTAR * p * 2.0 + vec2(17.3, 5.9);
+    amplitud *= 0.5;
+  }
+  return suma;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 3.0;
+  p.x += u_time * 0.15;                               // el viento: desplazar, no re-sortear
+  float densidad = fbm(p) + 0.5 * u_cobertura - 0.2;
+  float nube = smoothstep(0.0, 0.35, densidad);
+  vec3 cielo = mix(vec3(0.45, 0.65, 0.95), vec3(0.12, 0.3, 0.7), uv.y);
+  float sombra = smoothstep(0.2, 0.7, densidad);      // donde es más densa, más gris
+  vec3 blanco = mix(vec3(1.0), vec3(0.62, 0.66, 0.74), sombra);
+  fragColor = vec4(mix(cielo, blanco, nube), 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>Escala.</strong> <code>gl_FragCoord.xy / u_resolution.y * 3.0</code>: unas 3 celdas de la primera octava en vertical, dividiendo por la altura en los dos ejes para que las nubes no se estiren (lo viste en <a href="02-pensar-en-paralelo.html">6.2</a>).</li>
+    <li><strong>El viento.</strong> Sumar el tiempo a la posición desplaza todo el campo de nubes a velocidad constante. No hay estado: en el instante t, el cielo es el del instante 0 desplazado 0,15·t unidades.</li>
+    <li><strong>La cobertura</strong> desplaza el fbm hacia arriba o hacia abajo antes del umbral: más densidad por encima de 0 significa más cielo cubierto.</li>
+    <li><strong>El umbral suave.</strong> <code>smoothstep(0.0, 0.35, densidad)</code> convierte la densidad en «cuánta nube hay aquí». Un <code>step</code> daría nubes recortadas con tijera; la anchura de la transición es la que las hace esponjosas.</li>
+    <li><strong>El sombreado.</strong> Un segundo umbral, más alto, oscurece el interior de las nubes densas. No es iluminación real (para eso habría que simular la luz atravesando la nube, que es raymarching volumétrico), pero engaña al ojo.</li>
+  </ol>
+</section>
+
+<h2>Variaciones: turbulencia, ridged y mármol</h2>
+<p>Cambiar lo que se suma en cada octava da familias de texturas muy distintas con el mismo esqueleto:</p>
+<ul>
+  <li><strong>Turbulencia</strong>: sumar $|\text{ruido}|$ en lugar de ruido. El valor absoluto dobla hacia arriba la parte negativa y crea un pliegue afilado (un valle en forma de V) donde el ruido cruzaba el 0. Octava a octava, esos pliegues se ven como las venas oscuras del humo o del fuego. Perlin la usó en su artículo original de 1985.</li>
+  <li><strong>Ridged</strong> (con crestas): $(1 - |\text{ruido}|)^2$. Invertir convierte los valles en crestas, y elevar al cuadrado las afila: cordilleras vistas desde arriba, relámpagos, grietas.</li>
+  <li><strong>Mármol</strong>: $\sin(k\,x + a\cdot\text{turbulencia}(\vec p))$. Unas franjas regulares (el seno) cuya fase se retuerce con turbulencia. Otro clásico del artículo de 1985.</li>
+</ul>
+
+<p>El deslizador <code>tipo</code> elige qué se suma: 0 = fbm, 1 = turbulencia, 2 = ridged, 3 = mármol.</p>
+
+<div class="glsl-playground" data-titulo="fbm, turbulencia, ridged y mármol" data-altura="320"
+     data-uniforms='{"u_tipo":{"tipo":"int","min":0,"max":3,"valor":1,"etiqueta":"tipo"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_tipo;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruidoGradiente(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f);
+  float b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1));
+  float d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+
+// Qué se suma en cada octava según el tipo
+float octava(float n) {
+  if (u_tipo == 1 || u_tipo == 3) return abs(n);        // turbulencia (y base del mármol)
+  if (u_tipo == 2) { float c = 1.0 - abs(n); return c * c; }  // ridged
+  return n;                                             // fbm
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 3.0 + vec2(u_time * 0.05, 0.0);
+  float suma = 0.0, amplitud = 0.5;
+  vec2 q = p;
+  for (int k = 0; k < 6; k++) {
+    suma += amplitud * octava(ruidoGradiente(q));
+    q = ROTAR * q * 2.0 + vec2(17.3, 5.9);
+    amplitud *= 0.5;
+  }
+  vec3 color;
+  if (u_tipo == 0)      color = vec3(0.5 + suma);
+  else if (u_tipo == 1) color = vec3(suma * 1.8);
+  else if (u_tipo == 2) color = vec3(suma * 0.9);
+  else {
+    float vetas = 0.5 + 0.5 * sin(p.x * 6.0 + suma * 12.0);
+    color = mix(vec3(0.28, 0.25, 0.3), vec3(0.95, 0.93, 0.9), pow(vetas, 0.4));
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>Fíjate en los valores de salida: la turbulencia es siempre positiva y más bien oscura (con estas amplitudes medimos una media de 0,17 y un máximo de 0,39; por eso se multiplica por 1,8 para verla), y el ridged se acerca a 1 en las crestas (máximo 0,96) y es claro en casi todas partes (media 0,69). Cada variante necesita su propio remapeo antes de convertirse en color: mira siempre el rango de lo que sumas.</p>
+
+<h2>Domain warping: deformar el espacio con ruido</h2>
+<p>Hasta aquí, el ruido se usaba como <strong>valor</strong>. La idea que Iñigo Quilez popularizó en su artículo sobre <em>domain warping</em> es usarlo para mover <strong>dónde</strong> se evalúa otra cosa. En lugar de $f(\vec p)$, calcula $f(\vec p + \vec h(\vec p))$: la función original, pero sobre un espacio deformado por otra función. Con ruido, el resultado parece un líquido removido, humo, agua turbia, vetas de piedra o tejido orgánico.</p>
+<p>La receta de su artículo, con dos niveles de deformación:</p>
+$$\vec q = \big(\text{fbm}(\vec p),\ \text{fbm}(\vec p + \vec a)\big) \qquad \vec r = \big(\text{fbm}(\vec p + 4\vec q + \vec b),\ \text{fbm}(\vec p + 4\vec q + \vec c)\big) \qquad \text{valor} = \text{fbm}(\vec p + 4\vec r)$$
+<p>Los desplazamientos $\vec a = (5{,}2;\ 1{,}3)$, $\vec b = (1{,}7;\ 9{,}2)$, $\vec c = (8{,}3;\ 2{,}8)$ son números cualesquiera: sirven para que las dos componentes de cada vector sean dos fbm <strong>distintos</strong> (si usaras la misma entrada, $\vec q$ tendría sus dos componentes iguales y solo deformaría en diagonal). El 4 es la intensidad de la deformación.</p>
+
+<div class="glsl-playground" data-titulo="Domain warping en dos niveles" data-altura="340"
+     data-uniforms='{"u_niveles":{"tipo":"int","min":0,"max":2,"valor":2,"etiqueta":"niveles"},"u_fuerza":{"tipo":"float","min":0,"max":8,"valor":4,"etiqueta":"fuerza"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_niveles;
+uniform float u_fuerza;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruidoGradiente(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f);
+  float b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1));
+  float d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+float fbm(vec2 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 5; k++) {
+    suma += amplitud * ruidoGradiente(p);
+    p = ROTAR * p * 2.0 + vec2(17.3, 5.9);
+    amplitud *= 0.5;
+  }
+  return suma;
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 2.0;
+  float t = u_time * 0.08;
+  vec2 q = vec2(0.0), r = vec2(0.0);
+  if (u_niveles >= 1) q = vec2(fbm(p + vec2(0.0, 0.0) + t), fbm(p + vec2(5.2, 1.3) - t));
+  if (u_niveles >= 2) r = vec2(fbm(p + u_fuerza * q + vec2(1.7, 9.2)), fbm(p + u_fuerza * q + vec2(8.3, 2.8)));
+  vec2 desplazamiento = u_niveles == 2 ? r : q;
+  float v = fbm(p + u_fuerza * desplazamiento);
+
+  // Color: además del valor final, usamos los propios vectores de deformación
+  vec3 color = mix(vec3(0.10, 0.22, 0.38), vec3(0.90, 0.72, 0.42), clamp(0.5 + 1.6 * v, 0.0, 1.0));
+  color = mix(color, vec3(0.02, 0.08, 0.16), clamp(length(q) * 1.4, 0.0, 1.0));
+  color = mix(color, vec3(0.95, 0.9, 0.85), clamp(r.x * r.x * 3.0, 0.0, 1.0));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>Con 0 niveles ves el fbm normal. Con 1, el mismo fbm evaluado en posiciones empujadas por otro par de fbm: las manchas se estiran y se retuercen. Con 2, la deformación se deforma a su vez y aparecen los remolinos. El tiempo se suma a las entradas de $\vec q$ (en sentidos opuestos en cada componente) y la deformación evoluciona lentamente, como un fluido. El color usa también $|\vec q|$ y $r_x$: son campos suaves relacionados con la imagen, perfectos para teñir zonas distintas de forma coherente.</p>
+<p>Ojo con el coste: cada fbm son 5 ruidos, y aquí hay 5 fbm por píxel (dos para $\vec q$, dos para $\vec r$ y el final): 25 ruidos de gradiente, 100 hashes. Es de los shaders más caros de la lección: en el editor, con poco más de 100 000 píxeles, sobra potencia, pero en nuestro M1 costó unos 18 ms por frame a 2560 × 1600 (la resolución completa de la pantalla de un MacBook Air) y 36 ms en 4K. Los 16,7 ms de un frame a 60 Hz no dan para tanto: a pantalla completa, este shader ya no llega a 60 fps ni en un portátil moderno, y un móvil modesto va muy por detrás. Es el caso típico para dibujar a menos resolución y ampliar (lo verás al final de la lección).</p>
+
+<h2>Ruido que se mueve</h2>
+<p>Hay dos maneras de animar un ruido, y producen sensaciones distintas:</p>
+<ul>
+  <li><strong>Desplazar</strong>: $\text{ruido}(\vec p + \vec v\,t)$. El patrón entero se traslada sin cambiar de forma, como un papel pintado que se desliza. Sirve para viento, agua que fluye o niebla que pasa. Es gratis.</li>
+  <li><strong>Evolucionar</strong>: $\text{ruido3}(\vec p, t)$, un ruido en 3D donde el tiempo es la tercera coordenada. Cada instante es un corte distinto de un bloque de ruido: las formas nacen, se deforman y mueren sin moverse de sitio, como el agua hirviendo o una llama. Hace el doble de trabajo por celda (un cubo de 8 esquinas en lugar de un cuadrado de 4), aunque el precio real depende de la implementación: con los ruidos de esta lección, el fbm 3D de 5 octavas del editor costó en nuestro M1 1,4 veces el fbm 2D de gradiente, porque el 2D paga un seno y un coseno por esquina para construir su gradiente y el 3D, con <code>hash33</code>, no.</li>
+</ul>
+<p>Combinarlas es lo habitual: el fuego sube (desplazar hacia arriba) y a la vez cambia de forma (evolucionar). El ruido de gradiente 3D es la extensión directa del 2D: interpolación trilineal de 8 aportaciones.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 hash33(vec3 p3) {
+  p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yxz + 33.33);
+  return fract((p3.xxy + p3.yxx) * p3.zyx);
+}
+float esquina(vec3 i, vec3 f, vec3 o) {
+  vec3 g = hash33(i + o) * 2.0 - 1.0;
+  return dot(g, f - o);
+}
+float ruidoGradiente3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float abajo  = mix(mix(esquina(i, f, vec3(0,0,0)), esquina(i, f, vec3(1,0,0)), u.x),
+                     mix(esquina(i, f, vec3(0,1,0)), esquina(i, f, vec3(1,1,0)), u.x), u.y);
+  float arriba = mix(mix(esquina(i, f, vec3(0,0,1)), esquina(i, f, vec3(1,0,1)), u.x),
+                     mix(esquina(i, f, vec3(0,1,1)), esquina(i, f, vec3(1,1,1)), u.x), u.y);
+  return mix(abajo, arriba, u.z);
+}
+</script>
+<ol>
+  <li data-l="1-5">El <code>hash33</code> de Hoskins: 3 entradas, 3 salidas, el mismo esquema de reducir con <code>fract</code>, mezclar y multiplicar. Tres números aleatorios por el precio de uno.</li>
+  <li data-l="6-9">La aportación de una esquina: gradiente aleatorio (cada componente entre −1 y 1; no está normalizado, lo que da un rango algo mayor: de −0,75 a 0,78 en nuestras medidas, con 4,2 millones de muestras) por el vector de la esquina al punto.</li>
+  <li data-l="13-16">Dos bilineales, una en la cara de abajo del cubo (z = 0) y otra en la de arriba (z = 1)…</li>
+  <li data-l="17">…y una interpolación final en z entre ellas. Son 8 hashes y 7 <code>mix</code>, frente a 4 y 3 en 2D.</li>
+</ol>
+</div>
+
+<p>En el editor siguiente, <code>modo</code> 0 desplaza, 1 evoluciona y 2 hace las dos cosas a la vez.</p>
+
+<div class="glsl-playground" data-titulo="Desplazar frente a evolucionar" data-altura="300"
+     data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":2,"valor":1,"etiqueta":"modo"},"u_velocidad":{"tipo":"float","min":0,"max":2,"valor":0.5,"etiqueta":"velocidad"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_modo;
+uniform float u_velocidad;
+out vec4 fragColor;
+
+vec3 hash33(vec3 p3) {
+  p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yxz + 33.33);
+  return fract((p3.xxy + p3.yxx) * p3.zyx);
+}
+float esquina(vec3 i, vec3 f, vec3 o) { return dot(hash33(i + o) * 2.0 - 1.0, f - o); }
+float ruidoGradiente3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float abajo  = mix(mix(esquina(i, f, vec3(0,0,0)), esquina(i, f, vec3(1,0,0)), u.x),
+                     mix(esquina(i, f, vec3(0,1,0)), esquina(i, f, vec3(1,1,0)), u.x), u.y);
+  float arriba = mix(mix(esquina(i, f, vec3(0,0,1)), esquina(i, f, vec3(1,0,1)), u.x),
+                     mix(esquina(i, f, vec3(0,1,1)), esquina(i, f, vec3(1,1,1)), u.x), u.y);
+  return mix(abajo, arriba, u.z);
+}
+float fbm3(vec3 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 5; k++) {
+    suma += amplitud * ruidoGradiente3(p);
+    p = p * 2.0 + vec3(17.3, 5.9, 3.1);
+    amplitud *= 0.5;
+  }
+  return suma;
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 3.0;
+  float t = u_time * u_velocidad;
+  vec3 q = vec3(p, 0.0);
+  if (u_modo == 0) q.xy += vec2(t, 0.0);           // se traslada, sin cambiar de forma
+  if (u_modo == 1) q.z = t;                        // cambia de forma, sin moverse
+  if (u_modo == 2) q += vec3(t, 0.0, 0.6 * t);     // las dos cosas
+  float v = fbm3(q);
+  fragColor = vec4(vec3(0.5 + 1.1 * v), 1.0);
+}
+</script>
+</div>
+
+<div class="callout hack" data-titulo="Un ruido que vuelve a empezar (para bucles perfectos)">
+  <p>Un ruido evolucionando no se repite nunca, y a veces necesitas que sí: un fondo que se exporta como vídeo en bucle, o una animación que debe cerrar a los 4 segundos. Un truco barato es mezclar dos momentos separados exactamente un periodo $T$: con $s = \operatorname{fract}(t/T)$,</p>
+  $$\text{bucle}(\vec p, t) = \operatorname{mix}\big(\text{ruido3}(\vec p,\ sT),\ \text{ruido3}(\vec p,\ sT - T),\ s\big)$$
+  <p>Al empezar el ciclo ($s = 0$) vale $\text{ruido3}(\vec p, 0)$; al acabarlo ($s \to 1$), $\text{ruido3}(\vec p, T - T) = \text{ruido3}(\vec p, 0)$: el mismo fotograma, así que el salto de <code>fract</code> no se ve. El precio: a mitad de ciclo se mezclan dos ruidos independientes a partes iguales, y la mezcla tiene menos contraste (la media de dos ruidos independientes tiene una desviación típica $\sqrt 2$ veces menor). La versión sin pérdida de contraste es hacer el ruido periódico en el eje del tiempo, con la retícula periódica del hack de la sección siguiente. Los bucles perfectos, en general, son materia de <a href="07-animacion-shaders.html">6.7</a>.</p>
+</div>
+
+<h2>Dos hacks de profesional</h2>
+
+<h3>Ruido que se repite sin costuras</h3>
+<p>Una textura que se va a repetir (el suelo de un juego, un fondo en mosaico) necesita que su borde derecho encaje con el izquierdo y el de arriba con el de abajo. Con un ruido de retícula es casi gratis, porque el valor en cualquier punto solo depende de las esquinas de su celda: si haces que las esquinas se repitan con periodo $P$, todo el ruido se repite con periodo $P$.</p>
+
+<div class="callout hack" data-titulo="La retícula periódica">
+  <p>Antes de calcular el hash de una esquina, reduce su coordenada módulo el periodo: <code>hash12(mod(esquina, P))</code>. La esquina $P$ tiene entonces el mismo valor que la esquina 0, la $P + 1$ que la 1, y así sucesivamente. El <code>mod</code> de GLSL es <code>x - P * floor(x / P)</code>, así que funciona también con coordenadas negativas (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>)… casi siempre. En <a href="01-lenguaje.html#ejercicios">6.1</a> y <a href="05-patrones.html#cuando-falla-mod">6.5</a> viste que puede devolver P en lugar de 0, y por qué: con el <em>fast math</em>, la GPU no divide, multiplica x por el inverso de P redondeado a float32, y con divisores como 7 o 13, en los múltiplos <strong>negativos</strong> de P (solo en ellos) el cociente queda un pelo por debajo del entero y <code>floor</code> baja uno de más. La explicación completa, con las cifras por rango y por divisor, está en la caja «¿Cuándo falla <code>mod</code>?» de 6.5; aquí basta un dato más: no hace falta un rango enorme para verlo, porque entre −128 y 127 fallaron 8 enteros de 256 (−21, −42, −49, −77, −84, −91, −98 y −105; medido en el M1). Con un <code>isnan</code> en el shader no falla ninguno, pero no te apoyes en eso: en tu propia página solo vale la primera vez que se compila el shader (<a href="#m6b-hash-fastmath">el bicho de la caché</a>). En el editor de abajo las esquinas nunca son negativas, así que el <code>mod</code> normal no fallaría; en un mundo que se desplaza, sí las habrá. Una esquina que recibe P en lugar de 0 toma el valor de otra celda y crea una costura en un punto. La versión blindada, la de 6.5, suma medio antes de dividir para que el cociente nunca caiga cerca de un entero: <code>esquina - P * floor((esquina + 0.5) / P)</code>, y no falló en ninguno de los rangos que medimos.</p>
+  <p>Dos condiciones más: $P$ debe ser un número entero de celdas, y en un fbm cada octava tiene su propio periodo, $P\,\ell^k$, así que la lacunaridad tiene que ser entera y no puedes rotar las octavas (ni desplazarlas, salvo en múltiplos enteros). Es el ejercicio 6.6.4.</p>
+</div>
+
+<div class="glsl-playground" data-titulo="Value noise con periodo" data-altura="300"
+     data-uniforms='{"u_periodo":{"tipo":"int","min":2,"max":12,"valor":5,"etiqueta":"periodo"},"u_periodico":{"tipo":"bool","valor":true,"etiqueta":"periódica"},"u_bordes":{"tipo":"bool","valor":true,"etiqueta":"marcar copias"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_periodo;
+uniform bool u_periodico, u_bordes;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// mod blindado para enteros: el +0.5 evita que el cociente caiga cerca de un entero
+vec2 envolver(vec2 e, float P) { return e - P * floor((e + 0.5) / P); }
+
+float valorEsquina(vec2 esquina, float P) {
+  vec2 e = u_periodico ? envolver(esquina, P) : esquina;
+  return hash12(e + 10.0);   // +10: hash12(vec2(0.0)) vale 0 (ver el bicho del fbm)
+}
+
+float ruidoPeriodico(vec2 p, float P) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = valorEsquina(i, P), b = valorEsquina(i + vec2(1, 0), P);
+  float c = valorEsquina(i + vec2(0, 1), P), d = valorEsquina(i + vec2(1, 1), P);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main() {
+  float P = float(u_periodo);
+  // El lienzo muestra unas 2,2 copias en vertical del bloque de P × P celdas
+  vec2 p = gl_FragCoord.xy / u_resolution.y * P * 2.2;
+  vec3 color = vec3(ruidoPeriodico(p, P));
+  if (u_bordes) {
+    vec2 enBloque = abs(fract(p / P + 0.5) - 0.5) * P;       // distancia al borde de copia, en celdas
+    float px = P * 2.2 / u_resolution.y;
+    color = mix(color, vec3(1.0, 0.3, 0.3), 1.0 - smoothstep(0.0, 1.5 * px, min(enBloque.x, enBloque.y)));
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>Con la retícula periódica, el contenido de cada cuadro rojo es idéntico al de los demás y cruza los bordes sin costura (desactiva «marcar copias» y busca la junta: no la encontrarás). Desactiva «periódica»: los cuadros ya no se parecen.</p>
+
+<h3>Ruido desde una textura</h3>
+<p>Antes de que las GPU fueran rápidas en aritmética, el ruido se leía de una textura: una imagen de valores aleatorios precalculados. Sigue siendo un hack útil, y entenderlo te obliga a juntar todo lo que sabes de texturas. La idea: si la textura tiene un valor aleatorio en cada texel y la lees con filtrado <code>LINEAR</code>, el hardware hace la interpolación bilineal por ti. <strong>Un value noise en una sola lectura</strong>.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+uniform sampler2D u_tex0;   // "ruido:nomip:256": 256 × 256 texels aleatorios, LINEAR, REPEAT
+
+float ruidoTextura(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return texture(u_tex0, (i + f + 0.5) / 256.0).r;
+}
+</script>
+<ol>
+  <li data-l="1">La textura <code>ruido</code> del curso: ruido blanco con un valor independiente en cada canal. <code>nomip</code> porque queremos leer siempre los texels originales (ahora verás por qué), 256 texels de lado. Con <code>REPEAT</code> (el modo por defecto), el ruido es periódico con periodo 256: el hack de la sección anterior, gratis.</li>
+  <li data-l="4">Separamos la parte entera y la fraccionaria, como en el value noise calculado.</li>
+  <li data-l="5">El truco de Quilez: deformamos la parte fraccionaria con <code>smoothstep</code> <em>antes</em> de leer. El hardware sigue interpolando linealmente, pero le pedimos la posición $i + \text{fade}(f)$ en lugar de $i + f$: el resultado es el value noise con fade cúbico, $C^1$, en una lectura.</li>
+  <li data-l="6">El <code>+ 0.5</code> es imprescindible: el centro del texel $i$ está en $(i + 0{,}5)/N$ (lo viste en <a href="../05-webgl/05-texturas.html">5.5</a>). Leyendo ahí, con $f = 0$ obtienes exactamente el texel $i$, y con $f = 1$ exactamente el $i + 1$. Sin él, cada lectura mezclaría cuatro texels mal alineados con la retícula.</li>
+</ol>
+</div>
+
+<p>En nuestro M1, un fbm de 8 octavas sobre 2048 × 2048 píxeles tardó 0,8 ms leyendo la textura, 2,9 ms con value noise calculado y 5,9 ms con ruido de gradiente: la textura es unas siete veces más barata que el ruido de gradiente. Hay truco, claro:</p>
+<ul>
+  <li><strong>8 bits por valor</strong>: la textura solo tiene 256 niveles.</li>
+  <li><strong>8 bits de posición en el filtrado</strong>: la GPU no interpola con la posición exacta, sino cuantizada. Lo medimos leyendo entre los centros de dos texels a lo largo de 2048 píxeles: solo salieron <strong>257 valores distintos</strong>, un escalón cada 8 píxeles. La especificación solo exige cierta precisión mínima en el filtrado; Iñigo Quilez documenta en su artículo sobre la <a href="https://iquilezles.org/articles/hwinterpolation/">precisión de la interpolación por hardware</a> que las GPU actuales usan 8 bits fraccionarios, lo mismo que medimos aquí.</li>
+  <li><strong>Mipmaps</strong>: con mipmaps, en cuanto un texel ocupa menos de un píxel (las octavas altas de un fbm) la GPU lee un nivel reducido, que es la media de varios texels: gris. Eso es, de hecho, un antialiasing gratuito (el fbm calculado centellea donde el de textura se vuelve gris y estable), pero cambia el contraste. Si no lo quieres, usa <code>nomip</code> o <code>textureLod(…, 0.0)</code>.</li>
+</ul>
+
+<div class="glsl-playground" data-titulo="Ruido calculado frente a ruido leído de textura" data-altura="300" data-texturas="ruido:nomip:256"
+     data-uniforms='{"u_fuente":{"tipo":"int","min":0,"max":2,"valor":2,"etiqueta":"fuente"},"u_zoom":{"tipo":"float","min":0,"max":7,"valor":0,"etiqueta":"zoom (log2)"},"u_lupa":{"tipo":"bool","valor":false,"etiqueta":"lupa de contraste"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform int u_fuente;
+uniform float u_zoom;
+uniform bool u_lupa;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float ruidoValor(vec2 p) {
+  vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+  float a = hash12(i), b = hash12(i + vec2(1, 0)), c = hash12(i + vec2(0, 1)), d = hash12(i + vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float ruidoTextura(vec2 p, bool suave) {
+  vec2 i = floor(p), f = fract(p);
+  if (suave) f = f * f * (3.0 - 2.0 * f);
+  return texture(u_tex0, (i + f + 0.5) / 256.0).r;
+}
+
+void main() {
+  // Con zoom, cada celda ocupa más píxeles: 2^u_zoom veces más
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 8.0 / exp2(u_zoom) + 20.0;
+  float v = u_fuente == 0 ? ruidoValor(p) : ruidoTextura(p, u_fuente == 2);
+  // La lupa multiplica el valor por 64 y se queda con la parte fraccionaria: revela escalones
+  if (u_lupa) v = fract(v * 64.0);
+  fragColor = vec4(vec3(v), 1.0);
+}
+</script>
+</div>
+<p>El deslizador <code>fuente</code> elige entre el value noise calculado (0), la textura con la interpolación lineal del hardware (1) y la textura con el fade (2). Sin lupa, las tres fuentes parecen el mismo tipo de ruido (con valores distintos: el hash y la textura no son el mismo generador). Ahora activa la lupa y sube el zoom a 6 o 7: con el ruido calculado, las bandas de la lupa son suaves; con la textura, se ven escalonadas, los 256 pasos del filtrado. En una nube normal no se nota, pero si el ruido controla algo que amplifica diferencias pequeñas (la altura de un terreno iluminado, un umbral muy estrecho, una distorsión fuerte), los escalones aparecen.</p>
+
+<div class="callout bestiario" data-id="m6b-ruido-textura-escalones" data-titulo="El ruido leído de una textura hace escalones al ampliarlo">
+  <p><strong>Síntoma:</strong> un ruido (o cualquier dato) leído de una textura con filtrado <code>LINEAR</code> se ve perfecto a tamaño normal, pero al ampliarlo mucho, o al usarlo como altura para iluminar, aparecen bandas o terrazas, aunque la interpolación debería ser suave.</p>
+  <p><strong>Causa:</strong> doble cuantización. Los texels de una textura <code>RGBA8</code> solo tienen 256 niveles, y además el hardware de filtrado calcula la posición entre texels con precisión limitada: en nuestra GPU, 8 bits (257 valores distintos entre dos texels vecinos, por mucho que se amplíe).</p>
+  <p><strong>Solución:</strong> para ruido de baja frecuencia muy ampliado, calcula el ruido en el shader. Si necesitas la textura, haz tú la interpolación: lee los 4 texels con <code>texelFetch</code> y mézclalos con <code>mix</code> en float32 (4 lecturas en lugar de 1), y usa una textura de más precisión (<code>R16F</code> o <code>R32F</code>, <a href="../05-webgl/08-framebuffers.html">5.8</a>) si los 256 niveles tampoco bastan.</p>
+</div>
+
+<h2>Cuánto paga cada píxel</h2>
+<p>El ruido es de lo más caro que harás en un fragment shader, porque se multiplica: ruido × octavas × niveles de warping × dimensiones. Una tabla para estimar antes de medir:</p>
+<table class="b-num">
+  <thead><tr><th>Construcción</th><th>Hashes por píxel</th><th>Comentario</th></tr></thead>
+  <tbody>
+    <tr><td>Ruido blanco</td><td>1</td><td>un hash por celda</td></tr>
+    <tr><td>Value noise 2D</td><td>4</td><td>+ 3 mix</td></tr>
+    <tr><td>Gradient noise 2D</td><td>4</td><td>+ 4 productos punto (y sin/cos si el gradiente sale de un ángulo)</td></tr>
+    <tr><td>Gradient noise 3D</td><td>8</td><td>+ 8 productos punto, 7 mix</td></tr>
+    <tr><td>fbm 2D de 6 octavas</td><td>24</td><td>6 ruidos</td></tr>
+    <tr><td>fbm 3D de 6 octavas</td><td>48</td><td>el típico «fuego que evoluciona»</td></tr>
+    <tr><td>Warping de 2 niveles, fbm de 5 octavas</td><td>100</td><td>5 fbm de 5 ruidos</td></tr>
+  </tbody>
+</table>
+<p>Medimos el fbm de ruido de gradiente 2D en un lienzo de 2048 × 2048 (4,2 millones de píxeles, la mitad que una pantalla 4K) en el M1: 1 octava, 0,8 ms; 4 octavas, 3,1 ms; 8 octavas, 5,9 ms; 12 octavas, 8,8 ms. Cada octava añade unos 0,7 ms, más una parte fija de 0,3 ms que no depende de las octavas (limpiar y escribir 4 millones de píxeles). Con un presupuesto de 16,7 ms por frame, un fbm de 12 octavas a esa resolución ya se come más de la mitad, y en 4K no cabría con nada más al lado; una GPU de móvil puede ser diez veces más lenta, y la pantalla de un móvil de alta densidad tiene más píxeles de lo que parece. Las tres palancas, por orden de efecto: menos píxeles (dibujar el ruido a media resolución en un framebuffer y ampliarlo, <a href="../05-webgl/08-framebuffers.html">5.8</a>; el ruido suave lo aguanta muy bien), menos octavas (las que el tamaño de pantalla permite ver) y ruido más barato (value noise o textura para las octavas altas, donde nadie distingue la diferencia).</p>
+
+<div class="callout senior" id="medir-coste-shader" data-titulo="Cómo se mide lo que cuesta un shader (y cómo no)">
+  <p>Todas las cifras de tiempo de este módulo son de nuestro M1 (Chrome, ANGLE sobre Metal) y se tomaron igual: el shader, a pantalla completa en un framebuffer del tamaño indicado, dibujado muchas veces seguidas; el tiempo total, con <code>performance.now()</code>, dividido entre el número de dibujos; y al final, un <code>readPixels</code> de un píxel para obligar a esperar a que la GPU termine (sin él mides lo que tarda JavaScript en <em>encargar</em> el trabajo, no lo que tarda la GPU en hacerlo). Hay un segundo detalle que decide si la cifra vale algo: cada dibujo tiene que ir a su propia pasada de render. Nosotros alternamos entre dos framebuffers y limpiamos cada uno al empezar. Si dibujas veinte veces seguidas sobre el mismo framebuffer, una GPU de teselas como la de Apple puede ahorrarse el trabajo de los dibujos que el siguiente va a tapar por completo (la <em>eliminación de superficies ocultas</em> de estas GPU), y mides mucho menos de lo que cuesta un frame de verdad: con ese método, el fbm de 8 octavas salía en 0,26 ms en lugar de 5,9. Es un error fácil de cometer y difícil de detectar, porque da números estables y verosímiles. La extensión <code>EXT_disjoint_timer_query_webgl2</code> mide el tiempo en la propia GPU, pero en nuestras pruebas sobre ANGLE/Metal sus valores variaban mucho de una consulta a otra (solo el mínimo se parecía a lo medido con el método de arriba). Contrasta siempre dos métodos, y desconfía de cualquier cifra que no crezca cuando crece el trabajo.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.6.1 — Una tele sin señal</h3>
+  <p>Haz la «nieve» de una televisión analógica: ruido blanco en bloques de 3 × 3 píxeles que cambia <strong>en cada frame</strong>, con un aspecto ligeramente azulado, líneas de barrido horizontales (una fila oscura de cada 4 píxeles) y una banda más clara que baja lentamente por la pantalla. Parte de este código, que tiene la nieve pero congelada.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.6.1" data-altura="260">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_frame;
+out vec4 fragColor;
+
+float hash13(vec3 p3) {
+  p3 = fract(p3 * 0.1031);
+  p3 += dot(p3, p3.zyx + 31.32);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 bloque = floor(gl_FragCoord.xy / 3.0);
+  float nieve = hash13(vec3(bloque, 0.0));
+  fragColor = vec4(vec3(nieve), 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_frame;
+out vec4 fragColor;
+
+float hash13(vec3 p3) {
+  p3 = fract(p3 * 0.1031);
+  p3 += dot(p3, p3.zyx + 31.32);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 bloque = floor(gl_FragCoord.xy / 3.0);
+  // El número de frame como tercera coordenada: un sorteo nuevo en cada frame.
+  // mod() para que el valor que entra al hash no crezca sin límite.
+  float frame = mod(float(u_frame), 1000.0);
+  float nieve = hash13(vec3(bloque, frame));
+
+  // Líneas de barrido: una fila de cada 4 píxeles, más oscura
+  float barrido = mod(floor(gl_FragCoord.y), 4.0) == 0.0 ? 0.6 : 1.0;
+
+  // Banda clara que baja: posición entre 0 y 1 que avanza con el tiempo
+  float y = gl_FragCoord.y / u_resolution.y;
+  float posBanda = 1.0 - fract(u_time * 0.15);
+  float d = (y - posBanda) * 12.0;                // negativo por debajo de la banda: no usar pow(d, 2.0)
+  float banda = 1.0 + 0.35 * exp(-d * d);
+
+  vec3 color = vec3(nieve) * vec3(0.85, 0.92, 1.0) * barrido * banda;
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La nieve está congelada porque la entrada del hash no cambia con el tiempo. Tienes <code>u_frame</code>, un entero que aumenta en cada frame: conviértelo con <code>float()</code> y úsalo como tercera coordenada de <code>hash13</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para las líneas: <code>mod(floor(gl_FragCoord.y), 4.0) == 0.0</code> es cierto en una fila de cada cuatro. Para la banda: una campana <code>exp(-(d·k)²)</code> alrededor de una altura que baja con <code>1.0 - fract(u_time * velocidad)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La clave es qué entra en el hash. Con <code>vec3(bloque, frame)</code>, cada bloque tiene un valor distinto en cada frame: exactamente la nieve de una tele. Aquí sí queremos el «parpadeo» del bicho <a href="#m6b-ruido-parpadea">del ruido que parpadea</a>, porque la nieve real no tiene coherencia temporal. <code>u_frame</code> es un entero distinto en cada frame, así que garantiza un sorteo nuevo por imagen. Con <code>u_time</code> también funcionaría (en el hash de Hoskins, el avance de un frame, unas centésimas de segundo, ya basta para dar otro número sin relación con el anterior; cambios mucho más pequeños, del orden de una diezmilésima, todavía dejarían rastro), pero <code>u_frame</code> dice exactamente lo que quieres: algo «por imagen», que es justo el uso legítimo de <code>u_frame</code> que verás en <a href="07-animacion-shaders.html">6.7</a>. El <code>mod(…, 1000.0)</code> evita que la entrada crezca sin límite: aunque Hoskins aguanta entradas grandes, mantenerlas pequeñas es buena higiene (<a href="../03-matematicas/07-precision.html">3.7</a>).</p>
+    <p>Las líneas de barrido son un patrón de <a href="05-patrones.html">6.5</a>: el resto de dividir la fila entre 4. La banda es una gaussiana centrada en una altura que recorre la pantalla de arriba abajo cada 1/0,15 ≈ 6,7 segundos; sumarle 1 y multiplicar hace que aclare sin cambiar el tono. Fíjate en que el cuadrado se escribe <code>d * d</code> y no <code>pow(d, 2.0)</code>: <code>d</code> es negativo por debajo de la banda, y <code>pow</code> con base negativa es indefinido en GLSL (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>). En nuestra GPU, <code>pow(d, 2.0)</code> parece funcionar mientras el shader no use <code>isnan</code> (el compilador parece reescribirlo como <code>d * d</code>), pero con un <code>isnan</code> en el shader (en los editores del curso, siempre; en tu página, al menos la primera vez que se compila) o con un exponente que llega de un uniform, sale NaN en todos los píxeles de <code>d</code> negativo. El azulado final es un producto componente a componente por un color casi blanco.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.6.2 — Escribe tú el value noise 2D</h3>
+  <p>El código de partida tiene el hash y la estructura, pero <code>ruidoValor</code> devuelve el valor de la esquina inferior izquierda sin más (verás bloques). Complétalo: los cuatro valores de las esquinas, el fade quíntico y la interpolación bilineal. Al terminar debe verse un ruido suave, con manchas del tamaño de una celda (unas 6 en vertical), y el círculo pequeño de la esquina (que muestra cada esquina de la retícula con su valor) debe coincidir con el ruido en esos puntos.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.6.2" data-altura="300">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float ruidoValor(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  // TODO: valores de las 4 esquinas, fade quíntico y mezcla bilineal
+  return hash12(i);
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 6.0;
+  vec3 color = vec3(ruidoValor(p));
+  // Las esquinas de la retícula, pintadas con su valor y un borde rojo
+  vec2 esquina = floor(p + 0.5);
+  float d = length(p - esquina) * u_resolution.y / 6.0;      // en píxeles
+  if (d < 6.0) color = vec3(hash12(esquina));
+  if (d > 6.0 && d < 7.5) color = vec3(1.0, 0.3, 0.3);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float ruidoValor(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float a = hash12(i);                     // (0, 0)
+  float b = hash12(i + vec2(1.0, 0.0));    // (1, 0)
+  float c = hash12(i + vec2(0.0, 1.0));    // (0, 1)
+  float d = hash12(i + vec2(1.0, 1.0));    // (1, 1)
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 6.0;
+  vec3 color = vec3(ruidoValor(p));
+  vec2 esquina = floor(p + 0.5);
+  float d = length(p - esquina) * u_resolution.y / 6.0;
+  if (d < 6.0) color = vec3(hash12(esquina));
+  if (d > 6.0 && d < 7.5) color = vec3(1.0, 0.3, 0.3);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Las esquinas son <code>i</code>, <code>i + vec2(1, 0)</code>, <code>i + vec2(0, 1)</code> e <code>i + vec2(1, 1)</code>. Ojo con los literales: en GLSL, <code>vec2(1, 0)</code> es válido (el constructor convierte los enteros), pero <code>i + 1</code> no, porque no se suma un <code>int</code> a un <code>vec2</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Interpola primero en x entre las dos de abajo (a, b) y entre las dos de arriba (c, d), usando <code>u.x</code>; después, en y entre los dos resultados, con <code>u.y</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con la función completa, el ruido pasa exactamente por el valor de cada esquina: el círculo de cada esquina (pintado con <code>hash12(esquina)</code>) se funde con el ruido a su alrededor, porque en la esquina $f = 0$ (o 1) y el fade vale 0 (o 1), así que el <code>mix</code> devuelve el valor de esa esquina sin mezclar. Esa es la prueba de que las esquinas están bien asignadas: si confundes b con c, el ruido se ve suave igualmente, pero los círculos no coinciden.</p>
+    <p>El código de partida, <code>return hash12(i)</code>, es el ruido blanco por celdas: el «peldaño» del ejemplo 6.6.2 en 2D. Pasar de él al value noise es añadir la interpolación, y cambiar el fade por <code>f</code> te devuelve la versión lineal con sus estrellas de cuatro puntas.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.6.3 — Una llama</h3>
+  <p>Construye una llama en el centro del lienzo: una forma que se estrecha hacia arriba, cuyo contorno se agita con ruido que <strong>sube</strong> y a la vez <strong>cambia de forma</strong>, coloreada con una rampa negro → rojo → naranja → amarillo claro. El código de partida dibuja la forma base (una gota) sin ruido y te da un fbm 3D.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.6.3" data-altura="340">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+vec3 hash33(vec3 p3) {
+  p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yxz + 33.33);
+  return fract((p3.xxy + p3.yxx) * p3.zyx);
+}
+float esquina(vec3 i, vec3 f, vec3 o) { return dot(hash33(i + o) * 2.0 - 1.0, f - o); }
+float ruidoGradiente3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float abajo  = mix(mix(esquina(i, f, vec3(0,0,0)), esquina(i, f, vec3(1,0,0)), u.x),
+                     mix(esquina(i, f, vec3(0,1,0)), esquina(i, f, vec3(1,1,0)), u.x), u.y);
+  float arriba = mix(mix(esquina(i, f, vec3(0,0,1)), esquina(i, f, vec3(1,0,1)), u.x),
+                     mix(esquina(i, f, vec3(0,1,1)), esquina(i, f, vec3(1,1,1)), u.x), u.y);
+  return mix(abajo, arriba, u.z);
+}
+float fbm3(vec3 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 5; k++) {
+    suma += amplitud * ruidoGradiente3(p);
+    p = p * 2.0 + vec3(17.3, 5.9, 3.1);
+    amplitud *= 0.5;
+  }
+  return suma;
+}
+
+void main() {
+  // x centrada, y de 0 (abajo) a 1 (arriba), en unidades de altura
+  vec2 p = vec2((gl_FragCoord.x - 0.5 * u_resolution.x) / u_resolution.y, gl_FragCoord.y / u_resolution.y);
+  // Forma base: anchura que disminuye hacia arriba
+  float anchura = 0.28 * (1.0 - p.y) * smoothstep(0.0, 0.15, p.y + 0.05);
+  float llama = 1.0 - smoothstep(anchura * 0.6, anchura, abs(p.x));
+  fragColor = vec4(vec3(llama), 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+vec3 hash33(vec3 p3) {
+  p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yxz + 33.33);
+  return fract((p3.xxy + p3.yxx) * p3.zyx);
+}
+float esquina(vec3 i, vec3 f, vec3 o) { return dot(hash33(i + o) * 2.0 - 1.0, f - o); }
+float ruidoGradiente3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float abajo  = mix(mix(esquina(i, f, vec3(0,0,0)), esquina(i, f, vec3(1,0,0)), u.x),
+                     mix(esquina(i, f, vec3(0,1,0)), esquina(i, f, vec3(1,1,0)), u.x), u.y);
+  float arriba = mix(mix(esquina(i, f, vec3(0,0,1)), esquina(i, f, vec3(1,0,1)), u.x),
+                     mix(esquina(i, f, vec3(0,1,1)), esquina(i, f, vec3(1,1,1)), u.x), u.y);
+  return mix(abajo, arriba, u.z);
+}
+float fbm3(vec3 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 5; k++) {
+    suma += amplitud * ruidoGradiente3(p);
+    p = p * 2.0 + vec3(17.3, 5.9, 3.1);
+    amplitud *= 0.5;
+  }
+  return suma;
+}
+
+// Rampa de color del fuego: negro → rojo → naranja → amarillo claro
+vec3 rampaFuego(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c = mix(vec3(0.0), vec3(0.8, 0.08, 0.02), smoothstep(0.0, 0.35, t));
+  c = mix(c, vec3(1.0, 0.45, 0.05), smoothstep(0.35, 0.65, t));
+  return mix(c, vec3(1.0, 0.95, 0.7), smoothstep(0.65, 1.0, t));
+}
+
+void main() {
+  vec2 p = vec2((gl_FragCoord.x - 0.5 * u_resolution.x) / u_resolution.y, gl_FragCoord.y / u_resolution.y);
+  // Ruido que sube (desplazar en y hacia abajo = el patrón sube) y evoluciona (z = tiempo)
+  vec3 q = vec3(p.x * 4.0, p.y * 3.0 - u_time * 1.5, u_time * 0.6);
+  float n = fbm3(q);
+  // El ruido desplaza el borde: más fuerte arriba, donde la llama es más libre
+  float anchura = 0.28 * (1.0 - p.y) * smoothstep(0.0, 0.15, p.y + 0.05);
+  float borde = abs(p.x + n * 0.12 * p.y) - anchura * (0.8 + 0.6 * n);
+  float intensidad = 1.0 - smoothstep(-0.12, 0.02, borde);
+  intensidad *= 1.0 - smoothstep(0.55, 0.95, p.y + 0.3 * n);   // se apaga arriba
+  fragColor = vec4(rampaFuego(intensidad * 1.1), 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El ruido debe subir: como la llama no se mueve, lo que sube es el patrón. Resta el tiempo a la coordenada y que le pasas al ruido (<code>p.y * 3.0 - u_time * 1.5</code>). Y para que además cambie de forma, usa el tiempo como tercera coordenada de <code>fbm3</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Usa el ruido para <strong>deformar</strong> la forma, no para multiplicar el color: suma <code>n * algo</code> a <code>p.x</code> antes de medir la distancia al eje, y multiplica ese algo por <code>p.y</code> para que la base quede quieta y la punta se agite. Después convierte la intensidad en color con una rampa de varios <code>smoothstep</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Tres ideas de la lección juntas. <strong>Animar</strong>: <code>p.y * 3.0 - u_time * 1.5</code> desplaza el patrón hacia arriba (en el instante t, en la altura y se ve lo que en t = 0 estaba en y − 0,5·t) y <code>u_time * 0.6</code> como z lo hace evolucionar, sin lo cual se vería como un papel pintado que sube. <strong>Deformar el dominio</strong>: el ruido se suma a <code>p.x</code> antes de calcular la distancia al eje, que es un domain warping de una sola componente; y también modula la anchura. Multiplicar por <code>p.y</code> deja la base casi quieta. <strong>Colorear por tramos</strong>: la rampa encadena tres <code>smoothstep</code>, cada uno responsable de una transición, y el <code>* 1.1</code> satura el centro a amarillo claro.</p>
+    <p>El resultado depende mucho de las constantes (3, 1.5, 0.6, 0.12…): son la «dirección de arte» de la llama. Cambia la velocidad de subida frente a la de evolución y verás que una llama que sube mucho y evoluciona poco parece un tubo, y al revés, una sopa hirviendo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.6.4 — Un fbm que se repite sin costuras</h3>
+  <p>El shader dibuja un fbm de value noise de 5 octavas cuya primera octava tiene periodo 4 celdas… o eso pretende: el lienzo muestra el bloque de 4 × 4 celdas repetido y marca las juntas en rojo, y las juntas se ven porque el fbm no es periódico. Hazlo periódico. Cuando esté bien, al desactivar «marcar juntas» no debe verse ninguna costura.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.6.4" data-altura="300"
+       data-uniforms='{"u_juntas":{"tipo":"bool","valor":true,"etiqueta":"marcar juntas"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform bool u_juntas;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float ruidoValor(vec2 p, float periodo) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = hash12(i), b = hash12(i + vec2(1, 0));
+  float c = hash12(i + vec2(0, 1)), d = hash12(i + vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+
+float fbm(vec2 p, float periodo) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 5; k++) {
+    suma += amplitud * ruidoValor(p, periodo);
+    p = ROTAR * p * 2.0 + vec2(17.3, 5.9);
+    amplitud *= 0.5;
+  }
+  return suma;
+}
+
+void main() {
+  float P = 4.0;
+  // Coordenada dentro del bloque de P × P celdas, repetido
+  vec2 p = mod(gl_FragCoord.xy / u_resolution.y * 1.5, 1.0) * P;
+  vec3 color = vec3(fbm(p, P));
+  if (u_juntas) {
+    vec2 b = abs(fract(gl_FragCoord.xy / u_resolution.y * 1.5 + 0.5) - 0.5);
+    color = mix(color, vec3(1.0, 0.3, 0.3), 1.0 - smoothstep(0.0, 1.5 / u_resolution.y, min(b.x, b.y)));
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform bool u_juntas;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float ruidoValor(vec2 p, float periodo) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  // Esquinas módulo el periodo: la esquina P vale lo mismo que la 0.
+  // El + 10.0 evita que la esquina (0, 0) valga exactamente 0 (el hash de Hoskins en el origen).
+  float a = hash12(mod(i, periodo) + 10.0), b = hash12(mod(i + vec2(1, 0), periodo) + 10.0);
+  float c = hash12(mod(i + vec2(0, 1), periodo) + 10.0), d = hash12(mod(i + vec2(1, 1), periodo) + 10.0);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float fbm(vec2 p, float periodo) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 5; k++) {
+    suma += amplitud * ruidoValor(p, periodo);
+    // Sin rotación y con un desplazamiento ENTERO: los dos conservan la periodicidad.
+    // Frecuencia doble → periodo doble (en celdas de esta octava), y sigue siendo entero.
+    p = p * 2.0 + 1.0;
+    periodo *= 2.0;
+    amplitud *= 0.5;
+  }
+  return suma;
+}
+
+void main() {
+  float P = 4.0;
+  vec2 p = mod(gl_FragCoord.xy / u_resolution.y * 1.5, 1.0) * P;
+  vec3 color = vec3(fbm(p, P));
+  if (u_juntas) {
+    vec2 b = abs(fract(gl_FragCoord.xy / u_resolution.y * 1.5 + 0.5) - 0.5);
+    color = mix(color, vec3(1.0, 0.3, 0.3), 1.0 - smoothstep(0.0, 1.5 / u_resolution.y, min(b.x, b.y)));
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Primero, que <code>ruidoValor</code> use su parámetro <code>periodo</code>: reduce cada esquina con <code>mod(esquina, periodo)</code> antes del hash.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En la octava k, las coordenadas se han multiplicado por $2^k$. Un bloque que en la primera octava mide P celdas mide $2^k P$ celdas en la octava k: el periodo también tiene que doblarse. ¿Y qué hacen la rotación y el desplazamiento a un patrón que debería repetirse en x e y?</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>Cuando ya no haya costuras, mira las esquinas de cada copia. Si en ellas queda una mancha oscura, es el bicho del fbm en el origen: en el origen de cada copia coinciden las esquinas de todas las octavas y <code>hash12(vec2(0.0))</code> vale 0. Se arregla con un desplazamiento <strong>entero</strong> entre octavas y, para la primera octava, sumando una constante a lo que entra al hash.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Hacen falta tres cambios. (1) <strong>Esquinas periódicas</strong>: con <code>mod(i, periodo)</code> antes del hash, la esquina en x = P toma el valor de la de x = 0, así que el último tramo de una copia y el primero de la siguiente se interpolan entre los mismos valores. (2) <strong>Periodo por octava</strong>: tras <code>p *= 2.0</code>, el bloque que mide P en la octava 0 mide 2P en la 1, 4P en la 2… Si mantuvieras el periodo en P, la octava 1 se repetiría dos veces dentro del bloque, lo cual sigue siendo periódico con periodo P (se ve repetición interna) y funciona solo porque 2P es múltiplo de P; doblarlo conserva todo el detalle sin repeticiones internas. Y aquí <code>mod</code> es seguro sin blindar: todos los periodos (4, 8, 16, 32, 64) son potencias de 2, y dividir por una potencia de 2 es exacto en float; con un periodo como 7, usa la envoltura del hack. (3) <strong>Fuera la rotación, y cuidado con el desplazamiento</strong>: rotar un patrón periódico en x e y da un patrón periódico en direcciones giradas, que ya no encaja con el bloque cuadrado; y desplazar 17,3 celdas mueve la retícula de esa octava a posiciones no enteras.</p>
+    <p>¿Por qué la solución tiene un <code>+ 1.0</code> en el <code>p</code> y un <code>+ 10.0</code> dentro del hash? Los dos evitan el bicho de la mancha del origen: en la esquina (0, 0) de cada copia coinciden las esquinas de todas las octavas, y todas leen <code>hash12(vec2(0.0))</code>, que vale 0. Sin el <code>+ 1.0</code>, aparece una mancha negra muy marcada en cada junta, justo donde el ojo busca la costura. Un desplazamiento <strong>entero</strong> no rompe la periodicidad (las esquinas siguen en coordenadas enteras, y desplazar la entrada un bloque, P, desplaza la octava k exactamente su periodo, $2^k P$) y hace que las octavas 1 en adelante lean en esa junta esquinas distintas. Pero la octava 0, la de más amplitud, no se desplaza: su esquina (0, 0) sigue valiendo 0 y dejaría una mancha oscura más suave en cada junta. Por eso el <code>+ 10.0</code> dentro del hash (el mismo truco que en el editor del ruido periódico): la esquina (0, 0) ya no vale exactamente 0. Quita el <code>+ 10.0</code> y compruébalo.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>En un shader el azar es una <strong>función pura de la entrada</strong> (un hash). Es determinista a propósito: el mismo punto da el mismo valor en cada frame, y el tiempo entra solo si quieres que cambie.</li>
+    <li>El hash del seno se rompe con entradas grandes, con float16 y entre GPU, e incluso cambia dentro de la misma GPU según el <em>fast math</em> (un <code>isnan</code> en el shader cambia el ruido; en tu propia página, solo la primera vez que el navegador compila ese código, porque desde la caché vuelve el fast math, mientras que los editores del curso lo evitan con un comentario único en cada compilación). El de <strong>Hoskins</strong> es robusto y barato; <strong>PCG</strong> (con <code>uint</code>) es exacto bit a bit en cualquier GPU, a cambio de ser más caro en algunas.</li>
+    <li>Para convertir un <code>uint</code> en float en $[0, 1)$ usa los 24 bits altos: <code>float(h &gt;&gt; 8u) * (1.0 / 16777216.0)</code>. Dividir por 4294967295.0 puede dar 1.0.</li>
+    <li><strong>Value noise</strong>: valores aleatorios en las esquinas, interpolados. <strong>Gradient noise</strong>: gradientes aleatorios, vale 0 en las esquinas y no se alinea con la rejilla. El <strong>fade</strong> decide la continuidad: lineal $C^0$, cúbico $C^1$, quíntico $C^2$ (el que necesitas si calculas normales).</li>
+    <li><strong>fbm</strong>: octavas con frecuencia ×lacunaridad y amplitud ×ganancia. Rota y desplaza cada octava para que sus rejillas no coincidan, y no pongas más octavas de las que caben en los píxeles.</li>
+    <li><strong>Turbulencia</strong> (<code>abs</code>), <strong>ridged</strong> (<code>(1 − |n|)²</code>) y <strong>domain warping</strong> (<code>f(p + fbm(p))</code>) salen del mismo esqueleto.</li>
+    <li>Para animar, el tiempo va en la posición (desplazar) o en una dimensión extra (evolucionar, con el doble de esquinas por celda), nunca como entrada de un hash, salvo que quieras un sorteo nuevo en cada instante.</li>
+    <li>Hacks: envolver las esquinas con el periodo hace el ruido periódico (texturas en mosaico), con el <code>mod</code> blindado <code>e - P * floor((e + 0.5) / P)</code> si P no es potencia de 2; leer el ruido de una textura con <code>LINEAR</code> es un value noise en una lectura, con 8 bits de valor y de posición de filtrado.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li>Iñigo Quilez, <a href="https://iquilezles.org/articles/warp/">Domain warping</a> y <a href="https://iquilezles.org/articles/fbm/">fBM</a>: los dos artículos de referencia sobre lo que has hecho en la segunda mitad de la lección.</li>
+  <li>Ken Perlin, <a href="https://mrl.cs.nyu.edu/~perlin/paper445.pdf">Improving Noise</a> (SIGGRAPH 2002): el artículo del fade quíntico, en cuatro páginas.</li>
+  <li>Mark Jarzynski y Marc Olano, <a href="https://www.jcgt.org/published/0009/03/02/">Hash Functions for GPU Rendering</a> (JCGT, 2020): la comparativa de calidad y velocidad de hashes de la que sale PCG.</li>
+  <li>Dave Hoskins, <a href="https://www.shadertoy.com/view/4djSRW">Hash without Sine</a>: la familia completa de hashes (de 1 a 4 entradas y salidas), con licencia MIT.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

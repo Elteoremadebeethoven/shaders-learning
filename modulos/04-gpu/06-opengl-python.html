@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4.6 · OpenGL real desde Python (moderngl y PyOpenGL) — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m4.css">
+</head>
+<body data-leccion="04-gpu/opengl-python">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 4 · La GPU por dentro</p>
+  <h1>OpenGL real desde Python (moderngl y PyOpenGL)</h1>
+  <p class="resumen">La misma escena de la GPU de juguete, dibujada ahora por la GPU de verdad desde Python: primero con moderngl, una capa cómoda y sin ventana; después con PyOpenGL, llamada a llamada, junto a su equivalente exacto en WebGL. Con todas las particularidades de OpenGL en macOS.</p>
+  <div class="meta"><span class="chip">⏱ 80 min</span><span class="chip">Requisitos: 4.3, 4.4, 4.5</span><span class="chip">Python 3 + GPU</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Prepararás un entorno de Python con moderngl, PyOpenGL y glfw, y sabrás qué hacer si <code>pip</code> tiene que compilar algo.</li>
+      <li>Dibujarás sin ventana con moderngl y guardarás el resultado como PNG, entendiendo qué llamada de OpenGL hay detrás de cada método.</li>
+      <li>Escribirás el mismo programa con llamadas crudas de OpenGL y lo relacionarás, línea a línea, con WebGL.</li>
+      <li>Conocerás las particularidades de OpenGL en macOS: perfil core, contexto <em>forward-compatible</em>, versiones de GLSL, VAO obligatorio y pantallas Retina.</li>
+      <li>Abrirás una ventana interactiva con glfw y reconocerás en su bucle el <code>requestAnimationFrame</code> del navegador.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>¿Por qué OpenGL desde Python?</h2>
+<p>WebGL es OpenGL ES 3.0 dentro de un navegador, con ANGLE en medio (<a href="01-cpu-vs-gpu.html">4.1</a>). Fuera del navegador, la misma GPU se programa con OpenGL de escritorio, y desde Python tenemos dos maneras de hacerlo:</p>
+<ul>
+  <li><strong><a href="https://moderngl.readthedocs.io">moderngl</a></strong>: una capa fina y cómoda sobre OpenGL 3.3+. Objetos de Python (<code>ctx.buffer</code>, <code>ctx.program</code>, <code>ctx.vertex_array</code>) que por dentro hacen las llamadas de siempre. Puede crear un contexto <strong>sin ventana</strong>, ideal para renderizar imágenes desde un script.</li>
+  <li><strong><a href="https://pyopengl.sourceforge.net">PyOpenGL</a></strong>: la API de OpenGL tal cual, función por función (<code>glGenBuffers</code>, <code>glBindBuffer</code>…). Necesita que alguien cree el contexto: usaremos <strong><a href="https://www.glfw.org">glfw</a></strong>, una biblioteca de ventanas.</li>
+</ul>
+<p>Tener la GPU real a mano desde Python sirve para más cosas de las que parece: renderizar imágenes o vídeos sin navegador, probar shaders en scripts automáticos… y comprobar que lo que aprendiste con la GPU de juguete es verdad. Todas las imágenes de «GPU real» de este módulo salieron de estos scripts.</p>
+
+<h2>Preparar el entorno</h2>
+<p>El código está en la carpeta <code>python/</code> del curso, con su propio <a href="../../python/README.md"><code>README.md</code></a> y un <code>requirements.txt</code> con las versiones exactas que probamos. Desde esa carpeta:</p>
+<script type="text/plain" class="codigo" data-lang="bash" data-titulo="Terminal (macOS o Linux; en Windows, .venv\Scripts\activate)">
+cd python
+python3 -m venv .venv                  # un entorno virtual solo para el curso
+source .venv/bin/activate              # actívalo: a partir de aquí, "python" es el del entorno
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+# comprobación:
+python -c "import moderngl; c = moderngl.create_standalone_context(); print(c.info['GL_RENDERER'], c.info['GL_VERSION'])"
+# Apple M1 4.1 Metal - 90.5
+</script>
+<p>Los paquetes: <code>moderngl</code> (y su dependencia <code>glcontext</code>, que crea el contexto), <code>PyOpenGL</code>, <code>glfw</code> (que trae la biblioteca GLFW 3.4 compilada), <code>numpy</code> (PyOpenGL lo usa para devolver arrays) y <code>pillow</code> (para leer y guardar PNG).</p>
+
+<div class="callout cuidado" data-titulo="Python 3.14 y las ruedas que faltan">
+  <p>Probamos todo con Python 3.14.7 de Homebrew. <code>moderngl</code> 5.12.0 y <code>glcontext</code> 3.0.0 no publican paquetes precompilados (<em>wheels</em>) para Python 3.14 en macOS, así que <code>pip</code> los <strong>compila</strong> al instalarlos (tarda unos 5 segundos). Para eso necesitas las herramientas de línea de comandos de Xcode (<code>xcode-select --install</code>). Si no puedes compilar, usa un Python para el que sí haya paquetes, por ejemplo <code>brew install python@3.13</code> y <code>python3.13 -m venv .venv</code>. La GPU de juguete, en cambio, no necesita nada: funciona con cualquier Python desde el 3.9 (la probamos también con el 3.9 de Apple).</p>
+</div>
+
+<p>Para comprobar que todo funciona, <code>python probar_todo.py</code> ejecuta los 27 scripts del curso (la GPU de juguete, moderngl y PyOpenGL) y verifica que cada uno genera sus imágenes.</p>
+
+<h2>moderngl: el triángulo, sin ventana</h2>
+<p>Este es <code>python/moderngl/01_triangulo.py</code>: la escena de la GPU de juguete (los mismos 60 bytes), dibujada por la GPU real. Cada comentario dice qué llamadas de OpenGL hay detrás:</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/moderngl/01_triangulo.py:19-70">
+<script type="text/plain">
+# 1. Un contexto OpenGL "standalone": sin ventana (en macOS, un contexto CGL 4.1 core).
+ctx = moderngl.create_standalone_context()
+print("GPU:", ctx.info["GL_RENDERER"], "| OpenGL", ctx.info["GL_VERSION"])
+
+# 2. El programa: compila los dos shaders y los enlaza (glCreateShader ... glLinkProgram).
+prog = ctx.program(
+    vertex_shader="""
+        #version 330 core
+        in vec2 a_pos;
+        in vec3 a_color;
+        out vec3 v_color;
+        void main() {
+            v_color = a_color;
+            gl_Position = vec4(a_pos, 0.0, 1.0);
+        }
+    """,
+    fragment_shader="""
+        #version 330 core
+        in vec3 v_color;
+        out vec4 fragColor;
+        void main() {
+            fragColor = vec4(v_color, 1.0);
+        }
+    """,
+)
+
+# 3. El VBO: los mismos 60 bytes que en la GPU de juguete (x, y, r, g, b por vértice).
+vertices = struct.pack("<15f",
+                       -0.75, -0.75, 1.0, 0.0, 0.0,
+                        0.75, -0.75, 0.0, 1.0, 0.0,
+                        0.00,  0.75, 0.0, 0.0, 1.0)
+vbo = ctx.buffer(vertices)                       # glGenBuffers + glBindBuffer + glBufferData
+
+# 4. El VAO: "2f 3f" = 2 floats y luego 3 floats por vértice → stride 20, offsets 0 y 8.
+vao = ctx.vertex_array(prog, [(vbo, "2f 3f", "a_pos", "a_color")])
+print("vértices que dibujará vao.render():", vao.vertices)
+
+# 5. Un framebuffer propio (no hay ventana): color RGBA8 + profundidad.
+fbo = ctx.simple_framebuffer((256, 256))
+fbo.use()                                        # glBindFramebuffer + glViewport(0, 0, 256, 256)
+fbo.clear(0.08, 0.09, 0.12, 1.0)                 # glClearColor + glClear
+
+# 6. La orden de dibujo.
+vao.render(moderngl.TRIANGLES)                   # glUseProgram + glBindVertexArray + glDrawArrays
+
+# 7. Leer los píxeles (glReadPixels): las filas llegan de ABAJO a ARRIBA.
+datos = fbo.read(components=4)
+print("bytes leídos:", len(datos), "| píxel (128, 100):", tuple(datos[(100 * 256 + 128) * 4:][:4]))
+imagen = Image.frombytes("RGBA", fbo.size, datos).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+ruta = carpeta_img() / "moderngl-triangulo.png"
+imagen.save(ruta)
+print("guardado:", ruta)
+</script>
+<ol>
+  <li data-l="1-3">Un contexto <strong>standalone</strong>: sin ventana ni pantalla. En macOS, <code>glcontext</code> crea un contexto CGL con perfil core 4.1. <code>ctx.info</code> es un diccionario con lo que responde el driver: aquí, <code>Apple M1</code> y <code>4.1 Metal - 90.5</code> (el OpenGL de Apple también está implementado sobre Metal).</li>
+  <li data-l="5-25">El programa: dos shaders en GLSL de escritorio. <code>#version 330 core</code> es la versión de OpenGL 3.3; en macOS valen <code>330 core</code> y <code>410 core</code>, pero no el <code>300 es</code> de WebGL2 (lo comprobamos). <code>ctx.program</code> compila los dos, los enlaza y, si algo falla, lanza una excepción con el registro del compilador. No hay <code>precision</code>: en GLSL de escritorio se admite (lo probamos) pero no tiene efecto; los floats son siempre de 32 bits.</li>
+  <li data-l="27-32">Los mismos 60 bytes de siempre y <code>ctx.buffer(datos)</code>, que equivale a <code>glGenBuffers</code> + <code>glBindBuffer</code> + <code>glBufferData</code>. Con <code>dynamic=True</code> usaría el hint <code>GL_DYNAMIC_DRAW</code> en lugar de <code>GL_STATIC_DRAW</code> (lo comprobamos con <code>glGetBufferParameteriv</code>).</li>
+  <li data-l="34-36">El VAO. La cadena <code>"2f 3f"</code> describe el vértice: 2 floats y luego 3 floats. moderngl calcula el stride (20) y los offsets (0 y 8), busca la location de <code>a_pos</code> y <code>a_color</code> en el programa enlazado y hace los <code>glVertexAttribPointer</code>. <code>vao.vertices</code> es cuántos vértices caben en el buffer (3): lo que dibujará <code>render()</code> si no le dices otra cosa.</li>
+  <li data-l="38-41">Como no hay ventana, no hay framebuffer por defecto: creamos uno. <code>simple_framebuffer</code> reserva un renderbuffer de color RGBA8 y otro de profundidad. <code>use()</code> lo enlaza y ajusta el viewport a su tamaño; <code>clear()</code> es <code>glClearColor</code> + <code>glClear</code>.</li>
+  <li data-l="43-44">La orden de dibujo: <code>glUseProgram</code> + <code>glBindVertexArray</code> + <code>glDrawArrays(GL_TRIANGLES, 0, 3)</code>.</li>
+  <li data-l="46-52"><code>fbo.read(components=4)</code> es <code>glReadPixels</code> con RGBA y bytes sin signo (moderngl fija la alineación de las filas a 1 byte). Las filas llegan <strong>de abajo arriba</strong> (en GL la fila 0 es la inferior), así que Pillow le da la vuelta antes de guardar (<a href="03-gpu-de-juguete.html">4.3</a>).</li>
+</ol>
+</div>
+
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="python moderngl/01_triangulo.py">
+GPU: Apple M1 | OpenGL 4.1 Metal - 90.5
+vértices que dibujará vao.render(): 3
+bytes leídos: 262144 | píxel (128, 100): (81, 83, 91, 255)
+guardado: modulos/04-gpu/img/moderngl-triangulo.png
+</script>
+
+<figure class="m4-figura">
+  <div class="m4-fila">
+    <div><img src="img/juguete-triangulo.png" width="220" height="220" alt="Triángulo de colores de la GPU de juguete"><small>GPU de juguete (Python puro)</small></div>
+    <div><img src="img/moderngl-triangulo.png" width="220" height="220" alt="El mismo triángulo, de moderngl"><small>GPU real con moderngl</small></div>
+    <div><img src="img/pyopengl-triangulo.png" width="220" height="220" alt="El mismo triángulo, de PyOpenGL"><small>GPU real con PyOpenGL</small></div>
+  </div>
+  <figcaption>Tres caminos, una imagen: las tres son idénticas píxel a píxel (lo comprobamos con Pillow), y el píxel (128, 100) vale <code>(81, 83, 91, 255)</code> en las tres.</figcaption>
+</figure>
+
+<h3>El formato de moderngl, traducido</h3>
+<p>La cadena de formato es la parte de moderngl que más esconde. La comprobamos preguntando al driver, con PyOpenGL sobre el mismo contexto, qué había configurado moderngl para cada atributo (<code>moderngl/02_buffers_y_vao.py</code> y <code>moderngl/soluciones/ej4_formatos.py</code>):</p>
+<table class="m4-compacta">
+  <thead><tr><th>En la cadena</th><th>Tipo en el buffer</th><th>Con el shader</th><th>moderngl llama a</th></tr></thead>
+  <tbody>
+    <tr><td><code>3f</code></td><td>3 × <code>FLOAT</code></td><td><code>in vec3</code></td><td><code>glVertexAttribPointer(loc, 3, GL_FLOAT, GL_FALSE, …)</code></td></tr>
+    <tr><td><code>4f1</code></td><td>4 × <code>UNSIGNED_BYTE</code></td><td><code>in vec4</code> (recibe de 0 a 1)</td><td><code>glVertexAttribPointer(loc, 4, GL_UNSIGNED_BYTE, GL_TRUE, …)</code></td></tr>
+    <tr><td><code>2f2</code></td><td>2 × <code>HALF_FLOAT</code></td><td><code>in vec2</code></td><td><code>glVertexAttribPointer(loc, 2, GL_HALF_FLOAT, GL_FALSE, …)</code></td></tr>
+    <tr><td><code>4u1</code></td><td>4 × <code>UNSIGNED_BYTE</code></td><td><code>in uvec4</code> (enteros)</td><td><code>glVertexAttribIPointer(loc, 4, GL_UNSIGNED_BYTE, …)</code></td></tr>
+    <tr><td><code>4i2</code></td><td>4 × <code>SHORT</code></td><td><code>in ivec4</code> (enteros)</td><td><code>glVertexAttribIPointer(loc, 4, GL_SHORT, …)</code></td></tr>
+    <tr><td><code>4x</code></td><td>4 bytes de relleno</td><td>—</td><td>solo suma 4 al stride y a los offsets siguientes</td></tr>
+  </tbody>
+</table>
+<p>Con esta tabla, el formato compacto que diseñaste a mano en <a href="04-vbo-vao.html">4.4</a> (posición en floats, color en bytes normalizados, coordenadas de textura en <em>half float</em> y un identificador entero) cabe en una sola cadena; en el ejercicio 4.6.4 calcularás las llamadas exactas que genera.</p>
+<p>Al preguntar al driver descubrimos un detalle importante: <strong>la letra decide el tipo de los bytes, pero la función la elige el shader</strong>. Con <code>4u1</code> y un shader que declara <code>in uvec4</code>, moderngl llama a <code>glVertexAttribIPointer</code>; con el mismo <code>4u1</code> y un <code>in vec4</code>, llama a <code>glVertexAttribPointer</code> sin normalizar, y un byte 255 llega como 255,0. Lo mismo con <code>4f1</code>: normalizado si el shader pide <code>vec4</code>, entero crudo si pide <code>ivec4</code> o <code>uvec4</code>. En WebGL esa coincidencia la tienes que garantizar tú, o el dibujo falla (<a href="04-vbo-vao.html">4.4</a>).</p>
+<p>Dos detalles más que ya conoces con otro nombre: si un atributo que nombras no es activo (el shader no lo usa), <code>ctx.vertex_array</code> lanza <code>KeyError</code>; y <code>programa["u_x"]</code> lanza <code>KeyError</code> si el uniform no existe o el compilador lo eliminó (<a href="05-uniforms-varyings.html">4.5</a>). moderngl convierte en excepciones los silencios de OpenGL.</p>
+
+<div class="callout hack" data-titulo="Espía a moderngl con PyOpenGL">
+  <p>moderngl y PyOpenGL pueden trabajar sobre el <em>mismo</em> contexto: PyOpenGL actúa sobre el contexto actual, y el standalone de moderngl lo es desde que lo creas. Cada objeto de moderngl expone su nombre de OpenGL en <code>.glo</code>, así que puedes preguntarle al driver qué hizo moderngl de verdad:</p>
+<script type="text/plain" class="codigo" data-lang="python">
+GL.glBindVertexArray(vao.glo)                    # el VAO que creó moderngl
+v = numpy.zeros(4, dtype=numpy.int32)
+GL.glGetVertexAttribiv(prog["a_id"].location, GL.GL_VERTEX_ATTRIB_ARRAY_INTEGER, v)
+print(v[0])                                      # 1 = glVertexAttribIPointer
+GL.glBindVertexArray(0)                          # déjalo como estaba
+</script>
+  <p>Es la técnica de <code>moderngl/soluciones/ej4_formatos.py</code>, y así descubrimos que la función la elige el shader. Es un truco de depuración, no de producción: cada llamada de PyOpenGL cambia estado a espaldas de moderngl, así que deja todo como lo encontraste.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un VAO de moderngl se crea con el formato <code>"2f 4f1"</code> para <code>a_pos</code> (<code>in vec2</code>) y <code>a_color</code> (<code>in vec4</code>). ¿Qué stride pasa moderngl a <code>glVertexAttribPointer</code>?</p>
+  <ul>
+    <li>24 bytes.<div class="explicacion">Contaste <code>4f1</code> como cuatro floats (16 bytes). El número tras la letra es el tamaño de cada componente: cuatro componentes de 1 byte son 4 bytes.</div></li>
+    <li data-correcta>12 bytes.<div class="explicacion">Dos floats (8 bytes) más cuatro bytes normalizados (4 bytes): 12 bytes por vértice. Los offsets serán 0 y 8, y el color llegará al shader de 0 a 1.</div></li>
+    <li>6.<div class="explicacion">Eso es el número de componentes (2 + 4). El stride se mide siempre en bytes, en WebGL y en OpenGL.</div></li>
+  </ul>
+</div>
+
+<h2>PyOpenGL: las llamadas crudas, una a una</h2>
+<p>Ahora sin red: <code>python/pyopengl/01_triangulo_crudo.py</code> hace lo mismo con la API de OpenGL tal cual. Lo verás en cuatro trozos. Cada línea lleva al lado, en un comentario, su equivalente en WebGL: son casi siempre la misma llamada con otro nombre.</p>
+
+<h3>1. El contexto</h3>
+<div class="anotado" data-lang="python" data-fuente="python/pyopengl/01_triangulo_crudo.py:25-38">
+<script type="text/plain">
+# ---------------------------------------------------------------- 1. contexto
+if not glfw.init():
+    raise SystemExit("glfw.init() falló")
+glfw.window_hint(glfw.VISIBLE, glfw.FALSE)                    # ventana oculta: solo queremos el contexto
+glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)               # macOS: 4.1 es lo máximo
+glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)       # obligatorio en macOS con glfw < 3.4
+ventana = glfw.create_window(64, 64, "oculta", None, None)
+if not ventana:
+    glfw.terminate()
+    raise SystemExit("no se pudo crear el contexto OpenGL")
+glfw.make_context_current(ventana)                            # a partir de aquí, GL.* habla con ESTE contexto
+print("OpenGL", GL.glGetString(GL.GL_VERSION).decode(), "|", GL.glGetString(GL.GL_RENDERER).decode())
+</script>
+<ol>
+  <li data-l="2-3">Inicializa glfw. En el navegador, este papel (hablar con el sistema de ventanas y crear el contexto) lo hace <code>canvas.getContext('webgl2')</code>.</li>
+  <li data-l="4">La ventana existirá pero no se verá: solo la queremos para tener un contexto.</li>
+  <li data-l="5-8">Las <em>hints</em> del contexto: OpenGL 4.1 (el máximo de macOS), perfil <strong>core</strong> (sin las funciones antiguas) y <strong>forward-compatible</strong>. Son imprescindibles en macOS: sin ellas obtienes un contexto 2.1 (lo desmontamos más abajo).</li>
+  <li data-l="9-12">Crear la ventana es lo que crea el contexto. Si las hints piden algo imposible, devuelve <code>None</code>.</li>
+  <li data-l="13">Hace el contexto <strong>actual</strong> en este hilo. Las funciones <code>GL.*</code> de PyOpenGL no reciben el contexto como argumento (no hay un objeto <code>gl</code>): actúan sobre el contexto actual. Es la máquina de estados, un nivel más arriba.</li>
+  <li data-l="14"><code>glGetString</code> devuelve <code>bytes</code>, que hay que decodificar. En nuestro Mac imprime <code>OpenGL 4.1 Metal - 90.5 | Apple M1</code>.</li>
+</ol>
+</div>
+
+<h3>2. Shaders y programa</h3>
+<div class="anotado" data-lang="python" data-fuente="python/pyopengl/01_triangulo_crudo.py:41-73">
+<script type="text/plain">
+# ---------------------------------------------------------------- 2. shaders y programa
+def compilar(tipo, fuente):
+    sh = GL.glCreateShader(tipo)                              # gl.createShader(tipo)
+    GL.glShaderSource(sh, fuente)                             # gl.shaderSource(sh, fuente)
+    GL.glCompileShader(sh)                                    # gl.compileShader(sh)
+    if not GL.glGetShaderiv(sh, GL.GL_COMPILE_STATUS):        # gl.getShaderParameter(sh, gl.COMPILE_STATUS)
+        raise RuntimeError(GL.glGetShaderInfoLog(sh).decode())
+    return sh
+
+
+VS = """#version 330 core
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() {
+    v_color = a_color;
+    gl_Position = vec4(a_pos, 0.0, 1.0);
+}"""
+FS = """#version 330 core
+in vec3 v_color;
+out vec4 fragColor;
+void main() {
+    fragColor = vec4(v_color, 1.0);
+}"""
+vs, fs = compilar(GL.GL_VERTEX_SHADER, VS), compilar(GL.GL_FRAGMENT_SHADER, FS)
+programa = GL.glCreateProgram()                               # gl.createProgram()
+GL.glAttachShader(programa, vs)                               # gl.attachShader(p, vs)
+GL.glAttachShader(programa, fs)
+GL.glLinkProgram(programa)                                    # gl.linkProgram(p)
+if not GL.glGetProgramiv(programa, GL.GL_LINK_STATUS):        # gl.getProgramParameter(p, gl.LINK_STATUS)
+    raise RuntimeError(GL.glGetProgramInfoLog(programa).decode())
+GL.glDeleteShader(vs)                                         # ya están dentro del programa
+GL.glDeleteShader(fs)
+</script>
+<ol>
+  <li data-l="2-8">La función de compilar de siempre (en WebGL la escribirás en <a href="../05-webgl/02-primer-triangulo.html">5.2</a>): crear el shader, darle el código fuente, compilarlo y comprobar el estado. <code>glGetShaderiv</code> es <code>getShaderParameter</code>: en OpenGL, las consultas que devuelven enteros llevan la terminación <code>iv</code> (<em>integer vector</em>). El registro llega como <code>bytes</code>: hay que decodificarlo.</li>
+  <li data-l="11-24">Los shaders fijan las locations con <code>layout(location = N)</code>, así no hay que preguntar al enlazador dónde puso cada atributo (en <a href="04-vbo-vao.html">4.4</a> viste que moderngl, sin <code>layout</code>, obtuvo las locations que eligió el enlazador).</li>
+  <li data-l="25-31">Compilar los dos shaders y crear, adjuntar, enlazar y comprobar el programa: <code>glGetProgramiv(p, GL_LINK_STATUS)</code> es <code>getProgramParameter(p, gl.LINK_STATUS)</code>.</li>
+  <li data-l="32-33">Tras enlazar, el programa contiene el código compilado: los objetos shader sobran. <code>glDeleteShader</code> los marca para borrar (se liberan cuando se separen del programa).</li>
+</ol>
+</div>
+
+<h3>3. VAO, VBO, framebuffer y dibujo</h3>
+<div class="anotado" data-lang="python" data-fuente="python/pyopengl/01_triangulo_crudo.py:75-106">
+<script type="text/plain">
+# ---------------------------------------------------------------- 3. VAO + VBO
+vertices = struct.pack("<15f",
+                       -0.75, -0.75, 1.0, 0.0, 0.0,
+                        0.75, -0.75, 0.0, 1.0, 0.0,
+                        0.00,  0.75, 0.0, 0.0, 1.0)
+vao = GL.glGenVertexArrays(1)                                 # gl.createVertexArray()
+GL.glBindVertexArray(vao)                                     # gl.bindVertexArray(vao)
+vbo = GL.glGenBuffers(1)                                      # gl.createBuffer()
+GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)                      # gl.bindBuffer(gl.ARRAY_BUFFER, vbo)
+GL.glBufferData(GL.GL_ARRAY_BUFFER, len(vertices), vertices, GL.GL_STATIC_DRAW)   # gl.bufferData(...)
+GL.glEnableVertexAttribArray(0)                               # gl.enableVertexAttribArray(0)
+GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, 20, ctypes.c_void_p(0))  # gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0)
+GL.glEnableVertexAttribArray(1)
+GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 20, ctypes.c_void_p(8))  # gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8)
+
+# ---------------------------------------------------------------- 4. framebuffer propio
+fbo = GL.glGenFramebuffers(1)                                 # gl.createFramebuffer()
+GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
+rbo = GL.glGenRenderbuffers(1)                                # gl.createRenderbuffer()
+GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, rbo)
+GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, GL.GL_RGBA8, ANCHO, ALTO)
+GL.glFramebufferRenderbuffer(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_RENDERBUFFER, rbo)
+assert GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER) == GL.GL_FRAMEBUFFER_COMPLETE
+
+# ---------------------------------------------------------------- 5. dibujar
+GL.glViewport(0, 0, ANCHO, ALTO)                              # gl.viewport(0, 0, w, h)
+GL.glClearColor(0.08, 0.09, 0.12, 1.0)                        # gl.clearColor(...)
+GL.glClear(GL.GL_COLOR_BUFFER_BIT)                            # gl.clear(gl.COLOR_BUFFER_BIT)
+GL.glUseProgram(programa)                                     # gl.useProgram(p)
+GL.glBindVertexArray(vao)
+GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)                        # gl.drawArrays(gl.TRIANGLES, 0, 3)
+print("glGetError tras dibujar:", GL.glGetError())            # 0 = GL_NO_ERROR
+</script>
+<ol>
+  <li data-l="2-5">Los mismos 60 bytes, con <code>struct.pack</code>.</li>
+  <li data-l="6-7">El VAO, primero: en perfil core no hay VAO por defecto, y todo lo que sigue se grabará en este.</li>
+  <li data-l="8-10"><code>glGenBuffers(1)</code> devuelve un nombre (un entero: en OpenGL de escritorio los objetos son números, no objetos JavaScript). <code>glBufferData</code> recibe el tamaño en bytes explícitamente; en WebGL lo deduce del <code>TypedArray</code>.</li>
+  <li data-l="11-14">Los dos atributos, con los mismos argumentos que en WebGL. La diferencia: el offset se pasa como un «puntero» (<code>ctypes.c_void_p(8)</code>), herencia de cuando OpenGL podía leer los vértices directamente de la memoria de la CPU. WebGL eliminó esa posibilidad y el offset es un número normal. Aquí, un <code>8</code> a secas no funcionaría: lo verás en el ejemplo 4.6.2.</li>
+  <li data-l="16-23">Un framebuffer propio con un renderbuffer RGBA8 (no dibujamos en la ventana oculta; así además no dependemos de la pantalla Retina). <code>glCheckFramebufferStatus</code> confirma que está completo (<a href="../05-webgl/08-framebuffers.html">5.8</a>).</li>
+  <li data-l="25-32">Viewport, borrado, programa, VAO y <code>glDrawArrays</code>: idéntico a WebGL. <code>glGetError()</code> devuelve 0 (<code>GL_NO_ERROR</code>).</li>
+</ol>
+</div>
+
+<h3>4. Leer los píxeles</h3>
+<div class="anotado" data-lang="python" data-fuente="python/pyopengl/01_triangulo_crudo.py:108-117">
+<script type="text/plain">
+# ---------------------------------------------------------------- 6. leer los píxeles
+GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)                     # filas sin relleno (ver la lección)
+datos = GL.glReadPixels(0, 0, ANCHO, ALTO, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)   # gl.readPixels(...)
+datos = bytes(datos)
+fila = ANCHO * 4
+de_arriba_abajo = b"".join(datos[y * fila:(y + 1) * fila] for y in reversed(range(ALTO)))  # GL: fila 0 = abajo
+print("píxel (128, 100):", tuple(datos[(100 * ANCHO + 128) * 4:][:4]))
+ruta = carpeta_img() / "pyopengl-triangulo.png"
+guardar_png(ruta, ANCHO, ALTO, de_arriba_abajo)
+print("guardado:", ruta)
+</script>
+<ol>
+  <li data-l="2">Las filas de la lectura se alinean a 1 byte (enseguida verás por qué importa).</li>
+  <li data-l="3-4"><code>glReadPixels</code>: el mismo <code>gl.readPixels</code> de WebGL. PyOpenGL devuelve los bytes directamente (en WebGL pasas tú el <code>Uint8Array</code> de destino).</li>
+  <li data-l="5-6">Invertir el orden de las filas: la fila 0 de GL es la de abajo; la del PNG, la de arriba.</li>
+  <li data-l="7">El píxel de control, leído de los datos originales (fila 100 contando desde abajo, columna 128, 4 bytes por píxel): <code>(81, 83, 91, 255)</code>.</li>
+  <li data-l="8-10">Y guardamos con el codificador PNG de la GPU de juguete (<code>png_propio.py</code>): los mismos bytes, el mismo archivo.</li>
+</ol>
+</div>
+
+<h3>La tabla de traducción</h3>
+<p>Con los dos scripts delante, la correspondencia es casi mecánica:</p>
+<table class="m4-compacta m4-traduccion">
+  <thead><tr><th>WebGL2 (JavaScript)</th><th>OpenGL (PyOpenGL)</th><th>moderngl</th></tr></thead>
+  <tbody>
+    <tr><td><code>canvas.getContext('webgl2')</code></td><td><code>glfw.create_window</code> + <code>make_context_current</code></td><td><code>moderngl.create_standalone_context()</code></td></tr>
+    <tr><td><code>gl.createShader</code> / <code>shaderSource</code> / <code>compileShader</code></td><td><code>glCreateShader</code> / <code>glShaderSource</code> / <code>glCompileShader</code></td><td rowspan="2"><code>ctx.program(vertex_shader=…, fragment_shader=…)</code></td></tr>
+    <tr><td><code>gl.createProgram</code> / <code>attachShader</code> / <code>linkProgram</code></td><td><code>glCreateProgram</code> / <code>glAttachShader</code> / <code>glLinkProgram</code></td></tr>
+    <tr><td><code>gl.getShaderParameter(s, gl.COMPILE_STATUS)</code></td><td><code>glGetShaderiv(s, GL_COMPILE_STATUS)</code></td><td>(lanza <code>moderngl.Error</code>)</td></tr>
+    <tr><td><code>gl.createBuffer</code> + <code>bindBuffer</code> + <code>bufferData</code></td><td><code>glGenBuffers</code> + <code>glBindBuffer</code> + <code>glBufferData</code></td><td><code>ctx.buffer(bytes)</code></td></tr>
+    <tr><td><code>gl.createVertexArray</code> + <code>bindVertexArray</code></td><td><code>glGenVertexArrays</code> + <code>glBindVertexArray</code></td><td rowspan="2"><code>ctx.vertex_array(prog, [(vbo, "2f 3f", "a_pos", "a_color")])</code></td></tr>
+    <tr><td><code>gl.enableVertexAttribArray</code> + <code>vertexAttribPointer(l, 2, gl.FLOAT, false, 20, 8)</code></td><td><code>glEnableVertexAttribArray</code> + <code>glVertexAttribPointer(l, 2, GL_FLOAT, GL_FALSE, 20, c_void_p(8))</code></td></tr>
+    <tr><td><code>gl.getUniformLocation</code> + <code>gl.uniform1f</code></td><td><code>glGetUniformLocation</code> (−1 si no existe) + <code>glUniform1f</code></td><td><code>prog["u_x"].value = 1.0</code></td></tr>
+    <tr><td>(el canvas ya tiene framebuffer)</td><td><code>glGenFramebuffers</code> + <code>glGenRenderbuffers</code> + …</td><td><code>ctx.simple_framebuffer((w, h))</code></td></tr>
+    <tr><td><code>gl.viewport</code> + <code>clearColor</code> + <code>clear</code></td><td><code>glViewport</code> + <code>glClearColor</code> + <code>glClear</code></td><td><code>fbo.use()</code> + <code>fbo.clear(r, g, b, a)</code></td></tr>
+    <tr><td><code>gl.useProgram</code> + <code>bindVertexArray</code> + <code>drawArrays</code></td><td><code>glUseProgram</code> + <code>glBindVertexArray</code> + <code>glDrawArrays</code></td><td><code>vao.render(moderngl.TRIANGLES)</code></td></tr>
+    <tr><td><code>gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, destino)</code></td><td><code>glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE)</code></td><td><code>fbo.read(components=4)</code></td></tr>
+  </tbody>
+</table>
+<section class="ejemplo">
+  <h3>Ejemplo 4.6.1 — El mismo triángulo en WebGL, llamada por llamada</h3>
+  <p>Vamos a traducir <code>01_triangulo_crudo.py</code> a WebGL2 aplicando la tabla fila a fila, y a comprobar que la GPU del navegador produce el mismo píxel. Cada línea lleva su equivalente de Python en un comentario. Lo desmontarás con calma en <a href="../05-webgl/02-primer-triangulo.html">5.2</a>; por ahora, compara y fíjate en el píxel que lee al final:</p>
+
+<div class="js-playground" data-titulo="El mismo triángulo en WebGL" data-altura="260" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 256;
+// ≈ glfw.create_window + glfw.make_context_current
+const gl = canvas.getContext('webgl2', { antialias: false });
+
+function compilar(tipo, fuente) {
+  const sh = gl.createShader(tipo);            // glCreateShader
+  gl.shaderSource(sh, fuente);                 // glShaderSource
+  gl.compileShader(sh);                        // glCompileShader
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS))   // glGetShaderiv
+    throw new Error(gl.getShaderInfoLog(sh));
+  return sh;
+}
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+const FS = `#version 300 es
+precision highp float;       // obligatorio en GLSL ES
+in vec3 v_color;
+out vec4 fragColor;
+void main() { fragColor = vec4(v_color, 1.0); }`;
+const prog = gl.createProgram();                         // glCreateProgram
+gl.attachShader(prog, compilar(gl.VERTEX_SHADER, VS));   // glAttachShader
+gl.attachShader(prog, compilar(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);                                    // glLinkProgram
+
+const vertices = new Float32Array([
+  -0.75, -0.75,   1, 0, 0,
+   0.75, -0.75,   0, 1, 0,
+   0.00,  0.75,   0, 0, 1,
+]);
+const vao = gl.createVertexArray();          // glGenVertexArrays
+gl.bindVertexArray(vao);                     // glBindVertexArray
+const vbo = gl.createBuffer();               // glGenBuffers
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);         // glBindBuffer
+gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);   // glBufferData
+gl.enableVertexAttribArray(0);               // glEnableVertexAttribArray
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);   // glVertexAttribPointer
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);   // offset: un número
+
+gl.viewport(0, 0, 256, 256);                 // glViewport
+gl.clearColor(0.08, 0.09, 0.12, 1);          // glClearColor
+gl.clear(gl.COLOR_BUFFER_BIT);               // glClear
+gl.useProgram(prog);                         // glUseProgram
+gl.drawArrays(gl.TRIANGLES, 0, 3);           // glDrawArrays
+
+const px = new Uint8Array(4);
+gl.readPixels(128, 100, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);   // glReadPixels
+console.log('píxel (128, 100):', px);
+console.log('en Python (juguete, moderngl y PyOpenGL): 81, 83, 91, 255');
+</script>
+</div>
+
+  <p>Paso a paso, lo que cambió en la traducción:</p>
+  <ol>
+    <li><strong>El contexto</strong> sale del canvas: no hay hints ni ventana. Pedimos <code>antialias: false</code> porque con antialiasing (el valor por defecto) los píxeles de los bordes se mezclarían con el fondo y la imagen ya no sería idéntica a la de Python.</li>
+    <li><strong>Los shaders</strong> dicen <code>#version 300 es</code> en lugar de <code>330 core</code>, y el fragment shader necesita <code>precision highp float</code> (en GLSL ES es obligatorio; en el de escritorio no tiene efecto). <code>layout(location = N)</code> funciona igual en los dos.</li>
+    <li><strong>Los objetos</strong> son objetos de JavaScript (<code>WebGLBuffer</code>…), no enteros, y <code>bufferData</code> saca el tamaño del <code>Float32Array</code>.</li>
+    <li><strong>El offset</strong> de <code>vertexAttribPointer</code> es un número normal (8), sin <code>c_void_p</code>.</li>
+    <li><strong>No hay framebuffer propio</strong>: dibujamos en el del canvas, y <code>readPixels</code> escribe en un <code>Uint8Array</code> que le pasamos nosotros.</li>
+  </ol>
+  <p>En nuestro Mac, el navegador lee <code>(81, 83, 91, 255)</code>: el mismo valor, byte a byte, que los tres caminos de Python. Cuatro programas distintos, en dos lenguajes, a través de dos pilas de software distintas (ANGLE → Metal y el OpenGL de Apple → Metal), y una GPU de juguete que no toca la GPU: el mismo píxel. No es casualidad: las reglas de rasterización y de interpolación que implementaste en <a href="03-gpu-de-juguete.html">4.3</a> son las de la especificación, y todas las implementaciones las cumplen.</p>
+</section>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.6.2 — El triángulo negro: un offset que no era un offset</h3>
+  <p>Un error típico al pasar código de WebGL a PyOpenGL. Copiamos la configuración del color tal cual, con el offset como un número:</p>
+<script type="text/plain" class="codigo" data-lang="python">
+GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 20, 8)     # como en WebGL: offset 8
+</script>
+  <p>El triángulo sale <strong>negro</strong>: el píxel (128, 100) vale <code>(0, 0, 0, 255)</code>. Y no hay ningún error, ni siquiera con la comprobación de errores de PyOpenGL activada. Vamos a investigarlo como lo haría un depurador:</p>
+  <ol>
+    <li><strong>Acotar.</strong> La forma del triángulo es correcta, así que las posiciones (atributo 0) llegan bien. Negro es <code>v_color = (0, 0, 0)</code>: el atributo 1 está leyendo ceros.</li>
+    <li><strong>Preguntar al driver</strong> qué offset tiene guardado el atributo 1:
+<script type="text/plain" class="codigo" data-lang="python">
+GL.glGetVertexAttribPointerv(1, GL.GL_VERTEX_ATTRIB_ARRAY_POINTER)
+# → 4688920728   (con ctypes.c_void_p(8): → 8)
+</script>
+      No es 8: es un número enorme, que además cambia en cada ejecución. Huele a dirección de memoria.</li>
+    <li><strong>Leer el código de PyOpenGL.</strong> Su <code>glVertexAttribPointer</code> (en <code>OpenGL/GL/VERSION/GL_2_0.py</code>) hace <code>ArrayDatatype.asArray(pointer, type)</code>: convierte el argumento en un array del tipo indicado. Un <code>8</code> se convierte en un array de floats con un único valor, 8,0, en la memoria de Python, y lo que llega a OpenGL es la <em>dirección</em> de ese array. Es el modo antiguo de OpenGL, el de leer vértices de la memoria de la CPU.</li>
+    <li><strong>Entender el resultado.</strong> Pero hay un VBO enlazado, así que el driver interpreta el «puntero» como un offset dentro del buffer: unos 4 700 millones de bytes más allá del principio de un buffer de 60. Leer fuera del buffer es indefinido en OpenGL; el driver de Apple devuelve ceros, y de ahí el negro.</li>
+  </ol>
+  <p><strong>La solución</strong>: <code>ctypes.c_void_p(8)</code>, que PyOpenGL pasa tal cual como puntero con valor 8 (y <code>None</code> para el offset 0). En WebGL este error no existe, porque el último argumento siempre es un número; en moderngl tampoco, porque calcula los offsets por ti a partir de la cadena de formato. Lo comprobamos con los tres valores, midiendo el píxel (128, 100) y contando píxeles: los tres triángulos tienen la misma forma (18 432 píxeles), pero <code>c_void_p(8)</code> da <code>(81, 83, 91)</code>, <code>8</code> da los 18 432 píxeles negros y <code>None</code> da <code>(1, 0, 81)</code>, porque el «color» se lee desde el offset 0: la <em>x</em>, la <em>y</em> y el rojo de cada vértice.</p>
+</section>
+
+<div class="callout bestiario" data-id="m4-offset-entero" data-titulo="Con PyOpenGL, un atributo vale siempre cero (el objeto sale negro)">
+  <p><strong>Síntoma:</strong> un atributo (típicamente el color o la normal) llega al shader como ceros, sin ningún error de OpenGL. Las posiciones, con offset 0, funcionan.</p>
+  <p><strong>Causa:</strong> el offset de <code>glVertexAttribPointer</code> se pasó como un entero de Python (<code>8</code>). PyOpenGL lo convierte en un array en la memoria de la CPU y pasa su dirección, que el driver toma como un offset gigantesco dentro del VBO (ejemplo 4.6.2).</p>
+  <p><strong>Solución:</strong> pasa el offset como <code>ctypes.c_void_p(8)</code> (o <code>None</code> si es 0). Para comprobarlo: <code>glGetVertexAttribPointerv(loc, GL_VERTEX_ATTRIB_ARRAY_POINTER)</code> debe devolver el offset que pensabas.</p>
+</div>
+
+<div class="callout senior" data-titulo="PyOpenGL comprueba errores por ti (y cuánto cuesta)">
+  <p>Por defecto, PyOpenGL llama a <code>glGetError()</code> después de <strong>cada</strong> función y, si hay error, lanza una excepción <code>GLError</code> con la llamada y sus argumentos. Es magnífico para aprender: ningún error pasa inadvertido, y el traceback señala la línea culpable (en WebGL tendrías que ir preguntando con <code>getError</code>).</p>
+  <p>¿Cuánto cuesta? Lo medimos con 20 000 llamadas: <code>glUniform1f</code> tarda 0,62 µs con la comprobación y 0,41 µs sin ella (fijar el mismo uniform con moderngl, 0,42 µs). Es poco, porque en OpenGL nativo <code>glGetError</code> es una consulta barata dentro de tu propio proceso. En Chrome es otra historia: WebGL vive en un proceso aparte, y cada <code>getError</code> obliga a esperar su respuesta (<a href="01-cpu-vs-gpu.html">4.1</a>). Aun así, con decenas de miles de llamadas por frame, un 50 % más en cada una se nota.</p>
+  <p>Para desactivarla: <code>import OpenGL; OpenGL.ERROR_CHECKING = False</code> <em>antes</em> de <code>from OpenGL import GL</code>. El script <code>pyopengl/02_estado_y_errores.py</code> la desactiva para ver los errores como en WebGL: la llamada no hace nada y el error queda apuntado hasta que preguntas. Y recuerda que no todo error de programación es un error de OpenGL: el del ejemplo 4.6.2 no lo detecta ninguna comprobación.</p>
+</div>
+
+<div class="callout bestiario" data-id="m4-pack-alignment" data-titulo="La imagen leída con glReadPixels sale inclinada o cizallada">
+  <p><strong>Síntoma:</strong> lees el framebuffer en formato RGB (3 bytes por píxel) y al guardar la imagen cada fila aparece desplazada respecto a la anterior: la imagen sale inclinada, con franjas diagonales. Con anchos múltiplos de 4 (256, 300, 512…) no pasa; con los demás (99, 250, 301…), sí.</p>
+  <p><strong>Causa:</strong> <code>GL_PACK_ALIGNMENT</code>, que vale 4 por defecto: cada fila de la lectura se rellena hasta un múltiplo de 4 bytes. Con 99 píxeles RGB, una fila son 297 bytes y OpenGL escribe 300; si tu código supone que las filas están pegadas, cada fila empieza 3 bytes más tarde de lo que crees. Lo reprodujimos en <code>pyopengl/02_estado_y_errores.py</code>, pasando nuestro propio buffer como haríamos en C o con numpy:</p>
+  <figure class="m4-figura" style="margin:.8rem 0"><img class="pixelada" src="img/pyopengl-alineacion.png" width="408" height="198" alt="Izquierda: triángulo roto en franjas diagonales; derecha: el triángulo correcto"><figcaption>Izquierda: leída suponiendo filas de 297 bytes con alineación 4. Derecha: con <code>glPixelStorei(GL_PACK_ALIGNMENT, 1)</code>.</figcaption></figure>
+  <p><strong>Solución:</strong> <code>glPixelStorei(GL_PACK_ALIGNMENT, 1)</code> antes de leer (o lee RGBA, cuyas filas son siempre múltiplo de 4). Curiosidad: el <code>glReadPixels</code> «cómodo» de PyOpenGL (sin buffer de destino) cambia <code>GL_PACK_ALIGNMENT</code> a 1 por su cuenta, sin avisar: lo comprobamos leyendo el estado antes (4) y después (1). Te protege de este fallo… y modifica estado global a tus espaldas. En WebGL existe lo mismo: <code>gl.pixelStorei(gl.PACK_ALIGNMENT, 1)</code>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Lees con <code>glReadPixels</code> un framebuffer de 250 × 100 píxeles en formato <code>GL_RGB</code>, en tu propio buffer y sin tocar <code>GL_PACK_ALIGNMENT</code>. ¿Cuántos bytes ocupa cada fila en el buffer?</p>
+  <ul>
+    <li>750.<div class="explicacion">Es lo que ocupan los datos (250 × 3), pero 750 no es múltiplo de 4 y la alineación por defecto es 4: OpenGL añade relleno al final de cada fila.</div></li>
+    <li data-correcta>752.<div class="explicacion">750 bytes de datos, redondeados al siguiente múltiplo de 4: 2 bytes de relleno por fila. El buffer debe tener 752 × 100 = 75 200 bytes, y la fila <em>f</em> empieza en <em>f</em> × 752.</div></li>
+    <li>1000.<div class="explicacion">Serían filas RGBA (250 × 4). La alineación no convierte RGB en RGBA: solo rellena hasta el siguiente múltiplo de 4.</div></li>
+  </ul>
+</div>
+
+<h2>Particularidades de macOS</h2>
+<p>El OpenGL de macOS es especial: Apple lo declaró obsoleto en macOS 10.14 (2018) en favor de Metal, lo congeló en la versión 4.1 y lo implementa sobre Metal (<code>GL_VERSION</code> dice <code>4.1 Metal - 90.5</code>). Sigue funcionando perfectamente, pero con reglas propias que comprobamos una a una en macOS 26 con un M1:</p>
+<ul>
+  <li><strong>Sin pedir perfil core, obtienes OpenGL 2.1.</strong> Si creas la ventana de glfw sin hints, el contexto es <code>2.1 Metal</code> con GLSL 1.20, y <code>#version 330 core</code> no compila.</li>
+  <li><strong>Perfil core y forward-compatible.</strong> Para pasar de 2.1 hay que pedir 3.2 o más (hasta 4.1) con perfil core y forward-compatible. La versión que pides es un mínimo: pidiendo 3.3 recibimos 4.1, la más alta disponible. Con GLFW 3.3 (el paquete <code>glfw</code> 2.6), pedir 3.3 core sin la hint de forward-compatible falla con <code class="m4-largo">NSGL: The targeted version of macOS only supports forward-compatible core profile contexts for OpenGL 3.2 and above</code>; GLFW 3.4 (el que instalamos) la activa por su cuenta. Ponla siempre: no cuesta nada.</li>
+  <li><strong>Versiones de GLSL</strong>: <code>#version 330 core</code> y <code>#version 410 core</code> sí; <code>#version 300 es</code> (el de WebGL2) no (<code>version '300' is not supported</code>), ni <code>#version 420 core</code> (<code>version '420' is not supported</code>). En perfil core tampoco valen <code>#version 120</code> (<code>version '120' is not supported</code>) ni un shader sin <code>#version</code> (<code>#version required and missing</code>).</li>
+  <li><strong>VAO obligatorio.</strong> En perfil core no hay VAO por defecto. Sin un VAO enlazado, <code>glEnableVertexAttribArray</code> y <code>glDrawArrays</code> dan <code>GL_INVALID_OPERATION</code>. Curiosamente, <code>glVertexAttribPointer</code> no se queja en el driver de Apple: el error aparece más tarde, al dibujar, lejos de su causa.</li>
+  <li><strong>Retina</strong>: una ventana de 640 × 480 puntos tiene un framebuffer de 1 280 × 960 píxeles (lo que devuelve <code>glfw.get_framebuffer_size</code>).</li>
+</ul>
+
+<div class="callout bestiario" data-id="m4-contexto-21" data-titulo="«version '330' is not supported» en un Mac">
+  <p><strong>Síntoma:</strong> un shader con <code>#version 330 core</code> que funciona en Linux o Windows no compila en macOS: <code>ERROR: 0:1: '' :  version '330' is not supported</code>. Y <code>glGetString(GL_VERSION)</code> dice <code>2.1</code>.</p>
+  <p><strong>Causa:</strong> el contexto se creó sin pedir versión ni perfil, y macOS da entonces un contexto antiguo de OpenGL 2.1 (GLSL 1.20), por compatibilidad con programas viejos.</p>
+  <p><strong>Solución:</strong> antes de crear la ventana, pide un contexto core: <code>CONTEXT_VERSION_MAJOR = 4</code>, <code>CONTEXT_VERSION_MINOR = 1</code>, <code>OPENGL_PROFILE = OPENGL_CORE_PROFILE</code> y <code>OPENGL_FORWARD_COMPAT = True</code>. moderngl lo hace por ti en su contexto standalone.</p>
+</div>
+
+<div class="callout bestiario" data-id="m4-retina-viewport" data-titulo="En una pantalla Retina, el dibujo ocupa solo un cuarto de la ventana">
+  <p><strong>Síntoma:</strong> la escena aparece en la esquina inferior izquierda de la ventana, a la mitad de tamaño en cada eje, y el resto queda del color de borrado.</p>
+  <p><strong>Causa:</strong> <code>glViewport</code> recibió el tamaño de la ventana en <em>puntos</em> (<code>glfw.get_window_size</code>: 320 × 240) cuando el framebuffer tiene el doble de <em>píxeles</em> en cada eje (640 × 480). Lo medimos: con el viewport en puntos, el dibujo cubre el 25 % del framebuffer; con el tamaño del framebuffer, el 100 %. Es el mismo problema que el <code>devicePixelRatio</code> del canvas (<a href="../02-animacion/06-canvas2d.html">2.6</a>, <a href="../05-webgl/01-contexto.html">5.1</a>).</p>
+  <p><strong>Solución:</strong> usa siempre <code>glfw.get_framebuffer_size(ventana)</code> para <code>glViewport</code> (y vuelve a leerlo cuando la ventana cambie de tamaño o de pantalla).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un script de PyOpenGL crea la ventana con las hints de perfil core, compila los shaders sin errores… y el primer <code>glEnableVertexAttribArray</code> lanza <code>GLError: invalid operation</code> en un Mac. En Linux funcionaba. ¿Qué es lo más probable?</p>
+  <ul>
+    <li>Que el shader use <code>#version 330 core</code>.<div class="explicacion">Si compiló sin errores, la versión de GLSL es aceptable. El problema está en el estado, no en el shader.</div></li>
+    <li data-correcta>Que no haya ningún VAO enlazado: en perfil core no existe VAO por defecto.<div class="explicacion">Exacto. Muchos ejemplos de internet para Linux o Windows usan un perfil de compatibilidad, donde el VAO 0 funciona. En el perfil core de macOS hay que crear y enlazar un VAO antes de configurar atributos o dibujar.</div></li>
+    <li>Que falte <code>glfw.swap_buffers</code> después de dibujar.<div class="explicacion"><code>swap_buffers</code> presenta la imagen en la ventana; si falta, no se ve nada, pero no provoca ningún error de OpenGL (y menos antes de dibujar).</div></li>
+  </ul>
+</div>
+
+<h2>Una ventana interactiva con glfw</h2>
+<p>Hasta aquí hemos dibujado imágenes sueltas. Para animar hace falta un bucle, y en el navegador te lo da <code>requestAnimationFrame</code> (<a href="../02-animacion/03-raf.html">2.3</a>). Fuera, lo escribes tú. Este es el corazón de <code>python/pyopengl/03_ventana_glfw.py</code> (un triángulo que gira con un uniform; <kbd>Espacio</kbd> pausa, <kbd>Esc</kbd> cierra):</p>
+
+<div class="anotado" data-lang="python" data-fuente="python/pyopengl/03_ventana_glfw.py:96-128">
+<script type="text/plain">
+anterior = time.perf_counter()
+cuenta, t_fps, frame = 0, anterior, 0
+while not glfw.window_should_close(ventana):
+    ahora = time.perf_counter()
+    dt, anterior = min(ahora - anterior, 0.1), ahora            # dt en segundos, acotado (lección 2.3)
+    if not estado["pausa"]:
+        estado["t"] += dt
+    ancho, alto = glfw.get_framebuffer_size(ventana)           # ¡en píxeles reales, no en puntos!
+    GL.glViewport(0, 0, ancho, alto)
+    GL.glClearColor(0.08, 0.09, 0.12, 1.0)
+    GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+    GL.glUseProgram(prog)
+    GL.glUniform1f(loc_tiempo, estado["t"])
+    GL.glUniform1f(loc_aspecto, ancho / max(alto, 1))
+    GL.glBindVertexArray(vao)
+    GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
+    frame += 1
+    ultimo = args.frames and frame >= args.frames
+    if ultimo and args.captura:                                # leer el buffer trasero ANTES del swap
+        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+        px = bytes(GL.glReadPixels(0, 0, ancho, alto, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE))
+        filas = b"".join(px[y * ancho * 4:(y + 1) * ancho * 4] for y in reversed(range(alto)))
+        guardar_png(args.captura, ancho, alto, filas)
+        print("captura guardada:", args.captura, f"({ancho}×{alto})")
+    glfw.swap_buffers(ventana)                                 # muestra el frame (espera al vsync)
+    glfw.poll_events()                                         # procesa teclado, ratón, redimensionado...
+    cuenta += 1
+    if ahora - t_fps >= 1.0:
+        glfw.set_window_title(ventana, f"GPU real desde Python — {cuenta / (ahora - t_fps):.0f} fps")
+        cuenta, t_fps = 0, ahora
+    if ultimo:
+        break
+glfw.terminate()
+</script>
+<ol>
+  <li data-l="1-2">El reloj: <code>time.perf_counter()</code>, en segundos, con la máxima resolución disponible (el <code>performance.now()</code> de Python).</li>
+  <li data-l="3">El bucle vive mientras nadie pida cerrar la ventana (el botón rojo, o nuestro <kbd>Esc</kbd>).</li>
+  <li data-l="4-7">El <code>dt</code> del frame, limitado a 0,1 s para que una pausa larga (arrastrar la ventana, depurar) no produzca un salto enorme: la misma defensa que en el bucle de animación del navegador (<a href="../02-animacion/03-raf.html">2.3</a>).</li>
+  <li data-l="8-9">El tamaño del framebuffer <em>en cada frame</em>: si el usuario redimensiona la ventana o la mueve a otra pantalla, el viewport se adapta.</li>
+  <li data-l="10-16">El dibujo de siempre, con dos uniforms: el tiempo (para girar) y la proporción del framebuffer (para que el triángulo no se deforme al cambiar la forma de la ventana).</li>
+  <li data-l="17-24">Solo para las pruebas automáticas: con <code>--frames N --captura archivo.png</code> guarda el último frame y termina. Hay que leer los píxeles <em>antes</em> de <code>swap_buffers</code>, mientras la imagen está en el búfer trasero.</li>
+  <li data-l="25">Presenta el frame: intercambia el búfer trasero (donde dibujamos) y el delantero (el que se ve). Con <code>glfw.swap_interval(1)</code> (activado al crear la ventana) debería esperar al siguiente refresco de la pantalla (<em>vsync</em>). Lo medimos en una pantalla de 60 Hz: con <code>swap_interval(0)</code>, el bucle da unas 4 000 vueltas por segundo, dibujando frames que nadie llega a ver; con <code>swap_interval(1)</code> baja a unas 90, pero con intervalos irregulares, de 3 a 17 ms (un vsync de verdad daría 60, regulares). No hemos podido averiguar si la causa está en GLFW o en el OpenGL de macOS, así que no lo generalices; pero es una razón más para animar con el <code>dt</code> medido y no con un 1/60 supuesto.</li>
+  <li data-l="26">Procesa los eventos del sistema (teclado, ratón, redimensionado) y llama a nuestras funciones de respuesta. Si no se llama, la ventana deja de responder: es el equivalente de devolver el control al <em>event loop</em> del navegador (<a href="../01-web/05-event-loop.html">1.5</a>).</li>
+  <li data-l="27-30">Los fps, una vez por segundo, en el título de la ventana.</li>
+  <li data-l="31-33">Salir del bucle en las pruebas y liberar glfw.</li>
+</ol>
+</div>
+
+<figure class="m4-figura">
+  <img src="img/pyopengl-ventana.png" width="640" height="480" alt="Un triángulo de colores girado, en una ventana">
+  <figcaption>Captura del frame 60 de <code>03_ventana_glfw.py</code> (el framebuffer Retina de 1 280 × 960, reducido a la mitad para la web).</figcaption>
+</figure>
+
+<h2>Tres caminos, ¿cuál usar?</h2>
+<p>Ya has dibujado el mismo triángulo de tres maneras desde Python. No compiten: cada una sirve para una cosa.</p>
+<table class="m4-compacta">
+  <thead><tr><th></th><th>GPU de juguete</th><th>moderngl</th><th>PyOpenGL + glfw</th></tr></thead>
+  <tbody>
+    <tr><td>Qué ves</td><td>todo: cada vértice, cada fragmento, cada prueba</td><td>objetos; las llamadas quedan dentro</td><td>cada llamada de OpenGL</td></tr>
+    <tr><td>Ventana</td><td>no (PNG)</td><td>opcional (contexto <em>standalone</em>)</td><td>sí (glfw; puede ser oculta)</td></tr>
+    <tr><td>Errores</td><td>excepciones de Python</td><td>excepciones (<code>moderngl.Error</code>, <code>KeyError</code>)</td><td><code>GLError</code> tras cada llamada (desactivable)</td></tr>
+    <tr><td>Dibujar y leer el triángulo de 256 × 256</td><td class="num">89 ms</td><td class="num">0,29 ms</td><td class="num">0,29 ms</td></tr>
+    <tr><td>Para qué</td><td>entender y depurar el pipeline</td><td>renderizar desde scripts, probar shaders</td><td>aprender la API tal cual, portar código C o WebGL</td></tr>
+  </tbody>
+</table>
+<p>Los tiempos son de nuestro M1 (mediana de 50 repeticiones). La GPU de juguete procesa los 18 432 fragmentos uno a uno en Python: unas 300 veces más lenta que la GPU real. moderngl y PyOpenGL empatan porque el trabajo lo hace la misma GPU, y casi todo ese tiempo se va en devolver los 256 KB de píxeles a la CPU: encolar el borrado y el dibujo cuesta 12 µs.</p>
+
+<h2>Ejercicios</h2>
+<p>Estos ejercicios se hacen en tu ordenador, con el entorno de Python preparado. Las soluciones están en <code>python/moderngl/soluciones/</code> y las comprueba <code>probar_todo.py</code>.</p>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 4.6.1 — Traduce de WebGL a Python</h3>
+  <p>Traduce este fragmento de WebGL a PyOpenGL y a moderngl. Supón que el contexto y el programa <code>prog</code> ya existen, que el atributo de la location 0 se llama <code>a_pos</code> y que <code>loc</code> es la ubicación del uniform <code>u_valor</code>:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+gl.useProgram(prog);
+gl.uniform1f(loc, 0.5);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  <details class="pista"><summary>Pista</summary><p>Usa la tabla de traducción. En PyOpenGL, los datos pueden ser <code>struct.pack("&lt;6f", …)</code> y el offset, <code>ctypes.c_void_p(0)</code>. En moderngl, el formato del atributo va en <code>ctx.vertex_array</code> y el uniform se asigna por nombre.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+<script type="text/plain" class="codigo" data-lang="python">
+# PyOpenGL (con un VAO enlazado: en perfil core es obligatorio)
+datos = struct.pack("<6f", 0, 0, 1, 0, 0, 1)
+vbo = GL.glGenBuffers(1)
+GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+GL.glBufferData(GL.GL_ARRAY_BUFFER, len(datos), datos, GL.GL_STATIC_DRAW)
+GL.glEnableVertexAttribArray(0)
+GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, 8, ctypes.c_void_p(0))
+GL.glUseProgram(prog)
+GL.glUniform1f(loc, 0.5)
+GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
+
+# moderngl
+vbo = ctx.buffer(struct.pack("<6f", 0, 0, 1, 0, 0, 1))
+vao = ctx.vertex_array(prog, [(vbo, "2f", "a_pos")])     # stride 8 y offset 0 salen del formato
+prog["u_valor"].value = 0.5                              # por nombre, no por ubicación
+vao.render(moderngl.TRIANGLES, vertices=3)
+</script>
+    <p>Tres diferencias que conviene fijar: <code>glBufferData</code> necesita el tamaño en bytes explícito (WebGL lo saca del <code>Float32Array</code>); el offset de <code>glVertexAttribPointer</code> es un «puntero» (<code>c_void_p</code>); y en perfil core de escritorio necesitas un VAO enlazado antes del <code>glEnableVertexAttribArray</code>, mientras que en WebGL2 funcionaría con el VAO por defecto. En moderngl, el nombre del atributo (<code>"a_pos"</code>) sustituye a la location 0, y el uniform se asigna con el programa como diccionario: moderngl se encarga del <code>glUseProgram</code>. Probamos las dos traducciones con un shader mínimo sobre un framebuffer de 64 × 64: pintan los mismos 2 016 píxeles, del mismo color.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.6.2 — Un quad con índices en moderngl</h3>
+  <p>Partiendo de <code>moderngl/01_triangulo.py</code>, dibuja un quad con un buffer de índices: 4 vértices (cada uno con posición y color) y 6 índices <code>0 1 2 0 2 3</code> en <code>UNSIGNED_SHORT</code>. Guarda el resultado como PNG. ¿Cuánto vale <code>vao.vertices</code>?</p>
+  <details class="pista"><summary>Pista 1</summary><p><code>ctx.vertex_array</code> acepta dos argumentos más: <code>index_buffer=</code> (un <code>ctx.buffer</code> con los índices) e <code>index_element_size=</code> (1, 2 o 4 bytes por índice).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Empaqueta los índices con <code>struct.pack("&lt;6H", …)</code>: <code>H</code> es un entero sin signo de 2 bytes.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La solución completa está en <code>python/moderngl/soluciones/ej2_quad_indices.py</code>. La clave son dos líneas:</p>
+<script type="text/plain" class="codigo" data-lang="python">
+ibo = ctx.buffer(struct.pack("<6H", 0, 1, 2, 0, 2, 3))          # EBO: 6 índices × 2 bytes
+vao = ctx.vertex_array(prog, [(vbo, "2f 3f", "a_pos", "a_color")],
+                       index_buffer=ibo, index_element_size=2)   # 2 bytes por índice = UNSIGNED_SHORT
+</script>
+    <p>Con índices, <code>vao.vertices</code> vale 6 (el script lo imprime): moderngl cuenta los índices del EBO, que es lo que <code>render()</code> pasará a <code>glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0)</code>. El tamaño del índice es parte del contrato entre los bytes y la receta, igual que el <code>type</code> de <code>drawElements</code> en WebGL. Si pones <code>index_element_size=4</code> con los índices empaquetados en 2 bytes, lo medimos: <code>vao.vertices</code> pasa a 3 (12 bytes entre 4) y la GPU lee los índices 65 536, 2 y 196 610, dos de ellos muy fuera del buffer de vértices. OpenGL no lo valida y el resultado es indefinido: en nuestro Mac, sin ningún error, no se pintó ni un píxel. WebGL, en cambio, habría rechazado el dibujo con <code>INVALID_OPERATION</code> (<a href="04-vbo-vao.html">4.4</a>).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.6.3 — El cubo de 4.3, con profundidad y culling</h3>
+  <p>Lleva a moderngl el cubo del ejercicio 4.3.2 (los datos están en <code>gpu_juguete/ejercicios/ej2_culling.py</code>; las matrices, en <code>gpu_juguete/matrices.py</code>) y dibújalo con prueba de profundidad y back-face culling activados. Compara el resultado con la imagen de la GPU de juguete.</p>
+  <details class="pista"><summary>Pista 1</summary><p><code>ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)</code>. Y el framebuffer de <code>simple_framebuffer</code> ya tiene profundidad: límpiala con <code>fbo.clear(…, depth=1.0)</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Las matrices de <code>matrices.py</code> son tuplas de 16 floats en column-major: se pueden asignar tal cual a <code>prog["u_mvp"].value</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La solución (<code>python/moderngl/soluciones/ej3_cubo.py</code>) reutiliza los mismos 36 vértices y la misma matriz. El resultado es <strong>idéntico píxel a píxel</strong> (0 diferencias en 40 000) a la imagen de la GPU de juguete, que solo usaba culling. No es casualidad: en un objeto convexo, las caras que sobreviven al culling nunca se tapan entre sí, así que la prueba de profundidad no cambia ningún píxel. Añadirla es igualmente la costumbre correcta: en cuanto haya dos objetos, o uno cóncavo, la necesitarás.</p>
+    <p>Un detalle de moderngl: <code>ctx.enable</code> recibe una máscara de bits con las capacidades (<code>DEPTH_TEST | CULL_FACE</code>), y el modo se fija con <code>ctx.cull_face = "back"</code>. Por debajo son los mismos <code>glEnable(GL_DEPTH_TEST)</code>, <code>glEnable(GL_CULL_FACE)</code> y <code>glCullFace(GL_BACK)</code> de siempre.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 4.6.4 — Predice lo que hace moderngl</h3>
+  <p>Un VAO se crea con el formato <code>"3f 4f1 2f2 1u2 2x"</code> para los atributos <code>a_pos</code>, <code>a_color</code>, <code>a_uv</code> y <code>a_id</code>. El shader declara <code>in vec3 a_pos</code>, <code>in vec4 a_color</code>, <code>in vec2 a_uv</code> e <code>in uint a_id</code>. Sin ejecutar nada, escribe las cuatro llamadas a <code>glVertexAttribPointer</code>/<code>glVertexAttribIPointer</code> que hace moderngl: tamaño, tipo, normalizado, stride y offset de cada una. ¿Qué cambiaría si el shader declarase <code>in float a_id</code>? Después, compruébalo con <code>python moderngl/soluciones/ej4_formatos.py</code>, que pregunta al driver (y cámbiale la declaración para la segunda pregunta).</p>
+  <details class="pista"><summary>Pista 1</summary><p>El número tras la letra es el tamaño de cada componente en bytes: <code>f</code> = float de 4, <code>f1</code> = 1 byte (normalizado), <code>f2</code> = float de 2 bytes (<em>half</em>), <code>u2</code> = entero sin signo de 2 bytes, <code>x</code> = relleno.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El stride es la suma de todo, relleno incluido; el offset de cada atributo, la suma de lo que va antes.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Tamaños: <code>3f</code> = 12 bytes, <code>4f1</code> = 4, <code>2f2</code> = 4, <code>1u2</code> = 2 y <code>2x</code> = 2 de relleno: stride 24. Offsets: 0, 12, 16 y 20. Las llamadas:</p>
+<script type="text/plain" class="codigo" data-lang="text">
+glVertexAttribPointer (loc_pos,   3, GL_FLOAT,          GL_FALSE, 24, 0)
+glVertexAttribPointer (loc_color, 4, GL_UNSIGNED_BYTE,  GL_TRUE,  24, 12)
+glVertexAttribPointer (loc_uv,    2, GL_HALF_FLOAT,     GL_FALSE, 24, 16)
+glVertexAttribIPointer(loc_id,    1, GL_UNSIGNED_SHORT,           24, 20)
+</script>
+    <p>El script lo confirma consultando el estado del VAO (<code>entero=1</code> para <code>a_id</code>: la variante <code>I</code>, que entrega el entero tal cual). Los 2 bytes de relleno no son un capricho: redondean el vértice a 24 bytes, múltiplo de 4, para que el siguiente vértice empiece alineado.</p>
+    <p>Con <code>in float a_id</code> (y <code>vid = uint(a_id)</code> en el shader para que compile), moderngl cambia de función: la letra <code>u2</code> sigue fijando el tipo de los bytes (<code>GL_UNSIGNED_SHORT</code>), pero, como el shader pide un float, llama a <code>glVertexAttribPointer(loc_id, 1, GL_UNSIGNED_SHORT, GL_FALSE, 24, 20)</code> y el script muestra <code>entero=0</code>: un 3 llega como 3,0. Lo medimos también con <code>in int</code>: vuelve a la variante <code>I</code>. En WebGL no hay quien haga esa adaptación por ti: si la función y el tipo no casan con el shader, el dibujo falla con <code>INVALID_OPERATION</code> (<a href="04-vbo-vao.html">4.4</a>).</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Desde Python hay dos caminos a la GPU real: <strong>moderngl</strong> (objetos cómodos, contexto sin ventana) y <strong>PyOpenGL</strong> (la API cruda, con un contexto de glfw). Son las mismas llamadas que WebGL con otros nombres.</li>
+    <li>Entorno: <code>venv</code> + <code>pip install -r requirements.txt</code>. Con Python 3.14 en macOS, moderngl y glcontext se compilan al instalar (hacen falta las herramientas de Xcode).</li>
+    <li>moderngl: <code>create_standalone_context</code>, <code>ctx.program</code>, <code>ctx.buffer</code>, <code>ctx.vertex_array</code> con cadena de formato (<code>"2f 4f1"</code>…), <code>simple_framebuffer</code>, <code>vao.render</code>, <code>fbo.read</code>. La letra del formato fija el tipo de los bytes; el tipo del shader decide entre <code>glVertexAttribPointer</code> e <code>IPointer</code>. Convierte en <code>KeyError</code> los atributos y uniforms inactivos.</li>
+    <li>PyOpenGL: las mismas llamadas que WebGL con prefijo <code>gl</code>; los objetos son enteros, <code>glBufferData</code> recibe el tamaño, y el offset de un atributo se pasa como <code>ctypes.c_void_p(n)</code>: un entero a secas se convierte en un puntero a memoria de la CPU.</li>
+    <li>Las lecturas de píxeles llegan con la fila 0 abajo, y <code>GL_PACK_ALIGNMENT</code> (4 por defecto) rellena las filas: con RGB y un ancho que no sea múltiplo de 4, la imagen se cizalla.</li>
+    <li>macOS: OpenGL 4.1 sobre Metal; sin hints, contexto 2.1; perfil core + forward-compatible; <code>#version 330 core</code> o <code>410 core</code>; VAO obligatorio; framebuffer Retina al doble de la ventana.</li>
+    <li>Una ventana de glfw es un bucle explícito: dt, viewport con el tamaño del framebuffer, dibujar, <code>swap_buffers</code> (vsync) y <code>poll_events</code>.</li>
+    <li>La GPU de juguete, moderngl, PyOpenGL y WebGL dibujan el mismo triángulo con los mismos bytes: el píxel (128, 100) vale <code>(81, 83, 91, 255)</code> en los cuatro.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://moderngl.readthedocs.io">Documentación de moderngl</a>, en especial la referencia de <a href="https://moderngl.readthedocs.io/en/latest/topics/buffer_format.html">formatos de buffer</a>.</li>
+  <li><a href="https://learnopengl.com">LearnOpenGL</a> (Joey de Vries): el tutorial clásico de OpenGL moderno en C++; sus primeros capítulos corresponden a este módulo y al siguiente.</li>
+  <li><a href="https://www.glfw.org/docs/latest/window_guide.html">Guía de ventanas de GLFW</a>: contextos, hints, framebuffer y eventos.</li>
+  <li>Khronos, <a href="https://www.khronos.org/opengl/wiki/OpenGL_Context">OpenGL Context</a> (OpenGL Wiki): perfiles core y de compatibilidad, forward-compatible.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

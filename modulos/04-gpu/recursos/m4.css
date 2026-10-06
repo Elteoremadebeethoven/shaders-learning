@@ -1,0 +1,73 @@
+/* =====================================================================
+   m4.css — estilos propios del módulo 4 (La GPU por dentro).
+   Siempre con las variables del tema: funciona en claro y en oscuro.
+   ===================================================================== */
+
+/* Figuras con imágenes generadas por los scripts de Python */
+.leccion figure.m4-figura { margin: 1.8rem 0; text-align: center; }
+.leccion figure.m4-figura img {
+  max-width: 100%; height: auto; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--code-bg);
+}
+.leccion figure.m4-figura img.pixelada { image-rendering: pixelated; }
+.leccion figure.m4-figura .m4-fila { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; align-items: flex-start; }
+.leccion figure.m4-figura .m4-fila > div { flex: 1 1 200px; max-width: 360px; }
+.leccion figure.m4-figura .m4-fila small { display: block; color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+/* Salida de terminal (lo que imprime un script) */
+.leccion pre.m4-salida { border-left: 3px solid var(--accent-2); }
+
+/* Tablas compactas de datos */
+.leccion table.m4-compacta td, .leccion table.m4-compacta th { padding: 5px 9px; font-size: 14px; }
+.leccion table.m4-compacta td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* Tabla de traducción con código largo: el código en línea puede partirse en los espacios */
+.leccion table.m4-traduccion :not(pre) > code { white-space: normal; }
+.leccion table.m4-traduccion td { font-size: 13.5px; }
+/* Mensajes largos (errores del driver) en línea: pueden partirse */
+.leccion code.m4-largo { white-space: normal; }
+
+/* ---------------------------------------------------------------------
+   Demo: máquina de estados (HTML)
+   --------------------------------------------------------------------- */
+.m4-estado { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 0; background: var(--code-bg); }
+.m4-estado .m4-codigo { font: 12px/1.62 var(--mono); padding: 10px 0; border-right: 1px solid var(--border); overflow-x: auto; max-height: 420px; overflow-y: auto; }
+.m4-estado .m4-codigo div { padding: 0 12px; white-space: pre; color: var(--text-2); border-left: 3px solid transparent; }
+.m4-estado .m4-codigo div.hecha { color: var(--muted); }
+.m4-estado .m4-codigo div.actual { background: var(--hl-line); border-left-color: var(--accent); color: var(--text); }
+.m4-estado .m4-codigo div.comentario { color: var(--tk-comment); font-style: italic; }
+.m4-estado .m4-panel { padding: 10px 12px; font-size: 13px; color: var(--text-2); overflow-x: auto; }
+.m4-estado .m4-panel h5 { margin: 8px 0 4px; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.m4-estado .m4-panel h5:first-child { margin-top: 0; }
+.m4-estado .m4-slot { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-family: var(--mono); }
+.m4-estado .m4-slot .k { min-width: 9.5em; color: var(--muted); }
+.m4-estado .m4-obj { display: inline-block; padding: 1px 8px; border-radius: 5px; border: 1px solid var(--border-2); background: var(--surface-2); color: var(--text); font-family: var(--mono); font-size: 12.5px; }
+.m4-estado .m4-obj.vacio { color: var(--muted); border-style: dashed; background: none; }
+.m4-estado .m4-obj.a { border-color: var(--accent); }
+.m4-estado .m4-obj.b { border-color: var(--accent-2); }
+.m4-estado table.m4-attr { border-collapse: collapse; width: 100%; margin: 2px 0 6px; font: 12px var(--mono); display: table; }
+.m4-estado table.m4-attr th, .m4-estado table.m4-attr td { border: 1px solid var(--border); padding: 2px 5px; text-align: left; }
+.m4-estado table.m4-attr th { background: var(--surface-2); color: var(--muted); font-weight: 600; }
+.m4-estado .cambio { animation: m4-destello 1.2s ease-out; }
+.m4-estado .error { color: var(--err); font-weight: 600; }
+.m4-estado .m4-datos { font-family: var(--mono); font-size: 12px; }
+@keyframes m4-destello { 0% { background: color-mix(in srgb, var(--warn) 45%, transparent); } 100% { background: transparent; } }
+@media (max-width: 760px) { .m4-estado { grid-template-columns: minmax(0, 1fr); } .m4-estado .m4-codigo { border-right: 0; border-bottom: 1px solid var(--border); } }
+
+/* ---------------------------------------------------------------------
+   Demo: memoria de un VBO (bytes clicables) — lección 4.4
+   --------------------------------------------------------------------- */
+.m4-bytes { padding: 12px 14px; background: var(--code-bg); overflow-x: auto; }
+.m4-bytes .fila { display: flex; gap: 3px; margin: 3px 0; align-items: center; flex-wrap: nowrap; }
+.m4-bytes .etq { font: 12px var(--mono); color: var(--muted); min-width: 6.5em; }
+.m4-bytes .byte { font: 11.5px var(--mono); width: 23px; text-align: center; padding: 3px 0; border-radius: 3px; border: 1px solid var(--border); color: var(--text-2); background: var(--surface); cursor: pointer; flex: none; }
+.m4-bytes .byte.sep { margin-left: 6px; }
+.m4-bytes .byte.on { color: #fff; }
+.m4-leyenda { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--border); }
+.m4-leyenda button { font: 600 12.5px var(--mono); padding: 4px 10px; border-radius: 6px; border: 2px solid var(--border-2); background: var(--surface); color: var(--text); cursor: pointer; }
+.m4-leyenda button.activo { color: #fff; }
+
+/* ---------------------------------------------------------------------
+   Demo del pipeline (lección 4.2)
+   --------------------------------------------------------------------- */
+.m4-etapa-texto { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 14.5px; color: var(--text-2); min-height: 4.6em; background: var(--surface); }
+.m4-etapa-texto strong { color: var(--text); }

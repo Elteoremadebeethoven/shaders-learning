@@ -1,0 +1,2005 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7.1 · Arquitectura de una app con shaders — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m7.css">
+</head>
+<body data-leccion="07-integracion/arquitectura">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 7 · JavaScript + shaders juntos</p>
+  <h1>Arquitectura de una app con shaders</h1>
+  <p class="resumen">Un shader bonito en un editor no es una aplicación. Aquí montamos el esqueleto que sostiene todo lo demás: dónde vive el estado, un único bucle, un tamaño que no se rompe, un reloj propio, pausas, recuperación ante la pérdida de contexto, alternativas cuando algo falla y una resolución que se adapta a lo que da de sí la GPU.</p>
+  <div class="meta"><span class="chip">⏱ 150 min</span><span class="chip">Requisitos: 2.3, 5.1, 5.4, 5.10</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Estructurarás cualquier efecto WebGL en <code>iniciar</code> / <code>redimensionar</code> / <code>actualizar</code> / <code>dibujar</code>, con el estado en JavaScript y un único bucle para el DOM y la GPU.</li>
+      <li>Mantendrás el búfer del tamaño correcto (con el DPR y los píxeles limitados), pausarás cuando nadie mira y llevarás un reloj propio con pausa y cámara lenta.</li>
+      <li>Sobrevivirás a la pérdida de contexto, a la falta de WebGL2 y a los shaders que no compilan, sin dejar nunca una pantalla negra.</li>
+      <li>Organizarás los shaders con plantillas, <code>#define</code> inyectados y <code>#line</code>, los recargarás en caliente sin congelar la página y ajustarás la resolución al presupuesto de cada frame.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El script que crece</h2>
+<p>Casi todos los efectos WebGL empiezan igual: un canvas, un shader que funciona en el editor y cuarenta líneas de JavaScript para mostrarlo en la página. Funciona en tu portátil. Después llega la realidad: alguien lo abre en un móvil, otro cambia de pestaña, el diseñador pide un segundo efecto, el cliente quiere que el fondo reaccione al scroll, un usuario con una GPU antigua ve un rectángulo negro. Cada arreglo se añade donde cabe y, a los dos meses, nadie sabe en qué orden pasan las cosas.</p>
+<p>Este es el script típico, con los fallos que ya sabes reconocer gracias a los módulos anteriores:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const canvas = document.querySelector('canvas');
+const gl = canvas.getContext('webgl2');
+canvas.width = innerWidth;
+canvas.height = innerHeight;
+const programa = crearPrograma(gl, VS, FS);
+gl.useProgram(programa);
+const uTiempo = gl.getUniformLocation(programa, 'u_time');
+const uRaton = gl.getUniformLocation(programa, 'u_mouse');
+
+window.addEventListener('resize', () => {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+});
+canvas.addEventListener('pointermove', (e) => {
+  gl.uniform2f(uRaton, e.clientX, e.clientY);
+});
+
+function bucle() {
+  gl.uniform1f(uTiempo, Date.now() / 1000);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(bucle);
+}
+bucle();
+</script>
+<ol>
+  <li data-l="2">Sin comprobar el <code>null</code>: en un navegador sin WebGL2 la siguiente llamada lanza una excepción y la página se queda a medias (<a href="../05-webgl/01-contexto.html#m5-getcontext-null">5.1</a>).</li>
+  <li data-l="3-4">El búfer al tamaño CSS, sin <code>devicePixelRatio</code>: borroso en cualquier pantalla retina (<a href="../05-webgl/01-contexto.html#m5-canvas-borroso">5.1</a>). Y <code>innerWidth</code> incluye la barra de scroll.</li>
+  <li data-l="5-8">Programa y locations creados una sola vez, en variables sueltas. Cuando se pierda el contexto, estos objetos quedarán muertos y nada sabrá recrearlos.</li>
+  <li data-l="10-13">Redimensiona en el evento, fuera del frame, borrando el búfer ya dibujado. Y nadie actualiza <code>gl.viewport</code> (<a href="../05-webgl/01-contexto.html#m5-viewport-olvidado">5.1</a>).</li>
+  <li data-l="14-16">Una llamada de GL dentro de un evento, sin saber qué programa está en uso, varias veces por frame y con la y al revés (<a href="../01-web/04-js-dom-eventos.html#m1-raton-invertido">1.4</a>).</li>
+  <li data-l="19">La hora de 1970 convertida a float32: la animación está congelada desde el primer frame (<a href="../05-webgl/04-uniforms-animacion.html#m5-tiempo-float32">5.4</a>).</li>
+  <li data-l="20-21">Dibuja siempre, aunque el canvas esté fuera de la vista, y no sabe pausar ni ir a cámara lenta.</li>
+</ol>
+</div>
+
+<p>Ninguno de estos fallos es difícil de arreglar por separado. El problema es que no tienen un sitio: cada parche se pega donde toca y los parches se estorban entre sí. Lo que falta es una <strong>arquitectura</strong>, un reparto de responsabilidades en el que cada cosa tenga un lugar y un momento. Es lo que separa una demo de una aplicación, y es lo que vamos a construir en esta lección, pieza a pieza, para usarlo en el resto del módulo.</p>
+
+<div class="callout porque">
+  <p>Porque en gráficos interactivos casi todos los bichos difíciles son de <em>orden</em>: un uniform que se asigna cuando no está en uso su programa, un búfer que se borra después de dibujar, una textura que se usa antes de existir, un tiempo que salta al volver de una pausa. Una arquitectura clara no hace el código más largo; hace que el orden sea siempre el mismo y que cada fallo tenga un único sitio donde buscarlo.</p>
+</div>
+
+<h2>El esqueleto: cuatro funciones y un bucle</h2>
+<p>Toda aplicación con shaders, desde un fondo animado hasta un juego, se puede repartir en cuatro funciones con responsabilidades que no se mezclan. Las llamaremos por su nombre en español, pero en la literatura (y en Three.js, Unity o cualquier motor) las encontrarás como <em>init</em>, <em>resize</em>, <em>update</em> y <em>render</em>:</p>
+
+<svg class="diagrama" viewBox="0 0 760 330" width="760" role="img" aria-label="Ciclo de vida de una aplicación con shaders">
+  <defs>
+    <marker id="m71-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="44" y="18" width="160" height="46" rx="10"/>
+  <text x="124" y="46" text-anchor="middle" style="font-size:13px">getContext('webgl2')</text>
+  <path d="M206 41 L236 41" stroke="currentColor" stroke-width="2" marker-end="url(#m71-fl)"/>
+  <rect class="caja acento" x="240" y="18" width="150" height="46" rx="10"/>
+  <text x="315" y="40" text-anchor="middle" style="font-weight:700">iniciar(gl)</text>
+  <text x="315" y="56" text-anchor="middle" class="texto-tenue" style="font-size:11px">programas, buffers, texturas</text>
+  <path d="M315 66 L315 96" stroke="currentColor" stroke-width="2" marker-end="url(#m71-fl)"/>
+  <rect class="caja" x="44" y="100" width="706" height="118" rx="12" style="stroke-dasharray:6 4"/>
+  <text x="58" y="120" class="texto-tenue" style="font-size:12px">cada frame · un único requestAnimationFrame</text>
+  <rect class="caja" x="60" y="134" width="176" height="62" rx="10"/>
+  <text x="148" y="158" text-anchor="middle" style="font-weight:700">1 · tamaño</text>
+  <text x="148" y="176" text-anchor="middle" class="texto-tenue" style="font-size:11px">si cambió: redimensionar(gl)</text>
+  <path d="M238 165 L262 165" stroke="currentColor" stroke-width="2" marker-end="url(#m71-fl)"/>
+  <rect class="caja acento" x="266" y="134" width="220" height="62" rx="10"/>
+  <text x="376" y="158" text-anchor="middle" style="font-weight:700">2 · actualizar(estado, dt)</text>
+  <text x="376" y="176" text-anchor="middle" class="texto-tenue" style="font-size:11px">solo JavaScript, sin GL</text>
+  <path d="M488 165 L528 165" stroke="currentColor" stroke-width="2" marker-end="url(#m71-fl)"/>
+  <rect class="caja acento" x="532" y="134" width="200" height="62" rx="10"/>
+  <text x="632" y="158" text-anchor="middle" style="font-weight:700">3 · dibujar(gl, estado)</text>
+  <text x="632" y="176" text-anchor="middle" class="texto-tenue" style="font-size:11px">uniforms + draw calls</text>
+  <rect class="caja" x="300" y="262" width="160" height="50" rx="10"/>
+  <text x="380" y="284" text-anchor="middle" style="font-weight:700">estado</text>
+  <text x="380" y="301" text-anchor="middle" class="texto-tenue" style="font-size:11px">objeto de JavaScript</text>
+  <rect class="caja" x="560" y="262" width="180" height="50" rx="10"/>
+  <text x="650" y="284" text-anchor="middle">eventos</text>
+  <text x="650" y="301" text-anchor="middle" class="texto-tenue" style="font-size:11px">puntero, teclado, scroll</text>
+  <path d="M558 287 L464 287" stroke="currentColor" stroke-width="2" marker-end="url(#m71-fl)"/>
+  <text x="511" y="279" text-anchor="middle" class="texto-tenue" style="font-size:11px">escriben</text>
+  <path d="M376 258 L376 200" stroke="currentColor" stroke-width="2" marker-start="url(#m71-fl)" marker-end="url(#m71-fl)"/>
+  <path d="M440 258 L600 200" stroke="currentColor" stroke-width="2" marker-end="url(#m71-fl)"/>
+  <text x="548" y="240" class="texto-tenue" style="font-size:11px">lee</text>
+  <rect class="caja" x="44" y="262" width="226" height="50" rx="10"/>
+  <text x="157" y="284" text-anchor="middle">contexto perdido → restaurado</text>
+  <text x="157" y="301" text-anchor="middle" class="texto-tenue" style="font-size:11px">vuelve a llamar a iniciar(gl)</text>
+  <path d="M42 287 L22 287 L22 8 L315 8 L315 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#m71-fl)"/>
+</svg>
+
+<table class="m7-reglas">
+  <thead><tr><th>Función</th><th>Qué hace</th><th>Puede leer</th><th>Puede escribir</th><th>¿Toca GL?</th></tr></thead>
+  <tbody>
+    <tr><td>iniciar(gl)</td><td>Crea todo lo que vive en la GPU</td><td>código GLSL, datos originales</td><td>recursos de GPU</td><td class="m7-si">sí</td></tr>
+    <tr><td>redimensionar(gl)</td><td>Rehace lo que depende del tamaño del búfer</td><td>el tamaño nuevo</td><td>FBOs, texturas de pantalla</td><td class="m7-si">sí</td></tr>
+    <tr><td>actualizar(estado, dt)</td><td>Avanza el mundo <code>dt</code> segundos</td><td>estado, <code>dt</code></td><td>estado</td><td class="m7-no">no</td></tr>
+    <tr><td>dibujar(gl, estado)</td><td>Traduce el estado a píxeles</td><td>estado</td><td>uniforms, framebuffers</td><td class="m7-si">sí</td></tr>
+    <tr><td>eventos</td><td>Anotan lo que ha pasado</td><td>el evento</td><td>estado</td><td class="m7-no">no</td></tr>
+  </tbody>
+</table>
+
+<p>Las reglas de la tabla son más estrictas de lo que parece, y cada una tiene su razón:</p>
+<ul>
+  <li><strong>Los eventos solo escriben en el estado.</strong> Un <code>pointermove</code> puede llegar varias veces entre dos frames, cuando otro programa está en uso o con el contexto perdido. Si se limita a anotar «el ratón está aquí», nada de eso importa: <code>dibujar</code> leerá el último valor en el momento correcto.</li>
+  <li><strong><code>actualizar</code> no toca GL.</strong> Solo avanza el estado con <code>dt</code>: física, muelles, temporizadores, progreso de transiciones. Así puedes probarla sin GPU, llamarla varias veces con un paso fijo (<a href="../02-animacion/03-raf.html#paso-fijo-con-acumulador">2.3</a>) o no llamarla (pausa) sin que cambie nada del dibujo.</li>
+  <li><strong><code>dibujar</code> no cambia el estado.</strong> Es una traducción: mismo estado, misma imagen. Por eso puedes llamarla dos veces seguidas (tras redimensionar, en un modo «bajo demanda») sin que el tiempo avance.</li>
+  <li><strong><code>iniciar</code> se puede repetir.</strong> Todo lo que crea sale de descripciones (el código GLSL, los datos originales), así que volver a llamarla reconstruye la GPU entera. Cuando el navegador te devuelva un contexto perdido, esta propiedad te lo dará todo hecho.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.1.1 — El esqueleto, escrito a mano</h3>
+  <p>Un fondo animado con un halo que sigue al puntero y un anillo que se expande al hacer clic. Nada nuevo en el shader; lo que importa es dónde va cada línea de JavaScript. Mueve el puntero y haz clic sobre el lienzo.</p>
+  <div class="js-playground" data-titulo="El esqueleto: iniciar / redimensionar / actualizar / dibujar" data-altura="340" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;      // px del búfer, origen abajo
+uniform float u_pulso;     // 1 al hacer clic → 0
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  float d = length(p - m);
+  vec3 fondo = 0.22 * (0.5 + 0.5 * cos(u_time * 0.5 + p.xyx * 1.5 + vec3(0.0, 2.0, 4.0)));
+  float halo = exp(-4.0 * d);
+  float anillo = smoothstep(0.03, 0.0, abs(d - (1.0 - u_pulso) * 0.9)) * u_pulso;
+  fragColor = vec4(fondo + vec3(0.55, 0.48, 1.0) * halo * 0.8 + vec3(0.25, 0.82, 0.91) * anillo, 1.0);
+}`;
+
+// ---------- estado: lo que la app «sabe», en unidades que no dependen del búfer ----------
+const estado = {
+  tiempo: 0,                  // s de animación
+  raton: { x: 0.5, y: 0.5 },  // 0..1, origen abajo a la izquierda
+  pulso: 0,                   // vale 1 al hacer clic y decae hasta 0
+};
+
+// ---------- recursos de GPU: todos juntos, recreables ----------
+let gpu = null;
+function iniciar() {
+  const programa = GLKit.crearPrograma(gl, VS, FS);
+  gpu = { programa, u: GLKit.uniforms(gl, programa), vao: gl.createVertexArray() };
+}
+function redimensionar(ancho, alto) {
+  // aquí se rehacen los FBO que dependen del tamaño (este ejemplo no tiene)
+}
+function actualizar(e, dt) {
+  e.tiempo += dt;
+  e.pulso = Math.max(0, e.pulso - dt * 1.5);          // de 1 a 0 en 0,67 s
+}
+function dibujar(e) {
+  gl.useProgram(gpu.programa);
+  GLKit.ponerUniform(gl, gpu.u.u_time, e.tiempo);
+  GLKit.ponerUniform(gl, gpu.u.u_resolution, [canvas.width, canvas.height]);
+  GLKit.ponerUniform(gl, gpu.u.u_mouse, [e.raton.x * canvas.width, e.raton.y * canvas.height]);
+  GLKit.ponerUniform(gl, gpu.u.u_pulso, e.pulso);
+  gl.bindVertexArray(gpu.vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// ---------- eventos: SOLO escriben en el estado ----------
+canvas.addEventListener('pointermove', (ev) => {
+  const r = canvas.getBoundingClientRect();
+  estado.raton.x = (ev.clientX - r.left) / r.width;
+  estado.raton.y = (r.bottom - ev.clientY) / r.height;
+});
+canvas.addEventListener('pointerdown', () => { estado.pulso = 1; });
+
+// ---------- un único bucle ----------
+let previo = null;
+function frame(ms) {
+  const dt = previo === null ? 0 : Math.min((ms - previo) / 1000, 0.1);
+  previo = ms;
+  if (GLKit.ajustarTamaño(canvas)) redimensionar(canvas.width, canvas.height);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  actualizar(estado, dt);
+  dibujar(estado);
+  requestAnimationFrame(frame);
+}
+iniciar();
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Recorre el código de abajo arriba, como lo recorre el navegador:</p>
+  <ol>
+    <li><strong>El bucle</strong> es el de <a href="../02-animacion/03-raf.html">2.3</a> y <a href="../05-webgl/04-uniforms-animacion.html">5.4</a>: <code>dt</code> en segundos, limitado a 0,1 s; primero el tamaño, después actualizar y por último dibujar. <code>GLKit.ajustarTamaño</code> devuelve <code>true</code> solo si el búfer cambió, y ese es el único momento en que se llama a <code>redimensionar</code>.</li>
+    <li><strong>Los eventos</strong> no llaman a GL. El <code>pointermove</code> guarda el puntero normalizado (0 a 1, con la y ya invertida como en <a href="../01-web/04-js-dom-eventos.html">1.4</a>); el clic pone <code>pulso = 1</code>. Si llegan cinco <code>pointermove</code> entre dos frames, solo cuenta el último, que es exactamente lo que queremos.</li>
+    <li><strong><code>actualizar</code></strong> es JavaScript puro: el tiempo avanza y el pulso decae a 1,5 unidades por segundo, independiente de los fps.</li>
+    <li><strong><code>dibujar</code></strong> convierte el estado a lo que espera el shader: el puntero normalizado pasa a píxeles del búfer <em>en este momento</em>, con el tamaño actual. Si el canvas cambia de tamaño o de DPR, el halo sigue bajo el puntero sin hacer nada más.</li>
+    <li><strong><code>iniciar</code></strong> agrupa en un objeto <code>gpu</code> todo lo que vive en la tarjeta: programa, locations (dentro de <code>GLKit.uniforms</code>) y VAO. Si mañana hay que recrearlo, se recrea todo junto.</li>
+  </ol>
+</section>
+
+<h2>El estado vive en JavaScript</h2>
+<p>La palabra «estado» se usa para muchas cosas. En esta arquitectura tiene un significado preciso: <strong>lo mínimo que necesitas para dibujar el siguiente frame y que no puedes volver a calcular</strong>. Conviene separar tres categorías, porque cada una se trata de forma distinta:</p>
+<table>
+  <thead><tr><th>Categoría</th><th>Ejemplos</th><th>Dónde vive</th><th>Si se pierde…</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Estado</strong></td><td>tiempo de animación, posición suavizada del puntero, progreso de una transición, escena activa, nivel de calidad</td><td>un objeto de JavaScript</td><td>se pierde de verdad: por eso vive en JavaScript, que no se pierde</td></tr>
+    <tr><td><strong>Derivado</strong></td><td><code>u_resolution</code>, el aspecto, el puntero en píxeles del búfer, una matriz de proyección</td><td>se calcula al dibujar</td><td>se recalcula en el siguiente frame</td></tr>
+    <tr><td><strong>Caché de GPU</strong></td><td><code>WebGLProgram</code>, locations, buffers, VAOs, texturas, FBOs</td><td>la GPU (el objeto de JS es solo un asa)</td><td>se recrea con <code>iniciar</code> y <code>redimensionar</code> a partir de sus descripciones</td></tr>
+  </tbody>
+</table>
+<p>La regla que se deduce es corta: <strong>si puedes reconstruirlo, no es estado</strong>. Una <code>WebGLTexture</code> no es estado: es una copia en la GPU de un canvas o una imagen que tú conservas. Un FBO del tamaño de la pantalla no es estado: se rehace con el tamaño. Pero cuidado con la excepción: si la textura es el resultado de una simulación que avanza en la GPU (el juego de la vida de <a href="../05-webgl/08-framebuffers.html">5.8</a>, las partículas de <a href="05-particulas-gpu.html">7.5</a>), su contenido sí es estado, y vive donde no debería vivir el estado: en una memoria que el navegador te puede quitar. Tienes tres opciones: aceptar que se reinicia, guardar de vez en cuando una copia en la CPU con <code>readPixels</code>, o poder regenerarla desde una semilla.</p>
+
+<div class="callout senior" data-titulo="Unidades que sobreviven a los cambios de tamaño">
+  <p>Guarda el estado en unidades que no dependan del búfer: píxeles CSS, o mejor fracciones de 0 a 1 del canvas. El búfer cambia de tamaño por muchas razones que no son un evento de tu código: el usuario hace zoom, arrastra la ventana a otro monitor con otro DPR, o la calidad adaptativa del final de esta lección reduce la resolución. Un puntero guardado en píxeles del búfer se queda desplazado en cuanto el búfer cambia, hasta que el usuario vuelve a mover el ratón. Un puntero guardado de 0 a 1 se convierte a píxeles al dibujar, con el tamaño de ese frame, y nunca se desplaza. Lo verás en <a href="02-interaccion.html">7.2</a>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En una app con dos programas (un fondo y un cursor), ¿dónde debe ir la llamada <code>gl.uniform2f(loc.u_mouse, x, y)</code> del fondo?</p>
+  <ul>
+    <li>En el manejador de <code>pointermove</code>, para que el valor esté listo cuanto antes.<div class="explicacion">Los uniforms se asignan al programa <em>en uso</em>. Entre frames, el programa en uso es el último que dibujó (probablemente el del cursor), así que la location del fondo no pertenece a él: <code>INVALID_OPERATION</code> y el valor nunca llega. Además, puede haber varios eventos por frame y el contexto puede estar perdido.</div></li>
+    <li>En <code>actualizar</code>, que es donde se procesa lo que ha cambiado.<div class="explicacion"><code>actualizar</code> avanza el estado y no toca GL. Así se puede probar sin GPU, pausar o repetir con paso fijo. El puntero se guarda en el estado (o se suaviza aquí), pero el uniform se asigna al dibujar.</div></li>
+    <li data-correcta>En <code>dibujar</code>, justo después de <code>gl.useProgram</code> del fondo, leyendo el puntero del estado.<div class="explicacion">Correcto. Es el único momento en que sabes qué programa está en uso, el tamaño del búfer es el definitivo del frame y el contexto está vivo. El evento solo anota; el dibujo traduce.</div></li>
+  </ul>
+</div>
+
+<h2>Un único bucle para todo</h2>
+<p>En una página real no solo se mueve el canvas: hay etiquetas que siguen a objetos de la escena, contadores, barras de progreso, botones que reaccionan al mismo muelle que la transición del shader. La tentación es que cada parte tenga su propio bucle: el canvas su <code>requestAnimationFrame</code>, la interfaz un <code>setInterval</code>, el contador otro rAF con su propio reloj. La regla de un senior es la contraria: <strong>un solo <code>requestAnimationFrame</code> para toda la aplicación</strong>, que actualiza el estado una vez y después escribe en el DOM y dibuja en la GPU a partir de ese mismo estado.</p>
+<p>¿Tanto importa? Lo medimos con un círculo dibujado en WebGL que gira a 440 px/s y un cuadrado del DOM que debería ir pegado a él. Hicimos 40 capturas de pantalla a intervalos aleatorios y medimos en cada una la distancia entre los dos centros:</p>
+<table class="m7-medidas">
+  <thead><tr><th>Cómo se mueve el cuadrado del DOM</th><th class="num">Separación mediana</th><th class="num">Máxima</th></tr></thead>
+  <tbody>
+    <tr><td>En el mismo rAF que el canvas, con el tiempo del frame</td><td class="num">0,3 px</td><td class="num">0,6 px</td></tr>
+    <tr><td>En el mismo rAF, pero con <code>performance.now()</code></td><td class="num">1,2 px</td><td class="num">1,8 px</td></tr>
+    <tr><td>Con su propio <code>setInterval(…, 16)</code></td><td class="num">2,7 px</td><td class="num">8,6 px</td></tr>
+  </tbody>
+</table>
+<p>Con el mismo bucle y el mismo tiempo, la separación es el redondeo al píxel. Con <code>performance.now()</code> aparece un desfase fijo: ese reloj marca el instante en que se ejecuta tu código, unos milisegundos después del inicio del frame (<a href="../02-animacion/03-raf.html">2.3</a>), y a 440 px/s tres milisegundos son más de un píxel. Con un temporizador aparte, el cuadrado va unas veces un frame por delante y otras por detrás: 8,6 px de tirón, el bicho de <a href="../02-animacion/03-raf.html#m2-setinterval-tirones">2.3</a> visto desde otro ángulo. Compruébalo tú en esta demo, con más velocidad para que se note a simple vista:</p>
+
+<div class="js-playground" data-titulo="DOM y GL: ¿el mismo bucle?" data-altura="320" data-incluir="glkit" data-fondo="oscuro" data-sin-editor>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="etiqueta">GL</div>
+<label id="panel">el DOM se mueve con
+  <select id="modo">
+    <option value="mismo">el mismo rAF y el mismo tiempo</option>
+    <option value="now">el mismo rAF, pero performance.now()</option>
+    <option value="intervalo">su propio setInterval(…, 16)</option>
+  </select>
+</label>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; }
+#etiqueta { position: absolute; left: 0; top: 0; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+  border: 2px solid #fff; border-radius: 50%; color: #fff; font: 11px/40px monospace; text-align: center;
+  will-change: transform; pointer-events: none; }
+#panel { position: absolute; left: 10px; top: 8px; color: #b4bccb; font: 13px system-ui; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:hover, select:hover { border-color: #8b7bff; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const etiqueta = document.getElementById('etiqueta');
+const selector = document.getElementById('modo');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform vec2 u_pos;          // centro del círculo en px del búfer (origen abajo)
+uniform float u_radio;       // px del búfer
+out vec4 fragColor;
+void main() {
+  float d = distance(gl_FragCoord.xy, u_pos);
+  vec3 col = mix(vec3(0.07, 0.08, 0.1), vec3(0.55, 0.48, 1.0), smoothstep(u_radio + 1.0, u_radio - 1.0, d));
+  fragColor = vec4(col, 1.0);
+}`);
+const u = GLKit.uniforms(gl, programa);
+const vao = gl.createVertexArray();
+
+// La posición es una función del tiempo, en px CSS (y hacia abajo, como el DOM)
+function posicion(ms) {
+  const a = ms / 1000 * 7;                                  // 7 rad/s
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  return [w / 2 + Math.cos(a) * h * 0.33, h / 2 + Math.sin(a) * h * 0.33];
+}
+function moverDOM(ms) {
+  const [x, y] = posicion(ms);
+  etiqueta.style.transform = `translate(${x}px, ${y}px)`;
+}
+function dibujarGL(ms) {
+  GLKit.ajustarTamaño(canvas);
+  const k = canvas.width / canvas.clientWidth;              // px CSS → px del búfer
+  const [x, y] = posicion(ms);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(programa);
+  GLKit.ponerUniform(gl, u.u_pos, [x * k, canvas.height - y * k]);
+  GLKit.ponerUniform(gl, u.u_radio, 14 * k);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+let intervalo = 0;
+selector.onchange = () => {
+  clearInterval(intervalo);
+  if (selector.value === 'intervalo') intervalo = setInterval(() => moverDOM(performance.now()), 16);
+};
+function frame(ms) {
+  dibujarGL(ms);
+  if (selector.value === 'mismo') moverDOM(ms);
+  if (selector.value === 'now') moverDOM(performance.now());
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+
+<p>El reparto dentro del frame también importa. El orden que usaremos siempre es:</p>
+<ol>
+  <li><strong>Leer</strong> todo lo que venga del layout: <code>getBoundingClientRect()</code> de los elementos que siguen al shader, <code>scrollY</code>, tamaños. Al principio del frame el layout está limpio y leer es barato.</li>
+  <li><strong>Actualizar</strong> el estado con <code>dt</code>.</li>
+  <li><strong>Escribir en el DOM</strong>: estilos, textos, <code>transform</code>. Tras escribir, no vuelvas a leer geometría en este frame, o forzarás un layout síncrono (<a href="../02-animacion/01-pipeline-render.html">2.1</a>, <a href="../01-web/04-js-dom-eventos.html">1.4</a>).</li>
+  <li><strong>Dibujar</strong> en la GPU.</li>
+</ol>
+<p>El navegador presenta juntos lo que has escrito en el DOM y lo que has dibujado en el canvas durante un mismo callback: los dos entran en el mismo frame. Con varios bucles, pierdes también eso otro que da una arquitectura: poder pausar la aplicación entera de una vez, ralentizar todo junto o saber en qué orden pasan las cosas.</p>
+
+<div class="callout senior" data-titulo="desynchronized: la excepción que confirma la regla">
+  <p><code>getContext('webgl2', { desynchronized: true })</code> pide un canvas de <em>baja latencia</em>: el navegador puede presentarlo por su cuenta, sin esperar al resto de la página, lo que reduce el retraso entre el puntero y el trazo en aplicaciones de dibujo. El precio es justo lo que acabamos de medir: deja de estar sincronizado con el DOM y puede verse a medio dibujar (<em>tearing</em>). Es una petición, no una orden: en el Chrome de pruebas la pedimos y <code>getContextAttributes().desynchronized</code> devolvió <code>false</code>. Para un efecto que acompaña a la interfaz, no la quieres.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu canvas se dibuja en un rAF y un contador del DOM se actualiza en otro rAF distinto, con su propio cálculo de <code>dt</code>. Ambos parecen ir bien. ¿Qué problema es más probable que aparezca primero?</p>
+  <ul>
+    <li>Que se ejecuten en frames distintos y el contador vaya siempre un frame por detrás.<div class="explicacion">No: todos los callbacks de rAF pedidos antes de un frame se ejecutan en ese frame y reciben el mismo tiempo (2.3). El desfase aparece con temporizadores, no con dos rAF.</div></li>
+    <li data-correcta>Que al pausar, ralentizar o reanudar la animación, uno de los dos no se entere y se desincronicen.<div class="explicacion">Correcto. Dos bucles son dos relojes: cada pausa, cada cámara lenta y cada reinicio del tiempo hay que hacerlo dos veces, y el día que se olvida una, el contador y la escena dejan de coincidir. Con un único bucle y un único reloj, es imposible.</div></li>
+    <li>Que el navegador los fusione y ejecute solo uno por frame.<div class="explicacion">El navegador ejecuta todos los callbacks pendientes, en el orden en que se pidieron. No hay fusión: simplemente hay el doble de trabajo de gestión.</div></li>
+  </ul>
+</div>
+
+<h2>Tamaño: lo que 5.1 no podía saber</h2>
+<p>En <a href="../05-webgl/01-contexto.html">5.1</a> resolviste el tamaño del búfer píxel a píxel: <code>ResizeObserver</code> con <code>devicePixelContentBoxSize</code>, el tamaño se anota en el observador y se aplica al empezar el frame, solo si cambió, y el viewport sale de <code>drawingBufferWidth/Height</code>. Todo eso sigue igual. Lo que una aplicación añade son tres decisiones que un ejemplo aislado no necesita tomar:</p>
+<ol>
+  <li><strong>Un límite de DPR.</strong> Con DPR 3 hay 9 veces más píxeles que con DPR 1, y en <a href="../05-webgl/10-depuracion.html">5.10</a> un shader pesado tardó 7 veces más. En un móvil, pasar de DPR 3 a 2 divide por 2,25 el trabajo de los fragmentos y casi nadie nota la diferencia en un fondo animado. Por eso <code>GLKit.ajustarTamaño</code> limita a 2 por defecto.</li>
+  <li><strong>Un límite de píxeles totales.</strong> El DPR no basta: un monitor 4K con DPR 2 y el canvas a pantalla completa pide 3840 × 2160 = 8,3 megapíxeles, más que cualquier móvil. Un tope de área (por ejemplo, 4 millones de píxeles) protege el caso grande sin tocar el pequeño.</li>
+  <li><strong>Quién se entera del cambio.</strong> Lo que depende del tamaño (FBOs de post-proceso, texturas del tamaño de la pantalla, la rejilla de una simulación) se rehace en <code>redimensionar</code>, una vez por cambio, y no en <code>dibujar</code>, en cada frame, ni en el observador, que se ejecuta después del rAF y borraría el búfer ya dibujado (<a href="../05-webgl/01-contexto.html">5.1</a>).</li>
+</ol>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function tamañoObjetivo() {
+  const dpr = window.devicePixelRatio || 1;
+  let f = Math.min(1, dprMax / dpr);
+  if (calidad) f *= calidad.escala;
+  let w = dispAncho * f, h = dispAlto * f;
+  if (w * h > pixelesMax) {
+    const k = Math.sqrt(pixelesMax / (w * h));
+    w *= k; h *= k;
+  }
+  const ancho = Math.max(1, Math.round(w));
+  const alto = Math.max(1, Math.round(h));
+  return [ancho, alto];
+}
+</script>
+<ol>
+  <li data-l="1-2"><code>dispAncho</code> y <code>dispAlto</code> son los píxeles de dispositivo que anotó el <code>ResizeObserver</code> de 5.1. Partimos de ahí.</li>
+  <li data-l="3">El límite de DPR, como factor: con DPR 3 y <code>dprMax = 2</code>, <code>f = 0,667</code>; con DPR 1 o 2, <code>f = 1</code> (nunca ampliamos).</li>
+  <li data-l="4">La escala de la calidad adaptativa, que construiremos al final de la lección: un número entre, por ejemplo, 0,5 y 1.</li>
+  <li data-l="6-9">El tope de área. Escalar los dos lados por <code>k</code> multiplica el área por <code>k²</code>, así que para bajar el área a <code>pixelesMax</code> hace falta la raíz. Con 8,3 MP y un tope de 4 MP, <code>k = 0,69</code>: el búfer pasa de 3840 × 2160 a 2667 × 1500 y se conserva la proporción.</li>
+  <li data-l="10-12">Redondeo a entero y nunca menos de 1: un canvas de 0 × 0 (una pestaña sin layout, un contenedor con <code>display: none</code>) no debe dar un búfer de tamaño 0.</li>
+</ol>
+</div>
+
+<p>Dos detalles de CSS que completan el cuadro, los dos con su bicho en el módulo 1: el canvas necesita un tamaño CSS propio que no dependa del búfer (<code>width: 100%; height: 100%</code> en un contenedor con altura, o <code>position: fixed; inset: 0</code>), o crecerá sin parar (<a href="../01-web/04-js-dom-eventos.html#m1-canvas-crece">1.4</a>); y <code>display: block</code>, o aparecerá una franja de unos píxeles debajo (<a href="../01-web/02-css.html#m1-franja-canvas">1.2</a>).</p>
+
+<div class="callout hack" data-titulo="Menos resolución que la pantalla, a propósito">
+  <p>Nada obliga a que el búfer tenga la resolución de la pantalla. Si el búfer es más pequeño que la caja CSS, el navegador lo amplía con filtrado bilineal al componer la página, gratis para ti. Un fondo de ruido o de degradados se ve casi igual a media resolución y cuesta la cuarta parte. Los factores de esta función (DPR, área, calidad) son tres maneras de usar ese margen. Y si quieres píxeles gruesos a propósito (estética retro), <code>image-rendering: pixelated</code> en el CSS del canvas cambia el filtrado bilineal por el del vecino más próximo.</p>
+</div>
+
+<h2>Pausar cuando nadie mira</h2>
+<p>En <a href="../05-webgl/04-uniforms-animacion.html">5.4</a> viste las dos razones clásicas para parar el bucle: la pestaña oculta (el navegador deja de dar frames, pero hay que gestionar la vuelta) y el canvas fuera de la vista (el navegador <em>sigue</em> dando frames y tienes que parar tú, con un <code>IntersectionObserver</code>). En una aplicación hay más motivos: el usuario pulsa «pausa», el contexto se ha perdido, la inicialización falló. Si cada motivo arranca y para el bucle por su cuenta, acabarás con dos bucles vivos a la vez (y todo a doble velocidad) o con un bucle parado que nadie vuelve a arrancar. La solución es tener <strong>una sola decisión</strong> que combine todos los motivos:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+let visible = true, pestañaVisible = !document.hidden;
+let porUsuario = true, perdido = false, fallado = false;
+
+function revisar() {
+  const debe = visible && pestañaVisible && porUsuario
+            && !perdido && !fallado;
+  if (debe === app.activo) return;
+  app.activo = debe;
+  if (debe) {
+    reloj.reiniciarReferencia();
+    raf = requestAnimationFrame(frame);
+  } else {
+    cancelAnimationFrame(raf); raf = 0;
+  }
+}
+
+const io = new IntersectionObserver((ents) => {
+  visible = ents[ents.length - 1].isIntersecting;
+  revisar();
+});
+io.observe(canvas);
+document.addEventListener('visibilitychange', () => {
+  pestañaVisible = !document.hidden;
+  revisar();
+});
+</script>
+<ol>
+  <li data-l="1-2">Un booleano por motivo. Cada evento cambia <em>solo el suyo</em>; nadie arranca ni para el bucle directamente.</li>
+  <li data-l="5-6">La decisión: el bucle debe correr si y solo si todos los motivos lo permiten.</li>
+  <li data-l="7">Si ya estamos en el estado correcto, no se hace nada. Esta línea es la que impide los dos bucles a la vez: pedir «arrancar» dos veces no crea dos rAF.</li>
+  <li data-l="10">Al arrancar, el reloj olvida el último frame para que el primer <code>dt</code> sea 0 y no los segundos que estuvo parado (<a href="../02-animacion/03-raf.html">2.3</a>).</li>
+  <li data-l="17-20">Cuando llegan varias entradas en un mismo callback, la última es la más reciente.</li>
+  <li data-l="22-25">La pestaña: <code>document.hidden</code> es <code>true</code> mientras está oculta (<a href="../05-webgl/04-uniforms-animacion.html">5.4</a>).</li>
+</ol>
+</div>
+
+<p>Distingue bien dos cosas que se llaman igual. <strong>Pausar el bucle</strong> es no pedir más frames: coste cero, pero tampoco reacciona al puntero ni redibuja. <strong>Pausar el tiempo</strong> es seguir dibujando con <code>dt = 0</code>: la escena se congela, pero el halo sigue al ratón y un clic todavía hace algo. El botón de pausa de una interfaz suele querer lo segundo; la pestaña oculta y el scroll, lo primero. Para pausar el tiempo hace falta un reloj propio.</p>
+
+<h2>Un reloj propio</h2>
+<p>El argumento de <code>requestAnimationFrame</code> es el reloj de la página: empieza al cargarla y no se detiene nunca. Usarlo directamente como <code>u_time</code> funciona hasta que quieres cualquiera de estas cosas: pausar sin que la animación salte al reanudar, ir a cámara lenta, reiniciar una escena desde cero o que la animación sea igual al volver de otra pestaña. La solución es un reloj de la aplicación, que acumula su propio tiempo:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+class Reloj {
+  constructor({ dtMax = 0.1 } = {}) {
+    this.dtMax = dtMax;
+    this.t = 0;
+    this.dt = 0;
+    this.dtReal = 0;
+    this.intervaloMs = 0;
+    this.escala = 1;
+    this.pausado = false;
+    this.previo = null;
+  }
+  avanzar(ms) {
+    this.intervaloMs = this.previo === null ? 0 : ms - this.previo;
+    this.previo = ms;
+    const s = Math.max(this.intervaloMs / 1000, 0);
+    this.dtReal = Math.min(s, this.dtMax);
+    this.dt = this.pausado ? 0 : this.dtReal * this.escala;
+    this.t += this.dt;
+    return this.dt;
+  }
+  reiniciarReferencia() { this.previo = null; }
+  envuelto(periodo) { return this.t % periodo; }
+}
+</script>
+<ol>
+  <li data-l="3">El tope del <code>dt</code> real: tras una pestaña oculta o un frame larguísimo, nunca avanzamos más de 0,1 s de golpe (<a href="../02-animacion/03-raf.html">2.3</a>).</li>
+  <li data-l="4-5"><code>t</code> es el tiempo <em>de la animación</em> en segundos: lo que va a <code>u_time</code>. <code>dt</code> es lo que avanzó en el último frame, ya con la escala y la pausa aplicadas: lo que usan <code>actualizar</code>, los muelles y las partículas.</li>
+  <li data-l="6-7"><code>dtReal</code> es el tiempo real limitado (para lo que no debe ralentizarse, como el suavizado del puntero) e <code>intervaloMs</code> el intervalo real sin limitar, que usaremos para medir el rendimiento.</li>
+  <li data-l="8-9">La escala del tiempo (1 normal, 0,25 cámara lenta, 2 acelerado) y la pausa del tiempo.</li>
+  <li data-l="13-16">Igual que el bucle de 2.3: el primer frame, o el primero tras <code>reiniciarReferencia</code>, tiene <code>dt = 0</code>. El <code>Math.max(…, 0)</code> protege de un intervalo negativo si alguien llama a <code>avanzar</code> con un tiempo antiguo.</li>
+  <li data-l="17-18">La pausa y la escala actúan sobre <code>dt</code>, y <code>t</code> es la suma de los <code>dt</code>. Por eso al reanudar no hay salto: el tiempo de la animación no avanzó mientras estaba en pausa.</li>
+  <li data-l="22">El tiempo envuelto <em>en JavaScript</em>, con 64 bits, antes de viajar a la GPU como float32 (<a href="../05-webgl/04-uniforms-animacion.html">5.4</a>). Solo sirve si todo lo que depende de <code>t</code> en el shader tiene un periodo que divide a <code>periodo</code>; si no, la animación salta al envolver (<a href="../06-glsl/07-animacion-shaders.html#m6b-bucle-salta">6.7</a>).</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.1.2 — Pausa y cámara lenta de verdad</h3>
+  <p>El shader dibuja una aguja y unas ondas que dependen de <code>u_time</code>. Debajo, dos cuadrados del DOM: el de la izquierda gira con una animación CSS normal; el de la derecha, con el <code>t</code> de nuestro reloj. Prueba la pausa y la cámara lenta, y mueve el puntero mientras está en pausa.</p>
+  <div class="js-playground" data-titulo="Un reloj con pausa y escala de tiempo" data-altura="330" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <button data-e="pausa">⏯ pausa</button>
+  <button data-e="0.25">× 0,25</button>
+  <button data-e="1">× 1</button>
+  <button data-e="2">× 2</button>
+  <span id="info"></span>
+</div>
+<div class="cuadro" id="css">CSS</div>
+<div class="cuadro" id="nuestro">reloj</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; }
+#panel { position: absolute; left: 8px; top: 8px; color: #b4bccb; font: 12px ui-monospace, monospace; }
+#panel button { margin-right: 4px; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:hover, select:hover { border-color: #8b7bff; }
+.cuadro { position: absolute; bottom: 18px; width: 54px; height: 54px; border-radius: 8px; color: #0e1014;
+  font: 600 11px/54px system-ui; text-align: center; }
+#css { left: 24px; background: #f5b84b; animation: girar 4s linear infinite; }
+#nuestro { left: 96px; background: #3fd0e8; }
+@keyframes girar { to { transform: rotate(360deg); } }
+</script>
+<script type="text/x-js">
+class Reloj {
+  constructor({ dtMax = 0.1 } = {}) {
+    this.dtMax = dtMax; this.t = 0; this.dt = 0; this.dtReal = 0; this.intervaloMs = 0;
+    this.escala = 1; this.pausado = false; this.previo = null;
+  }
+  avanzar(ms) {
+    this.intervaloMs = this.previo === null ? 0 : ms - this.previo;
+    this.previo = ms;
+    this.dtReal = Math.min(Math.max(this.intervaloMs / 1000, 0), this.dtMax);
+    this.dt = this.pausado ? 0 : this.dtReal * this.escala;
+    this.t += this.dt;
+    return this.dt;
+  }
+  reiniciarReferencia() { this.previo = null; }
+}
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = length(p), a = atan(p.y, p.x);
+  float ondas = 0.5 + 0.5 * sin(r * 18.0 - u_time * 4.0);
+  vec3 col = vec3(0.07, 0.08, 0.1) + 0.12 * ondas * vec3(0.25, 0.82, 0.91) * smoothstep(1.2, 0.2, r);
+  float ang = -u_time * 1.5708;                            // un cuarto de vuelta por segundo
+  vec2 dir = vec2(cos(ang), sin(ang));
+  float h = clamp(dot(p, dir), 0.0, 0.7);
+  col += vec3(0.55, 0.48, 1.0) * smoothstep(0.03, 0.0, length(p - dir * h));
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  col += vec3(1.0, 0.42, 0.71) * 0.6 * exp(-12.0 * length(p - m));
+  fragColor = vec4(col, 1.0);
+}`);
+const u = GLKit.uniforms(gl, programa);
+const vao = gl.createVertexArray();
+const reloj = new Reloj();
+const raton = { x: -1, y: -1 };                            // 0..1, origen abajo (fuera al principio)
+const info = document.getElementById('info');
+const nuestro = document.getElementById('nuestro');
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = (e.clientX - r.left) / r.width; raton.y = (r.bottom - e.clientY) / r.height;
+});
+document.getElementById('panel').addEventListener('click', (e) => {
+  const q = e.target.dataset.e;
+  if (!q) return;
+  if (q === 'pausa') reloj.pausado = !reloj.pausado;
+  else reloj.escala = +q;
+});
+
+function frame(ms) {
+  reloj.avanzar(ms);
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(programa);
+  GLKit.ponerUniform(gl, u.u_time, reloj.t);
+  GLKit.ponerUniform(gl, u.u_resolution, [canvas.width, canvas.height]);
+  GLKit.ponerUniform(gl, u.u_mouse, [raton.x * canvas.width, raton.y * canvas.height]);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // El DOM, en el mismo frame y con el mismo reloj:
+  nuestro.style.transform = `rotate(${reloj.t * 90}deg)`;    // 90°/s = 1 vuelta cada 4 s, como el CSS
+  info.textContent = `t = ${reloj.t.toFixed(2)} s · dt = ${(reloj.dt * 1000).toFixed(1)} ms · escala ${reloj.escala}${reloj.pausado ? ' · PAUSA' : ''}`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Lo que deberías observar, y por qué:</p>
+  <ul>
+    <li><strong>Pausa:</strong> la aguja, las ondas y el cuadrado cian se detienen, pero el halo rosa sigue al puntero. El bucle sigue vivo; lo que se detuvo es el tiempo de la animación (<code>dt = 0</code>). Al reanudar, todo sigue desde donde estaba: <code>t</code> no avanzó durante la pausa.</li>
+    <li><strong>× 0,25:</strong> todo lo que depende de <code>reloj.t</code> va a cámara lenta, en la GPU y en el DOM, perfectamente sincronizado. El cuadrado naranja no se entera: su animación CSS vive en el reloj del documento (<code>document.timeline</code>, <a href="../02-animacion/07-waapi-flip.html">2.7</a>), no en el tuyo.</li>
+    <li><strong>La línea de información</strong> muestra <code>dt</code> en milisegundos: 16,7 ms a 60 Hz con escala 1, 4,2 ms a × 0,25 y 0 en pausa.</li>
+  </ul>
+  <p>Para que el cuadrado naranja obedezca también, su animación tiene que leer tu reloj. Con la Web Animations API basta con crear la animación en pausa y fijar su posición en cada frame: <code>anim.currentTime = reloj.t * 1000</code> (el <code>currentTime</code> de una animación va en milisegundos). Lo harás en el proyecto final (<a href="06-proyecto-final.html">7.6</a>).</p>
+</section>
+
+<div class="callout bestiario" data-id="m7-camara-lenta-parcial" data-titulo="Con la cámara lenta (o la pausa), unas cosas se ralentizan y otras no">
+  <p><strong>Síntoma:</strong> activas la pausa o la cámara lenta de tu escena y la mayor parte se detiene, pero algo sigue a velocidad normal: un elemento del DOM con una animación CSS, unas partículas, un parpadeo del shader, un muelle. Al reanudar, esas partes están desfasadas del resto.</p>
+  <p><strong>Causa:</strong> hay más de un reloj. Las partes que no se enteran leen el tiempo por su cuenta: el argumento de <code>requestAnimationFrame</code>, <code>performance.now()</code>, el <code>dt</code> sin escalar, una animación CSS o WAAPI (que avanza con <code>document.timeline</code>) o un <code>setInterval</code>.</p>
+  <p><strong>Solución:</strong> un único reloj de la aplicación (<code>t</code> y <code>dt</code> con escala y pausa) del que beben todos: <code>u_time</code>, <code>actualizar</code>, muelles, partículas y DOM. Las animaciones WAAPI se controlan desde él con <code>anim.pause()</code> y <code>anim.currentTime = reloj.t * 1000</code> en cada frame. Deja fuera a propósito solo lo que no debe ralentizarse (el suavizado del puntero, con <code>dtReal</code>).</p>
+</div>
+
+<h2>Recursos y pérdida de contexto</h2>
+<p>La pérdida de contexto ya la conoces (<a href="../05-webgl/01-contexto.html">5.1</a>): el navegador te quita la GPU, avisa con <code>webglcontextlost</code>, te la devuelve (si llamaste a <code>preventDefault</code>) con <code>webglcontextrestored</code> y todo lo que había dentro ha desaparecido. En una aplicación, el esqueleto convierte ese problema en tres líneas, porque <code>iniciar</code> ya sabe crear todo desde cero:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  perdido = true; revisar();
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  perdido = false;
+  app.ancho = app.alto = 0;
+  iniciar(gl, app);
+  revisar();
+});
+</script>
+<ol>
+  <li data-l="2">«Sé recuperarme.» Sin esta línea, el navegador no devolverá el contexto nunca.</li>
+  <li data-l="3">Un motivo más para parar el bucle: con el contexto perdido, las llamadas de GL no hacen nada (ni se quejan), así que dibujar sería trabajo tirado. El reloj no avanza mientras tanto.</li>
+  <li data-l="7">Olvidar el tamaño conocido obliga a que el próximo frame llame a <code>redimensionar</code>: los FBOs también murieron y hay que rehacerlos con el tamaño actual.</li>
+  <li data-l="8">Todo lo de la GPU, otra vez, desde sus descripciones. El objeto <code>gl</code> es el mismo (5.1); lo que había dentro, no.</li>
+  <li data-l="9"><code>revisar</code> vuelve a arrancar el bucle si los demás motivos lo permiten, con <code>dt = 0</code> en el primer frame.</li>
+</ol>
+</div>
+
+<p>Esto solo funciona si <code>iniciar</code> es <em>completa</em>: si algo de la GPU se creó fuera de ella, sobrevive como un objeto de JavaScript que apunta a un contexto que ya no existe. Es el fallo más habitual, y es silencioso:</p>
+
+<div class="callout bestiario" data-id="m7-locations-viejas" data-titulo="Tras recuperar el contexto, la escena sale negra (o transparente)">
+  <p><strong>Síntoma:</strong> la app sobrevive a la pérdida de contexto (el bucle vuelve, no hay excepciones), pero la escena sale negra, transparente o con los colores por defecto. En DevTools aparecen avisos como <code>WebGL: INVALID_OPERATION: uniform4f: location is not from the associated program</code> o <code>useProgram: object does not belong to this context</code>.</p>
+  <p><strong>Causa:</strong> <code>iniciar</code> recreó el programa, pero alguna referencia a objetos del contexto anterior sigue guardada fuera: las locations en variables globales, un VAO creado aparte, una textura cacheada. Lo comprobamos: tras restaurar, un <code>uniform4f</code> con la location del programa viejo dio <code>INVALID_OPERATION</code>, el uniform del programa nuevo se quedó en su valor inicial y el píxel salió (0, 0, 0, 0). <code>gl.isProgram(viejo)</code> devuelve <code>false</code>.</p>
+  <p><strong>Solución:</strong> todo lo que sale de la GPU (programas, locations, buffers, VAOs, texturas, FBOs) se crea dentro de <code>iniciar</code>/<code>redimensionar</code> y se guarda en un único objeto (<code>gpu = { … }</code>) que se sustituye entero. Pruébalo siempre con <code>WEBGL_lose_context</code>: <code>loseContext()</code> y, un segundo después, <code>restoreContext()</code>.</p>
+</div>
+
+<div class="callout hack" data-titulo="Pide la extensión antes de necesitarla">
+  <p>Para probar la recuperación necesitas <code>WEBGL_lose_context</code>, y aquí hay una trampa: con el contexto perdido, <code>gl.getExtension()</code> devuelve <code>null</code> (<a href="../05-webgl/01-contexto.html">5.1</a>). Si pides la extensión para llamar a <code>restoreContext()</code> <em>después</em> de perderlo, obtienes <code>null</code> y un <code>TypeError</code> (nos pasó preparando esta lección). Pídela al arrancar y guárdala: el objeto sigue sirviendo tras la restauración. En producción, la misma extensión sirve para lo contrario: <code>loseContext()</code> al destruir una escena libera su memoria de GPU al momento, sin esperar al recolector de basura (<a href="../05-webgl/10-depuracion.html">5.10</a>).</p>
+</div>
+
+<h2>Todo junto: <code>M7.crearApp</code></h2>
+<p>Con las piezas anteriores (el esqueleto, el tamaño, las pausas, el reloj y la pérdida de contexto) ya tienes una arquitectura completa. Igual que en el módulo 5 empaquetaste en GLKit lo que habías escrito a mano, en este módulo usaremos <a href="recursos/m7kit.js">m7kit</a>, un archivo corto que recoge lo de esta lección (y algunas herramientas de 2.4, 2.5 y 7.2). En los playgrounds se inyecta con <code>data-incluir="glkit,m7kit"</code>. Su pieza central es <code>M7.crearApp</code>, y se usa así:</p>
+
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="La forma de una app con m7kit">
+const app = M7.crearApp(canvas, {
+  contexto: { antialias: false },   // atributos de getContext (5.1)
+  dprMax: 2,                        // límite de DPR
+  pixelesMax: 4e6,                  // límite de píxeles del búfer
+  calidad: { min: 0.5 },            // calidad adaptativa (al final de la lección); sin esta opción, no hay
+  bajoDemanda: false,               // true: solo dibuja cuando alguien llama a app.pedirFrame() (7.3)
+  estado: { /* lo que la app sabe */ },
+  iniciar(gl, app) { /* programas, buffers, texturas → app.gpu, por ejemplo */ },
+  redimensionar(gl, app) { /* FBOs con app.ancho × app.alto */ },
+  actualizar(estado, dt, app) { /* solo JavaScript */ },
+  dibujar(gl, estado, app) { /* uniforms y draw calls */ },
+  fallar(motivo, app) { /* mostrar la alternativa sin WebGL */ },
+});
+// app.reloj (t, dt, escala, pausado), app.ancho/app.alto (búfer), app.anchoCSS/app.altoCSS,
+// app.fps, app.pedirFrame(), app.pausar(), app.reanudar(), app.destruir()
+</script>
+
+<p>Por dentro no hay nada que no hayas visto. Este es el bucle, que resume la lección:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function frame(ms) {
+  raf = 0;
+  if (!app.activo || gl.isContextLost()) return;
+  pendiente = false;
+  reloj.avanzar(ms);
+  const iv = reloj.intervaloMs;
+  if (iv > 0 && iv < 250) {
+    app.msFrame += 0.1 * (iv - app.msFrame);
+    app.fps = 1000 / app.msFrame;
+  }
+  if (calidad) calidad.medir(iv);
+  aplicarTamaño();
+  gl.viewport(0, 0, app.ancho, app.alto);
+  try {
+    if (o.actualizar) o.actualizar(app.estado, reloj.dt, app);
+    if (o.dibujar) o.dibujar(gl, app.estado, app);
+  } catch (err) {
+    fallar('error en el bucle: ' + err.message, err);
+    return;
+  }
+  app.frame++;
+  if (!o.bajoDemanda || pendiente) programar();
+  else dormido = true;
+}
+</script>
+<ol>
+  <li data-l="2-3"><code>raf = 0</code> anota que ya no hay ninguna petición pendiente. Si la app se desactivó entre la petición y este callback (o el contexto se perdió), no se hace nada.</li>
+  <li data-l="5">El reloj de la aplicación: <code>t</code> y <code>dt</code> con pausa y escala.</li>
+  <li data-l="6-10">Los fps, con la media móvil exponencial de los <em>tiempos</em> de frame (<a href="../02-animacion/03-raf.html">2.3</a>). Se descartan los intervalos absurdos (el primero tras una pausa vale 0; uno de más de 250 ms no es rendimiento, es una pestaña que vuelve).</li>
+  <li data-l="11">La calidad adaptativa mide el mismo intervalo; puede cambiar la escala de resolución.</li>
+  <li data-l="12-13">El tamaño se aplica al empezar el frame (con los tres factores de antes). Si cambió, se llama a <code>redimensionar</code>. El viewport se fija siempre: tu <code>dibujar</code> puede haberlo cambiado para un FBO en el frame anterior.</li>
+  <li data-l="14-20">Actualizar y dibujar. Una excepción aquí no puede repetirse 60 veces por segundo llenando la consola: se detiene la app y se muestra la alternativa (sección siguiente).</li>
+  <li data-l="22-23">En modo continuo, siempre se pide el siguiente frame. En modo bajo demanda, solo si alguien llamó a <code>app.pedirFrame()</code> durante este frame (un muelle que aún se mueve, un evento); si no, la app se duerme. Lo usaremos en <a href="03-transiciones-shader.html">7.3</a>.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.1.3 — El mismo efecto, con m7kit, y a prueba de golpes</h3>
+  <p>El ejemplo 7.1.1 reescrito con <code>M7.crearApp</code>. Tiene tres botones para maltratarlo: pausar el bucle, perder el contexto y recuperarlo. La línea de abajo muestra el tamaño del búfer, los fps, el tiempo del reloj y cuántas veces se ha llamado a <code>iniciar</code>. Haz también scroll hasta que el playground casi desaparezca y vuelve: el reloj no salta.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.1.3 — M7.crearApp" data-altura="340" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <button id="pausa">⏯ pausar bucle</button>
+  <button id="perder">perder contexto</button>
+  <button id="recuperar">recuperar</button>
+  <div id="info"></div>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+#panel { position: absolute; left: 8px; top: 8px; right: 8px; color: #b4bccb; font: 12px ui-monospace, monospace; }
+#panel button { margin: 0 4px 6px 0; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:hover, select:hover { border-color: #8b7bff; }
+</script>
+<script type="text/x-js">
+const FS = `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_pulso;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  float d = length(p - m);
+  vec3 fondo = 0.22 * (0.5 + 0.5 * cos(u_time * 0.5 + p.xyx * 1.5 + vec3(0.0, 2.0, 4.0)));
+  float anillo = smoothstep(0.03, 0.0, abs(d - (1.0 - u_pulso) * 0.9)) * u_pulso;
+  fragColor = vec4(fondo + vec3(0.55, 0.48, 1.0) * exp(-4.0 * d) * 0.8 + vec3(0.25, 0.82, 0.91) * anillo, 1.0);
+}`;
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+let inicios = 0;
+
+const app = M7.crearApp(canvas, {
+  estado: { raton: { x: 0.5, y: 0.5 }, pulso: 0 },
+  iniciar(gl, app) {
+    inicios++;
+    const programa = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { programa, u: GLKit.uniforms(gl, programa), vao: gl.createVertexArray() };
+    console.log('iniciar() #' + inicios);
+  },
+  actualizar(e, dt) {
+    e.pulso = Math.max(0, e.pulso - dt * 1.5);
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    gl.useProgram(g.programa);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, g.u.u_mouse, [e.raton.x * app.ancho, e.raton.y * app.alto]);
+    GLKit.ponerUniform(gl, g.u.u_pulso, e.pulso);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    info.textContent = `búfer ${app.ancho}×${app.alto} · ${app.fps.toFixed(0)} fps · t = ${app.reloj.t.toFixed(2)} s · iniciar() × ${inicios}`;
+  },
+  alPerder() { console.warn('contexto perdido: el bucle se detiene'); },
+  fallar(motivo) { canvas.style.background = 'linear-gradient(135deg, #1b1f5e, #b8467a)'; console.warn(motivo); },
+});
+
+// Eventos: solo estado
+canvas.addEventListener('pointermove', (ev) => {
+  const r = canvas.getBoundingClientRect();
+  app.estado.raton.x = (ev.clientX - r.left) / r.width;
+  app.estado.raton.y = (r.bottom - ev.clientY) / r.height;
+});
+canvas.addEventListener('pointerdown', () => { app.estado.pulso = 1; });
+
+// Botones de maltrato
+const ext = app.gl.getExtension('WEBGL_lose_context');     // ¡antes de perderlo!
+let enPausa = false;
+document.getElementById('pausa').onclick = () => { enPausa = !enPausa; enPausa ? app.pausar() : app.reanudar(); };
+document.getElementById('perder').onclick = () => ext.loseContext();
+document.getElementById('recuperar').onclick = () => ext.restoreContext();
+</script>
+  </div>
+  <p>Cuatro cosas que comprobar: al perder el contexto, el lienzo se vuelve transparente (se ve el fondo de la página) y el bucle se detiene (el reloj no avanza); al recuperarlo, la consola dice <code>iniciar() #2</code> y todo sigue donde estaba; la pausa del bucle congela incluso el halo del puntero (no hay frames); y el código de la aplicación no tiene ni una línea sobre tamaños, observadores o eventos de contexto: eso ya no es su problema.</p>
+</section>
+
+<h2>Varias escenas, un solo contexto</h2>
+<p>Tarde o temprano una página tiene más de un efecto: un fondo en la portada, otro en una sección, una transición entre dos vistas. La solución ingenua, un canvas con su contexto por efecto, choca con dos muros que ya conoces: el límite de unos 16 contextos vivos (<a href="../05-webgl/01-contexto.html#m5-demasiados-contextos">5.1</a>) y que los recursos no se comparten entre contextos (una textura cargada en uno no existe en otro, y una transición entre dos escenas necesita las dos en el mismo). La arquitectura habitual es <strong>un contexto y un gestor de escenas</strong>: cada escena es un objeto con la misma interfaz que la app (<code>iniciar</code>, <code>redimensionar</code>, <code>actualizar</code>, <code>dibujar</code>) más una función <code>liberar</code> que borra lo suyo.</p>
+<p>El gestor decide tres cosas: qué escena está activa (solo esa se actualiza y se dibuja), cuándo se inicia cada una (al necesitarla por primera vez, no todas al arrancar) y si al salir de una se libera o se conserva. Liberar ahorra memoria de GPU; conservar evita el tirón de volver a compilar sus shaders al regresar (<a href="../04-gpu/01-cpu-vs-gpu.html#m4-tiron-primer-dibujo">4.1</a>). Para una transición entre dos escenas (<a href="03-transiciones-shader.html">7.3</a>) las dos tienen que estar vivas a la vez.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.1.4 — Un gestor de escenas que sobrevive a todo</h3>
+  <p>Tres escenas: dos de pantalla completa (solo un programa cada una) y una con geometría propia (un buffer de 4096 puntos). Cambia de escena con y sin «liberar al salir» y sigue la consola. Después pierde el contexto y recupéralo.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.1.4 — Gestor de escenas" data-altura="330" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <select id="escena"><option>plasma</option><option>anillos</option><option>puntos</option></select>
+  <label><input type="checkbox" id="liberar" checked> liberar al salir</label>
+  <button id="perder">perder contexto</button> <button id="recuperar">recuperar</button>
+  <div id="info"></div>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; }
+#panel { position: absolute; left: 8px; top: 8px; color: #b4bccb; font: 12px system-ui; }
+#info { font: 12px ui-monospace, monospace; margin-top: 4px; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:hover, select:hover { border-color: #8b7bff; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const CABECERA = `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+`;
+const FS_PLASMA = CABECERA + `void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float v = sin(p.x * 3.0 + u_time) + sin(p.y * 4.0 - u_time * 1.3)
+          + sin((p.x + p.y) * 2.0 + u_time * 0.7) + sin(length(p) * 5.0 - u_time * 2.0);
+  vec3 col = 0.5 + 0.5 * cos(v * 0.9 + vec3(0.0, 0.6, 1.2) + 3.5);    // paleta de coseno (6.4)
+  fragColor = vec4(col * col * 0.85, 1.0);
+}`;
+const FS_ANILLOS = CABECERA + `void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float a = 0.5 + 0.5 * sin(length(p) * 20.0 - u_time * 3.0);
+  fragColor = vec4(mix(vec3(0.07, 0.08, 0.1), vec3(0.25, 0.82, 0.91), a * a), 1.0);
+}`;
+
+// Una escena de pantalla completa: solo un programa y un VAO vacío
+function escenaShader(nombre, fs) {
+  let gpu = null;
+  return {
+    nombre,
+    iniciar(gl) { const p = GLKit.crearPrograma(gl, VS, fs); gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() }; },
+    liberar(gl) { gl.deleteProgram(gpu.p); gl.deleteVertexArray(gpu.vao); gpu = null; },
+    dibujar(gl, app) {
+      gl.useProgram(gpu.p);
+      GLKit.ponerUniform(gl, gpu.u.u_time, app.reloj.t);
+      GLKit.ponerUniform(gl, gpu.u.u_resolution, [app.ancho, app.alto]);
+      gl.bindVertexArray(gpu.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    },
+  };
+}
+// Una escena con geometría propia: 64 × 64 puntos en un buffer
+function escenaPuntos() {
+  let gpu = null;
+  const VSP = `#version 300 es
+layout(location = 0) in vec2 a_pos;
+uniform float u_time;
+uniform vec2 u_resolution;
+void main() {
+  vec2 p = a_pos + 0.03 * vec2(sin(u_time * 2.0 + a_pos.y * 9.0), cos(u_time * 1.7 + a_pos.x * 7.0));
+  p.x *= u_resolution.y / u_resolution.x;           // sin estirar
+  gl_Position = vec4(p, 0.0, 1.0);
+  gl_PointSize = 3.0;
+}`;
+  const FSP = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() { fragColor = vec4(0.55, 0.48, 1.0, 1.0); }`;
+  return {
+    nombre: 'puntos',
+    iniciar(gl) {
+      const datos = new Float32Array(64 * 64 * 2);
+      for (let i = 0; i < 64 * 64; i++) { datos[2 * i] = (i % 64) / 63 * 1.8 - 0.9; datos[2 * i + 1] = Math.floor(i / 64) / 63 * 1.8 - 0.9; }
+      const p = GLKit.crearPrograma(gl, VSP, FSP);
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      const buffer = GLKit.crearBuffer(gl, datos);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+      gpu = { p, u: GLKit.uniforms(gl, p), vao, buffer };
+    },
+    liberar(gl) { gl.deleteProgram(gpu.p); gl.deleteVertexArray(gpu.vao); gl.deleteBuffer(gpu.buffer); gpu = null; },
+    dibujar(gl, app) {
+      gl.clearColor(0.07, 0.08, 0.1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(gpu.p);
+      GLKit.ponerUniform(gl, gpu.u.u_time, app.reloj.t);
+      GLKit.ponerUniform(gl, gpu.u.u_resolution, [app.ancho, app.alto]);
+      gl.bindVertexArray(gpu.vao);
+      gl.drawArrays(gl.POINTS, 0, 64 * 64);
+    },
+  };
+}
+
+const escenas = { plasma: escenaShader('plasma', FS_PLASMA), anillos: escenaShader('anillos', FS_ANILLOS), puntos: escenaPuntos() };
+const gestor = {
+  activa: null,
+  vivas: new Set(),
+  preparar(gl, nombre, liberarAnterior) {
+    const nueva = escenas[nombre];
+    if (this.activa && this.activa !== nueva && liberarAnterior) {
+      this.activa.liberar(gl); this.vivas.delete(this.activa);
+      console.log('liberar ' + this.activa.nombre);
+    }
+    if (!this.vivas.has(nueva)) { nueva.iniciar(gl); this.vivas.add(nueva); console.log('iniciar ' + nombre); }
+    this.activa = nueva;
+  },
+  olvidarTodo() { this.vivas.clear(); this.activa = null; },   // tras perder el contexto, todas están muertas
+};
+
+const canvas = document.getElementById('c');
+const selector = document.getElementById('escena');
+const liberar = document.getElementById('liberar');
+const info = document.getElementById('info');
+const app = M7.crearApp(canvas, {
+  estado: { escena: 'plasma' },
+  iniciar() { gestor.olvidarTodo(); },           // al arrancar y al recuperar el contexto
+  dibujar(gl, e, app) {
+    if (!gestor.activa || gestor.activa.nombre !== e.escena) gestor.preparar(gl, e.escena, liberar.checked);
+    gestor.activa.dibujar(gl, app);
+    info.textContent = 'vivas: ' + [...gestor.vivas].map((s) => s.nombre).join(', ');
+  },
+});
+selector.onchange = () => { app.estado.escena = selector.value; };   // el evento solo anota
+const ext = app.gl.getExtension('WEBGL_lose_context');
+document.getElementById('perder').onclick = () => { ext.loseContext(); console.warn('contexto perdido'); };
+document.getElementById('recuperar').onclick = () => ext.restoreContext();
+</script>
+  </div>
+  <p>Tres decisiones del código que merecen atención:</p>
+  <ul>
+    <li><strong>El selector no inicia nada.</strong> Solo anota la escena deseada en el estado; el cambio real ocurre al principio del siguiente <code>dibujar</code>, donde es seguro tocar GL. Es la regla de los eventos aplicada a algo más grande que un uniform.</li>
+    <li><strong>Iniciación perezosa.</strong> Al arrancar solo se compila la escena activa. Las demás se compilan la primera vez que se eligen (fíjate en la consola). Con «liberar al salir» desmarcado, volver a una escena ya vista es instantáneo; marcado, se vuelve a compilar.</li>
+    <li><strong>La pérdida de contexto borra el conjunto de vivas.</strong> <code>iniciar</code> de la app se limita a olvidar todas las escenas: la activa se reconstruirá sola en el siguiente frame y las demás, cuando se elijan. Ninguna escena necesita saber nada de pérdidas de contexto.</li>
+  </ul>
+</section>
+
+<h2>Cuando algo falla en producción</h2>
+<p>En tu máquina todo funciona. En la de tus usuarios hay navegadores sin WebGL2, GPUs en listas negras, drivers que no compilan un shader que el tuyo acepta, contextos que se pierden y no vuelven, extensiones que no existen. La regla de oro es la <strong>mejora progresiva</strong>: la página tiene que estar completa sin el canvas. El texto, los botones y los enlaces viven en el DOM (<a href="02-interaccion.html">7.2</a> vuelve sobre ello); el efecto es una capa encima que, si falla, se sustituye por algo estático y digno: un degradado CSS, una imagen, un vídeo corto. Nunca un rectángulo negro, y nunca una excepción que deje la página a medio montar.</p>
+<table>
+  <thead><tr><th>Qué falla</th><th>Cómo te enteras</th><th>Qué haces</th></tr></thead>
+  <tbody>
+    <tr><td>No hay WebGL2 (navegador viejo, GPU en lista negra, desactivado por política)</td><td><code>getContext('webgl2')</code> devuelve <code>null</code>; el evento <code>webglcontextcreationerror</code> trae el motivo en <code>statusMessage</code></td><td>Alternativa estática. Opcional: un efecto más simple con CSS o Canvas 2D.</td></tr>
+    <tr><td>Un shader no compila en esa GPU</td><td><code>COMPILE_STATUS</code>/<code>LINK_STATUS</code> falsos; GLKit lanza una excepción con el log</td><td>Captura en <code>iniciar</code>, prueba una variante más simple (<code>#define CALIDAD 0</code>) y, si tampoco, alternativa. Envía el log y <code>UNMASKED_RENDERER_WEBGL</code> a tu telemetría.</td></tr>
+    <tr><td>Falta una extensión (<code>EXT_color_buffer_float</code>, <code>OES_texture_float_linear</code>)</td><td><code>getExtension</code> devuelve <code>null</code></td><td>Camino alternativo: formato de 16 bits o de 8, menos calidad, otro efecto.</td></tr>
+    <tr><td>El contexto se pierde y no vuelve</td><td><code>webglcontextlost</code> sin <code>webglcontextrestored</code> al cabo de unos segundos</td><td>Alternativa estática; no dejes el lienzo transparente para siempre.</td></tr>
+    <tr><td>Una excepción en el bucle</td><td><code>try</code>/<code>catch</code> alrededor de actualizar y dibujar</td><td>Detén el bucle (no repitas el error 60 veces por segundo), muestra la alternativa e informa una vez.</td></tr>
+  </tbody>
+</table>
+<p>El motivo de <code>webglcontextcreationerror</code> es útil para la telemetría. Lo medimos arrancando Chrome con WebGL2 desactivado (<code>--disable-webgl2</code>): <code>getContext('webgl2')</code> devolvió <code>null</code> y el evento llegó durante la propia llamada con el texto <code>disabled by enterprise policy or commandline switch</code>. WebGL1 seguía disponible en esa prueba: un navegador sin WebGL2 no siempre está sin GPU.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.1.5 — Tres maneras de fallar con elegancia</h3>
+  <p>Cada botón arranca de nuevo la app en un escenario distinto. En todos, el resultado debe ser una alternativa digna, y la app anterior se destruye liberando su contexto.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.1.5 — Alternativas" data-altura="320" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<div id="escena">
+  <div id="alternativa" hidden>
+    <b>Aquí iría la animación.</b>
+    <span>El contenido de la página no depende de ella.</span>
+    <small></small>
+  </div>
+</div>
+<div id="panel">
+  <button data-modo="normal">normal</button>
+  <button data-modo="sin-webgl2">sin WebGL2</button>
+  <button data-modo="no-compila">el shader no compila</button>
+  <button data-modo="excepcion">excepción en dibujar</button>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+#escena { position: absolute; inset: 0; }
+#escena canvas { width: 100%; height: 100%; display: block; }
+#alternativa { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center;
+  align-items: center; gap: 6px; color: #fff; font: 15px system-ui; text-align: center; padding: 20px;
+  background: linear-gradient(135deg, #1b1f5e, #b8467a 60%, #ffb36b); }
+#alternativa[hidden] { display: none; }
+#alternativa small { font: 11px ui-monospace, monospace; opacity: 0.8; max-width: 90%; }
+#panel { position: absolute; left: 8px; top: 8px; }
+#panel button { margin-right: 4px; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+button:hover, select:hover { border-color: #8b7bff; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec3 col = 0.5 + 0.5 * cos(u_time + p.xyx * 2.0 + vec3(0.0, 2.0, 4.0));
+  fragColor = vec4(col * col, 1.0);
+}`;
+const escena = document.getElementById('escena');
+const alternativa = document.getElementById('alternativa');
+let app = null;
+
+function arrancar(modo) {
+  if (app && app.gl) app.destruir();                     // libera el contexto anterior (loseContext)
+  const viejo = escena.querySelector('canvas');
+  if (viejo) viejo.remove();
+  alternativa.hidden = true;
+  const canvas = document.createElement('canvas');
+  escena.prepend(canvas);
+  if (modo === 'sin-webgl2') canvas.getContext('2d');    // truco: un canvas solo admite un tipo de contexto
+  const fs = modo === 'no-compila' ? FS.replace('fragColor = ', 'fragColor = noExiste + ') : FS;
+
+  app = M7.crearApp(canvas, {
+    iniciar(gl, app) {
+      const p = GLKit.crearPrograma(gl, VS, fs);
+      app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+    },
+    dibujar(gl, e, app) {
+      if (modo === 'excepcion' && app.reloj.t > 1) throw new Error('algo se rompió en dibujar()');
+      gl.useProgram(app.gpu.p);
+      GLKit.ponerUniform(gl, app.gpu.u.u_time, app.reloj.t);
+      GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+      gl.bindVertexArray(app.gpu.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    },
+    fallar(motivo) {
+      canvas.remove();                                    // fuera el lienzo: ni negro ni transparente
+      alternativa.hidden = false;
+      alternativa.querySelector('small').textContent = motivo.split('\n').slice(0, 2).join(' ');
+    },
+  });
+}
+document.getElementById('panel').onclick = (e) => { if (e.target.dataset.modo) arrancar(e.target.dataset.modo); };
+arrancar('normal');
+</script>
+  </div>
+  <p>El escenario «sin WebGL2» usa un truco para simularlo en cualquier navegador: pedir antes un contexto <code>'2d'</code> al mismo canvas, porque un canvas solo admite un tipo de contexto y la segunda petición, de otro tipo, devuelve <code>null</code> (<a href="../05-webgl/01-contexto.html">5.1</a>). El shader roto hace que <code>GLKit.crearPrograma</code> lance una excepción dentro de <code>iniciar</code>, que <code>crearApp</code> captura. La excepción en <code>dibujar</code> aparece una sola vez en la consola, porque el bucle se detiene en lugar de repetirla en cada frame. Y en los tres casos el canvas se retira: la alternativa ocupa su sitio.</p>
+</section>
+
+<div class="callout senior" data-titulo="Qué mandar a la telemetría">
+  <p>Cuando un shader falla solo en ciertos equipos, necesitas saber cuáles. Lo mínimo: el log del compilador (<code>getShaderInfoLog</code>), la GPU (<code>UNMASKED_RENDERER_WEBGL</code> de <code>WEBGL_debug_renderer_info</code>, como en la <a href="../00-inicio/01-bienvenida.html">bienvenida</a>), el navegador y el motivo de <code>webglcontextcreationerror</code> si lo hubo. Agrupa por mensaje y envía cada fallo una vez por sesión. Y guarda el shader que falló: un log de ANGLE sin el código que lo produjo sirve de poco (el formato de esos logs lo viste en <a href="../05-webgl/10-depuracion.html">5.10</a>).</p>
+</div>
+
+<h2>Organizar el código de los shaders</h2>
+<p>Hasta aquí los shaders han sido cadenas escritas dentro del JavaScript con <em>template literals</em> (las comillas invertidas), y es una buena forma de trabajar: sin <code>fetch</code>, sin archivos que cargar, compatible con <code>file://</code>. Tres costumbres la hacen escalable:</p>
+<ul>
+  <li><strong>Marcar las cadenas.</strong> Un comentario <code>/* glsl */</code> justo antes de la comilla invertida no cambia nada para JavaScript, pero varios editores (VS Code con la extensión adecuada, por ejemplo) lo usan para colorear el GLSL de dentro.</li>
+  <li><strong>Trozos reutilizables.</strong> El ruido, las funciones de color, los easings: cadenas sueltas que se interpolan con <code>${RUIDO}</code>. Es la «directiva include» de los pobres, y funciona porque el preprocesador de GLSL solo ve el texto final. Una única regla: la línea <code>#version 300 es</code> tiene que seguir siendo la primera.</li>
+  <li><strong>Configuración desde JavaScript.</strong> Calidad, número de octavas, un modo de depuración… en lugar de pasarlos como uniforms, se pueden inyectar como <code>#define</code> y compilar una variante del shader para cada configuración.</li>
+</ul>
+
+<h3>Inyectar <code>#define</code> sin romper nada</h3>
+<p>¿Por qué <code>#define</code> y no un uniform? Porque un uniform es un valor desconocido al compilar: el compilador debe generar código para todos los casos. Con <code>#define OCTAVAS 5</code>, el bucle tiene un límite constante que el compilador puede desenrollar, y con <code>#if CALIDAD > 1</code> el código de la calidad alta ni siquiera existe en la variante baja (el compilador elimina lo que no llega a las salidas, <a href="../06-glsl/01-lenguaje.html">6.1</a>). El precio es una compilación por variante, que se hace una vez al arrancar o al cambiar de calidad.</p>
+<p>El truco tiene tres trampas, todas comprobadas en el Chrome de pruebas:</p>
+<ol>
+  <li><strong>El sitio.</strong> Si pones el <code>#define</code> delante de todo, ANGLE protesta con <code>ERROR: 0:2: 'version' : #version directive must occur before anything else, except for comments and white space</code>, y en cascada aparecen errores de sintaxis de GLSL ES 1.00. Hay que insertarlo <em>después</em> de la primera línea.</li>
+  <li><strong>Los números de línea.</strong> Cada línea insertada desplaza las del resto: con tres <code>#define</code>, un error en la línea 5 de tu código se anuncia en la línea 9. La directiva <code>#line</code> lo arregla: en ANGLE, <code>#line N</code> hace que la línea <em>siguiente</em> cuente como la N. Con <code>#line 2</code> justo después de los <code>#define</code>, el error vuelve a anunciarse en la línea 5.</li>
+  <li><strong>Los tipos.</strong> JavaScript no distingue <code>2</code> de <code>2.0</code>, y GLSL sí: un número inyectado sin punto decimal es un <code>int</code> (lo verás en el bestiario de abajo).</li>
+</ol>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function conDefines(fuente, defines) {
+  if (!/^\s*#version/.test(fuente)) {
+    throw new Error('la primera línea debe ser #version');
+  }
+  const fin = fuente.indexOf('\n');
+  let extra = '';
+  for (const k in defines) {
+    const v = defines[k];
+    const texto = v === true ? '1' : v === false ? '0' : String(v);
+    extra += '#define ' + k + ' ' + texto + '\n';
+  }
+  return fuente.slice(0, fin + 1) + extra
+       + '#line 2\n' + fuente.slice(fin + 1);
+}
+function flotante(v) {
+  const s = String(v);
+  if (/[.eE]/.test(s) || !isFinite(v)) return s;
+  return s + '.0';
+}
+</script>
+<ol>
+  <li data-l="2-5">La primera línea debe ser <code>#version</code>; si no lo es, preferimos una excepción clara ahora que un error críptico del compilador después. <code>fin</code> es la posición del salto de línea que la termina.</li>
+  <li data-l="7-11">Una línea por <code>#define</code>. Los booleanos se escriben como 1 o 0, para usarlos con <code>#if</code>; el resto, tal cual con <code>String</code>.</li>
+  <li data-l="12-13">La primera línea, los <code>#define</code>, <code>#line 2</code> (la línea que venía después de <code>#version</code> era la 2) y el resto del código.</li>
+  <li data-l="15-19">La tercera trampa: el número 2 de JavaScript se escribe como <code>"2"</code>, que en GLSL es un <code>int</code>. Esta función garantiza un literal float: añade <code>.0</code> si el texto no tiene ni punto ni exponente (<code>String(1e-7)</code> es <code>"1e-7"</code>, que ya es un float válido en GLSL).</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m7-define-entero" data-titulo="Al inyectar un número desde JavaScript, el shader deja de compilar («wrong operand types»)">
+  <p><strong>Síntoma:</strong> el shader compilaba con el valor escrito a mano y, al generarlo desde JavaScript (<code>`#define RADIO ${radio}`</code>), falla con <code>'*' : wrong operand types - no operation '*' exists that takes a left-hand operand of type 'const int' and a right operand of type 'const float'</code> o con <code>cannot convert from 'const int' to 'highp float'</code>. A veces solo falla con ciertos valores: con 2,5 compila y con 2 no.</p>
+  <p><strong>Causa:</strong> JavaScript no distingue enteros de decimales: <code>String(2.0)</code> es <code>"2"</code>. El <code>#define</code> pega ese texto y en GLSL <code>2</code> es un <code>int</code>, y GLSL no convierte tipos implícitamente (<a href="../06-glsl/01-lenguaje.html">6.1</a>). Lo comprobamos: <code>#define RADIO 2</code> seguido de <code>RADIO * 0.5</code> da exactamente esos dos errores.</p>
+  <p><strong>Solución:</strong> formatea los floats al generarlos: <code>(2).toFixed(1)</code> o una función como <code>flotante(v)</code>, que añade <code>.0</code> cuando falta. Usa texto sin decimales solo cuando quieras un <code>int</code> de verdad (el límite de un bucle).</p>
+</div>
+
+<div class="callout hack" data-titulo="#line con número de «archivo»">
+  <p><code>#line</code> admite un segundo número, el de la <em>cadena de fuente</em>, que aparece como prefijo en los errores. Lo comprobamos: tras <code>#line 1 7</code>, un error en la quinta línea se anunció como <code>ERROR: 7:5:</code> en lugar de <code>0:5:</code>. Si montas un shader con varios trozos interpolados, pon <code>#line 1 N</code> al principio de cada uno con un número distinto por trozo, y el log te dirá en qué trozo y en qué línea de ese trozo está el error. Es lo que hacen los motores grandes con sus <code>#include</code>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Montas un fragment shader así: <code>'#define OCTAVAS 5\n' + fuente</code>, donde <code>fuente</code> empieza por <code>#version 300 es</code>. ¿Qué ocurre?</p>
+  <ul>
+    <li>Compila bien: el preprocesador procesa el <code>#define</code> antes que cualquier otra cosa.<div class="explicacion">El preprocesador sí va primero, pero <code>#version</code> es especial: tiene que ser lo primero del shader (en WebGL, literalmente la primera línea). ANGLE rechaza el shader.</div></li>
+    <li data-correcta>Falla: <code>#version</code> ya no está al principio, y en cascada aparecen errores de GLSL ES 1.00, como que <code>out</code> no existe.<div class="explicacion">Correcto. El error real es el primero («#version directive must occur before anything else…»); los siguientes vienen de que, sin <code>#version</code> válido, el shader se trata como GLSL ES 1.00. Inserta los <code>#define</code> tras la primera línea y añade <code>#line 2</code>.</div></li>
+    <li>Compila, pero todos los errores futuros se anuncian una línea más abajo.<div class="explicacion">Eso pasaría si insertaras el <code>#define</code> en el sitio correcto (después de <code>#version</code>) sin <code>#line</code>. Aquí ni siquiera compila.</div></li>
+  </ul>
+</div>
+
+<h3>Recarga en caliente, sin congelar la página</h3>
+<p>Mientras desarrollas un efecto, recargar la página entera por cada cambio del shader es lento y te hace perder el estado (la escena, la cámara, el momento de la transición que estabas ajustando). La <em>recarga en caliente</em> sustituye solo el programa. Con un servidor de desarrollo como Vite se monta así (código de ejemplo: no funciona en <code>file://</code> ni en los playgrounds):</p>
+
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="main.js (con Vite, en desarrollo)">
+import fuenteFS from './fondo.frag?raw';         // ?raw: el archivo como texto
+
+let programa = compilar(fuenteFS);
+
+if (import.meta.hot) {                            // solo existe en desarrollo
+  import.meta.hot.accept('./fondo.frag?raw', (modulo) => {
+    if (modulo) cambiarFuente(modulo.default);    // la nueva versión del texto
+  });
+}
+</script>
+
+<p>La herramienta es lo de menos; la regla es lo importante: <strong>compila la versión nueva aparte y solo sustituye a la vieja si ha compilado</strong>. Si falla, muestra el error y deja la vieja funcionando. Es exactamente lo que hacen los editores de este curso cuando escribes un punto y coma de menos. Y hay un segundo detalle que casi nadie cuida: <strong>no congelar la página mientras compila</strong>. En <a href="../05-webgl/02-primer-triangulo.html">5.2</a> viste que Chrome compila en otros hilos y que preguntar <code>LINK_STATUS</code> obliga a esperar. Lo medimos con un shader grande: preguntar enseguida bloqueó el hilo principal 177,5 ms (diez frames perdidos de golpe); sondeando <code>COMPLETION_STATUS_KHR</code> de la extensión <code>KHR_parallel_shader_compile</code> una vez por frame, el programa estuvo listo en 10 frames, cada consulta costó como mucho 0,1 ms y la página no perdió ni un frame.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.1.6 — Recarga en caliente con compilación en paralelo</h3>
+  <p>Edita el shader del cuadro de texto (dentro del resultado). Cada cambio se compila en segundo plano; mientras tanto, el programa anterior sigue dibujando. Rompe algo a propósito (borra un punto y coma) y verás el error sin que la animación se detenga.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.1.6 — Recarga en caliente" data-altura="400" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<textarea id="fuente" spellcheck="false"></textarea>
+<div id="estado">…</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { position: absolute; left: 0; top: 0; width: 100%; height: 48%; display: block; }
+#fuente { position: absolute; left: 0; right: 0; top: 48%; bottom: 26px; width: 100%; box-sizing: border-box;
+  background: #12151b; color: #dfe3ea; border: 0; border-top: 1px solid #2a3040; padding: 8px;
+  font: 12px/1.45 ui-monospace, monospace; resize: none; outline: none; }
+#estado { position: absolute; left: 0; right: 0; bottom: 0; height: 26px; padding: 4px 8px; box-sizing: border-box;
+  font: 12px ui-monospace, monospace; color: #b4bccb; background: #181c24; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const area = document.getElementById('fuente');
+const estadoTxt = document.getElementById('estado');
+const gl = canvas.getContext('webgl2');
+const ext = gl.getExtension('KHR_parallel_shader_compile');   // puede no existir: entonces esperamos
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+area.value = `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float d = length(p) - 0.5 - 0.1 * sin(atan(p.y, p.x) * 6.0 + u_time * 2.0);
+  vec3 col = mix(vec3(0.55, 0.48, 1.0), vec3(0.07, 0.08, 0.1), smoothstep(0.0, 0.01, d));
+  fragColor = vec4(col, 1.0);
+}`;
+
+let actual = null;        // { programa, u }: el que dibuja
+let pendiente = null;     // { programa, vs, fs, t0, frames }: el que se está compilando
+let fuentePedida = area.value;                           // estado: lo que escribió el usuario
+
+function lanzar(fuente) {                                // encola la compilación SIN preguntar nada
+  if (pendiente) { gl.deleteProgram(pendiente.programa); gl.deleteShader(pendiente.vs); gl.deleteShader(pendiente.fs); }
+  const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, VS); gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, fuente); gl.compileShader(fs);
+  const programa = gl.createProgram();
+  gl.attachShader(programa, vs); gl.attachShader(programa, fs); gl.linkProgram(programa);
+  pendiente = { programa, vs, fs, t0: performance.now(), frames: 0 };
+}
+function revisarPendiente() {
+  if (!pendiente) return;
+  pendiente.frames++;
+  if (ext && !gl.getProgramParameter(pendiente.programa, ext.COMPLETION_STATUS_KHR)) return; // aún no: seguimos con el viejo
+  const { programa, vs, fs, t0, frames } = pendiente;
+  pendiente = null;
+  if (gl.getProgramParameter(programa, gl.LINK_STATUS)) {
+    if (actual) gl.deleteProgram(actual.programa);
+    actual = { programa, u: GLKit.uniforms(gl, programa) };
+    estadoTxt.textContent = `✓ listo en ${frames} frame(s), ${(performance.now() - t0).toFixed(0)} ms` + (ext ? ' · compilación en paralelo' : '');
+  } else {
+    const log = (gl.getShaderInfoLog(fs) || gl.getProgramInfoLog(programa) || '').trim().split('\n')[0];
+    estadoTxt.textContent = '✗ ' + log + '  → sigue el anterior';
+    gl.deleteProgram(programa);
+  }
+  gl.deleteShader(vs); gl.deleteShader(fs);             // enlazado (o fallido): los shaders sobran
+}
+
+let espera = 0;
+area.addEventListener('input', () => {                   // el evento solo anota (con un pequeño retraso)
+  clearTimeout(espera);
+  espera = setTimeout(() => { fuentePedida = area.value; }, 250);
+});
+const vao = gl.createVertexArray();
+let enviada = null;
+function frame(ms) {
+  if (fuentePedida !== enviada) { enviada = fuentePedida; lanzar(enviada); }
+  revisarPendiente();
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  if (actual) {
+    gl.useProgram(actual.programa);
+    GLKit.ponerUniform(gl, actual.u.u_time, ms / 1000);
+    GLKit.ponerUniform(gl, actual.u.u_resolution, [canvas.width, canvas.height]);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>El orden del frame es el de siempre: primero se procesa lo que el evento anotó (si la fuente cambió, se lanza la compilación), después se revisa la compilación pendiente y por último se dibuja con el programa que haya. <code>lanzar</code> no pregunta nada a GL: encola la compilación y el enlace y vuelve enseguida. <code>revisarPendiente</code> pregunta <code>COMPLETION_STATUS_KHR</code>, que no espera; solo cuando dice «listo» se consulta <code>LINK_STATUS</code>, que entonces tampoco espera. Si la extensión no existe, <code>ext</code> es <code>null</code> y se consulta <code>LINK_STATUS</code> directamente: funciona igual, solo que puede congelar un instante. Aquí el tiempo sale de <code>ms / 1000</code> para no mezclar temas; en tu app sería <code>reloj.t</code>.</p>
+</section>
+
+<h2>Presupuesto de rendimiento: calidad adaptativa</h2>
+<p>Cada frame tiene un presupuesto: 16,7 ms a 60 Hz, 8,3 ms a 120 Hz (<a href="../02-animacion/01-pipeline-render.html">2.1</a>). Un fondo que va sobrado en tu portátil puede no caber en el móvil de un usuario, y no hay un número de octavas o de píxeles que sirva para todos. La técnica de un senior es medir en el dispositivo del usuario y adaptar la calidad sobre la marcha. El mando más eficaz es el que ya tienes: <strong>la resolución del búfer</strong>. El trabajo de los fragmentos es proporcional al número de píxeles, así que un 15 % menos de lado es un 28 % menos de trabajo, y el navegador amplía el resultado sin coste.</p>
+<p>La pregunta es qué medir. El reflejo es cronometrar el código con <code>performance.now()</code>, y es un error: como viste en <a href="../05-webgl/10-depuracion.html">5.10</a>, las llamadas de WebGL solo encolan trabajo, y el JavaScript no ve cuánto tarda la GPU. Lo medimos con un fragment shader pesado (1500 iteraciones de un bucle) a pantalla completa en la máquina de pruebas:</p>
+<table class="m7-medidas">
+  <thead><tr><th>Escala del búfer</th><th>Búfer</th><th class="num">JavaScript por frame</th><th class="num">Intervalo entre frames (mediana)</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>1440 × 900</td><td class="num">≈ 0 ms</td><td class="num">66,7 ms (15 fps)</td></tr>
+    <tr><td>0,75</td><td>1080 × 675</td><td class="num">≈ 0 ms</td><td class="num">33,3 ms (30 fps)</td></tr>
+    <tr><td>0,5</td><td>720 × 450</td><td class="num">≈ 0 ms</td><td class="num">16,7 ms (60 fps)</td></tr>
+  </tbody>
+</table>
+<p>El JavaScript tarda lo mismo (nada) en los tres casos, pero el intervalo entre frames sí refleja la GPU: cuando no le da tiempo, el navegador espera y el siguiente callback de rAF llega uno o varios periodos más tarde. Fíjate también en que los intervalos salen en múltiplos exactos de 16,7 ms (<a href="../02-animacion/01-pipeline-render.html">2.1</a>). <strong>El intervalo real entre frames es la medida</strong>, y es justo lo que el reloj guarda en <code>intervaloMs</code>. El controlador queda así:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+medir(intervaloMs) {
+  if (!(intervaloMs > 0) || intervaloMs > 250) return false;
+  this.mediaMs += 0.1 * (intervaloMs - this.mediaMs);
+  if (this.enfriar > 0) {
+    this.enfriar -= intervaloMs;
+    return false;
+  }
+  const antes = this.escala;
+  if (this.mediaMs > this.objetivoMs * 1.25) {
+    this.escala = Math.max(this.min, this.escala * this.paso);
+    this.holgura = 0;
+  } else if (this.mediaMs < this.objetivoMs * 1.1) {
+    this.holgura += intervaloMs;
+    if (this.holgura > this.paciencia) {
+      this.escala = Math.min(this.max, this.escala / this.paso);
+      this.holgura = 0;
+    }
+  } else {
+    this.holgura = 0;
+  }
+  if (this.escala === antes) return false;
+  this.enfriar = 500;
+  this.mediaMs = this.objetivoMs;
+  this.cambios++;
+  return true;
+}
+</script>
+<ol>
+  <li data-l="2">Un intervalo de 0 (el primer frame tras una pausa) o de más de 250 ms (una pestaña que vuelve) no dice nada del rendimiento.</li>
+  <li data-l="3">Media móvil exponencial de los tiempos de frame, con α = 0,1: un frame suelto lento no dispara nada; una racha, sí.</li>
+  <li data-l="4-7">Tras cada cambio, medio segundo sin decidir: el búfer nuevo tarda unos frames en notarse y no queremos reaccionar a medidas del tamaño anterior. El constructor pone además <code>enfriar = 1000</code> al arrancar (un «calentamiento»): los primeros frames de una página son lentos por motivos que no tienen que ver con el efecto (compilar shaders, terminar de cargar) y no deben bajar la calidad.</li>
+  <li data-l="9-11">Si vamos más de un 25 % por encima del presupuesto, se baja ya, multiplicando por <code>paso</code> (0,85 por defecto). Bajar deprisa es importante: cada segundo por encima del presupuesto son tirones que el usuario ve.</li>
+  <li data-l="12-17">Si vamos holgados (por debajo del 110 % del presupuesto, porque a vsync fijo el intervalo nunca baja de 16,7), se acumula «holgura» y solo se sube tras <code>paciencia</code> ms seguidos (2 s por defecto). Subir despacio evita el sube y baja.</li>
+  <li data-l="18-20">En la zona intermedia, ni subimos ni bajamos, y la holgura acumulada se pierde.</li>
+  <li data-l="21-25">Si hubo cambio, se programa el enfriamiento y la media se reinicia en el presupuesto para empezar a juntar pruebas desde cero.</li>
+</ol>
+</div>
+
+<p>En la misma máquina y con un shader aún más pesado (2500 iteraciones), el controlador llevó el búfer de 1440 × 900 a 543 × 339 en 4,2 s (el primero, de calentamiento, sin decidir nada), y los fps pasaron de 14 a 60. Y a partir de ahí apareció un comportamiento curioso: cada 3 segundos intentaba subir a 639 × 399, no cabía, bajaba unos 0,6 s después y volvía a empezar.</p>
+
+<div class="callout bestiario" data-id="m7-calidad-oscila" data-titulo="La nitidez del fondo cambia cada pocos segundos (y hay un tirón en cada cambio)">
+  <p><strong>Síntoma:</strong> con calidad adaptativa, el fondo alterna periódicamente entre más nítido y más borroso, y cada cambio viene con un pequeño tirón. En la consola de rendimiento se ve una caída de fps con un ritmo regular.</p>
+  <p><strong>Causa:</strong> el controlador sube cuando va holgado, el nivel superior no cabe, baja, vuelve a ir holgado y repite. Medimos un ciclo cada 3 s entre 543 × 339 y 639 × 399. Cada cambio reasigna el búfer (que se borra, <a href="../05-webgl/01-contexto.html">5.1</a>) y el intento fallido son unos cuantos frames lentos. El fondo del problema: con la pantalla a 60 Hz, un frame que necesita 3 ms de GPU y uno que necesita 16 ms dan el mismo intervalo, 16,7 ms. Desde rAF no se puede saber cuánto margen queda: la única forma de averiguarlo es probar a subir.</p>
+  <p><strong>Solución:</strong> histéresis con memoria. Si una subida fracasa enseguida, recuerda ese nivel como «techo» y no lo vuelvas a intentar durante un buen rato (10 s o más, creciendo con cada fracaso). Sube solo con holgura sostenida, cuantiza la escala a pasos grandes y, si puedes, usa además el temporizador de GPU (<a href="../05-webgl/10-depuracion.html">5.10</a>) para estimar el margen. Es el ejercicio 7.1.5.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.1.7 — La resolución que se adapta sola</h3>
+  <p>Un shader con un bucle de coste regulable (el número de iteraciones se inyecta con <code>#define</code>, así que cada cambio compila una variante). Sube el coste hasta que tu GPU no llegue a 60 fps y observa cómo la escala baja hasta que vuelve a caber. Con «adaptativa» desmarcada, la resolución se queda fija y los fps se hunden. Si tu GPU es muy rápida, puede que necesites el máximo del deslizador.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.1.7 — Calidad adaptativa" data-altura="330" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="panel">
+  <label>coste <input type="range" id="coste" min="50" max="4000" step="50" value="200"> <span id="vcoste">200</span></label>
+  <label><input type="checkbox" id="adaptativa" checked> adaptativa</label>
+  <div id="info"></div>
+</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; }
+#panel { position: absolute; left: 8px; top: 8px; color: #e4e7ee; font: 12px system-ui; background: rgba(14,16,20,0.7); padding: 6px 8px; border-radius: 6px; }
+#panel input[type=range] { width: 160px; vertical-align: middle; }
+#info { font: 12px ui-monospace, monospace; margin-top: 4px; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float a = 0.0;
+  for (int i = 0; i < ITERACIONES; i++) {              // ITERACIONES llega por #define
+    float k = 6.2831853 * float(i) / float(ITERACIONES);
+    vec2 c = 0.45 * vec2(cos(u_time * 0.7 + k), sin(u_time * 0.9 + 2.0 * k));
+    a += sin(length(p - c) * 9.0 - u_time * 2.0);      // media de N anillos: caro, pero suave
+  }
+  a /= float(ITERACIONES);
+  vec3 col = 0.5 + 0.5 * cos(3.0 * a + vec3(0.0, 0.8, 1.6) + 3.0);
+  fragColor = vec4(col * col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const app = M7.crearApp(canvas, {
+  calidad: { min: 0.25, max: 1 },
+  estado: { iteraciones: 200 },
+  iniciar(gl, app) { app.gpu = { vao: gl.createVertexArray(), iteraciones: -1 }; },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    if (g.iteraciones !== e.iteraciones) {             // variante nueva: se compila aquí, no en el evento
+      if (g.programa) gl.deleteProgram(g.programa);
+      g.programa = GLKit.crearPrograma(gl, VS, M7.conDefines(FS, { ITERACIONES: e.iteraciones }));
+      g.u = GLKit.uniforms(gl, g.programa);
+      g.iteraciones = e.iteraciones;
+    }
+    gl.useProgram(g.programa);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const c = app.calidad;
+    info.textContent = `escala ${c.escala.toFixed(2)} · búfer ${app.ancho}×${app.alto} · ${app.fps.toFixed(0)} fps · cambios ${c.cambios}`;
+  },
+});
+document.getElementById('coste').oninput = (ev) => {
+  app.estado.iteraciones = +ev.target.value;
+  document.getElementById('vcoste').textContent = ev.target.value;
+};
+document.getElementById('adaptativa').onchange = (ev) => {
+  app.calidad.min = ev.target.checked ? 0.25 : 1;      // con min = max = 1 la escala no puede moverse
+  if (!ev.target.checked) app.calidad.escala = 1;
+};
+</script>
+  </div>
+  <p>El búfer cambia de tamaño, pero el canvas ocupa lo mismo en la página: el navegador amplía la imagen. Con el coste alto, fíjate en que los bordes se ablandan un poco y en que la animación, en cambio, vuelve a ser fluida: casi siempre es el trato que quieres. Si tu pantalla es de 120 Hz, el presupuesto del controlador sigue siendo 16,7 ms (<code>objetivoMs</code>): para un fondo animado, 60 fps estables son mejores que 120 intermitentes.</p>
+</section>
+
+<div class="callout senior" data-titulo="Otros mandos, y en qué orden tocarlos">
+  <p>La resolución es el mando más eficaz para efectos limitados por los fragmentos, pero no el único. En orden de coste para el usuario: primero el límite de DPR (casi invisible), después la escala de resolución, después variantes del shader con menos octavas o iteraciones (<code>#define CALIDAD</code>, compiladas de antemano para no dar un tirón al cambiar), después menos partículas o menos pasadas de post-proceso, y por último desactivar el efecto. Y si lo que te limita es la CPU (muchas llamadas de dibujo, simulación en JavaScript), bajar la resolución no sirve de nada: el diagnóstico de <a href="../05-webgl/10-depuracion.html">5.10</a> va primero.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Mides con <code>performance.now()</code> tu función <code>dibujar</code> y tarda 0,3 ms, pero la página va a 30 fps en un portátil modesto. ¿Qué es lo más probable?</p>
+  <ul>
+    <li>El navegador está limitando los fps a 30 para ahorrar batería.<div class="explicacion">Algunos navegadores lo hacen en modo ahorro, pero entonces el intervalo sería exactamente 33,3 ms con cualquier carga. Antes de culpar al navegador, baja la resolución y mira si cambia.</div></li>
+    <li data-correcta>La GPU no llega: tus llamadas solo encolan trabajo y el JavaScript no ve cuánto tarda en ejecutarse.<div class="explicacion">Correcto. El JavaScript de WebGL es barato porque solo anota órdenes; el coste real llega después, en la GPU, y se manifiesta como intervalos de 33,3 ms entre frames. Si al bajar la resolución los fps suben, la culpa es de los fragmentos.</div></li>
+    <li>Hay otro código de JavaScript lento que no estás midiendo.<div class="explicacion">Podría ser, pero entonces lo verías en el panel de rendimiento como tareas largas. Con solo 0,3 ms de dibujo y una escena de pantalla completa, la sospechosa número uno es la GPU.</div></li>
+  </ul>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 7.1.1 — El halo que no sigue al ratón</h3>
+  <p>Dos programas: un fondo con un halo que debería seguir al puntero y un anillo blanco encima, dibujado con mezcla. Al mover el puntero, el anillo lo sigue… y el halo no. La consola del playground muestra un error de GL cada vez que mueves el ratón. Arréglalo aplicando las reglas del esqueleto: el evento solo anota en el estado y los uniforms se asignan en el frame. Al terminar, halo y anillo deben ir juntos y la consola debe quedar limpia.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.1.1" data-altura="320" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS_FONDO = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  fragColor = vec4(vec3(0.07, 0.08, 0.1) + vec3(0.55, 0.48, 1.0) * 0.9 * exp(-5.0 * length(p - m)), 1.0);
+}`;
+const FS_ANILLO = `#version 300 es
+precision highp float;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+void main() {
+  float d = abs(distance(gl_FragCoord.xy, u_mouse) - 18.0);
+  fragColor = vec4(1.0, 1.0, 1.0, smoothstep(2.0, 0.5, d));
+}`;
+const fondo = GLKit.crearPrograma(gl, VS, FS_FONDO);
+const anillo = GLKit.crearPrograma(gl, VS, FS_ANILLO);
+const uf = GLKit.uniforms(gl, fondo), ua = GLKit.uniforms(gl, anillo);
+const vao = gl.createVertexArray();
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * canvas.width / r.width;
+  const y = (r.bottom - e.clientY) * canvas.height / r.height;
+  gl.uniform2f(uf.u_mouse.loc, x, y);            // el halo del fondo
+  gl.uniform2f(ua.u_mouse.loc, x, y);            // el anillo
+  GLKit.revisarError(gl, 'pointermove');
+});
+
+function frame() {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.bindVertexArray(vao);
+  gl.useProgram(fondo);
+  gl.uniform2f(uf.u_resolution.loc, canvas.width, canvas.height);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(anillo);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.BLEND);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS_FONDO = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  fragColor = vec4(vec3(0.07, 0.08, 0.1) + vec3(0.55, 0.48, 1.0) * 0.9 * exp(-5.0 * length(p - m)), 1.0);
+}`;
+const FS_ANILLO = `#version 300 es
+precision highp float;
+uniform vec2 u_mouse;
+out vec4 fragColor;
+void main() {
+  float d = abs(distance(gl_FragCoord.xy, u_mouse) - 18.0);
+  fragColor = vec4(1.0, 1.0, 1.0, smoothstep(2.0, 0.5, d));
+}`;
+const fondo = GLKit.crearPrograma(gl, VS, FS_FONDO);
+const anillo = GLKit.crearPrograma(gl, VS, FS_ANILLO);
+const uf = GLKit.uniforms(gl, fondo), ua = GLKit.uniforms(gl, anillo);
+const vao = gl.createVertexArray();
+
+const estado = { raton: [0.5, 0.5] };            // 0..1, origen abajo: no depende del búfer
+
+canvas.addEventListener('pointermove', (e) => {  // el evento SOLO anota
+  const r = canvas.getBoundingClientRect();
+  estado.raton = [(e.clientX - r.left) / r.width, (r.bottom - e.clientY) / r.height];
+});
+
+function frame() {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  const mx = estado.raton[0] * canvas.width, my = estado.raton[1] * canvas.height;  // derivado, al dibujar
+  gl.bindVertexArray(vao);
+  gl.useProgram(fondo);
+  gl.uniform2f(uf.u_resolution.loc, canvas.width, canvas.height);
+  gl.uniform2f(uf.u_mouse.loc, mx, my);          // con SU programa en uso
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(anillo);
+  gl.uniform2f(ua.u_mouse.loc, mx, my);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.BLEND);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Los uniforms son estado <em>del programa</em> y <code>gl.uniform*</code> actúa sobre el programa en uso (<a href="../05-webgl/04-uniforms-animacion.html">5.4</a>). ¿Qué programa está en uso cuando llega el evento, entre dos frames?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Crea un objeto <code>estado</code> con la posición del puntero (mejor normalizada, de 0 a 1). El evento escribe ahí; en <code>frame</code>, después de cada <code>useProgram</code>, asigna el <code>u_mouse</code> de ese programa.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El último programa usado en cada frame es el del anillo, y sigue en uso hasta el frame siguiente. Cuando llega el <code>pointermove</code>, <code>gl.uniform2f(uf.u_mouse.loc, …)</code> intenta asignar una location del fondo con el anillo en uso: <code>INVALID_OPERATION</code> (en DevTools: <code>location is not from the associated program</code>) y el valor se descarta. La del anillo sí funciona por casualidad, porque su programa es justo el que está en uso. Por eso el síntoma es tan desconcertante: la mitad del código «funciona».</p>
+    <p>La solución separa las responsabilidades: el evento solo guarda el puntero en <code>estado.raton</code>, normalizado, y el frame lo convierte a píxeles del búfer con el tamaño de ese momento y lo asigna a cada programa justo después de su <code>useProgram</code>. De paso desaparecen otros dos problemas: si llegan varios eventos por frame, solo el último cuenta (antes se hacían varias llamadas de GL inútiles), y si el búfer cambia de tamaño sin que se mueva el ratón, el halo no se desplaza.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.1.2 — Un reloj con pausa y cámara lenta</h3>
+  <p>Este <code>Reloj</code> usa el tiempo de la página tal cual, así que no sabe pausar ni ir a cámara lenta, y salta al volver de una pestaña. Reescribe <code>avanzar(ms)</code> (y lo que necesites del constructor) para que pasen todas las pruebas. No mires el código de la lección: intenta deducirlo de las pruebas.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.1.2" data-altura="300" data-sin-resultado data-consola-altura="220">
+<script type="text/x-js">
+class Reloj {
+  constructor({ dtMax = 0.1 } = {}) {
+    this.dtMax = dtMax;
+    this.t = 0;
+    this.dt = 0;
+    this.escala = 1;
+    this.pausado = false;
+    this.previo = null;
+  }
+  avanzar(ms) {
+    // ✗ Así no: el tiempo de la página no sabe de pausas ni de escalas
+    const nuevo = ms / 1000;
+    this.dt = nuevo - this.t;
+    this.t = nuevo;
+    return this.dt;
+  }
+  reiniciarReferencia() { this.previo = null; }
+}
+
+// ---------- pruebas (no las toques) ----------
+function prueba(nombre, ok) { console.log((ok ? '✓ ' : '✗ ') + nombre); }
+const r = new Reloj();
+r.avanzar(1000);
+prueba('el primer frame tiene dt = 0 y t = 0', r.dt === 0 && r.t === 0);
+r.avanzar(1016.7);
+prueba('a 60 Hz, dt ≈ 0,0167 s', Math.abs(r.dt - 0.0167) < 1e-9);
+r.escala = 0.5; r.avanzar(1033.4);
+prueba('con escala 0,5, dt ≈ 0,00835 s', Math.abs(r.dt - 0.00835) < 1e-9);
+const tAntes = r.t;
+r.pausado = true; r.avanzar(1050.1); r.avanzar(1066.8);
+prueba('en pausa, dt = 0 y t no cambia', r.dt === 0 && r.t === tAntes);
+r.pausado = false; r.escala = 1; r.avanzar(1083.5);
+prueba('al quitar la pausa, dt ≈ 0,0167 s (sin salto)', Math.abs(r.dt - 0.0167) < 1e-9);
+r.avanzar(6083.5);
+prueba('tras 5 s sin frames, dt se limita a 0,1 s', Math.abs(r.dt - 0.1) < 1e-12);
+r.reiniciarReferencia(); r.avanzar(9000);
+prueba('tras reiniciarReferencia(), dt = 0', r.dt === 0);
+console.log('t final = ' + r.t.toFixed(5) + ' s (esperado: 0.14175)');
+</script>
+<script type="text/x-js" data-solucion>
+class Reloj {
+  constructor({ dtMax = 0.1 } = {}) {
+    this.dtMax = dtMax;
+    this.t = 0;
+    this.dt = 0;
+    this.escala = 1;
+    this.pausado = false;
+    this.previo = null;       // ms del frame anterior; null = no hay
+  }
+  avanzar(ms) {
+    const dtReal = this.previo === null ? 0 : Math.min((ms - this.previo) / 1000, this.dtMax);
+    this.previo = ms;
+    this.dt = this.pausado ? 0 : dtReal * this.escala;   // pausa y escala actúan sobre dt…
+    this.t += this.dt;                                   // …y t es la suma de los dt
+    return this.dt;
+  }
+  reiniciarReferencia() { this.previo = null; }
+}
+
+// ---------- pruebas (no las toques) ----------
+function prueba(nombre, ok) { console.log((ok ? '✓ ' : '✗ ') + nombre); }
+const r = new Reloj();
+r.avanzar(1000);
+prueba('el primer frame tiene dt = 0 y t = 0', r.dt === 0 && r.t === 0);
+r.avanzar(1016.7);
+prueba('a 60 Hz, dt ≈ 0,0167 s', Math.abs(r.dt - 0.0167) < 1e-9);
+r.escala = 0.5; r.avanzar(1033.4);
+prueba('con escala 0,5, dt ≈ 0,00835 s', Math.abs(r.dt - 0.00835) < 1e-9);
+const tAntes = r.t;
+r.pausado = true; r.avanzar(1050.1); r.avanzar(1066.8);
+prueba('en pausa, dt = 0 y t no cambia', r.dt === 0 && r.t === tAntes);
+r.pausado = false; r.escala = 1; r.avanzar(1083.5);
+prueba('al quitar la pausa, dt ≈ 0,0167 s (sin salto)', Math.abs(r.dt - 0.0167) < 1e-9);
+r.avanzar(6083.5);
+prueba('tras 5 s sin frames, dt se limita a 0,1 s', Math.abs(r.dt - 0.1) < 1e-12);
+r.reiniciarReferencia(); r.avanzar(9000);
+prueba('tras reiniciarReferencia(), dt = 0', r.dt === 0);
+console.log('t final = ' + r.t.toFixed(5) + ' s (esperado: 0.14175)');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El reloj no puede calcular <code>t</code> a partir de <code>ms</code>: tiene que <em>acumularlo</em>. Guarda el <code>ms</code> del frame anterior en <code>this.previo</code> y calcula el <code>dt</code> real con la diferencia.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Tres transformaciones del <code>dt</code> real, en este orden: limitarlo a <code>dtMax</code>, anularlo si está en pausa y multiplicarlo por <code>escala</code>. Después, <code>t += dt</code>. ¿Qué vale el <code>dt</code> real cuando <code>previo</code> es <code>null</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La clave es que <code>t</code> deja de ser «el tiempo de la página» y pasa a ser la suma de los <code>dt</code> de la animación. Todo lo demás sale de ahí: si la pausa pone <code>dt = 0</code>, <code>t</code> no avanza; si la escala multiplica <code>dt</code>, <code>t</code> avanza más despacio; y al quitar la pausa no hay salto porque <code>t</code> nunca incluyó el tiempo que estuvo en pausa.</p>
+    <p>El orden importa en un caso: el límite se aplica al <code>dt</code> <em>real</em>, antes de la escala. Si limitaras después, con escala 0,5 una vuelta de pestaña avanzaría 0,1 s en lugar de 0,05, y con escala 3 avanzaría solo 0,1 en lugar de 0,3. Fíjate también en <code>previo</code>: el reloj guarda siempre el último <code>ms</code>, incluso en pausa, para que el primer frame tras quitarla tenga un <code>dt</code> normal (la prueba 5). <code>reiniciarReferencia</code> es para cuando el <em>bucle</em> estuvo parado (no hubo frames), y ahí sí quieres <code>dt = 0</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.1.3 — Que sobreviva a la pérdida de contexto</h3>
+  <p>Esta app usa <code>M7.crearApp</code>, pero su autor creó los recursos fuera de <code>iniciar</code> («total, solo se crean una vez»). Una simulación pierde el contexto al 1,2 s y lo recupera al 2,2 s: tras la recuperación la imagen no vuelve y la consola lo confirma. Arréglalo para que, tras recuperarse, se vea exactamente lo mismo que al principio y la prueba final diga ✓.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.1.3" data-altura="320" data-apilado data-incluir="glkit,m7kit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  uv.y += 0.01 * sin(uv.x * 20.0 + u_time * 3.0);          // una ondulación suave
+  fragColor = texture(u_tex, uv);
+}`;
+const canvas = document.getElementById('c');
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    // (vacía: «ya lo creé todo abajo»)
+  },
+  dibujar(gl, e, app) {
+    gl.useProgram(programa);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, textura);
+    GLKit.ponerUniform(gl, u.u_tex, 0);
+    GLKit.ponerUniform(gl, u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, u.u_resolution, [app.ancho, app.alto]);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+const gl = app.gl;
+const programa = GLKit.crearPrograma(gl, VS, FS);
+const u = GLKit.uniforms(gl, programa);
+const vao = gl.createVertexArray();
+const textura = GLKit.crearTextura(gl, Texturas.crear('paisaje'), { wrap: gl.MIRRORED_REPEAT });
+
+// ---------- simulación de pérdida (no la toques) ----------
+const ext = gl.getExtension('WEBGL_lose_context');
+setTimeout(() => { ext.loseContext(); console.log('… contexto perdido'); }, 1200);
+setTimeout(() => { while (gl.getError()) {} ext.restoreContext(); console.log('… contexto recuperado'); }, 2200);
+setTimeout(() => {
+  const e = gl.getError();
+  console.log(e === gl.NO_ERROR ? '✓ ningún error de GL tras recuperar' : '✗ error de GL tras recuperar: 0x' + e.toString(16));
+}, 2900);
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  uv.y += 0.01 * sin(uv.x * 20.0 + u_time * 3.0);          // una ondulación suave
+  fragColor = texture(u_tex, uv);
+}`;
+const imagen = Texturas.crear('paisaje');                  // la FUENTE se conserva en JavaScript
+const canvas = document.getElementById('c');
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    // Todo lo de la GPU, junto y desde sus descripciones: se repite al recuperar el contexto
+    const programa = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = {
+      programa,
+      u: GLKit.uniforms(gl, programa),
+      vao: gl.createVertexArray(),
+      textura: GLKit.crearTextura(gl, imagen, { wrap: gl.MIRRORED_REPEAT }),
+    };
+  },
+  dibujar(gl, e, app) {
+    const g = app.gpu;
+    gl.useProgram(g.programa);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, g.textura);
+    GLKit.ponerUniform(gl, g.u.u_tex, 0);
+    GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+const gl = app.gl;
+
+// ---------- simulación de pérdida (no la toques) ----------
+const ext = gl.getExtension('WEBGL_lose_context');
+setTimeout(() => { ext.loseContext(); console.log('… contexto perdido'); }, 1200);
+setTimeout(() => { while (gl.getError()) {} ext.restoreContext(); console.log('… contexto recuperado'); }, 2200);
+setTimeout(() => {
+  const e = gl.getError();
+  console.log(e === gl.NO_ERROR ? '✓ ningún error de GL tras recuperar' : '✗ error de GL tras recuperar: 0x' + e.toString(16));
+}, 2900);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué pasa con <code>programa</code>, <code>u</code>, <code>vao</code> y <code>textura</code> cuando el contexto se pierde? ¿Quién los vuelve a crear cuando se recupera?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>M7.crearApp</code> vuelve a llamar a <code>iniciar</code> tras la recuperación. Mueve ahí la creación de los cuatro recursos y guárdalos en un objeto (por ejemplo, <code>app.gpu</code>) que <code>dibujar</code> lea. ¿Qué tienes que conservar fuera de <code>iniciar</code> para poder volver a subir la textura?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Tras la pérdida, <code>programa</code>, <code>vao</code> y <code>textura</code> son asas de un contexto que ya no existe (<code>gl.isProgram(programa)</code> devuelve <code>false</code>), y las locations de <code>u</code> pertenecen a un programa muerto. <code>crearApp</code> vuelve a llamar a <code>iniciar</code>, pero estaba vacía, y <code>dibujar</code> sigue usando los objetos viejos: <code>useProgram</code> y <code>bindTexture</code> dan <code>INVALID_OPERATION</code> (<code>object does not belong to this context</code>) y no se dibuja nada. Es el bestiario <a href="#m7-locations-viejas">de la escena negra tras recuperar</a>.</p>
+    <p>La solución mueve los cuatro recursos a <code>iniciar</code> y los agrupa en <code>app.gpu</code>, que se sustituye entero en cada llamada. Lo que <em>no</em> se mueve es la imagen fuente (<code>Texturas.crear('paisaje')</code>, un canvas 2D): vive en JavaScript y sobrevive a la pérdida, así que <code>iniciar</code> puede volver a subirla. Si la textura viniera de una imagen que ya no conservas, tendrías que volver a descargarla: por eso conviene guardar la fuente (o un <code>ImageBitmap</code>) mientras la app viva.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.1.4 — <code>#define</code> que no rompe nada</h3>
+  <p>Escribe <code>conDefines(fuente, defines)</code> y <code>flotante(v)</code> para que pasen las cinco pruebas: el shader con defines debe compilar, un error en la línea 6 debe anunciarse en la línea 6 y <code>flotante</code> debe producir siempre un literal float de GLSL.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.1.4" data-altura="300" data-sin-resultado data-consola-altura="220">
+<script type="text/x-js">
+function conDefines(fuente, defines) {
+  // ✗ versión ingenua: los #define delante de todo
+  let extra = '';
+  for (const k in defines) extra += '#define ' + k + ' ' + defines[k] + '\n';
+  return extra + fuente;
+}
+function flotante(v) {
+  return String(v);
+}
+
+// ---------- pruebas (no las toques) ----------
+const gl = document.createElement('canvas').getContext('webgl2');
+function compilar(fuente) {
+  const s = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(s, fuente); gl.compileShader(s);
+  return { ok: gl.getShaderParameter(s, gl.COMPILE_STATUS), log: (gl.getShaderInfoLog(s) || '').trim() };
+}
+function prueba(nombre, ok, detalle) { console.log((ok ? '✓ ' : '✗ ') + nombre + (!ok && detalle ? '\n    ' + detalle : '')); }
+
+const BUENO = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  float r = RADIO * 0.5;
+  fragColor = vec4(vec3(r), float(OCTAVAS) / 10.0);
+}`;
+const r1 = compilar(conDefines(BUENO, { RADIO: flotante(2), OCTAVAS: 5 }));
+prueba('compila con RADIO = flotante(2) y OCTAVAS = 5', r1.ok, r1.log.split('\n')[0]);
+
+const ROTO = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  float x = 1.0;
+  fragColor = vec4(x, y, 0.0, 1.0);
+}`;
+const r2 = compilar(conDefines(ROTO, { A: 1, B: 2, C: 3 }));
+prueba("el error de 'y' (línea 6) se anuncia en la línea 6", /0:6:.*'y'/.test(r2.log), r2.log.split('\n')[0]);
+prueba('flotante(2) === "2.0"', flotante(2) === '2.0', 'dio ' + JSON.stringify(flotante(2)));
+prueba('flotante(0.25) === "0.25"', flotante(0.25) === '0.25', 'dio ' + JSON.stringify(flotante(0.25)));
+prueba('flotante(1e-7) compila como float', compilar('#version 300 es\nprecision highp float;\nout vec4 c;\nvoid main() { float f = ' + flotante(1e-7) + '; c = vec4(f); }').ok, 'dio ' + flotante(1e-7));
+</script>
+<script type="text/x-js" data-solucion>
+function conDefines(fuente, defines) {
+  const fin = fuente.indexOf('\n');                     // final de la línea #version
+  let extra = '';
+  for (const k in defines) {
+    const v = defines[k];
+    extra += '#define ' + k + ' ' + (v === true ? '1' : v === false ? '0' : String(v)) + '\n';
+  }
+  // #version, los #define y #line 2: la línea siguiente vuelve a ser la 2
+  return fuente.slice(0, fin + 1) + extra + '#line 2\n' + fuente.slice(fin + 1);
+}
+function flotante(v) {
+  const s = String(v);
+  return /[.eE]/.test(s) || !isFinite(v) ? s : s + '.0'; // "2" → "2.0"; "0.25" y "1e-7" ya son float
+}
+
+// ---------- pruebas (no las toques) ----------
+const gl = document.createElement('canvas').getContext('webgl2');
+function compilar(fuente) {
+  const s = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(s, fuente); gl.compileShader(s);
+  return { ok: gl.getShaderParameter(s, gl.COMPILE_STATUS), log: (gl.getShaderInfoLog(s) || '').trim() };
+}
+function prueba(nombre, ok, detalle) { console.log((ok ? '✓ ' : '✗ ') + nombre + (!ok && detalle ? '\n    ' + detalle : '')); }
+
+const BUENO = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  float r = RADIO * 0.5;
+  fragColor = vec4(vec3(r), float(OCTAVAS) / 10.0);
+}`;
+const r1 = compilar(conDefines(BUENO, { RADIO: flotante(2), OCTAVAS: 5 }));
+prueba('compila con RADIO = flotante(2) y OCTAVAS = 5', r1.ok, r1.log.split('\n')[0]);
+
+const ROTO = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  float x = 1.0;
+  fragColor = vec4(x, y, 0.0, 1.0);
+}`;
+const r2 = compilar(conDefines(ROTO, { A: 1, B: 2, C: 3 }));
+prueba("el error de 'y' (línea 6) se anuncia en la línea 6", /0:6:.*'y'/.test(r2.log), r2.log.split('\n')[0]);
+prueba('flotante(2) === "2.0"', flotante(2) === '2.0', 'dio ' + JSON.stringify(flotante(2)));
+prueba('flotante(0.25) === "0.25"', flotante(0.25) === '0.25', 'dio ' + JSON.stringify(flotante(0.25)));
+prueba('flotante(1e-7) compila como float', compilar('#version 300 es\nprecision highp float;\nout vec4 c;\nvoid main() { float f = ' + flotante(1e-7) + '; c = vec4(f); }').ok, 'dio ' + flotante(1e-7));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Los <code>#define</code> tienen que ir justo después de la primera línea. <code>fuente.indexOf('\n')</code> te da dónde termina.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Tras insertar los <code>#define</code>, una directiva <code>#line N</code> hace que la línea siguiente cuente como la N. ¿Qué número tenía la línea que iba justo después de <code>#version</code>? Para <code>flotante</code>: un literal float de GLSL necesita un punto decimal o un exponente.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La versión ingenua falla de dos maneras. Con los <code>#define</code> delante, <code>#version</code> deja de ser lo primero y el shader ni compila. Y aunque lo colocaras bien, los tres <code>#define</code> desplazarían el error de la línea 6 a la 9. La solución corta la fuente tras la primera línea, inserta los <code>#define</code> y añade <code>#line 2</code>, porque la línea que seguía a <code>#version</code> era la 2: desde ahí la numeración vuelve a coincidir con la de tu archivo.</p>
+    <p><code>flotante</code> resuelve la otra mitad: <code>String(2)</code> da <code>"2"</code>, un <code>int</code> en GLSL, y <code>RADIO * 0.5</code> no compila porque GLSL no convierte tipos solo (<a href="#m7-define-entero">el bestiario de la lección</a>). Si el texto ya tiene punto o exponente (<code>"0.25"</code>, <code>"1e-7"</code>) es un float válido; si no, basta con añadir <code>.0</code>. Los <code>int</code> de verdad, como <code>OCTAVAS</code>, se pasan sin <code>flotante</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 7.1.5 — Calidad que no oscila</h3>
+  <p>La simulación de abajo reproduce una GPU: el coste del frame es proporcional a los píxeles (la escala al cuadrado) y la pantalla solo presenta en múltiplos de 16,667 ms. Con el controlador de la lección (<code>M7.Calidad</code>) la escala oscila sin parar entre dos niveles, como en el bestiario. Escribe <code>CalidadEstable</code> para que, con la carga constante, haga como mucho 6 cambios entre los segundos 8 y 30 (cuando ya ha tenido tiempo de adaptarse), y que aun así vuelva a escala 1 cuando a los 30 s la escena se aligera.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.1.5" data-altura="320" data-sin-resultado data-consola-altura="220" data-incluir="m7kit">
+<script type="text/x-js">
+// Punto de partida: se comporta igual que M7.Calidad. Sobrescribe medir() entero.
+class CalidadEstable extends M7.Calidad {
+  medir(intervaloMs) {
+    return super.medir(intervaloMs);
+  }
+}
+
+// ---------- simulación (no la toques) ----------
+function simular(Clase) {
+  const c = new Clase({ min: 0.25 });
+  let t = 0, cambiosTramo = 0, lentos = 0;
+  const cambios = [];
+  while (t < 60000) {
+    const coste = t < 30000 ? 45 : 12;                 // ms de GPU a escala 1
+    const iv = Math.max(1, Math.ceil(coste * c.escala * c.escala / 16.667 - 1e-9)) * 16.667;
+    if (c.medir(iv)) {
+      cambios.push((t / 1000).toFixed(1) + ' s → ' + c.escala.toFixed(2));
+      if (t > 8000 && t < 30000) cambiosTramo++;
+    }
+    if (iv > 17) lentos++;
+    t += iv;
+  }
+  return { cambiosTramo, lentos, final: c.escala, cambios };
+}
+const base = simular(M7.Calidad), tuya = simular(CalidadEstable);
+console.log('M7.Calidad:     ' + base.cambiosTramo + ' cambios entre 8 y 30 s · ' + base.lentos + ' frames lentos en total');
+console.log('CalidadEstable: ' + tuya.cambiosTramo + ' cambios entre 8 y 30 s · ' + tuya.lentos + ' frames lentos en total');
+console.log('tus cambios: ' + tuya.cambios.join(' · '));
+console.log((tuya.cambiosTramo <= 6 ? '✓' : '✗') + ' como mucho 6 cambios con la carga constante');
+console.log((tuya.final === 1 ? '✓' : '✗') + ' vuelve a escala 1 cuando la escena se aligera');
+</script>
+<script type="text/x-js" data-solucion>
+class CalidadEstable extends M7.Calidad {
+  constructor(opciones) {
+    super(opciones);
+    this.techo = Infinity;       // escala que falló hace poco: no volver a intentarla todavía
+    this.bloqueo = 0;            // ms que quedan de castigo para ese techo
+    this.desdeSubida = Infinity; // ms desde la última subida
+  }
+  medir(intervaloMs) {
+    if (!(intervaloMs > 0) || intervaloMs > 250) return false;
+    this.bloqueo = Math.max(0, this.bloqueo - intervaloMs);
+    if (this.bloqueo === 0) this.techo = Infinity;       // pasado el castigo, se puede volver a probar
+    this.desdeSubida += intervaloMs;
+    this.mediaMs += 0.1 * (intervaloMs - this.mediaMs);
+    if (this.enfriar > 0) { this.enfriar -= intervaloMs; return false; }
+    const antes = this.escala;
+    if (this.mediaMs > this.objetivoMs * 1.25) {
+      if (this.desdeSubida < 1500) {                     // la última subida no cabía: recordarlo
+        this.techo = this.escala;
+        this.bloqueo = 10000;
+      }
+      this.escala = Math.max(this.min, this.escala * this.paso);
+      this.holgura = 0;
+    } else if (this.mediaMs < this.objetivoMs * 1.1) {
+      this.holgura += intervaloMs;
+      const nueva = Math.min(this.max, this.escala / this.paso);
+      if (this.holgura > this.paciencia && nueva < this.techo - 1e-9) {
+        this.escala = nueva;
+        this.holgura = 0;
+        this.desdeSubida = 0;
+      }
+    } else {
+      this.holgura = 0;
+    }
+    if (this.escala === antes) return false;
+    this.enfriar = 500;
+    this.mediaMs = this.objetivoMs;
+    this.cambios++;
+    return true;
+  }
+}
+
+// ---------- simulación (no la toques) ----------
+function simular(Clase) {
+  const c = new Clase({ min: 0.25 });
+  let t = 0, cambiosTramo = 0, lentos = 0;
+  const cambios = [];
+  while (t < 60000) {
+    const coste = t < 30000 ? 45 : 12;                 // ms de GPU a escala 1
+    const iv = Math.max(1, Math.ceil(coste * c.escala * c.escala / 16.667 - 1e-9)) * 16.667;
+    if (c.medir(iv)) {
+      cambios.push((t / 1000).toFixed(1) + ' s → ' + c.escala.toFixed(2));
+      if (t > 8000 && t < 30000) cambiosTramo++;
+    }
+    if (iv > 17) lentos++;
+    t += iv;
+  }
+  return { cambiosTramo, lentos, final: c.escala, cambios };
+}
+const base = simular(M7.Calidad), tuya = simular(CalidadEstable);
+console.log('M7.Calidad:     ' + base.cambiosTramo + ' cambios entre 8 y 30 s · ' + base.lentos + ' frames lentos en total');
+console.log('CalidadEstable: ' + tuya.cambiosTramo + ' cambios entre 8 y 30 s · ' + tuya.lentos + ' frames lentos en total');
+console.log('tus cambios: ' + tuya.cambios.join(' · '));
+console.log((tuya.cambiosTramo <= 6 ? '✓' : '✗') + ' como mucho 6 cambios con la carga constante');
+console.log((tuya.final === 1 ? '✓' : '✗') + ' vuelve a escala 1 cuando la escena se aligera');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Mira la lista de cambios del original: sube a 0,61, medio segundo después baja a 0,52, y así cada 2,5 s. La información útil es «acabo de subir y ha fallado». ¿Cómo sabes que una bajada llega justo después de una subida?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Guarda los milisegundos transcurridos desde la última subida. Si bajas y han pasado menos de 1,5 s, apunta la escala que falló como <code>techo</code> y prohíbe volver a ella durante, por ejemplo, 10 s. Pasado ese tiempo, olvida el techo: la escena pudo haberse aligerado.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El original no tiene memoria: cada vez que acumula 2 s de holgura vuelve a intentar el mismo nivel que acaba de fallar. La solución añade tres campos: <code>desdeSubida</code> (para reconocer que una bajada es la consecuencia inmediata de una subida), <code>techo</code> (la escala que no cupo) y <code>bloqueo</code> (cuánto tiempo más la respetamos). Con un castigo de 10 s, los intentos fallidos pasan de uno cada 2,5 s a uno cada 10 s: 4 cambios en el tramo en lugar de 16, y 117 frames lentos en lugar de 213.</p>
+    <p>¿Por qué no prohibir el techo para siempre? Porque las condiciones cambian: a los 30 s la escena se aligera y el controlador debe poder volver a escala 1, y solo puede averiguarlo probando (como explica el bestiario, a vsync fijo el intervalo no revela el margen). Un paso más, habitual en controladores reales, es que el castigo crezca con cada fracaso seguido (10 s, 20 s, 40 s…) y se reinicie cuando una subida funciona: es la misma idea que el <em>backoff</em> exponencial de los reintentos de red.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Cuatro funciones con responsabilidades estrictas: <code>iniciar</code> crea la GPU desde descripciones (y se puede repetir), <code>redimensionar</code> rehace lo que depende del tamaño, <code>actualizar(estado, dt)</code> avanza el estado sin tocar GL y <code>dibujar(gl, estado)</code> lo traduce a píxeles. Los eventos solo anotan en el estado.</li>
+    <li>Estado es lo que no puedes reconstruir; los objetos de GL son una caché que se recrea. Guarda el estado en unidades independientes del búfer (0 a 1, px CSS) y convierte al dibujar.</li>
+    <li>Un único <code>requestAnimationFrame</code> y un único reloj para el DOM y la GPU: leer, actualizar, escribir DOM, dibujar. Medido: 0,3 px de separación con el mismo bucle frente a picos de 8,6 px con un <code>setInterval</code>.</li>
+    <li>Tamaño con el patrón de 5.1 más un límite de DPR, un tope de píxeles totales y <code>redimensionar</code> solo cuando cambia. Una sola decisión (<code>revisar</code>) combina todos los motivos de pausa.</li>
+    <li>Reloj propio: <code>t</code> es la suma de <code>dt × escala</code> (0 en pausa), con el <code>dt</code> real limitado. Pausar el tiempo no es pausar el bucle. Todo lo que deba ralentizarse debe beber de ese reloj.</li>
+    <li>Pérdida de contexto: <code>preventDefault</code>, parar y, al recuperar, repetir <code>iniciar</code> y <code>redimensionar</code>. Nada de la GPU fuera de <code>iniciar</code>. Pide <code>WEBGL_lose_context</code> antes de perder el contexto.</li>
+    <li>Mejora progresiva: sin WebGL2, con un shader que no compila o con una excepción en el bucle, alternativa estática y un único informe, nunca un rectángulo negro.</li>
+    <li>Shaders: trozos interpolados, <code>#define</code> insertados tras <code>#version</code> con <code>#line 2</code>, floats con punto decimal. Recarga en caliente compilando aparte, sondeando <code>COMPLETION_STATUS_KHR</code> y sustituyendo solo si compila.</li>
+    <li>Calidad adaptativa: mide el intervalo real entre frames (el JavaScript no ve la GPU), baja deprisa, sube despacio y recuerda los niveles que fallaron.</li>
+  </ul>
+</div>
+
+<p>En la siguiente lección, <a href="02-interaccion.html">7.2</a>, llenamos el estado con lo que hace el usuario: el puntero con sus conversiones y su suavizado, clics que dejan ondas, varios dedos a la vez, el scroll y elementos del DOM que guían al shader, sin olvidar el teclado, la preferencia de movimiento reducido y la accesibilidad.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices">MDN: WebGL best practices</a>, con recomendaciones de robustez y de rendimiento, entre ellas la compilación en paralelo.</li>
+  <li><a href="https://www.khronos.org/webgl/wiki/HandlingContextLost">Khronos: Handling Context Lost</a>, la guía oficial para recuperarse de la pérdida de contexto.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/KHR_parallel_shader_compile">MDN: KHR_parallel_shader_compile</a>, la extensión de <code>COMPLETION_STATUS_KHR</code>.</li>
+  <li><a href="https://web.dev/articles/device-pixel-content-box">web.dev: Pixel-perfect rendering with devicePixelContentBox</a>, el patrón de tamaño que usa <code>crearApp</code>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m7kit.js"></script>
+</body>
+</html>

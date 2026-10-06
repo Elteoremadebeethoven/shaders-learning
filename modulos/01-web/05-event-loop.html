@@ -1,0 +1,788 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.5 · El event loop y el frame — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m1.css">
+</head>
+<body data-leccion="01-web/event-loop">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 1 · Fundamentos web mínimos</p>
+  <h1>El event loop y el frame</h1>
+  <p class="resumen">JavaScript tiene un solo hilo, y lo comparte con el cálculo de estilos, el layout y el pintado. Entender en qué orden se ejecutan las tareas, las microtareas y los callbacks de <code>requestAnimationFrame</code>, y cuándo pinta el navegador, es entender por qué una animación va fluida, tiembla o se congela.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 1.3, 1.4</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás qué es la pila de llamadas, la cola de tareas y la de microtareas, y exactamente cuándo se vacía cada una.</li>
+      <li>Conocerás los pasos de un frame (callbacks de rAF, estilo, layout, pintado, composición) y cuándo ocurren.</li>
+      <li>Resolverás puzzles de orden con <code>setTimeout</code>, promesas, <code>queueMicrotask</code> y <code>requestAnimationFrame</code>, y sabrás cuáles no tienen respuesta única.</li>
+      <li>Entenderás por qué una tarea larga congela una animación de JavaScript pero no una de CSS sobre <code>transform</code>, y cómo trocear el trabajo.</li>
+      <li>Conocerás las rarezas de los temporizadores, los relojes (<code>performance.now()</code> frente a <code>Date.now()</code>) y las pestañas en segundo plano.</li>
+      <li>Detectarás el layout forzado: leer una medida justo después de escribir un estilo.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Un solo hilo para todo</h2>
+<p>El JavaScript de una página se ejecuta en un único hilo, el <strong>hilo principal</strong>. Y ese hilo no es solo tuyo: el navegador lo usa también para calcular estilos, hacer el layout, pintar, despachar eventos y ejecutar los callbacks de los temporizadores. Mientras tu código se ejecuta, nada de eso puede ocurrir. Si un cálculo tarda 200 ms, la página está 200 ms sin responder a clics y sin pintar nada nuevo.</p>
+<p>Para decidir qué se ejecuta y cuándo, el navegador sigue un algoritmo definido en el estándar HTML: el <strong>event loop</strong> (bucle de eventos). Es un bucle que, simplificando mucho, hace esto una y otra vez:</p>
+<ol>
+  <li>Coge <strong>una tarea</strong> de la cola y la ejecuta entera.</li>
+  <li>Ejecuta <strong>todas las microtareas</strong> pendientes.</li>
+  <li>Si toca, <strong>pinta un frame</strong>: callbacks de <code>requestAnimationFrame</code>, estilo, layout, pintado y composición.</li>
+</ol>
+<p>Esta lección desmonta cada paso, con experimentos en Chrome, porque de este orden depende todo lo que harás en el módulo 2: un bucle de animación bien hecho es, literalmente, un buen uso del event loop.</p>
+
+<div class="callout porque">
+  <p>Cuando una animación tiembla, se congela o da saltos, la causa casi nunca es el código que dibuja: es <em>cuándo</em> se ejecuta. Una tarea demasiado larga, un temporizador que no está sincronizado con la pantalla o un bucle de promesas que no deja pintar. Si sabes qué hace el event loop, sabes dónde mirar.</p>
+</div>
+
+<h2>La pila de llamadas</h2>
+<p>La <strong>pila de llamadas</strong> (<em>call stack</em>) es la lista de funciones que están ejecutándose ahora mismo, una encima de otra. Cuando llamas a una función, se apila; cuando termina, se desapila y el control vuelve a la de debajo. JavaScript ejecuta lo que está en la cima, y solo eso.</p>
+<script type="text/plain" class="codigo" data-lang="js">
+function dibujarParticula(p) { ctx.fillRect(p.x, p.y, 2, 2); }     // 3. cima de la pila
+function dibujarTodo() { for (const p of particulas) dibujarParticula(p); }  // 2.
+function frame(t) { actualizar(t); dibujarTodo(); requestAnimationFrame(frame); } // 1. base
+</script>
+<p>Cuando <code>dibujarParticula</code> se está ejecutando, la pila es <code>frame → dibujarTodo → dibujarParticula</code>. La pila tiene un tamaño máximo: una recursión sin final acaba en <code>RangeError: Maximum call stack size exceeded</code> (el mismo error que viste con <code>Math.max(...array)</code> gigantes en la lección <a href="03-js-lenguaje.html">1.3</a>). Lo importante para el event loop es un momento concreto: cuando la pila <strong>queda vacía</strong>. Solo entonces puede el navegador hacer otra cosa.</p>
+
+<h2>Tareas y microtareas</h2>
+<p>Hay dos colas de trabajo pendiente, con reglas muy distintas:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th></th><th>Tareas (<em>tasks</em>)</th><th>Microtareas (<em>microtasks</em>)</th></tr></thead>
+  <tbody>
+    <tr><td>Qué las crea</td><td>ejecutar un <code>&lt;script&gt;</code>, un temporizador que vence (<code>setTimeout</code>, <code>setInterval</code>), un evento del usuario (clic, tecla), un mensaje (<code>postMessage</code>)</td><td>callbacks de promesas (<code>then</code>, <code>catch</code>, <code>finally</code>, la continuación tras un <code>await</code>), <code>queueMicrotask</code>, <code>MutationObserver</code></td></tr>
+    <tr><td>Cuántas por vuelta</td><td><strong>una</strong></td><td><strong>todas</strong>, incluidas las que se encolen mientras se vacía la cola</td></tr>
+    <tr><td>Cuándo se ejecutan</td><td>cuando el bucle de eventos elige la siguiente</td><td>en cuanto la pila de llamadas queda vacía (al terminar una tarea, y también entre los oyentes de un evento real)</td></tr>
+    <tr><td>¿Se puede pintar entre dos?</td><td>sí</td><td>no: el frame espera a que la cola quede vacía</td></tr>
+  </tbody>
+</table>
+<p>El momento en que se vacían las microtareas se llama <strong>punto de control de microtareas</strong> (<em>microtask checkpoint</em>), y ocurre cada vez que la pila de llamadas queda vacía. Fíjate en que no dice «al terminar cada tarea», sino «cada vez que la pila queda vacía», y la diferencia se nota:</p>
+<div class="callout senior" data-titulo="Un clic real no es lo mismo que el.click()">
+  <p>Lo comprobé con dos oyentes de <code>click</code> en el mismo botón, cada uno de los cuales encola una microtarea:</p>
+  <ul>
+    <li>Con un <strong>clic real</strong> del usuario, el resultado fue <code>L1 M1 L2 M2</code>: el navegador llama a cada oyente con la pila vacía debajo, así que al terminar el primero hay un punto de control y su microtarea se ejecuta antes que el segundo oyente.</li>
+    <li>Con <strong><code>boton.click()</code></strong> desde tu código, fue <code>L1 L2 M1 M2</code>: los oyentes se ejecutan encima de tu script, la pila nunca queda vacía entre ellos, y las dos microtareas esperan a que termine todo.</li>
+  </ul>
+  <p>Disparar un evento desde código no es exactamente igual que el evento real. Rara vez importa, pero cuando importa (un test automático que «no reproduce» un fallo, por ejemplo) es desconcertante.</p>
+</div>
+
+<h2>El frame: cuándo pinta el navegador</h2>
+<p>Un monitor de 60 Hz muestra una imagen nueva cada 16,7 ms. El navegador intenta producir un frame para cada refresco, y lo hace <em>entre tareas</em>: cuando toca pintar y el hilo está libre, ejecuta los pasos de «actualizar el renderizado». Medí los instantes de 20 callbacks seguidos de <code>requestAnimationFrame</code> en Chrome: estaban separados 16,6 o 16,7 ms, como un reloj (a 120 Hz serían 8,3 ms: la lección <a href="../02-animacion/03-raf.html">2.3</a> se ocupa de eso).</p>
+
+<svg class="diagrama" viewBox="0 0 760 270" width="760" role="img" aria-label="El event loop: una tarea, todas las microtareas y, si toca, un frame">
+  <defs>
+    <marker id="m15-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="20" y="30" width="170" height="70" rx="10"/>
+  <text x="105" y="58" text-anchor="middle" style="font-weight:700">1 · una tarea</text>
+  <text x="105" y="80" text-anchor="middle" class="texto-tenue" style="font-size:12px">script, timer, evento…</text>
+  <rect class="caja" x="250" y="30" width="190" height="70" rx="10"/>
+  <text x="345" y="58" text-anchor="middle" style="font-weight:700">2 · TODAS las microtareas</text>
+  <text x="345" y="80" text-anchor="middle" class="texto-tenue" style="font-size:12px">promesas, queueMicrotask</text>
+  <path d="M192 65 L246 65" stroke="currentColor" stroke-width="2" marker-end="url(#m15-fl)"/>
+  <path d="M442 65 L496 65" stroke="currentColor" stroke-width="2" marker-end="url(#m15-fl)"/>
+  <rect class="caja" x="500" y="30" width="120" height="70" rx="10"/>
+  <text x="560" y="58" text-anchor="middle" style="font-weight:700">¿toca frame?</text>
+  <text x="560" y="80" text-anchor="middle" class="texto-tenue" style="font-size:12px">≈ cada 16,7 ms</text>
+  <path d="M622 65 L700 65 L700 250 L105 250 L105 104" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="5 4" marker-end="url(#m15-fl)"/>
+  <text x="710" y="160" class="texto-tenue" style="font-size:12px">no</text>
+  <path d="M560 102 L560 138" stroke="currentColor" stroke-width="2" marker-end="url(#m15-fl)"/>
+  <text x="568" y="125" class="texto-tenue" style="font-size:12px">sí</text>
+  <g style="font-size:12px">
+    <rect x="160" y="142" width="96" height="44" rx="8" style="fill:color-mix(in srgb, var(--c-bestiario) 22%, var(--surface));stroke:var(--c-bestiario)"/>
+    <text x="208" y="160" text-anchor="middle" style="font-weight:700">callbacks</text>
+    <text x="208" y="176" text-anchor="middle">de rAF</text>
+    <rect class="caja" x="272" y="142" width="80" height="44" rx="8"/><text x="312" y="168" text-anchor="middle">estilo</text>
+    <rect class="caja" x="368" y="142" width="80" height="44" rx="8"/><text x="408" y="168" text-anchor="middle">layout</text>
+    <rect class="caja" x="464" y="142" width="80" height="44" rx="8"/><text x="504" y="168" text-anchor="middle">pintado</text>
+    <rect class="caja" x="560" y="142" width="100" height="44" rx="8"/><text x="610" y="168" text-anchor="middle">composición</text>
+  </g>
+  <path d="M258 164 L268 164 M354 164 L364 164 M450 164 L460 164 M546 164 L556 164" stroke="currentColor" stroke-width="1.5"/>
+  <text x="408" y="212" text-anchor="middle" class="texto-tenue" style="font-size:12px">(después del layout: callbacks de ResizeObserver; y se actualizan los IntersectionObserver)</text>
+  <text x="160" y="232" class="texto-tenue" style="font-size:12px">tras cada callback de rAF también se vacían las microtareas</text>
+</svg>
+
+<p>Los pasos de un frame, en orden:</p>
+<ol>
+  <li><strong>Callbacks de <code>requestAnimationFrame</code></strong>. Es tu oportunidad de cambiar el DOM, los estilos o dibujar en un canvas justo antes de que se pinte: por eso es el sitio del bucle de animación. Todos los callbacks del mismo frame reciben el mismo instante (dos callbacks recibieron exactamente 23,1 ms), y un <code>requestAnimationFrame</code> pedido <em>dentro</em> de un callback se ejecuta en el frame siguiente, no en este.</li>
+  <li><strong>Estilo</strong>: calcula qué reglas CSS se aplican a cada elemento.</li>
+  <li><strong>Layout</strong>: calcula la posición y el tamaño de cada caja. Después, se ejecutan los callbacks de <code>ResizeObserver</code> (comprobé en la lección <a href="04-js-dom-eventos.html">1.4</a> que llegaban después de los de rAF) y se actualizan los <code>IntersectionObserver</code>.</li>
+  <li><strong>Pintado</strong>: convierte las cajas en listas de órdenes de dibujo.</li>
+  <li><strong>Composición</strong>: combina las capas pintadas y las manda a la pantalla. Esta parte ocurre en otro hilo, el del <em>compositor</em>, con ayuda de la GPU. Recuerda este detalle: dentro de poco lo veremos en acción.</li>
+</ol>
+<p>El pipeline de renderizado completo, con qué propiedades CSS disparan cada paso, es la lección <a href="../02-animacion/01-pipeline-render.html">2.1</a>. Aquí nos basta con saber cuándo ocurre: <strong>entre tareas, nunca en medio de una</strong>.</p>
+
+<h2>La demo: el event loop paso a paso</h2>
+<p>Este simulador ejecuta pequeños programas paso a paso, mostrando la línea que se está ejecutando, la pila de llamadas, las colas y la consola. Sigue las reglas del estándar que acabas de leer, y cada programa da el mismo resultado que comprobé en Chrome. Empieza con «El clásico» y avanza con «paso ▶»; lee la explicación de abajo en cada paso.</p>
+
+<div class="demo ancho" id="demo-bucle">
+  <div class="m1-bucle">
+    <pre class="m1-bucle-codigo"></pre>
+    <div>
+      <div class="m1-bucle-paneles">
+        <div class="m1-panel pila"><h5>Pila de llamadas</h5><ol></ol></div>
+        <div class="m1-panel micro"><h5>Microtareas</h5><ol></ol></div>
+        <div class="m1-panel tareas"><h5>Tareas</h5><ol></ol></div>
+        <div class="m1-panel timers"><h5>Temporizadores</h5><ol></ol></div>
+        <div class="m1-panel raf"><h5>Callbacks de rAF</h5><ol></ol></div>
+        <div class="m1-panel consola"><h5>Consola</h5><div class="salida"></div></div>
+      </div>
+      <div class="m1-bucle-frame"><span data-p="raf">rAF</span>→<span data-p="pintar">estilo · layout · pintado · composición</span></div>
+    </div>
+  </div>
+  <div class="m1-bucle-texto"></div>
+  <div class="m1-bucle-nota" hidden></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+<p>Recorre todos los programas del selector. Tres cosas que observar: en «Microtareas que encolan microtareas», la microtarea que se añade durante el punto de control se ejecuta en ese mismo punto de control, antes que el timeout; en «rAF dentro de rAF», hacen falta dos frames; y compara «Dos oyentes: clic REAL» con «Los mismos oyentes con boton.click()»: es el experimento de la sección anterior.</p>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué imprime este código?</p>
+  <script type="text/plain" class="codigo" data-lang="js">
+setTimeout(() => console.log("T"), 0);
+Promise.resolve()
+  .then(() => console.log("P1"))
+  .then(() => console.log("P2"));
+queueMicrotask(() => console.log("Q"));
+console.log("S");
+</script>
+  <ul>
+    <li><code>S T P1 P2 Q</code><div class="explicacion">El timeout es una tarea: espera a que termine el script <em>y</em> a que se vacíen todas las microtareas. <code>T</code> va el último.</div></li>
+    <li><code>S P1 P2 Q T</code><div class="explicacion">Casi. El segundo <code>then</code> no se encola hasta que el primero termina, así que <code>Q</code>, que se encoló durante el script, va antes que <code>P2</code>.</div></li>
+    <li data-correcta><code>S P1 Q P2 T</code><div class="explicacion">Correcto. Durante el script se encolan <code>P1</code> y <code>Q</code>. En el punto de control se ejecuta <code>P1</code>, que al terminar resuelve la promesa encadenada y encola <code>P2</code> al final de la cola, detrás de <code>Q</code>. La cola se vacía entera (<code>P1</code>, <code>Q</code>, <code>P2</code>) y solo después llega la tarea del timeout.</div></li>
+  </ul>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.5.1 — Un programa con async/await, paso a paso</h3>
+  <p><code>async</code>/<code>await</code> parece código síncrono, pero cada <code>await</code> parte la función en dos: lo que va después se ejecuta más tarde, como una microtarea (o después de una tarea, si lo que esperas tarda en resolverse). Predice el orden antes de ejecutar:</p>
+  <div class="js-playground" data-titulo="El orden de un async/await" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+console.log("1");
+setTimeout(() => console.log("2"), 0);
+
+(async () => {
+  console.log("3");
+  await null;                                   // el resto de la función, como microtarea
+  console.log("4");
+  await new Promise((r) => setTimeout(r, 0));   // ahora espera a una TAREA
+  console.log("5");
+})();
+
+Promise.resolve().then(() => console.log("6"));
+console.log("7");
+</script>
+  </div>
+  <p><strong>Durante el script (una tarea).</strong> Se imprime <code>1</code>. El <code>setTimeout</code> registra el temporizador A. La función <code>async</code> se llama y se ejecuta <em>síncronamente</em> hasta su primer <code>await</code>: imprime <code>3</code>. En <code>await null</code> se suspende y encola su continuación como microtarea (la llamaremos C1). El script sigue: el <code>then</code> encola la microtarea «6», detrás de C1, y se imprime <code>7</code>.</p>
+  <p><strong>Punto de control de microtareas.</strong> La cola es [C1, «6»]. C1 imprime <code>4</code> y llega al segundo <code>await</code>: crea una promesa que solo se resolverá cuando venza un temporizador B, registrado ahora (después que A), y se suspende otra vez. Después, «6» imprime <code>6</code>. Cola vacía.</p>
+  <p><strong>Tareas.</strong> Vence A e imprime <code>2</code>. Vence B: su callback resuelve la promesa, lo que encola la continuación C2 como microtarea; al terminar esa tarea se vacían las microtareas y C2 imprime <code>5</code>.</p>
+  <p>Resultado: <code>1 3 7 4 6 2 5</code>, el mismo que dio Chrome. La lección: el código de una función <code>async</code> anterior al primer <code>await</code> es síncrono; cada <code>await</code> es un punto donde la función cede, y lo que cede depende de qué esté esperando.</p>
+</section>
+
+<h2>Una tarea larga lo congela todo… casi</h2>
+<p>Si una tarea tarda mucho, el bucle no puede llegar al paso del frame: no hay callbacks de rAF, ni estilo, ni layout, ni pintado. Pero el paso de <em>composición</em> vive en otro hilo. Una animación CSS de <code>transform</code> u <code>opacity</code> puede ejecutarse entera en el compositor, sin el hilo principal. Lo comprobé grabando los frames que producía Chrome (con la herramienta de <em>screencast</em> del protocolo de DevTools) mientras un bucle bloqueaba el hilo principal 1,5 s: dos cajas con el mismo movimiento, una animada con <code>@keyframes</code> sobre <code>transform</code> y otra con JavaScript y rAF. Durante el bloqueo se grabaron 84 frames; en ellos, la caja de CSS siguió avanzando (de x = 415 a 625 y vuelta a 445) y la de JavaScript se quedó clavada en x = 400. Al terminar el bloqueo, la de JavaScript saltó a su sitio.</p>
+<p>Compruébalo tú. El botón ejecuta un bucle ocupado en el hilo principal de esta página, así que durante 1,5 s todo lo demás de la página (las otras demos, los botones, el resto del código) quedará congelado. (Los editores de código son iframes y en Chrome pueden seguir funcionando: se explica en el ejemplo 1.5.2.)</p>
+
+<div class="demo ancho" id="demo-bloqueo">
+  <div class="m1-escenario" style="height:112px">
+    <div class="m1-pista"><span class="etq">CSS @keyframes sobre transform (compositor)</span><div class="m1-bola css"></div></div>
+    <div class="m1-pista"><span class="etq">JavaScript + requestAnimationFrame (hilo principal)</span><div class="m1-bola js"></div></div>
+  </div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+<p>Pulsa el botón con la animación de JavaScript «basada en el tiempo»: la bola azul se congela y, al terminar, salta a donde debería estar, porque su posición se calcula a partir del instante del frame. Cambia a «basada en frames» (<code>x += paso</code> en cada frame) y repite: al terminar el bloqueo, continúa desde donde se paró, con 1,5 s de retraso para siempre. La lección <a href="../02-animacion/03-raf.html">2.3</a> explica por qué la primera es casi siempre la buena.</p>
+
+<div class="callout bestiario" data-id="m1-tarea-larga" data-titulo="La página se congela y la animación se para">
+  <p><strong>Síntoma:</strong> durante un momento (al cargar datos, al generar una malla, al procesar una imagen) la animación se detiene, los botones no responden y después todo da un salto.</p>
+  <p><strong>Causa:</strong> una tarea larga ocupa el hilo principal. Mientras no termine, el event loop no puede ejecutar callbacks de rAF, ni eventos, ni pintar. Solo sobreviven las animaciones que viven en el compositor (CSS sobre <code>transform</code> y <code>opacity</code>) y el propio desplazamiento de la página, que también lo gestiona el compositor mientras no haya listeners que lo bloqueen.</p>
+  <p><strong>Solución:</strong> trocea el trabajo en pedazos de pocos milisegundos y devuelve el control al event loop entre uno y otro, esperando al siguiente frame o creando una tarea nueva (ejercicio 1.5.2); mueve el cálculo pesado a un Web Worker; y para animaciones decorativas que no deben tropezar, usa CSS sobre <code>transform</code>/<code>opacity</code>. En DevTools, las tareas de más de 50 ms aparecen marcadas en rojo como <em>long tasks</em> (lección <a href="07-herramientas.html">1.7</a>).</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.5.2 — Detectar tareas largas y trocearlas</h3>
+  <p>El navegador puede avisarte de cada tarea que pase de 50 ms con un <code>PerformanceObserver</code> de tipo <code>"longtask"</code>. Aquí lo usamos para medir un cálculo pesado hecho de golpe y el mismo cálculo troceado:</p>
+  <div class="js-playground" data-titulo="Tareas largas: detectarlas y trocearlas" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+const largas = [];
+new PerformanceObserver((lista) => {
+  for (const e of lista.getEntries()) largas.push(Math.round(e.duration));
+}).observe({ type: "longtask" });
+
+const N = 120e6;                                  // 120 millones de operaciones
+function trozo(desde, hasta) {                    // el trabajo "de verdad"
+  let s = 0;
+  for (let i = desde; i < hasta; i++) s += Math.sqrt(i);
+  return s;
+}
+
+// Un MessageChannel: ceder el hilo sin el mínimo de 4 ms de setTimeout
+const canal = new MessageChannel();
+const ceder = () => new Promise((r) => { canal.port1.onmessage = () => r(); canal.port2.postMessage(0); });
+
+async function prueba() {
+  let t0 = performance.now();
+  trozo(0, N);                                    // 1. todo de golpe: una sola tarea
+  console.log("de golpe:  ", Math.round(performance.now() - t0), "ms");
+  await new Promise((r) => setTimeout(r, 200));   // deja que el observador informe
+  console.log("   tareas largas:", largas.splice(0).join(", ") || "ninguna");
+
+  t0 = performance.now();
+  for (let i = 0; i < N; i += 2e6) {              // 2. en trozos de dos millones
+    trozo(i, i + 2e6);
+    await ceder();                                // fin de la tarea: aquí se puede pintar
+  }
+  console.log("troceado:  ", Math.round(performance.now() - t0), "ms");
+  await new Promise((r) => setTimeout(r, 200));
+  console.log("   tareas largas:", largas.splice(0).join(", ") || "ninguna");
+}
+prueba();
+</script>
+  </div>
+  <p><strong>El observador.</strong> <code>observe({ type: "longtask" })</code> pide al navegador un aviso por cada tarea de más de 50 ms. Cada entrada trae su duración (<code>e.duration</code>). Lo comprobé aparte: una tarea de 120 ms se notificó y una de 30 ms, no.</p>
+  <p><strong>De golpe.</strong> 120 millones de raíces cuadradas en una sola tarea: el observador informa de una tarea larga de la misma duración, y durante ese tiempo la página no pinta ni responde.</p>
+  <p><strong>Troceado.</strong> El mismo cálculo, en 60 trozos de dos millones, cediendo el hilo entre trozo y trozo con un <code>MessageChannel</code> (que crea una tarea nueva sin el mínimo de 4 ms de <code>setTimeout</code>). Ahora ninguna tarea supera los 50 ms (o casi ninguna, según tu máquina: si alguna los pasa, reduce el tamaño del trozo), y el tiempo total apenas cambia. El trabajo es el mismo; lo que cambia es que el event loop recupera el control decenas de veces, y en cada una puede pintar y atender eventos.</p>
+  <p>Un detalle sobre los editores del curso: son iframes con <code>sandbox</code>. En un Chrome de escritorio con su configuración normal, cada uno corre en <em>su propio proceso</em>, con su propio hilo principal. Lo comprobé de dos maneras: con un bucle ocupado de 1,5 s dentro de un editor, los temporizadores de la página de la lección siguieron llegando cada 50 ms; y un observador de tareas largas dentro de un iframe no vio un bloqueo de 300 ms de la página. Así que un bucle infinito en un editor congela ese editor (el botón «Detener» lo destruye), no la lección. Pero es una optimización del navegador, no una garantía: en un Chrome con ese aislamiento desactivado (algunas herramientas de pruebas automáticas lo desactivan por defecto, y allí medí 1,5 s de congelación en la página) o en un dispositivo con poca memoria, los iframes pueden compartir hilo con la página, y entonces un bloqueo en uno se nota en todos.</p>
+</section>
+
+<h2><code>setTimeout</code> no es un reloj</h2>
+<h3><code>setTimeout(fn, 0)</code> no significa «ahora»</h3>
+<p>Significa «encola una tarea cuando haya pasado al menos 0 ms». Se ejecutará cuando el event loop llegue a ella: después del código actual, después de todas las microtareas y, quizá, después de un frame. Además, el estándar HTML impone un mínimo de 4 ms cuando los temporizadores se anidan más de cinco niveles (un <code>setTimeout</code> dentro del callback de otro, y así sucesivamente). Lo medí encadenando <code>setTimeout(paso, 0)</code>: las primeras vueltas tardaron entre 0 y 0,4 ms y, a partir de la séptima, unos 5 ms cada una. En 300 ms, una cadena de <code>setTimeout(0)</code> dio solo 67 vueltas.</p>
+<div class="callout hack" data-titulo="Tareas sin el mínimo de 4 ms">
+  <p>Si necesitas encadenar tareas rápido sin bloquear el hilo (para trocear un cálculo largo), hay alternativas que no sufren el mínimo. Un <code>MessageChannel</code> que se envía mensajes a sí mismo dio 114 155 vueltas en 300 ms, frente a las 67 de <code>setTimeout(0)</code>. Y lo importante: durante 600 ms de vueltas con <code>MessageChannel</code>, el navegador siguió pintando unos 36 frames, porque cada vuelta es una tarea y entre tareas se puede pintar. Existe también <code>await scheduler.yield()</code>, la API moderna para ceder el hilo (143 905 vueltas en 300 ms), pero tiene un matiz que verás en el ejercicio 1.5.2: prioriza la continuación de tu código, y en mis pruebas apenas dejaba pintar.</p>
+</div>
+
+<h3><code>setTimeout</code> frente a <code>requestAnimationFrame</code></h3>
+<p>Antes de <code>requestAnimationFrame</code>, las animaciones se hacían con <code>setTimeout(frame, 16)</code>. Medí 20 vueltas de una cadena así: los intervalos fueron desde 16,2 hasta 18,8 ms, irregulares y sin relación con el refresco de la pantalla. Los de rAF, en la misma página, fueron 16,6 y 16,7 ms, clavados. Con <code>setTimeout</code>, algunos refrescos reciben dos actualizaciones y otros ninguna: la animación tiembla. rAF, además, se detiene cuando la pestaña no se ve (lo medimos más abajo) y recibe el instante exacto del frame. <strong>Para animar, siempre rAF.</strong></p>
+<div class="callout bestiario" data-id="m1-orden-timeout-raf" data-titulo="A veces el setTimeout va antes que el rAF, y a veces después">
+  <p><strong>Síntoma:</strong> un código que registra un <code>setTimeout(fn, 0)</code> y un <code>requestAnimationFrame(fn2)</code> se comporta distinto de una ejecución a otra, o en otro ordenador.</p>
+  <p><strong>Causa:</strong> el estándar no fija si el navegador ejecuta antes la tarea del temporizador o el frame; depende de cuánto falte para el siguiente refresco. Lo medí repitiendo el puzzle clásico 40 veces: el timeout salió antes 21 veces y el rAF 19. Y justo después de un bloqueo de 100 ms, el rAF salió antes las 20 veces que lo probé, porque el frame iba con retraso.</p>
+  <p><strong>Solución:</strong> no dependas de ese orden. Si una cosa tiene que ocurrir antes de pintar, ponla en el callback de rAF; si tiene que ocurrir después de otra, encadénala explícitamente.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Dentro de un callback de <code>requestAnimationFrame</code> ejecutas <code>requestAnimationFrame(b)</code> y <code>Promise.resolve().then(m)</code>. ¿Cuándo se ejecutan <code>b</code> y <code>m</code>?</p>
+  <ul>
+    <li>Los dos en este mismo frame, antes de pintar.<div class="explicacion"><code>m</code> sí (es una microtarea, y se vacían al terminar cada callback de rAF), pero <code>b</code> no: los callbacks de rAF pedidos durante un frame se guardan para el siguiente.</div></li>
+    <li data-correcta><code>m</code> al terminar este callback, antes de pintar; <code>b</code> en el frame siguiente.<div class="explicacion">Correcto: es el programa «rAF dentro de rAF» del simulador. Si no fuera así, un bucle de animación que se vuelve a pedir en cada frame nunca dejaría pintar.</div></li>
+    <li>Los dos en el frame siguiente.<div class="explicacion">Una microtarea nunca espera a un frame: se ejecuta en cuanto la pila se vacía, que es al terminar el callback actual.</div></li>
+  </ul>
+</div>
+
+<h2>Inanición por microtareas</h2>
+<p>La regla «se vacían todas las microtareas, incluidas las nuevas» tiene un reverso: si cada microtarea encola otra, la cola nunca se vacía y el event loop nunca llega al frame. La página se congela exactamente igual que con un bucle <code>while</code>, aunque no haya ningún bucle a la vista. Lo medí dejando correr 600 ms una cadena de <code>queueMicrotask</code> que se volvía a encolar: en esos 600 ms se pintó <strong>1</strong> frame. La misma cadena hecha con <code>setTimeout(0)</code> pintó 36 frames, porque cada vuelta es una tarea nueva y entre tareas el navegador puede pintar.</p>
+<div class="callout bestiario" data-id="m1-inanicion-microtareas" data-titulo="Un bucle de promesas congela la página">
+  <p><strong>Síntoma:</strong> la página deja de pintar y de responder, aunque tu código no tiene ningún bucle largo; o una animación «asíncrona» hecha con promesas no se ve hasta que termina entera.</p>
+  <p><strong>Causa:</strong> una cadena de microtareas que no termina (una función <code>async</code> que hace <code>await</code> de promesas ya resueltas en un bucle, o <code>queueMicrotask</code> recursivo). Las microtareas nunca ceden el paso al frame.</p>
+  <p><strong>Solución:</strong> para ceder de verdad hay que crear una <em>tarea</em> (<code>await new Promise((r) =&gt; setTimeout(r, 0))</code>, un <code>MessageChannel</code>) o esperar al siguiente frame (<code>await new Promise(requestAnimationFrame)</code>). Un <code>await</code> de algo ya resuelto no cede nada.</p>
+</div>
+
+<h2>Relojes: <code>performance.now()</code> frente a <code>Date.now()</code></h2>
+<ul>
+  <li><strong><code>performance.now()</code></strong>: milisegundos desde que empezó a cargarse la página (<code>performance.timeOrigin</code>), con decimales. Es <strong>monótono</strong>: nunca va hacia atrás, aunque cambie la hora del sistema. Su resolución está recortada a propósito para dificultar ataques de temporización: medí saltos mínimos de 0,1 ms (100 µs). Las páginas con aislamiento de origen cruzado (<code>crossOriginIsolated</code>, que requiere cabeceras especiales del servidor) tienen resolución más fina, de 5 µs según la documentación; una página abierta con <code>file://</code> no lo está.</li>
+  <li><strong><code>Date.now()</code></strong>: milisegundos enteros desde el 1 de enero de 1970, según el reloj del sistema. Sirve para fechas; no para medir duraciones, porque si el sistema ajusta la hora (sincronización de red, cambio manual), puede saltar hacia delante o hacia atrás.</li>
+  <li><strong>El argumento de rAF</strong> es un instante en el mismo reloj que <code>performance.now()</code> (y que <code>e.timeStamp</code> de los eventos): el comienzo del frame. Dentro del callback, <code>performance.now()</code> ya es algo mayor (entre 0,4 y 2,5 ms en mis medidas), porque el frame empezó antes de llamar a tu función. Para animar, usa el argumento: todos los callbacks del frame ven el mismo tiempo y todo se mueve sincronizado.</li>
+</ul>
+
+<div class="callout senior" data-titulo="¿Por qué 0,1 ms y no nanosegundos?">
+  <p>Un reloj muy preciso permite medir cuánto tarda en leerse una posición de memoria, y eso es la base de ataques como Spectre, que deducen datos ajenos a partir de esos tiempos. Por eso los navegadores recortan la resolución de <code>performance.now()</code> y le añaden un pequeño ruido. Para animar da igual: 0,1 ms es cien veces más fino que un frame. Para medir el rendimiento de un trozo de código, en cambio, repite la operación muchas veces y mide el total; una sola medida de algo que tarda microsegundos no significa nada.</p>
+</div>
+
+<h2>Pestañas en segundo plano</h2>
+<p>Cuando una pestaña no se ve, el navegador ahorra trabajo. Lo medí en Chrome con una página que contaba callbacks de rAF y vueltas de un <code>setInterval</code> de 100 ms, y que después pasaba a segundo plano (<code>document.visibilityState = "hidden"</code>) durante 4 s:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th></th><th>en primer plano (2 s)</th><th>en segundo plano (4 s)</th></tr></thead>
+  <tbody>
+    <tr><td>callbacks de <code>requestAnimationFrame</code></td><td>121</td><td><strong>0</strong>: rAF se detiene por completo</td></tr>
+    <tr><td>vueltas de <code>setInterval(fn, 100)</code></td><td>20</td><td>4, separadas ~1000 ms: como mucho una por segundo</td></tr>
+  </tbody>
+</table>
+<p>Según la documentación de Chrome, si la pestaña sigue oculta más de cinco minutos, las cadenas de temporizadores pueden limitarse todavía más (a una vez por minuto). Para tu bucle de animación, lo importante es esto:</p>
+<div class="callout bestiario" data-id="m1-segundo-plano" data-titulo="Al volver a la pestaña, la animación da un salto enorme">
+  <p><strong>Síntoma:</strong> cambias de pestaña, vuelves al cabo de un rato y los objetos aparecen de golpe muy lejos, la física explota o un contador ha avanzado de golpe.</p>
+  <p><strong>Causa:</strong> mientras la pestaña estaba oculta, rAF no se ejecutó. En el primer frame al volver, el tiempo transcurrido desde el frame anterior (<code>dt</code>) son decenas de segundos, y la simulación lo aplica de una vez.</p>
+  <p><strong>Solución:</strong> limita <code>dt</code> (por ejemplo, <code>Math.min(dt, 0.1)</code>, como hacen las demos de este curso) o pausa la animación en el evento <code>visibilitychange</code> y reinicia el reloj al volver. Y nunca uses temporizadores para llevar la cuenta del tiempo: en segundo plano se ralentizan.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu juego calcula <code>dt</code> como el tiempo desde el frame anterior. Pasas 30 segundos en otra pestaña y vuelves. Sin ningún límite, ¿qué <code>dt</code> recibe el primer frame?</p>
+  <ul>
+    <li>Unos 16,7 ms, como siempre.<div class="explicacion">rAF no se ejecutó mientras la pestaña estaba oculta, así que el frame anterior fue hace unos 30 s.</div></li>
+    <li data-correcta>Unos 30 segundos.<div class="explicacion">Exacto. rAF se detiene en segundo plano (medimos 0 callbacks en 4 s) y el primer frame al volver ve todo el hueco. Por eso se limita <code>dt</code> o se pausa en <code>visibilitychange</code>.</div></li>
+    <li>Unos 30 frames de 1 segundo cada uno, porque rAF sigue a una vez por segundo.<div class="explicacion">Eso le pasa a <code>setInterval</code> (se limita a una vez por segundo), no a rAF, que se detiene por completo.</div></li>
+  </ul>
+</div>
+
+<h2>Otros hilos: Web Workers y OffscreenCanvas</h2>
+<p>El hilo principal no es el único disponible. Un <strong>Web Worker</strong> ejecuta JavaScript en otro hilo, sin acceso al DOM, y se comunica con la página por mensajes (<code>postMessage</code>); los <code>ArrayBuffer</code> se pueden <em>transferir</em> sin copiarlos (lección <a href="06-binario.html">1.6</a>). Es el sitio para cálculos pesados: generar una malla, simular miles de partículas en CPU, decodificar datos. Y con <strong><code>OffscreenCanvas</code></strong>, un worker puede incluso dibujar con WebGL2 en un canvas de la página, sin tocar el hilo principal. Lo comprobé con un worker creado a partir de un <code>Blob</code>, que recibió el canvas con <code>transferControlToOffscreen()</code> y obtuvo un contexto <code>webgl2</code>.</p>
+<div class="callout cuidado">
+  <p>Con <code>file://</code>, <code>new Worker("trabajador.js")</code> falla: <code>SecurityError: Failed to construct 'Worker': Script at 'file:///…/trabajador.js' cannot be accessed from origin 'null'</code>. Servida por HTTP, la misma página funcionó. El truco para <code>file://</code> es crear el worker desde un <code>Blob</code> con el código en un string (<code>new Worker(URL.createObjectURL(new Blob([codigo])))</code>), que sí funcionó. El porqué de ese «origin 'null'», en la lección <a href="07-herramientas.html">1.7</a>.</p>
+</div>
+
+<h2>Leer una medida justo después de escribir un estilo</h2>
+<div class="callout senior" data-titulo="El layout es perezoso… hasta que le preguntas">
+  <p>Cuando cambias un estilo, el navegador no recalcula nada en ese momento: marca el layout como «sucio» y lo recalcula una sola vez, en el siguiente frame. Pero si justo después <em>lees</em> una medida (<code>offsetWidth</code>, <code>getBoundingClientRect()</code>, <code>getComputedStyle</code>…), la respuesta tiene que ser correcta, así que el navegador se ve obligado a hacer el layout <em>en ese instante</em>, de forma síncrona, dentro de tu tarea. Es un <strong>layout forzado</strong>. Uno suelto no importa; alternar escrituras y lecturas en un bucle obliga a un layout por vuelta. A esto se le llama <em>layout thrashing</em>.</p>
+</div>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+// Alternando: un layout forzado por vuelta
+for (const el of elementos) {
+  el.style.width = (el.offsetWidth + 1) + "px";
+}
+// Por fases: un solo layout
+const anchos = elementos.map((el) => el.offsetWidth);
+elementos.forEach((el, i) => { el.style.width = (anchos[i] + 1) + "px"; });
+</script>
+<ol>
+  <li data-l="2-4">En la primera vuelta, <code>offsetWidth</code> encuentra el layout al día. Pero la escritura de <code>style.width</code> lo ensucia, y el <code>offsetWidth</code> de la vuelta siguiente obliga a recalcularlo. Con 500 elementos, 500 layouts. Lo medí: <strong>80 ms</strong>.</li>
+  <li data-l="6">Todas las lecturas seguidas: la primera puede forzar un layout, las demás ya lo encuentran calculado.</li>
+  <li data-l="7">Todas las escrituras seguidas: solo ensucian el layout, que se recalculará una vez, en el frame. Mismo resultado: <strong>1 ms</strong>. El mismo trabajo, ochenta veces más rápido, solo por el orden, cuando a 60 fps tienes 16,7 ms por frame.</li>
+</ol>
+</div>
+<div class="callout bestiario" data-id="m1-layout-forzado" data-titulo="Un bucle que toca el DOM es lentísimo sin motivo aparente">
+  <p><strong>Síntoma:</strong> actualizar unos cientos de elementos por frame (barras, etiquetas, posiciones) tarda decenas de milisegundos, y en el panel Performance aparecen muchos bloques morados de «Layout» dentro de tu función.</p>
+  <p><strong>Causa:</strong> dentro del bucle se alternan escrituras de estilo y lecturas de medidas: cada lectura fuerza un layout síncrono.</p>
+  <p><strong>Solución:</strong> separa las fases: primero todas las lecturas, después todas las escrituras. Mejor aún, evita leer del DOM en el bucle de animación: guarda tú las medidas en variables y actualízalas con <code>ResizeObserver</code>. Y para mover cosas, <code>transform</code>, que no necesita layout. Lo verás a fondo en la lección <a href="../02-animacion/01-pipeline-render.html">2.1</a>.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 1.5.1 — Predice el orden</h3>
+  <p>Sin ejecutar antes, escribe en <code>prediccion</code> el orden en que se registrarán los números. Después ejecuta: la consola compara tu predicción con el orden real y dice si has acertado. Si fallas, repasa las reglas (o reproduce el programa mentalmente en el simulador) antes de mirar la solución.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.5.1" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+const orden = [];
+const log = (x) => orden.push(x);
+
+log("1");
+setTimeout(() => log("2"), 0);
+Promise.resolve().then(() => {
+  log("3");
+  setTimeout(() => log("4"), 0);
+  queueMicrotask(() => log("5"));
+});
+setTimeout(() => {
+  log("6");
+  Promise.resolve().then(() => log("7"));
+}, 0);
+log("8");
+
+// Escribe aquí tu predicción, sin ejecutar antes:
+const prediccion = ["1", "?"];
+
+setTimeout(() => {
+  console.log("real:       " + orden.join(" "));
+  console.log("predicción: " + prediccion.join(" "));
+  console.log(orden.join() === prediccion.join() ? "✓ ¡exacto!" : "✗ no coincide: repasa las reglas");
+}, 50);
+</script>
+<script type="text/x-js" data-solucion>
+const orden = [];
+const log = (x) => orden.push(x);
+
+log("1");
+setTimeout(() => log("2"), 0);
+Promise.resolve().then(() => {
+  log("3");
+  setTimeout(() => log("4"), 0);
+  queueMicrotask(() => log("5"));
+});
+setTimeout(() => {
+  log("6");
+  Promise.resolve().then(() => log("7"));
+}, 0);
+log("8");
+
+// Síncrono (1, 8) → microtareas tras el script (3, 5) → tareas en orden (2, 6 + su microtarea 7, 4)
+const prediccion = ["1", "8", "3", "5", "2", "6", "7", "4"];
+
+setTimeout(() => {
+  console.log("real:       " + orden.join(" "));
+  console.log("predicción: " + prediccion.join(" "));
+  console.log(orden.join() === prediccion.join() ? "✓ ¡exacto!" : "✗ no coincide: repasa las reglas");
+}, 50);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Primero, todo lo síncrono del script. Después, todas las microtareas (y las que se encolen mientras). Después, las tareas, <strong>de una en una</strong>, con sus microtareas detrás de cada una.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Hay tres temporizadores de 0 ms. ¿En qué orden se registran? Uno de ellos se registra dentro de una microtarea, es decir, después de que termine el script.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El orden real es <code>1 8 3 5 2 6 7 4</code>.</p>
+    <ol>
+      <li><strong>Script (una tarea):</strong> se registran <code>1</code> y <code>8</code>; por el camino se crean el temporizador «2», la microtarea del <code>then</code> y el temporizador «6».</li>
+      <li><strong>Punto de control de microtareas:</strong> el <code>then</code> registra <code>3</code>, crea el temporizador «4» (el tercero, registrado después que «2» y «6») y encola la microtarea «5», que se ejecuta en este mismo punto de control: <code>5</code>.</li>
+      <li><strong>Tareas, de una en una:</strong> los temporizadores vencen en el orden en que se registraron. «2» registra <code>2</code>. «6» registra <code>6</code> y encola «7», que se ejecuta al terminar esa tarea, antes que la siguiente: <code>7</code>. Por último, «4»: <code>4</code>.</li>
+    </ol>
+    <p>La trampa habitual es poner el <code>4</code> antes que el <code>2</code> («se registró dentro del primer <code>then</code>») o el <code>7</code> al final («es de una promesa, va después de los timeouts»). La regla que lo resuelve todo: tras <em>cada</em> tarea se vacían las microtareas.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.5.2 — La barra de progreso que no se mueve</h3>
+  <p>El código procesa 40 lotes de trabajo (cada uno, un cálculo de unos 15 ms) y actualiza una barra de progreso después de cada lote. Pero la barra salta de 0 al 100 % de golpe y la bola de al lado se congela mientras tanto. Reescribe <code>procesar</code> para que la barra avance de verdad y la bola siga moviéndose, cediendo el control al event loop entre lote y lote. La consola debe mostrar muchos frames pintados durante el trabajo (ahora muestra 0 o 1).</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.5.2" data-altura="260" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="fila"><div class="barra"><div id="progreso"></div></div><div class="bola" id="bola"></div></div>
+<button id="empezar">procesar</button>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font: 13px sans-serif; color: #ddd; }
+.fila { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+.barra { flex: 1; height: 14px; background: #2a3040; border-radius: 7px; overflow: hidden; }
+#progreso { height: 100%; width: 0; background: #3ecf8e; }
+.bola { width: 18px; height: 18px; border-radius: 50%; background: #3fd0e8; }
+</script>
+<script type="text/x-js">
+const progreso = document.getElementById("progreso");
+const bola = document.getElementById("bola");
+let frames = 0;
+(function girar(t) { frames++; bola.style.transform = `translateY(${Math.sin(t / 150) * 8}px)`; requestAnimationFrame(girar); })(0);
+
+function loteDeTrabajo() {                        // simula un cálculo de ~15 ms
+  const fin = performance.now() + 15;
+  while (performance.now() < fin) {}
+}
+
+function procesar() {
+  const f0 = frames, t0 = performance.now();
+  for (let i = 1; i <= 40; i++) {
+    loteDeTrabajo();
+    progreso.style.width = (i / 40 * 100) + "%";
+  }
+  console.log("hecho en", Math.round(performance.now() - t0), "ms · frames pintados durante el trabajo:", frames - f0);
+}
+document.getElementById("empezar").addEventListener("click", procesar);
+procesar();
+</script>
+<script type="text/x-js" data-solucion>
+const progreso = document.getElementById("progreso");
+const bola = document.getElementById("bola");
+let frames = 0;
+(function girar(t) { frames++; bola.style.transform = `translateY(${Math.sin(t / 150) * 8}px)`; requestAnimationFrame(girar); })(0);
+
+function loteDeTrabajo() {                        // simula un cálculo de ~15 ms
+  const fin = performance.now() + 15;
+  while (performance.now() < fin) {}
+}
+
+// Ceder el hilo hasta el próximo frame: el navegador pinta y después seguimos
+const ceder = () => new Promise((r) => requestAnimationFrame(r));
+
+async function procesar() {
+  const f0 = frames, t0 = performance.now();
+  for (let i = 1; i <= 40; i++) {
+    loteDeTrabajo();
+    progreso.style.width = (i / 40 * 100) + "%";
+    await ceder();                                // aquí el navegador puede pintar y atender eventos
+  }
+  console.log("hecho en", Math.round(performance.now() - t0), "ms · frames pintados durante el trabajo:", frames - f0);
+}
+document.getElementById("empezar").addEventListener("click", procesar);
+procesar();
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Mientras el <code>for</code> se ejecuta, ¿puede el event loop llegar al paso de pintar? ¿Cuántas tareas hay ahí?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Convierte <code>procesar</code> en una función <code>async</code> y, tras cada lote, haz <code>await</code> de una promesa que se resuelva en el próximo frame. Cuidado: <code>await Promise.resolve()</code> solo crea una microtarea, y eso no deja pintar.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>En el original, los 40 lotes (unos 600 ms) se ejecutan dentro de una sola tarea. Aunque la anchura de la barra cambia 40 veces, el navegador no pinta hasta que la tarea termina, y entonces solo ve el último valor: 100 %. Por eso la consola dice que no se pintó ningún frame (a lo sumo uno) y la bola se congela.</p>
+    <p>La solución convierte <code>procesar</code> en <code>async</code> y, tras cada lote, hace <code>await ceder()</code>, una promesa que se resuelve en el siguiente callback de <code>requestAnimationFrame</code>. La función se suspende ahí, la tarea actual termina, el navegador pinta el frame (con la barra en su nuevo ancho y la bola en su sitio) y, en ese frame, la función continúa con el lote siguiente. Un lote por frame: la consola pasa a mostrar unos 40 frames pintados.</p>
+    <p>¿Por qué no <code>scheduler.yield()</code>, la API «oficial» para ceder? Medí las cinco formas de ceder con estos mismos 40 lotes de 15 ms:</p>
+    <table class="m1-tabla-compacta">
+      <thead><tr><th>Tras cada lote…</th><th>tiempo total</th><th>frames pintados</th></tr></thead>
+      <tbody>
+        <tr><td><code>await Promise.resolve()</code></td><td>600 ms</td><td>0 (una microtarea no cede nada)</td></tr>
+        <tr><td><code>await scheduler.yield()</code></td><td>601 ms</td><td>5</td></tr>
+        <tr><td><code>MessageChannel</code></td><td>603 ms</td><td>37</td></tr>
+        <tr><td><code>requestAnimationFrame</code></td><td>664 ms</td><td>40</td></tr>
+        <tr><td><code>setTimeout(0)</code></td><td>778 ms</td><td>46 (y el mínimo de 4 ms alarga el total)</td></tr>
+      </tbody>
+    </table>
+    <p><code>scheduler.yield()</code> pone la continuación de tu código por delante de las demás tareas; según su documentación, sirve para que el navegador pueda atender la entrada del usuario, pero en Chrome casi nunca dejó pintar. Para que se <em>vea</em> el progreso, cede hasta el frame (rAF) o con una tarea (<code>MessageChannel</code>). El coste es un poco de tiempo total extra, a cambio de una página que responde. Para cálculos todavía más pesados, un Web Worker los saca del hilo principal del todo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.5.3 — El bucle que fuerza el layout</h3>
+  <p>La función <code>ajustar</code> pone a cada una de las 400 barras una altura proporcional a su anchura. Funciona, pero es muy lenta. Reescríbela para que haga exactamente lo mismo mucho más rápido, sin cambiar el resultado final. La consola mide el tiempo y comprueba que las alturas finales son idénticas.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.5.3" data-altura="260" data-fondo="oscuro">
+<script type="text/x-html">
+<div id="barras"></div>
+</script>
+<script type="text/x-css">
+body { padding: 8px; }
+#barras { display: flex; flex-wrap: wrap; gap: 2px; align-items: flex-start; }
+#barras div { background: #8b7bff; min-height: 2px; }
+</script>
+<script type="text/x-js">
+const cont = document.getElementById("barras");
+for (let i = 0; i < 400; i++) {
+  const d = document.createElement("div");
+  d.style.width = (4 + (i * 7) % 12) + "px";
+  cont.appendChild(d);
+}
+const barras = [...cont.children];
+
+function ajustar() {
+  for (const b of barras) {
+    b.style.height = b.offsetWidth * 3 + "px";      // lee un ancho y escribe una altura
+  }
+}
+
+const t0 = performance.now();
+ajustar();
+console.log("ajustar():", (performance.now() - t0).toFixed(1), "ms");
+console.log("comprobación:", barras.slice(0, 5).map((b) => b.style.height).join(" "), "… suma", barras.reduce((s, b) => s + parseFloat(b.style.height), 0));
+</script>
+<script type="text/x-js" data-solucion>
+const cont = document.getElementById("barras");
+for (let i = 0; i < 400; i++) {
+  const d = document.createElement("div");
+  d.style.width = (4 + (i * 7) % 12) + "px";
+  cont.appendChild(d);
+}
+const barras = [...cont.children];
+
+function ajustar() {
+  const anchos = barras.map((b) => b.offsetWidth);       // 1. todas las lecturas (un solo layout)
+  barras.forEach((b, i) => {                             // 2. todas las escrituras (ningún layout)
+    b.style.height = anchos[i] * 3 + "px";
+  });
+}
+
+const t0 = performance.now();
+ajustar();
+console.log("ajustar():", (performance.now() - t0).toFixed(1), "ms");
+console.log("comprobación:", barras.slice(0, 5).map((b) => b.style.height).join(" "), "… suma", barras.reduce((s, b) => s + parseFloat(b.style.height), 0));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué le pasa al layout cuando escribes <code>style.height</code>? ¿Y qué tiene que hacer el navegador cuando, justo después, lees <code>offsetWidth</code> de la siguiente barra?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Separa el bucle en dos: uno que solo lee y guarda los anchos en un array, y otro que solo escribe.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada <code>b.style.height = …</code> invalida el layout; la lectura de <code>offsetWidth</code> de la barra siguiente obliga al navegador a recalcularlo en ese momento. Son 400 layouts forzados, uno por vuelta. Da igual que la altura no afecte al ancho: el navegador no puede saberlo sin recalcular (las barras están en un contenedor flexible que reparte filas).</p>
+    <p>La solución lee primero todos los anchos, con un único layout (el del primer <code>offsetWidth</code>; los demás ya encuentran el layout al día), y después escribe todas las alturas, lo que solo marca el layout como sucio una vez: se recalculará en el siguiente frame, como siempre. Mismo resultado (la comprobación da la misma suma), en una fracción del tiempo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 1.5.4 — Un cronómetro que no pierde el tiempo</h3>
+  <p>Este cronómetro suma 10 ms en cada vuelta de un <code>setInterval</code> de 10 ms. A mitad de la medida, un trabajo pesado bloquea el hilo 300 ms (simula, por ejemplo, un cálculo al cargar un nivel). Al final, compara con el tiempo real: se ha retrasado. Arréglalo para que el valor mostrado sea correcto al milisegundo, y para que el número en pantalla se actualice con <code>requestAnimationFrame</code> en lugar del <code>setInterval</code>. Al terminar, la consola debe mostrar una diferencia de 0 ms (o casi) con el tiempo real.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.5.4" data-altura="260" data-fondo="oscuro">
+<script type="text/x-html">
+<div id="crono">0.000 s</div>
+</script>
+<script type="text/x-css">
+#crono { font: 700 44px monospace; color: #f5b84b; padding: 20px; }
+</script>
+<script type="text/x-js">
+const crono = document.getElementById("crono");
+const inicioReal = performance.now();
+let transcurrido = 0;                                // ms, según el cronómetro
+
+const id = setInterval(() => {
+  transcurrido += 10;                                // "han pasado 10 ms"
+  crono.textContent = (transcurrido / 1000).toFixed(3) + " s";
+}, 10);
+
+setTimeout(() => {                                   // trabajo pesado a mitad de la medida
+  const fin = performance.now() + 300;
+  while (performance.now() < fin) {}
+}, 500);
+
+setTimeout(() => {
+  clearInterval(id);
+  const real = performance.now() - inicioReal;
+  console.log("cronómetro:", Math.round(transcurrido), "ms · real:", Math.round(real), "ms · diferencia:", Math.round(real - transcurrido), "ms");
+}, 1500);
+</script>
+<script type="text/x-js" data-solucion>
+const crono = document.getElementById("crono");
+const inicioReal = performance.now();
+let parado = false, transcurrido = 0;
+
+// El tiempo no se cuenta: se MIDE contra un reloj monótono, en cada frame
+function frame() {
+  if (parado) return;
+  transcurrido = performance.now() - inicioReal;
+  crono.textContent = (transcurrido / 1000).toFixed(3) + " s";
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+setTimeout(() => {                                   // trabajo pesado a mitad de la medida
+  const fin = performance.now() + 300;
+  while (performance.now() < fin) {}
+}, 500);
+
+setTimeout(() => {
+  parado = true;
+  transcurrido = performance.now() - inicioReal;     // valor final exacto, en el momento de parar
+  const real = performance.now() - inicioReal;
+  console.log("cronómetro:", Math.round(transcurrido), "ms · real:", Math.round(real), "ms · diferencia:", Math.round(real - transcurrido), "ms");
+}, 1500);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Cuántas vueltas del <code>setInterval</code> caben en los 300 ms de bloqueo? ¿Cuántas se ejecutan después, cuando el hilo se libera?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>No cuentes el tiempo: guarda el instante inicial y resta, en cada actualización, <code>performance.now() − inicio</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>Por qué se retrasa.</strong> El cronómetro supone que cada vuelta del intervalo son exactamente 10 ms. No lo son: cada vuelta llega algo tarde, y sobre todo, durante los 300 ms de bloqueo no puede ejecutarse ninguna. Cuando el hilo se libera, el navegador no ejecuta de golpe las 30 vueltas perdidas: un intervalo no acumula vueltas pendientes. El cronómetro pierde, así, casi todo el bloqueo. Y en una pestaña en segundo plano, con el intervalo limitado a una vuelta por segundo, perdería casi todo el tiempo.</p>
+    <p><strong>La solución</strong> no cuenta nada: en cada frame <em>mide</em> <code>performance.now() − inicioReal</code>, un reloj monótono que sigue avanzando pase lo que pase. Aunque se pierdan frames durante el bloqueo, el siguiente frame muestra el valor correcto. La actualización en pantalla pasa a <code>requestAnimationFrame</code>: una vez por refresco, sincronizada con la pantalla (con <code>setInterval</code> de 10 ms se hacían actualizaciones que nadie llegaba a ver) y detenida si la pestaña está oculta.</p>
+    <p>Es el mismo principio del ejercicio 1.3.2 y del ejemplo 1.3.2: el tiempo se calcula a partir de una fuente fiable, no se acumula a base de sumar pasos que suponemos iguales.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un solo hilo para tu JavaScript, los eventos, el estilo, el layout y el pintado. El event loop: una tarea, todas las microtareas, y un frame si toca.</li>
+    <li>Tareas: scripts, temporizadores, eventos, mensajes; una por vuelta. Microtareas: promesas, <code>await</code>, <code>queueMicrotask</code>; todas, cada vez que la pila se vacía (también entre los oyentes de un evento real, pero no con <code>el.click()</code>).</li>
+    <li>Un frame: callbacks de rAF (todos con el mismo instante; los pedidos durante el frame, al siguiente), estilo, layout, <code>ResizeObserver</code>, pintado y composición (en el hilo del compositor).</li>
+    <li>El orden entre <code>setTimeout(0)</code> y rAF no está garantizado. <code>setTimeout(0)</code> tiene un mínimo de 4 ms cuando se anida más de cinco niveles (desde la séptima vuelta de una cadena); <code>MessageChannel</code> y <code>scheduler.yield()</code> no.</li>
+    <li>Una tarea larga congela las animaciones de JavaScript, pero no las de CSS sobre <code>transform</code>/<code>opacity</code> en el compositor. Trocea el trabajo cediendo con una tarea; un bucle de microtareas no cede nada.</li>
+    <li><code>performance.now()</code> es monótono (resolución de 0,1 ms sin aislamiento); <code>Date.now()</code> es para fechas. En segundo plano rAF se detiene y los intervalos bajan a uno por segundo: limita <code>dt</code>.</li>
+    <li>Leer una medida justo después de escribir un estilo fuerza un layout síncrono: primero todas las lecturas, después todas las escrituras.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://html.spec.whatwg.org/multipage/webappapis.html#event-loop-processing-model">HTML Standard, «Event loop processing model»</a>: el algoritmo oficial, paso a paso.</li>
+  <li><a href="https://jakearchibald.com/2015/tasks-microtasks-queues-and-schedules/">Jake Archibald, «Tasks, microtasks, queues and schedules»</a>: el artículo clásico, con el experimento del clic real frente a <code>el.click()</code>.</li>
+  <li><a href="https://www.youtube.com/watch?v=cCOL7MC4Pl0">Jake Archibald, «In The Loop» (charla)</a>: el event loop y los frames, con animaciones.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Scheduler/yield">MDN, <code>scheduler.yield()</code></a>: cómo ceder el hilo en tareas largas.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/bucle-eventos.js"></script>
+<script>
+/* Demo 1: el event loop paso a paso (simulador en recursos/bucle-eventos.js) */
+Curso.alListo(() => {
+  const raiz = document.getElementById("demo-bucle");
+  const { simular, PROGRAMAS } = window.BucleEventos;
+  const esc = Curso.util.escapar;
+  const codigo = raiz.querySelector(".m1-bucle-codigo");
+  const texto = raiz.querySelector(".m1-bucle-texto");
+  const nota = raiz.querySelector(".m1-bucle-nota");
+  const info = raiz.querySelector(".demo-info");
+  const ctrl = raiz.querySelector(".demo-controles");
+  const paneles = {};
+  ["pila", "micro", "tareas", "timers", "raf"].forEach((k) => (paneles[k] = raiz.querySelector(".m1-panel." + k + " ol")));
+  const salida = raiz.querySelector(".m1-panel.consola .salida");
+  let clave = "clasico", frameAntes = false, fotos = [], i = 0, auto = null;
+
+  function cargar() {
+    const prog = PROGRAMAS[clave];
+    fotos = simular(prog, frameAntes);
+    i = 0;
+    codigo.innerHTML = prog.codigo.map((l, n) => '<span class="m1-l" data-n="' + (n + 1) + '"><i>' + (n + 1) + "</i>" + esc(l) + "</span>").join("");
+    nota.hidden = !prog.nota;
+    nota.textContent = prog.nota ? "⚠ " + prog.nota : "";
+    pintar();
+  }
+  function lista(ol, xs) {
+    ol.innerHTML = xs.length ? xs.map((x) => "<li>" + esc(x) + "</li>").join("") : '<li class="vacio" style="background:none;border:0">vacía</li>';
+  }
+  function pintar() {
+    const f = fotos[i];
+    codigo.querySelectorAll(".m1-l").forEach((el) => el.classList.toggle("activa", +el.dataset.n === f.linea));
+    lista(paneles.pila, f.pila);
+    lista(paneles.micro, f.micro);
+    lista(paneles.tareas, f.tareas);
+    lista(paneles.timers, f.timers);
+    lista(paneles.raf, f.raf);
+    salida.innerHTML = f.consola.map((x, k) => (k === f.consola.length - 1 && f.nuevoLog ? "<b>" + esc(x) + "</b>" : esc(x))).join("\n") || '<span class="vacio">(vacía)</span>';
+    raiz.querySelectorAll(".m1-bucle-frame span").forEach((s) => s.classList.toggle("on", f.enFrame === s.dataset.p));
+    texto.textContent = f.texto;
+    info.textContent = "paso " + (i + 1) + " de " + fotos.length + "   ·   reloj simulado t = " + f.t.toFixed(1) + " ms   ·   frames pintados: " + f.frame + (f.fase ? "   ·   ejecutando: " + f.fase : "");
+  }
+  function mover(d) { i = Math.max(0, Math.min(fotos.length - 1, i + d)); pintar(); if (i === fotos.length - 1) pararAuto(); }
+  function pararAuto() { if (auto) { clearInterval(auto); auto = null; btnAuto.textContent = "reproducir"; } }
+  Curso.selector(ctrl, { etiqueta: "Programa:", opciones: Object.keys(PROGRAMAS).map((k) => [k, PROGRAMAS[k].titulo]), valor: clave, alCambiar: (v) => { clave = v; pararAuto(); cargar(); } });
+  Curso.boton(ctrl, "◀ paso", () => { pararAuto(); mover(-1); });
+  Curso.boton(ctrl, "paso ▶", () => { pararAuto(); mover(1); }, true);
+  const btnAuto = Curso.boton(ctrl, "reproducir", () => {
+    if (auto) { pararAuto(); return; }
+    if (i === fotos.length - 1) i = 0;
+    btnAuto.textContent = "pausa";
+    auto = setInterval(() => mover(1), 1100);
+  });
+  Curso.boton(ctrl, "⟲ reiniciar", () => { pararAuto(); i = 0; pintar(); });
+  Curso.casilla(ctrl, { etiqueta: "el frame llega antes que la tarea pendiente", valor: false, alCambiar: (v) => { frameAntes = v; pararAuto(); cargar(); } });
+  cargar();
+});
+
+/* Demo 2: bloquear el hilo principal. La bola roja la anima CSS (compositor);
+   la azul, JavaScript con requestAnimationFrame. */
+Curso.alListo(() => {
+  const raiz = document.getElementById("demo-bloqueo");
+  const esc = raiz.querySelector(".m1-escenario");
+  const bolaCss = raiz.querySelector(".m1-bola.css");
+  const bolaJs = raiz.querySelector(".m1-bola.js");
+  const info = raiz.querySelector(".demo-info");
+  const ctrl = raiz.querySelector(".demo-controles");
+  const estilo = document.createElement("style");
+  document.head.appendChild(estilo);
+  let recorrido = 600, modo = "tiempo", x = 0, dir = 1, frames = 0, visible = false, raf = 0, ultimoInforme = "";
+  let fpsCuenta = 0, fpsT0 = performance.now(), fps = 0;
+
+  // Keyframes con píxeles fijos (sin var()) para que el compositor pueda animarlos solo
+  function medir() {
+    recorrido = Math.max(100, esc.clientWidth - 70);
+    estilo.textContent = "@keyframes m1-vaiven-px { from { transform: translateX(0); } to { transform: translateX(" + recorrido + "px); } }";
+    bolaCss.style.animation = "m1-vaiven-px 2s linear infinite alternate";
+  }
+  function frame(ms) {
+    raf = 0;
+    frames++; fpsCuenta++;
+    if (ms - fpsT0 >= 1000) { fps = Math.round(fpsCuenta * 1000 / (ms - fpsT0)); fpsCuenta = 0; fpsT0 = ms; escribir(); }
+    let pos;
+    if (modo === "tiempo") {
+      const t = (ms / 1000) % 4, f = t < 2 ? t / 2 : 2 - t / 2;      // mismo vaivén que la animación CSS
+      pos = f * recorrido;
+    } else {
+      x += dir * recorrido / 120;                                      // un paso fijo por frame (≈2 s a 60 Hz)
+      if (x > recorrido) { x = recorrido; dir = -1; } else if (x < 0) { x = 0; dir = 1; }
+      pos = x;
+    }
+    bolaJs.style.transform = "translateX(" + pos + "px)";
+    if (visible) raf = requestAnimationFrame(frame);
+  }
+  function escribir() {
+    info.textContent = "rAF: " + (fps ? fps + " frames/s en el último segundo" : "midiendo…") + (ultimoInforme ? "\n" + ultimoInforme : "");
+  }
+  Curso.boton(ctrl, "Bloquear el hilo principal 1,5 s", () => {
+    const f0 = frames, t0 = performance.now();
+    const fin = t0 + 1500;
+    while (performance.now() < fin) { /* ocupado: nada más puede ejecutarse */ }
+    ultimoInforme = "Último bloqueo: " + Math.round(performance.now() - t0) + " ms, y durante él se ejecutaron " + (frames - f0) + " callbacks de rAF.";
+    escribir();
+  }, true);
+  Curso.selector(ctrl, { etiqueta: "animación JS:", opciones: [["tiempo", "basada en el tiempo"], ["frames", "basada en frames (x += paso)"]], valor: modo, alCambiar: (v) => { modo = v; } });
+  medir();
+  if ("ResizeObserver" in window) new ResizeObserver(medir).observe(esc);
+  new IntersectionObserver((ents) => {
+    visible = ents.some((e) => e.isIntersecting);
+    if (visible && !raf) { fpsCuenta = 0; fpsT0 = performance.now(); fps = 0; raf = requestAnimationFrame(frame); }   // medir de cero al volver a la vista
+    if (!visible) fps = 0;
+  }).observe(esc);
+  escribir();
+});
+</script>
+</body>
+</html>

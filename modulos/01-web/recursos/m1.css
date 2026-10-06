@@ -1,0 +1,198 @@
+/* =====================================================================
+   Módulo 1 · estilos propios de las demos (siempre con variables del tema)
+   Todas las clases llevan el prefijo m1- para no chocar con el curso.
+   ===================================================================== */
+
+/* ---------- utilidades de maquetación dentro de .demo ---------- */
+.m1-dos-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); min-height: 0; }
+.m1-dos-col > * { min-width: 0; }
+.m1-dos-col > * + * { border-left: 1px solid var(--border); }
+@media (max-width: 900px) {
+  .m1-dos-col { grid-template-columns: minmax(0, 1fr); }
+  .m1-dos-col > * + * { border-left: 0; border-top: 1px solid var(--border); }
+}
+.m1-etq {
+  font: 600 11.5px var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2);
+  display: flex; align-items: center; gap: 8px;
+}
+.m1-etq .espacio { flex: 1; }
+.m1-etq button { text-transform: none; letter-spacing: 0; white-space: nowrap; }
+.m1-etq button.activo { border-color: var(--accent); color: var(--text); }
+
+/* ---------- editor CodeMirror fuera de un playground ---------- */
+.m1-cm { position: relative; background: var(--code-bg); }
+.m1-cm .CodeMirror {
+  height: 100%; font: 13.5px/1.58 var(--mono); background: var(--code-bg); color: var(--code-text);
+}
+.m1-cm .CodeMirror-gutters { background: var(--code-bg); border-right: 1px solid var(--border); }
+.m1-cm .CodeMirror-linenumber { color: var(--tk-comment); opacity: .7; }
+.m1-cm .CodeMirror-cursor { border-left: 2px solid var(--accent); }
+.m1-cm .CodeMirror-selected { background: var(--sel) !important; }
+.m1-cm .CodeMirror-activeline-background { background: color-mix(in srgb, var(--hl-line) 55%, transparent); }
+.m1-cm textarea { width: 100%; height: 100%; }
+
+/* ---------- árbol DOM (lección 1.1) ---------- */
+.m1-arbol {
+  margin: 0; padding: 10px 12px; overflow: auto; background: var(--code-bg); color: var(--code-text);
+  font: 13px/1.62 var(--mono); white-space: pre;
+}
+.m1-arbol .n { display: block; }
+.m1-arbol .g { color: var(--border-2); user-select: none; }            /* guías de sangría */
+.m1-arbol .el { color: var(--tk-tag); }
+.m1-arbol .at { color: var(--tk-attr); }
+.m1-arbol .va { color: var(--tk-string); }
+.m1-arbol .tx { color: var(--tk-string); }
+.m1-arbol .tx-etq, .m1-arbol .co-etq { color: var(--muted); font-style: italic; }
+.m1-arbol .co { color: var(--tk-comment); font-style: italic; }
+.m1-arbol .dt { color: var(--tk-meta); }
+.m1-arbol .ws { color: var(--c-cuidado); opacity: .9; }
+.m1-arbol .solo-espacios { opacity: .62; }
+.m1-arbol .implicito {
+  font: 600 10.5px var(--font); color: var(--c-hack); margin-left: 8px; padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--c-hack) 45%, transparent); border-radius: 999px;
+}
+.leccion .m1-serializado { margin: 0; padding: 10px 12px; overflow: auto; background: var(--code-bg); color: var(--code-text); font: 13px/1.6 var(--mono); white-space: pre-wrap; word-break: break-all; border: 0; border-radius: 0; }
+.m1-diag { list-style: none; margin: 0; padding: 0; }
+.m1-diag li { margin: 2px 0; }
+.m1-diag .ok { color: var(--ok); }
+.m1-diag .aviso { color: var(--warn); }
+.m1-diag .mal { color: var(--err); }
+
+/* ---------- pequeños elementos reutilizables ---------- */
+.m1-leyenda { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); margin: -.6rem 0 1.4rem; justify-content: center; }
+.m1-leyenda i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+.m1-tabla-compacta td, .m1-tabla-compacta th { padding: 5px 10px; font-size: 14px; }
+.m1-tabla-compacta code { white-space: nowrap; }
+.m1-mono { font-family: var(--mono); font-size: .9em; }
+
+/* ---------- escenario de demos CSS (lección 1.2) ---------- */
+.m1-escenario { position: relative; overflow: hidden; background: var(--code-bg); }
+.m1-rejilla {
+  background-color: var(--code-bg);
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px);
+  background-size: 20px 20px;
+  background-position: center center;
+}
+.m1-ejes::before, .m1-ejes::after { content: ""; position: absolute; background: color-mix(in srgb, var(--text) 28%, transparent); }
+.m1-ejes::before { left: 0; right: 0; top: 50%; height: 1px; }
+.m1-ejes::after { top: 0; bottom: 0; left: 50%; width: 1px; }
+
+/* modelo de caja: colores al estilo DevTools, derivados del tema */
+.m1-flujo { display: flow-root; padding: 28px; }
+.m1-caja-real {
+  --w: 160; --h: 70; --p: 20; --b: 6; --m: 24; --bs: content-box;
+  box-sizing: var(--bs);
+  width: calc(var(--w) * 1px); height: calc(var(--h) * 1px);
+  padding: calc(var(--p) * 1px); margin: calc(var(--m) * 1px);
+  border: calc(var(--b) * 1px) solid color-mix(in srgb, var(--c-resumen) 75%, transparent);
+  background:
+    linear-gradient(color-mix(in srgb, var(--c-nota) 50%, transparent), color-mix(in srgb, var(--c-nota) 50%, transparent)) content-box,
+    color-mix(in srgb, var(--c-hack) 38%, transparent) padding-box;
+  color: var(--text); font: 600 13px var(--mono); display: flex; align-items: center; justify-content: center; text-align: center;
+  position: relative; z-index: 1; overflow: hidden;
+}
+.m1-caja-margen {
+  position: absolute; pointer-events: none;
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--c-cuidado) 30%, transparent) 0 6px, transparent 6px 12px);
+  outline: 1px dashed color-mix(in srgb, var(--c-cuidado) 80%, transparent);
+}
+.m1-caja-vecina { height: 26px; margin: 0 28px; border-radius: 6px; background: color-mix(in srgb, var(--text) 12%, transparent); color: var(--muted); font: 12px var(--mono); display: flex; align-items: center; padding: 0 10px; }
+
+/* orden de transformaciones */
+.m1-fantasma {
+  position: absolute; left: calc(50% - 50px); top: calc(50% - 30px); width: 100px; height: 60px;
+  border: 2px solid var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text); font: 700 30px/56px var(--font); text-align: left; padding-left: 12px;
+}
+.m1-fantasma.paso { border-style: dashed; background: transparent; opacity: .55; color: var(--muted); }
+.m1-fantasma.inverso { border-color: var(--accent-2); border-style: dotted; background: color-mix(in srgb, var(--accent-2) 12%, transparent); color: var(--accent-2); }
+.m1-etq-fantasma { position: absolute; font: 600 11px var(--mono); color: var(--muted); white-space: nowrap; line-height: 1; pointer-events: none; }
+.m1-etq-fantasma.resultado { color: var(--accent); }
+.m1-etq-fantasma.inverso { color: var(--accent-2); }
+.m1-fantasma .eje-x, .m1-fantasma .eje-y { position: absolute; left: 50%; top: 50%; background: var(--err); }
+.m1-fantasma .eje-x { width: 34px; height: 2px; margin-top: -1px; }
+.m1-fantasma .eje-y { width: 2px; height: 34px; margin-left: -1px; background: var(--ok); }
+.m1-fantasma .origen { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: var(--c-resumen); }
+.m1-marca-origen { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; border: 2px solid var(--c-resumen); }
+
+/* ---------- inspector de coordenadas (lección 1.4) ---------- */
+.m1-insp-padre {
+  position: absolute; left: 36px; top: 46px; width: 320px; height: 190px; padding: 16px;
+  border: 8px solid color-mix(in srgb, var(--c-resumen) 70%, transparent);
+  background: color-mix(in srgb, var(--c-hack) 18%, var(--surface));
+  color: var(--text-2); font: 12px var(--mono); box-sizing: content-box;
+}
+.m1-insp-padre::before { content: "padre · 320×190 + padding 16 + borde 8"; position: absolute; left: 0; top: 0; color: var(--muted); }
+.m1-insp-hijo {
+  position: absolute; left: 190px; top: 80px; width: 110px; height: 70px;
+  background: color-mix(in srgb, var(--c-nota) 45%, var(--surface)); border-radius: 4px;
+  display: flex; align-items: center; justify-content: center; color: var(--text); font: 600 12px var(--mono);
+}
+.m1-cruz-h, .m1-cruz-v { position: absolute; pointer-events: none; background: color-mix(in srgb, var(--err) 70%, transparent); }
+.m1-cruz-h { left: 0; right: 0; height: 1px; }
+.m1-cruz-v { top: 0; bottom: 0; width: 1px; }
+.m1-insp-info { display: grid; grid-template-columns: max-content 1fr; gap: 1px 14px; }
+.m1-insp-info b { color: var(--text); font-weight: 600; }
+.m1-insp-info .aviso { color: var(--warn); }
+
+/* ---------- visualizador del event loop (lección 1.5) ---------- */
+.m1-bucle { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 900px) { .m1-bucle { grid-template-columns: minmax(0, 1fr); } }
+/* ojo: es un <pre>, y ".leccion pre" (curso.css) tiene más especificidad que una sola clase: hace falta el prefijo .leccion */
+.leccion .m1-bucle-codigo { margin: 0; padding: 10px 0; background: var(--code-bg); color: var(--code-text); font: 12px/1.7 var(--mono); overflow: auto; border: 0; border-right: 1px solid var(--border); border-radius: 0; min-height: 250px; }
+/* ojo: no llamar .ln a estas líneas; curso.css ya usa ".leccion pre .ln" para los números de línea */
+.m1-bucle-codigo .m1-l { display: block; padding: 0 12px 0 0; white-space: pre; border-left: 3px solid transparent; }
+.m1-bucle-codigo .m1-l i { display: inline-block; width: 2.6em; text-align: right; padding-right: 10px; color: var(--tk-comment); font-style: normal; opacity: .7; }
+.m1-bucle-codigo .m1-l.activa { background: var(--hl-line); border-left-color: var(--accent); }
+.m1-bucle-paneles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 8px; align-content: start; }
+@media (max-width: 600px) { .m1-bucle-paneles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.m1-panel { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); min-height: 92px; overflow: hidden; }
+.m1-panel h5 { margin: 0; padding: 5px 8px; font: 600 11px var(--font); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.m1-panel ol { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.m1-panel li { margin: 0; padding: 3px 6px; border-radius: 5px; font: 11px/1.35 var(--mono); color: var(--text); background: color-mix(in srgb, var(--c) 22%, var(--surface)); border: 1px solid color-mix(in srgb, var(--c) 55%, transparent); }
+.m1-panel.pila { --c: var(--accent); } .m1-panel.pila ol { flex-direction: column-reverse; }
+.m1-panel.micro { --c: var(--c-hack); } .m1-panel.tareas { --c: var(--c-nota); } .m1-panel.raf { --c: var(--c-bestiario); } .m1-panel.timers { --c: var(--c-resumen); }
+.m1-panel.consola { --c: var(--muted); }
+.m1-panel.consola .salida { padding: 6px 8px; font: 12.5px/1.5 var(--mono); color: var(--code-text); white-space: pre-wrap; }
+.m1-panel.consola .salida b { color: var(--ok); }
+.m1-panel .vacio { color: var(--muted); font: italic 11.5px var(--font); padding: 4px 2px; }
+.m1-bucle-texto { padding: 10px 14px; border-top: 1px solid var(--border); font-size: 14.5px; color: var(--text); min-height: 3.4em; background: var(--surface); }
+.m1-bucle-frame { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 0 10px 10px; font: 11px var(--mono); color: var(--muted); }
+.m1-bucle-frame span { padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); }
+.m1-bucle-frame span.on { background: color-mix(in srgb, var(--c-bestiario) 30%, var(--surface)); border-color: var(--c-bestiario); color: var(--text); }
+.m1-bucle-nota { padding: 8px 14px; font-size: 13.5px; color: var(--warn); border-top: 1px dashed var(--border); }
+
+/* ---------- demo del hilo bloqueado (lección 1.5) ---------- */
+.m1-pista { position: relative; height: 54px; border-bottom: 1px dashed var(--border); }
+.m1-pista .etq { position: absolute; left: 10px; top: 4px; font: 11.5px var(--mono); color: var(--muted); }
+.m1-bola { position: absolute; left: 20px; top: 22px; width: 26px; height: 26px; border-radius: 50%; }
+.m1-bola.css { background: var(--c-bestiario); animation: m1-vaiven 2s linear infinite alternate; }
+.m1-bola.js { background: var(--accent-2); }
+@keyframes m1-vaiven { from { transform: translateX(0); } to { transform: translateX(var(--recorrido, 600px)); } }
+
+/* ---------- volcado hexadecimal y bits de un float (lección 1.6) ---------- */
+.m1-hex-entrada { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--surface-2); font-size: 13.5px; color: var(--text-2); }
+.m1-hex-entrada input[type=text] { flex: 1; min-width: 220px; font: 13.5px var(--mono); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-2); background: var(--code-bg); color: var(--text); }
+.m1-hex-cuerpo { padding: 12px 14px; background: var(--code-bg); font: 13px/1.6 var(--mono); color: var(--code-text); overflow-x: auto; }
+.m1-hex-fila { display: flex; gap: 10px; align-items: baseline; white-space: nowrap; }
+.m1-hex-fila .off { color: var(--tk-comment); min-width: 3.2em; }
+.m1-byte { display: inline-block; min-width: 2.1em; text-align: center; padding: 1px 2px; margin-right: 3px; border-radius: 4px; cursor: pointer; border: 1px solid transparent; }
+.m1-byte.el0 { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.m1-byte.el1 { background: color-mix(in srgb, var(--accent-2) 26%, transparent); }
+.m1-byte.sel { border-color: var(--text); }
+.m1-valores { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.m1-valores span { padding: 2px 8px; border-radius: 5px; cursor: pointer; border: 1px solid transparent; }
+.m1-valores span.el0 { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.m1-valores span.el1 { background: color-mix(in srgb, var(--accent-2) 22%, transparent); }
+.m1-valores span.sel { border-color: var(--text); }
+.m1-valores .cambio { color: var(--warn); }
+.m1-bits { display: flex; flex-wrap: wrap; gap: 1px; margin: 6px 0; font: 600 13px var(--mono); }
+.m1-bits span { display: inline-block; width: 1.15em; text-align: center; border-radius: 3px; }
+.m1-bits .s { background: color-mix(in srgb, var(--c-bestiario) 45%, transparent); }
+.m1-bits .e { background: color-mix(in srgb, var(--c-resumen) 40%, transparent); }
+.m1-bits .m { background: color-mix(in srgb, var(--c-nota) 32%, transparent); }
+.m1-bits .sep { width: .5em; background: none; }
+.m1-hex-sub { color: var(--muted); font-size: 12px; margin-top: 10px; }

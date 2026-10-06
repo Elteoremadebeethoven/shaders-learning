@@ -1,0 +1,1099 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.1 · HTML y el DOM — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m1.css">
+</head>
+<body data-leccion="01-web/html">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 1 · Fundamentos web mínimos</p>
+  <h1>HTML y el DOM</h1>
+  <p class="resumen">Tu archivo <code>.html</code> es solo texto. El navegador lo decodifica, lo trocea, lo corrige y lo convierte en un árbol de objetos vivos: el DOM. Ese árbol, y no tu código fuente, es lo que ven JavaScript, CSS y el <code>&lt;canvas&gt;</code> en el que vas a dibujar.</p>
+  <div class="meta"><span class="chip">⏱ 75 min</span><span class="chip">Requisitos: 0.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Seguirás el camino completo bytes → caracteres → tokens → árbol DOM, y sabrás en qué paso nace cada error típico.</li>
+      <li>Escribirás un documento mínimo correcto y sabrás qué pasa exactamente si falta el doctype, el <code>charset</code> o el <code>viewport</code>.</li>
+      <li>Distinguirás nodos elemento, nodos de texto y comentarios, y podrás predecir el árbol que sale de un HTML con errores.</li>
+      <li>Sabrás dónde colocar un <code>&lt;script&gt;</code>, qué cambian <code>defer</code> y <code>async</code>, y cuándo esperar a <code>DOMContentLoaded</code> o a <code>load</code>.</li>
+      <li>Entenderás el <code>&lt;canvas&gt;</code> como un elemento con dos tamaños: el búfer de dibujo y la caja CSS.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué empezar por el HTML</h2>
+<p>Todo lo que harás en este curso ocurre dentro de una página web. El lienzo donde WebGL pinta es un elemento HTML (<code>&lt;canvas&gt;</code>). El ratón llega como eventos que viajan por el árbol de la página. Una animación CSS cambia, frame a frame, propiedades de elementos de ese árbol. Cuando algo falla en esta capa (un <code>Cannot read properties of null (reading 'getContext')</code>, un canvas que se ve borroso, un botón que ha desaparecido), el problema no está en tu shader ni en tus matemáticas: está en cómo el navegador construyó la página.</p>
+<p>Por eso esta lección no es un catálogo de etiquetas. Es un paseo por lo que hace el navegador con tu archivo, con experimentos reales en Chrome, para que puedas predecir qué árbol sale de cualquier HTML, incluso de uno mal escrito. Solo veremos las etiquetas que vas a usar, pero las veremos por dentro.</p>
+
+<div class="callout porque">
+  <p>El navegador nunca trabaja con tu HTML «tal cual»: primero lo convierte en otra cosa, el DOM, y a partir de ahí solo usa esa otra cosa. Casi todas las rarezas de esta lección salen de la diferencia entre lo que escribiste y lo que el navegador construyó.</p>
+</div>
+
+<h2>Del archivo al árbol</h2>
+
+<svg class="diagrama" viewBox="0 0 760 270" width="760" role="img" aria-label="Del archivo HTML al árbol DOM: bytes, caracteres, tokens y árbol">
+  <defs>
+    <marker id="m11-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <text x="180" y="16" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">decodificar</text>
+  <text x="180" y="30" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">(charset)</text>
+  <text x="375" y="30" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">tokenizar</text>
+  <text x="572" y="16" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">construir</text>
+  <text x="572" y="30" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">y corregir</text>
+
+  <rect class="caja" x="8" y="40" width="150" height="92" rx="10"/>
+  <text x="83" y="64" text-anchor="middle" style="font-weight:700">bytes</text>
+  <text x="83" y="90" text-anchor="middle" style="font-family:var(--mono);font-size:12px">3C 70 3E 68 6F</text>
+  <text x="83" y="108" text-anchor="middle" style="font-family:var(--mono);font-size:12px">6C 61 C3 B1 …</text>
+
+  <rect class="caja" x="203" y="40" width="150" height="92" rx="10"/>
+  <text x="278" y="64" text-anchor="middle" style="font-weight:700">caracteres</text>
+  <text x="278" y="98" text-anchor="middle" style="font-family:var(--mono);font-size:13px">&lt;p&gt;holañ…</text>
+
+  <rect class="caja" x="398" y="40" width="150" height="92" rx="10"/>
+  <text x="473" y="64" text-anchor="middle" style="font-weight:700">tokens</text>
+  <text x="473" y="88" text-anchor="middle" style="font-size:12px">apertura ‹p›</text>
+  <text x="473" y="106" text-anchor="middle" style="font-size:12px">texto «holañ»</text>
+  <text x="473" y="124" text-anchor="middle" style="font-size:12px">…</text>
+
+  <rect class="caja" x="598" y="40" width="154" height="130" rx="10"/>
+  <text x="675" y="62" text-anchor="middle" style="font-weight:700">árbol DOM</text>
+  <text x="612" y="86" style="font-family:var(--mono);font-size:12px">html</text>
+  <text x="624" y="104" style="font-family:var(--mono);font-size:12px">├ head</text>
+  <text x="624" y="122" style="font-family:var(--mono);font-size:12px">└ body</text>
+  <text x="648" y="140" style="font-family:var(--mono);font-size:12px">└ p</text>
+  <text x="672" y="158" style="font-family:var(--mono);font-size:12px" class="texto-tenue">└ "holañ"</text>
+
+  <path d="M160 86 L199 86" stroke="currentColor" stroke-width="2" marker-end="url(#m11-fl)"/>
+  <path d="M355 86 L394 86" stroke="currentColor" stroke-width="2" marker-end="url(#m11-fl)"/>
+  <path d="M550 86 L594 86" stroke="currentColor" stroke-width="2" marker-end="url(#m11-fl)"/>
+
+  <rect class="caja" x="605" y="212" width="140" height="48" rx="10"/>
+  <text x="675" y="241" text-anchor="middle" style="font-weight:700">JavaScript</text>
+  <path d="M675 173 L675 208" stroke="currentColor" stroke-width="2" marker-end="url(#m11-fl)" marker-start="url(#m11-fl)"/>
+  <text x="684" y="195" class="texto-tenue" style="font-size:11.5px">lee y modifica</text>
+
+  <rect class="caja" x="210" y="212" width="330" height="48" rx="10"/>
+  <text x="375" y="233" text-anchor="middle">estilo → layout → pintado → píxeles</text>
+  <text x="375" y="251" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">(el pipeline de renderizado, lección 2.1)</text>
+  <path d="M600 150 C 565 165, 560 195, 544 226" stroke="currentColor" stroke-width="2" fill="none" marker-end="url(#m11-fl)"/>
+  <text x="78" y="241" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">+ el CSS de la página</text>
+  <path d="M150 236 L206 236" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#m11-fl)"/>
+</svg>
+
+<p>Cuando abres un <code>.html</code>, el navegador encadena cuatro pasos, y lo hace a medida que llegan los bytes, sin esperar a tener el archivo entero:</p>
+<ol>
+  <li><strong>Decodificar.</strong> El archivo son bytes. Para convertirlos en caracteres hay que saber la codificación (UTF-8, casi siempre). Si el navegador se equivoca aquí, verás «Ã±» en lugar de «ñ».</li>
+  <li><strong>Tokenizar.</strong> Una máquina de estados recorre los caracteres y emite <em>tokens</em>: «etiqueta de apertura <code>p</code>», «texto <code>hola</code>», «etiqueta de cierre <code>p</code>», «comentario»… El tokenizador no sabe nada de JavaScript ni de CSS; recuérdalo, porque más abajo nos morderá.</li>
+  <li><strong>Construir el árbol.</strong> Cada token se inserta en un árbol siguiendo unas reglas larguísimas y muy precisas de la especificación HTML. Aquí se corrigen los errores: se cierran etiquetas olvidadas, se crean elementos que faltan y se recolocan los que están en sitios imposibles.</li>
+  <li>El resultado es el <strong>DOM</strong> (<em>Document Object Model</em>): un árbol de objetos en la memoria del navegador (en Chrome, objetos C++ del motor Blink) que JavaScript ve como objetos normales: <code>document</code>, <code>document.body</code>, <code>canvas.width</code>…</li>
+</ol>
+<p>A partir del DOM y del CSS, el navegador calcula estilos, posiciones y, al final, píxeles. Ese es el <em>pipeline de renderizado</em>, y lo recorrerás paso a paso en la lección <a href="../02-animacion/01-pipeline-render.html">2.1</a>. Hoy quédate con esto: <strong>JavaScript nunca toca tu archivo; toca el árbol.</strong> Y el árbol puede no parecerse a tu archivo.</p>
+
+<h2>El documento mínimo, línea a línea</h2>
+<p>Esta es la plantilla que usarás en tus proyectos. Pasa el ratón por las notas para iluminar cada línea.</p>
+
+<div class="anotado" data-lang="html">
+<script type="text/plain">
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mi primera animación</title>
+  <link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+  <canvas id="lienzo" width="640" height="360">
+    Tu navegador no puede mostrar este lienzo.
+  </canvas>
+  <script src="app.js"><\/script>
+</body>
+</html>
+</script>
+<ol>
+  <li data-l="1">No es una etiqueta ni un elemento: es una señal que significa «usa las reglas modernas». En el árbol aparece como un nodo especial (<code>DocumentType</code>). Mayúsculas o minúsculas dan igual. Si falta, el navegador entra en <em>modo quirks</em>, y eso cambia medidas reales (lo verás enseguida).</li>
+  <li data-l="2">El elemento raíz. <code>lang</code> declara el idioma del texto: lo usan los lectores de pantalla para pronunciar, el corrector ortográfico, la separación silábica de CSS (<code>hyphens: auto</code>) y la elección de fuentes en idiomas asiáticos.</li>
+  <li data-l="3">Metadatos: nada de lo que va en el <code>&lt;head&gt;</code> se pinta.</li>
+  <li data-l="4">Cómo convertir bytes en caracteres. Tiene que aparecer entero dentro de los primeros 1024 bytes del archivo, porque el navegador lo busca ahí antes de decodificar en serio. Por eso va lo primero del <code>&lt;head&gt;</code>.</li>
+  <li data-l="5">En móviles, sin esta línea la página se maqueta como si la pantalla midiera 980 px y después se encoge. Lo medimos más abajo.</li>
+  <li data-l="6">El texto de la pestaña y del historial. Es obligatorio en un documento válido.</li>
+  <li data-l="7">Carga una hoja CSS. Bloquea el renderizado (<em>render-blocking</em>): el navegador no pinta nada hasta tenerla, para no enseñarte un instante la página sin estilos (el <em>FOUC</em>, <em>flash of unstyled content</em>).</li>
+  <li data-l="9">El contenido visible.</li>
+  <li data-l="10-12">Un lienzo con un búfer de 640 × 360 píxeles. Ojo: <code>width</code> y <code>height</code> <strong>no</strong> son su tamaño en pantalla (última sección). El texto de dentro es <em>contenido de respaldo</em>: solo se muestra en navegadores sin soporte para canvas, es decir, hoy en día nunca.</li>
+  <li data-l="13">Tu JavaScript, al final del <code>&lt;body&gt;</code>: cuando se ejecute, todo lo de arriba, canvas incluido, ya existirá en el árbol. La sección sobre <code>&lt;script&gt;</code> explica por qué y cuáles son las alternativas.</li>
+  <li data-l="14-15">Curiosidad: <code>&lt;/body&gt;</code> y <code>&lt;/html&gt;</code> son opcionales. También lo son <code>&lt;html&gt;</code>, <code>&lt;head&gt;</code> y <code>&lt;body&gt;</code>: si faltan, el parser crea esos elementos igualmente. En la demo de más abajo los verás aparecer siempre, los escribas o no. Escríbelos de todos modos: el código se lee mejor.</li>
+</ol>
+</div>
+
+<h3>El doctype y el modo quirks</h3>
+<p>A finales de los años 90 los navegadores implementaban CSS con errores, y miles de páginas se escribieron contando con esos errores. Cuando los navegadores se corrigieron, no podían romper aquellas páginas, así que se inventó un interruptor: si el documento empieza con un doctype moderno, se aplican las reglas correctas (<em>modo estándar</em>); si no hay doctype, se emulan los errores antiguos (<em>modo quirks</em>, «modo manías»). Ese interruptor sigue ahí y puedes consultarlo: <code>document.compatMode</code> vale <code>"CSS1Compat"</code> en modo estándar y <code>"BackCompat"</code> en quirks.</p>
+<p>No es una curiosidad histórica. Cargué la misma página con y sin doctype en Chrome, en una ventana de 700 px de alto, y esto es lo que cambió:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Prueba</th><th>Con <code>&lt;!doctype html&gt;</code></th><th>Sin doctype</th></tr></thead>
+  <tbody>
+    <tr><td><code>document.compatMode</code></td><td><code>"CSS1Compat"</code></td><td><code>"BackCompat"</code></td></tr>
+    <tr><td>un <code>&lt;div style="height:50%"&gt;</code> vacío dentro del <code>&lt;body&gt;</code></td><td>0 px</td><td>342 px (media ventana, descontando los márgenes del <code>body</code>)</td></tr>
+    <tr><td>un <code>&lt;canvas style="height:100%"&gt;</code></td><td>150 px (su alto por defecto)</td><td>684 px (toda la ventana)</td></tr>
+    <tr><td><code>el.style.width = 100</code> (un número, sin unidad)</td><td>se ignora: <code>el.style.width</code> sigue siendo <code>""</code></td><td>se acepta como <code>"100px"</code></td></tr>
+  </tbody>
+</table>
+<p>Fíjate en las dos últimas filas: en quirks, un canvas con <code>height:100%</code> «funciona» y asignar un número sin unidad a <code>style.width</code> también «funciona». Si pruebas una idea en un archivo rápido sin doctype y después la llevas a un proyecto de verdad, deja de funcionar. Una sola línea te evita tener un navegador que se comporta distinto que en todos los tutoriales.</p>
+
+<div class="callout nota">
+  <p>Un doctype antiguo tampoco es inocuo. <code>&lt;!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"&gt;</code> sin la URL final activa el modo quirks completo (lo comprobé con <code>compatMode</code>). Con la URL activa un modo «casi estándar» (<em>limited quirks</em>) que <code>compatMode</code> también reporta como <code>"CSS1Compat"</code> y que solo cambia un detalle del cálculo de la altura de línea (el famoso hueco bajo las imágenes dentro de celdas de tabla). La regla práctica es corta: <code>&lt;!doctype html&gt;</code>, y nada más.</p>
+</div>
+
+<div class="callout bestiario" data-id="m1-quirks" data-titulo="Funciona en mi archivo de prueba y no en el proyecto">
+  <p><strong>Síntoma:</strong> un <code>height:100%</code> que llenaba la pantalla ahora mide 150 px, o <code>el.style.left = x</code> ha dejado de mover el elemento.</p>
+  <p><strong>Causa:</strong> el archivo de prueba no tenía doctype y se renderizaba en modo quirks, que resuelve las alturas en % contra la ventana y acepta números sin unidad en <code>style</code>. El proyecto sí tiene doctype.</p>
+  <p><strong>Solución:</strong> <code>&lt;!doctype html&gt;</code> siempre en la primera línea, y unidades siempre en JavaScript: <code>el.style.left = x + "px"</code>. Para diagnosticarlo, escribe <code>document.compatMode</code> en la consola.</p>
+</div>
+
+<h3>meta charset: de bytes a letras</h3>
+<p>La letra «ñ» en UTF-8 ocupa dos bytes: <code>C3 B1</code>. Si el navegador decodifica esos bytes como <em>windows-1252</em> (la codificación occidental antigua), cada byte se convierte en un carácter: <code>C3</code> es «Ã» y <code>B1</code> es «±». Resultado: «Ã±». Es el <em>mojibake</em>, y tiene una firma inconfundible.</p>
+<p>Lo comprobé con una página que contiene «ñandú, canción, 1€» y <strong>no</strong> tiene <code>&lt;meta charset&gt;</code>:</p>
+<ul>
+  <li>Abierta con <code>file://</code>, Chrome detectó UTF-8 y se vio bien.</li>
+  <li>Servida por HTTP con la cabecera <code>Content-Type: text/html</code> (sin <code>charset</code>), <code>document.characterSet</code> fue <code>"windows-1252"</code> y se vio «Ã±andÃº, canciÃ³n, 1â‚¬».</li>
+</ul>
+<p>Es decir: el error aparece justo cuando pasas de abrir el archivo con doble clic a usar un servidor local (lección <a href="07-herramientas.html">1.7</a>). Y no afecta solo al texto visible: los scripts se decodifican con la codificación de la página, así que un <code>"canción".length</code> mal decodificado ya no vale 7.</p>
+
+<div class="callout bestiario" data-id="m1-mojibake" data-titulo="Aparece «Ã±» en lugar de «ñ»">
+  <p><strong>Síntoma:</strong> tildes y eñes convertidas en parejas raras (Ã¡, Ã±, â‚¬), a veces solo cuando sirves la página por HTTP.</p>
+  <p><strong>Causa:</strong> los bytes UTF-8 se decodificaron como windows-1252 porque ni la cabecera HTTP ni el documento declaraban la codificación.</p>
+  <p><strong>Solución:</strong> <code>&lt;meta charset="utf-8"&gt;</code> como primera línea del <code>&lt;head&gt;</code> (dentro de los primeros 1024 bytes) y archivos guardados en UTF-8. Compruébalo con <code>document.characterSet</code>.</p>
+</div>
+
+<h3>meta viewport: el ancho en el móvil</h3>
+<p>Emulé en Chrome un móvil de 390 px de ancho, con 3 píxeles físicos por cada píxel CSS, con y sin la línea del viewport:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th></th><th><code>innerWidth</code></th><th>escala de la página</th></tr></thead>
+  <tbody>
+    <tr><td>sin <code>&lt;meta name="viewport"&gt;</code></td><td>980</td><td>0,398 (se ve al 40 %)</td></tr>
+    <tr><td>con <code>width=device-width, initial-scale=1</code></td><td>390</td><td>1</td></tr>
+  </tbody>
+</table>
+<p>Sin esa línea, el navegador móvil finge una pantalla de 980 px, maqueta la página para ese ancho y la encoge hasta que quepa. Tu canvas «a pantalla completa» mide 980 px CSS y todo se ve diminuto. <code>width=device-width</code> significa «usa el ancho real del dispositivo» e <code>initial-scale=1</code>, «sin zoom inicial». La diferencia entre píxeles CSS y píxeles físicos (ese factor 3, el <code>devicePixelRatio</code>) la verás en la lección <a href="02-css.html">1.2</a>; para el canvas darás el primer paso en el ejercicio 1.1.4 de esta lección, y la receta completa está en la <a href="../02-animacion/06-canvas2d.html">2.6</a>.</p>
+
+<h2>Elementos, atributos y nodos</h2>
+
+<h3>Anatomía de un elemento</h3>
+<script type="text/plain" class="codigo" data-lang="html">
+<canvas id="lienzo" class="fondo animado" width="640" data-velocidad="2">Texto de respaldo</canvas>
+</script>
+<ul>
+  <li>La <strong>etiqueta de apertura</strong>, <code>&lt;canvas …&gt;</code>, lleva el <strong>nombre</strong> del elemento (<code>canvas</code>) y sus <strong>atributos</strong>, pares <code>nombre="valor"</code>.</li>
+  <li>El <strong>contenido</strong> es lo que hay entre la apertura y el cierre. Puede contener texto y otros elementos: así se forma el árbol.</li>
+  <li>La <strong>etiqueta de cierre</strong>, <code>&lt;/canvas&gt;</code>.</li>
+</ul>
+<p>Reglas que conviene saber con exactitud:</p>
+<ul>
+  <li>Los nombres de etiquetas y atributos no distinguen mayúsculas: <code>&lt;CANVAS WIDTH=10&gt;</code> es lo mismo que <code>&lt;canvas width=10&gt;</code>. En elementos HTML, <code>el.tagName</code> devuelve el nombre en mayúsculas (<code>"CANVAS"</code>) y <code>el.localName</code> en minúsculas (<code>"canvas"</code>). Compara con uno u otro, sin mezclar.</li>
+  <li>Las comillas de los valores son opcionales si el valor no tiene espacios ni caracteres especiales (<code>width=640</code>). Ponlas siempre.</li>
+  <li><strong>Atributos booleanos</strong> (<code>hidden</code>, <code>disabled</code>, <code>autoplay</code>…): cuenta la <em>presencia</em>, no el valor. <code>hidden="false"</code> oculta el elemento: lo comprobé, <code>el.hidden</code> vale <code>true</code> y su altura es 0. Para «apagar» un booleano hay que quitar el atributo.</li>
+  <li><strong>Elementos vacíos</strong> (<em>void</em>): <code>meta</code>, <code>link</code>, <code>img</code>, <code>br</code>, <code>hr</code>, <code>input</code>, <code>source</code>… No tienen contenido ni etiqueta de cierre.</li>
+  <li>La barra de «autocierre» <code>/&gt;</code> <strong>no significa nada en HTML</strong>. En los elementos vacíos se ignora, y en los demás también: <code>&lt;div/&gt;Hola</code> produce un <code>div</code> que <em>contiene</em> «Hola», porque la barra se descarta y el <code>div</code> sigue abierto. La costumbre viene de XML, JSX y SVG, donde <code>/&gt;</code> sí cierra (de hecho, dentro de un <code>&lt;svg&gt;</code> incrustado en HTML también cierra: lo comprobé, porque ahí el parser trata <code>/&gt;</code> como en XML). Con un canvas, esto es un desastre:</li>
+</ul>
+
+<div class="callout bestiario" data-id="m1-canvas-autocerrado" data-titulo="Todo lo que va después de mi canvas ha desaparecido">
+  <p><strong>Síntoma:</strong> escribes <code>&lt;canvas id="lienzo"/&gt;</code> y el párrafo y el botón que van detrás no se ven, aunque <code>getElementById</code> los encuentra sin problema.</p>
+  <p><strong>Causa:</strong> en HTML, <code>/&gt;</code> no cierra un elemento que no sea vacío. El canvas queda abierto y todo lo que sigue se convierte en su contenido de respaldo, que no se pinta cuando el navegador soporta canvas. Lo medí: el párrafo tiene <code>offsetHeight = 0</code> y su <code>parentNode</code> es el canvas. Los <code>&lt;script&gt;</code> que quedan dentro sí se ejecutan, lo que despista todavía más.</p>
+  <p><strong>Solución:</strong> <code>&lt;canvas id="lienzo"&gt;&lt;/canvas&gt;</code>, siempre con cierre explícito.</p>
+</div>
+
+<h3>Nodos: elementos, texto y comentarios</h3>
+<p>El árbol no solo tiene elementos. Cada pieza del documento es un <strong>nodo</strong>, y hay varios tipos; el número es el valor de <code>nodo.nodeType</code>:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Tipo</th><th><code>nodeType</code></th><th><code>nodeName</code></th><th>Ejemplo</th></tr></thead>
+  <tbody>
+    <tr><td>Elemento</td><td>1</td><td><code>"LI"</code>, <code>"CANVAS"</code>…</td><td><code>&lt;li&gt;uno&lt;/li&gt;</code></td></tr>
+    <tr><td>Texto</td><td>3</td><td><code>"#text"</code></td><td><code>uno</code>, pero también <code>"\n  "</code></td></tr>
+    <tr><td>Comentario</td><td>8</td><td><code>"#comment"</code></td><td><code>&lt;!-- nota --&gt;</code></td></tr>
+    <tr><td>Documento</td><td>9</td><td><code>"#document"</code></td><td>el objeto <code>document</code></td></tr>
+    <tr><td>Doctype</td><td>10</td><td><code>"html"</code></td><td><code>&lt;!doctype html&gt;</code></td></tr>
+  </tbody>
+</table>
+<p>La trampa está en la segunda fila: <strong>los espacios, tabuladores y saltos de línea que hay entre etiquetas también son nodos de texto</strong>. Con esta lista:</p>
+<script type="text/plain" class="codigo" data-lang="html">
+<ul id="lista">
+  <li>uno</li>
+  <li>dos</li>
+</ul>
+</script>
+<p>Chrome da <code>lista.childNodes.length === 5</code> y <code>lista.children.length === 2</code>. Además de los dos <code>&lt;li&gt;</code> hay tres nodos de texto hechos solo de espacios: el salto de línea con la sangría antes de cada <code>li</code> y el salto antes de <code>&lt;/ul&gt;</code>. Y <code>lista.firstChild</code> es el texto <code>"\n  "</code>, no el primer <code>li</code>.</p>
+<p>¿Por qué el parser no los tira? Porque no puede saber si importan. Dentro de un <code>&lt;pre&gt;</code>, o con <code>white-space: pre</code> en CSS, se ven tal cual. Entre elementos en línea se convierten en un espacio visible: es el misterioso hueco de unos 4 px entre elementos <code>inline-block</code> que verás en la lección <a href="02-css.html">1.2</a>.</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Incluye nodos de texto y comentarios</th><th>Solo elementos</th></tr></thead>
+  <tbody>
+    <tr><td><code>childNodes</code></td><td><code>children</code></td></tr>
+    <tr><td><code>firstChild</code> / <code>lastChild</code></td><td><code>firstElementChild</code> / <code>lastElementChild</code></td></tr>
+    <tr><td><code>nextSibling</code> / <code>previousSibling</code></td><td><code>nextElementSibling</code> / <code>previousElementSibling</code></td></tr>
+    <tr><td><code>textContent</code>: todo el texto de los descendientes, pegado</td><td>—</td></tr>
+  </tbody>
+</table>
+<div class="callout cuidado">
+  <p>Si recorres el árbol con <code>childNodes</code> o <code>firstChild</code> esperando elementos, te encontrarás nodos de texto. Usa <code>children</code> y las versiones <code>…Element…</code> salvo que quieras de verdad el texto.</p>
+</div>
+
+<h3>La demo: escribe HTML y mira el árbol</h3>
+<p>Esto es lo que hace el navegador con lo que escribes. El editor de la izquierda se analiza con el mismo parser que Chrome usa para las páginas (a través de <code>DOMParser</code>) y a la derecha ves el árbol resultante con los nodos de texto a la vista: <code>·</code> es un espacio y <code>↵</code> un salto de línea. Las etiquetas marcadas con «creado por el parser» no están en tu código. Debajo, una lista compara cuántas etiquetas de cada tipo escribiste con cuántos elementos existen en el árbol.</p>
+
+<div class="demo ancho" id="demo-dom">
+  <div class="m1-dos-col" style="height:430px">
+    <div style="display:flex;flex-direction:column;min-height:0">
+      <div class="m1-etq">Tu HTML <span class="espacio"></span><span style="text-transform:none;letter-spacing:0;font-weight:500">se analiza mientras escribes</span></div>
+      <div class="m1-cm" style="flex:1;min-height:0" id="demo-dom-editor"></div>
+    </div>
+    <div style="display:flex;flex-direction:column;min-height:0">
+      <div class="m1-etq">Resultado <span class="espacio"></span>
+        <button type="button" class="pg-btn activo" data-vista="arbol">Árbol DOM</button>
+        <button type="button" class="pg-btn" data-vista="html">HTML serializado</button>
+      </div>
+      <div class="m1-arbol" style="flex:1;min-height:0" id="demo-dom-arbol"></div>
+      <pre class="m1-serializado" style="flex:1;min-height:0;display:none" id="demo-dom-html"></pre>
+    </div>
+  </div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Recorre los ejemplos del selector uno a uno y, antes de mirar, intenta predecir el árbol. Después escribe tus propios errores: ¿qué hace el parser con un <code>&lt;/div&gt;</code> de más?, ¿y con un <code>&lt;p&gt;</code> dentro de un <code>&lt;h1&gt;</code>?, ¿y con texto antes del <code>&lt;!doctype&gt;</code>?</p>
+<div class="callout nota">
+  <p><code>DOMParser</code> construye un documento aparte, sin ventana: no ejecuta scripts ni descarga imágenes. Puedes escribir lo que quieras sin miedo. Una diferencia menor con una página real: como en ese documento los scripts están desactivados, el contenido de <code>&lt;noscript&gt;</code> se analiza como HTML normal.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Este HTML tiene un <code>&lt;ul&gt;</code> con tres <code>&lt;li&gt;</code>, cada uno en su propia línea y con sangría, y el <code>&lt;/ul&gt;</code> en una línea aparte. ¿Cuánto vale <code>ul.childNodes.length</code>?</p>
+  <ul>
+    <li>3<div class="explicacion">Eso es <code>ul.children.length</code>, que solo cuenta elementos. <code>childNodes</code> incluye también los nodos de texto de espacios.</div></li>
+    <li>6<div class="explicacion">Casi: cuentas un nodo de espacios delante de cada <code>li</code>, pero te falta el último, el salto de línea que hay entre el tercer <code>&lt;/li&gt;</code> y el <code>&lt;/ul&gt;</code>.</div></li>
+    <li data-correcta>7<div class="explicacion">Sí: 3 elementos <code>li</code> y 4 nodos de texto (uno antes de cada <code>li</code> y uno antes de <code>&lt;/ul&gt;</code>). Es el patrón «texto, elemento, texto, elemento… texto». Compruébalo pegando el HTML en la demo.</div></li>
+    <li>4<div class="explicacion">No hay un único nodo de texto «de fondo»: cada tramo de espacios entre dos etiquetas es un nodo de texto distinto.</div></li>
+  </ul>
+</div>
+
+<h2>El DOM no es tu código fuente</h2>
+
+<div class="callout senior" data-titulo="El parser nunca falla">
+  <p>Un compilador de C o de GLSL rechaza el programa al primer error: con un <code>;</code> olvidado, el shader entero no compila. En los editores de este curso verás el mensaje en rojo (el GLSL de la lección <a href="../06-glsl/01-lenguaje.html">6.1</a> es todavía más estricto que C); en tu propio WebGL, el síntoma es una pantalla negra, que aprenderás a diagnosticar en la lección <a href="../05-webgl/02-primer-triangulo.html">5.2</a>. El parser HTML hace lo contrario: <strong>cualquier secuencia de bytes produce un árbol</strong>, y la especificación define exactamente cuál, caso por caso, para que todos los navegadores construyan el mismo. Por eso un HTML roto «funciona»… pero no como tú crees.</p>
+</div>
+
+<p>Estas son correcciones reales, obtenidas analizando cada línea en Chrome y leyendo el <code>innerHTML</code> resultante:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Escribes</th><th>Chrome construye</th><th>Regla</th></tr></thead>
+  <tbody>
+    <tr><td><code>&lt;p&gt;hola&lt;div&gt;mundo&lt;/div&gt;&lt;/p&gt;</code></td><td><code>&lt;p&gt;hola&lt;/p&gt;&lt;div&gt;mundo&lt;/div&gt;&lt;p&gt;&lt;/p&gt;</code></td><td>Un <code>div</code> no puede ir dentro de un <code>p</code>: al abrirlo, el parser cierra el párrafo. Y el <code>&lt;/p&gt;</code> que sobra crea un párrafo vacío.</td></tr>
+    <tr><td><code>&lt;table&gt;&lt;tr&gt;&lt;td&gt;x&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</code></td><td><code>&lt;table&gt;&lt;tbody&gt;&lt;tr&gt;…</code></td><td>Las filas siempre van dentro de un <code>tbody</code>; si falta, se crea.</td></tr>
+    <tr><td><code>&lt;table&gt;texto&lt;tr&gt;…&lt;/table&gt;</code></td><td><code>texto&lt;table&gt;&lt;tbody&gt;…</code></td><td>El texto suelto dentro de una tabla se saca fuera, delante de ella (<em>foster parenting</em>).</td></tr>
+    <tr><td><code>&lt;ul&gt;&lt;li&gt;uno&lt;li&gt;dos&lt;/ul&gt;</code></td><td><code>&lt;ul&gt;&lt;li&gt;uno&lt;/li&gt;&lt;li&gt;dos&lt;/li&gt;&lt;/ul&gt;</code></td><td>Abrir un <code>li</code> cierra el anterior. Esto es HTML válido: el cierre de <code>li</code> es opcional.</td></tr>
+    <tr><td><code>&lt;b&gt;negrita&lt;i&gt;ambas&lt;/b&gt;cursiva&lt;/i&gt;</code></td><td><code>&lt;b&gt;negrita&lt;i&gt;ambas&lt;/i&gt;&lt;/b&gt;&lt;i&gt;cursiva&lt;/i&gt;</code></td><td>Etiquetas cruzadas: el parser cierra la <code>i</code>, cierra la <code>b</code> y <strong>clona</strong> la <code>i</code> para continuar (el llamado «algoritmo de la agencia de adopción»).</td></tr>
+    <tr><td><code>&lt;a href=a&gt;uno&lt;a href=b&gt;dos&lt;/a&gt;&lt;/a&gt;</code></td><td>dos enlaces hermanos</td><td>Un enlace no puede contener otro: abrir el segundo cierra el primero.</td></tr>
+    <tr><td><code>&lt;div&gt;&lt;/span&gt;&lt;/div&gt;</code></td><td><code>&lt;div&gt;&lt;/div&gt;</code></td><td>Un cierre sin apertura se ignora.</td></tr>
+  </tbody>
+</table>
+<p>Dos consecuencias prácticas:</p>
+<ol>
+  <li>«Ver código fuente» (<kbd>Ctrl</kbd>+<kbd>U</kbd>, o <kbd>⌘</kbd>+<kbd>⌥</kbd>+<kbd>U</kbd> en Mac) enseña el archivo tal como llegó. El panel <em>Elements</em> de las DevTools enseña el DOM vivo, ya corregido por el parser y modificado por tus scripts. Cuando depures, fíate del panel Elements (lección <a href="07-herramientas.html">1.7</a>).</li>
+  <li><code>innerHTML</code> y <code>outerHTML</code> no te devuelven tu texto: <em>serializan</em> el árbol, es decir, escriben de nuevo el HTML a partir de los nodos. Por eso en la demo la pestaña «HTML serializado» enseña la versión corregida.</li>
+</ol>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.1.1 — El selector que no encuentra nada</h3>
+  <p>Tienes un aviso dentro de un párrafo y una regla CSS para ponerlo en rojo. La regla no se aplica y <code>document.querySelector("p .aviso")</code> devuelve <code>null</code>. El HTML parece correcto. Ejecuta y mira la consola:</p>
+  <div class="js-playground" data-titulo="Un div dentro de un p" data-altura="200">
+<script type="text/x-html">
+<p>Atención: <div class="aviso">la bandeja quema</div></p>
+</script>
+<script type="text/x-css">
+body { padding: 12px 16px; font-family: sans-serif; }
+p .aviso { color: tomato; font-weight: bold; }   /* nunca se aplica */
+p { outline: 1px dashed #999; min-height: 1em; }
+</script>
+<script type="text/x-js">
+console.log('querySelector("p .aviso") →', document.querySelector("p .aviso"));
+
+// ¿Qué elementos hay de verdad en el <body>? (saltamos los <script> del editor)
+for (const el of document.body.children) {
+  if (el.tagName !== "SCRIPT") console.log(el.outerHTML);
+}
+</script>
+  </div>
+  <p><strong>Paso 1, lo que ve el tokenizador.</strong> Emite, en orden: apertura <code>p</code>, texto «Atención: », apertura <code>div</code> (con su atributo <code>class</code>), texto «la bandeja quema», cierre <code>div</code>, cierre <code>p</code>.</p>
+  <p><strong>Paso 2, lo que hace el constructor del árbol.</strong> Con el <code>p</code> abierto llega la apertura de <code>div</code>. La especificación dice que un <code>div</code> es contenido «de flujo» y un <code>p</code> solo admite contenido «de frase» (texto, <code>span</code>, <code>em</code>, <code>a</code>…), así que antes de insertar el <code>div</code> <strong>cierra el párrafo</strong>. El <code>div</code> queda como hermano del <code>p</code>, no como hijo.</p>
+  <p><strong>Paso 3, el cierre huérfano.</strong> Cuando llega el <code>&lt;/p&gt;</code>, no queda ningún párrafo abierto. La regla para ese caso es curiosa: el parser crea un <code>p</code> vacío y lo cierra en el acto. Por eso la consola enseña tres elementos: <code>&lt;p&gt;Atención: &lt;/p&gt;</code>, el <code>div</code> y un <code>&lt;p&gt;&lt;/p&gt;</code> (el recuadro discontinuo vacío que ves abajo).</p>
+  <p><strong>Paso 4, la consecuencia.</strong> El selector <code>p .aviso</code> busca un <code>.aviso</code> <em>descendiente</em> de un <code>p</code>, y en el árbol no hay ninguno. La regla CSS tampoco se aplica, por el mismo motivo. El CSS y el JavaScript eran correctos; el árbol no era el que imaginabas.</p>
+  <p><strong>La corrección.</strong> Usa un elemento de frase para el aviso, <code>&lt;span class="aviso"&gt;</code>, o convierte el párrafo en un contenedor de flujo, <code>&lt;div&gt;</code>. Prueba cualquiera de las dos en la pestaña HTML y vuelve a ejecutar: el selector encuentra el elemento y el texto se pone rojo.</p>
+</section>
+
+<h3>El caso más traicionero: <code>&lt;/script&gt;</code> dentro de un string</h3>
+<p>Dentro de un <code>&lt;script&gt;</code>, el tokenizador no entiende JavaScript: lee caracteres en crudo hasta encontrar la secuencia <code>&lt;/script</code>, esté donde esté. Así que esto:</p>
+<script type="text/plain" class="codigo" data-lang="html">
+<script>
+  const etiqueta = "<\/script>";
+  console.log(etiqueta);
+<\/script>
+</script>
+<p>termina el script <em>en mitad del string</em>. El script queda como <code>const etiqueta = "</code>, que es JavaScript inválido, y el resto (<code>"; console.log(etiqueta);</code>) se convierte en texto visible de la página. Es un error fácil de cometer (al preparar esta lección falló así hasta el código de la demo del árbol) y el mensaje del navegador, <code>SyntaxError: Invalid or unexpected token</code>, no dice nada de la causa real. Pruébalo en la demo del árbol con el ejemplo «<code>&lt;/script&gt;</code> dentro de un string».</p>
+<p>La solución es escribir <code>"&lt;\/script&gt;"</code>. En un string de JavaScript, <code>\/</code> equivale a <code>/</code>, así que el valor no cambia, pero el tokenizador ya no ve la secuencia <code>&lt;/script</code>.</p>
+
+<div class="callout bestiario" data-id="m1-script-string" data-titulo="Un string con «&lt;/script&gt;» rompe el script">
+  <p><strong>Síntoma:</strong> <code>SyntaxError: Invalid or unexpected token</code> (o <code>Unexpected end of input</code>) en un script que parece correcto, y trozos de tu código aparecen como texto en la página.</p>
+  <p><strong>Causa:</strong> el tokenizador HTML corta el <code>&lt;script&gt;</code> en el primer <code>&lt;/script</code> que encuentra, aunque esté dentro de un string o de un comentario de JavaScript.</p>
+  <p><strong>Solución:</strong> escribe <code>&lt;\/script&gt;</code> dentro del código en línea, o mueve el código a un archivo <code>.js</code> externo, donde el problema no existe.</p>
+</div>
+
+<h2>id, class y data-*: nombres y datos en los nodos</h2>
+<ul>
+  <li><strong><code>id</code></strong>: identificador único en el documento; se busca con <code>document.getElementById("lienzo")</code>. Si lo repites, el documento es inválido y <code>getElementById</code> devuelve el primero (lo comprobé: <code>querySelectorAll("#dup")</code> encuentra los dos).</li>
+  <li><strong><code>class</code></strong>: una lista de nombres separados por espacios, para agrupar elementos y darles estilo. <code>class="fondo animado"</code> son dos clases. En JavaScript se lee con <code>el.className</code> (un string; se llama así porque <code>class</code> era palabra reservada en el JavaScript de 1995) o, mucho mejor, con <code>el.classList</code>, que verás en la lección <a href="04-js-dom-eventos.html">1.4</a>.</li>
+  <li><strong><code>data-*</code></strong>: atributos inventados por ti para guardar datos en el HTML. JavaScript los lee en <code>el.dataset</code>, con una conversión de nombres que conviene conocer.</li>
+</ul>
+<div class="anotado" data-lang="html">
+<script type="text/plain">
+<canvas id="lienzo" data-velocidad-max="3" data-color="tomato"></canvas>
+<script>
+  const c = document.getElementById("lienzo");
+  c.dataset.velocidadMax;              // "3"
+  c.dataset.color;                     // "tomato"
+  c.dataset.velocidadMax + 1;          // "31"
+  Number(c.dataset.velocidadMax) + 1;  // 4
+  c.dataset.nuevoValor = 5;            // crea data-nuevo-valor="5"
+<\/script>
+</script>
+<ol>
+  <li data-l="1">Dos atributos de datos. Los nombres de atributo van en minúsculas y con guiones.</li>
+  <li data-l="4">En <code>dataset</code>, se quita el prefijo <code>data-</code> y cada guion seguido de letra se convierte en esa letra en mayúscula: <code>velocidad-max</code> → <code>velocidadMax</code>. Escribir <code>c.dataset.velocidad-max</code> sería una resta (<code>c.dataset.velocidad - max</code>) y daría <code>ReferenceError: max is not defined</code>.</li>
+  <li data-l="6">Los valores son <strong>siempre strings</strong>. Con <code>+</code>, un string concatena: <code>"3" + 1</code> es <code>"31"</code>. Es un error clásico cuando configuras una animación desde el HTML.</li>
+  <li data-l="7">Convierte antes de operar: <code>Number(…)</code>, <code>parseFloat(…)</code> o el <code>+</code> unario (<code>+c.dataset.velocidadMax</code>). Los detalles de estas conversiones, en la lección <a href="03-js-lenguaje.html">1.3</a>.</li>
+  <li data-l="8">Funciona también al revés: asignar en <code>dataset</code> crea el atributo, con el nombre de vuelta a guiones y el valor convertido a string. Lo comprobé en <code>outerHTML</code>: <code>data-nuevo-valor="5"</code>.</li>
+</ol>
+</div>
+<p>Este curso usa <code>data-*</code> para configurar cada componente: <code>data-titulo</code>, <code>data-altura</code>… y, en los editores de shaders, <code>data-uniforms</code> con un JSON dentro que el código lee con <code>JSON.parse(el.dataset.uniforms)</code>. Es la forma estándar de pasar configuración del HTML al JavaScript.</p>
+
+<div class="callout hack" data-titulo="Cada id es una variable global">
+  <p>Si un elemento tiene <code>id="miCaja"</code>, en la consola puedes escribir directamente <code>miCaja</code> (o <code>window.miCaja</code>) y obtienes el elemento, sin <code>getElementById</code>. Es un vestigio de los navegadores antiguos que la especificación mantiene (<em>named access</em>). Lo comprobé, y también sus límites: los globales de verdad ganan (un elemento con <code>id="top"</code> no cambia <code>window.top</code>, y <code>id="alert"</code> no tapa la función <code>alert</code>), y cualquier <code>let</code>, <code>const</code> o <code>var</code> con el mismo nombre lo oculta. Úsalo para probar cosas rápido en la consola; nunca en código de verdad.</p>
+</div>
+
+<div class="callout senior" data-titulo="Atributos y propiedades no son lo mismo">
+  <p>El <em>atributo</em> es el string que hay en el HTML; la <em>propiedad</em> es el valor JavaScript del objeto DOM. Muchas propiedades «reflejan» un atributo, pero aplicando conversiones. Con el canvas, esto es lo que medí:</p>
+  <table class="m1-tabla-compacta">
+    <thead><tr><th>Haces</th><th><code>canvas.width</code> vale</th></tr></thead>
+    <tbody>
+      <tr><td>nada (no hay atributo <code>width</code>)</td><td>300, el valor por defecto</td></tr>
+      <tr><td><code>canvas.width = 2.9</code></td><td>2 (se trunca a entero)</td></tr>
+      <tr><td><code>canvas.width = "abc"</code></td><td>0</td></tr>
+      <tr><td><code>canvas.setAttribute("width", "50%")</code></td><td>50 (lee los dígitos del principio y descarta el resto)</td></tr>
+      <tr><td><code>canvas.removeAttribute("width")</code></td><td>300 otra vez</td></tr>
+    </tbody>
+  </table>
+  <p>La excepción famosa es <code>input.value</code>: la propiedad es el valor <em>actual</em> (lo que el usuario ha tecleado) y el atributo <code>value</code> es el valor <em>inicial</em>. En cuanto el usuario escribe, dejan de coincidir.</p>
+</div>
+
+<h2><code>&lt;script&gt;</code>: dónde ponerlo y cuándo se ejecuta</h2>
+<p>Cuando el parser llega a un <code>&lt;script&gt;</code> clásico, <strong>se detiene</strong>: descarga el archivo (si tiene <code>src</code>), lo ejecuta y solo después sigue leyendo el HTML. ¿Por qué no sigue en paralelo? Por <code>document.write()</code>, una función de los años 90 que inserta HTML en la entrada del parser <em>justo en ese punto</em>. Si el script puede escribir en el documento, el parser no sabe qué viene después hasta que el script termine. Aunque tú nunca uses <code>document.write</code>, el navegador no puede saberlo, así que espera.</p>
+
+<svg class="diagrama" viewBox="0 0 760 300" width="760" role="img" aria-label="Cronograma de script clásico, defer, async y module">
+  <text x="10" y="44" style="font-weight:700">clásico</text>
+  <text x="10" y="112" style="font-weight:700">defer</text>
+  <text x="10" y="180" style="font-weight:700">async</text>
+  <text x="10" y="248" style="font-weight:700">module</text>
+  <!-- clásico -->
+  <rect class="caja" x="120" y="30" width="170" height="18" rx="3"/>
+  <path d="M290 39 L420 39" class="tenue" stroke-width="2" stroke-dasharray="4 4"/>
+  <rect x="290" y="54" width="130" height="8" rx="2" style="fill:var(--accent-2)"/>
+  <rect class="acento-relleno" x="420" y="30" width="50" height="18" rx="3"/>
+  <rect class="caja" x="470" y="30" width="270" height="18" rx="3"/>
+  <text x="355" y="26" text-anchor="middle" class="texto-tenue" style="font-size:11px">parser parado</text>
+  <!-- defer -->
+  <rect class="caja" x="120" y="98" width="490" height="18" rx="3"/>
+  <rect x="290" y="122" width="130" height="8" rx="2" style="fill:var(--accent-2)"/>
+  <rect class="acento-relleno" x="612" y="98" width="50" height="18" rx="3"/>
+  <path d="M668 92 L668 136" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="668" y="148" text-anchor="middle" class="texto-tenue" style="font-size:11px">DOMContentLoaded</text>
+  <!-- async -->
+  <rect class="caja" x="120" y="166" width="300" height="18" rx="3"/>
+  <rect x="290" y="190" width="130" height="8" rx="2" style="fill:var(--accent-2)"/>
+  <rect class="acento-relleno" x="420" y="166" width="50" height="18" rx="3"/>
+  <rect class="caja" x="470" y="166" width="270" height="18" rx="3"/>
+  <text x="445" y="160" text-anchor="middle" class="texto-tenue" style="font-size:11px">en cuanto llega</text>
+  <!-- module -->
+  <rect class="caja" x="120" y="234" width="490" height="18" rx="3"/>
+  <rect x="290" y="258" width="130" height="8" rx="2" style="fill:var(--accent-2)"/>
+  <rect class="acento-relleno" x="612" y="234" width="50" height="18" rx="3"/>
+  <text x="612" y="228" class="texto-tenue" style="font-size:11px">(como defer)</text>
+  <!-- eje y leyenda -->
+  <path d="M120 282 L740 282" class="tenue" stroke-width="1.5"/>
+  <text x="740" y="296" text-anchor="end" class="texto-tenue" style="font-size:11px">tiempo →</text>
+  <text x="120" y="296" class="texto-tenue" style="font-size:11px">el parser llega al &lt;script&gt; en el punto donde empieza la descarga</text>
+</svg>
+<div class="m1-leyenda"><span><i style="background:var(--surface-2);border:1px solid var(--border-2)"></i>parseo del HTML</span><span><i style="background:var(--accent-2)"></i>descarga del script</span><span><i style="background:var(--accent)"></i>ejecución del script</span></div>
+
+<p>Para ver cada caso con números reales, preparé una página servida por un servidor local que retrasa a propósito cada archivo (el retraso de cada uno va en el comentario) y registré en qué milisegundo se ejecutaba cada cosa y en qué estado estaba el documento (<code>document.readyState</code>):</p>
+<script type="text/plain" class="codigo" data-lang="html" data-titulo="La página del experimento (resumida)">
+<head>
+  <script>/* 1: en línea, en el head */<\/script>
+  <script defer>/* 2: en línea con defer */<\/script>
+  <script defer src="defer1.js"><\/script>   <!-- llega a los 600 ms -->
+  <script defer src="defer2.js"><\/script>   <!-- llega a los 100 ms -->
+  <script async src="async1.js"><\/script>   <!-- llega a los 700 ms -->
+  <script async src="async2.js"><\/script>   <!-- llega a los 50 ms -->
+  <script type="module" src="modulo.js"><\/script>
+</head>
+<body>
+  <canvas id="lienzo"></canvas>
+  <script>/* 3: en línea, al final */<\/script>
+  <script src="lento.js"><\/script>          <!-- clásico, llega a los 400 ms -->
+  <p id="despues">…</p>
+  <img src="imagen">                         <!-- llega a los 1200 ms -->
+</body>
+</script>
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="Lo que registró Chrome (ms desde el inicio · readyState · qué pasó)">
+  21 ms  loading      1: en línea en el head → getElementById('lienzo') = null
+  21 ms  loading      2: en línea con defer → se ejecuta ya (defer se ignora)
+  22 ms  loading      3: en línea al final del body → getElementById('lienzo') = [object HTMLCanvasElement]
+  83 ms  loading      async2.js se ejecuta
+ 422 ms  loading      lento.js se ejecuta; ¿existe #despues? false
+ 423 ms  loading      el script en línea que va tras lento.js se ejecuta
+ 425 ms  interactive  (fin del parseo)
+ 622 ms  interactive  defer1.js se ejecuta; ¿existe #final? true
+ 623 ms  interactive  defer2.js se ejecuta
+ 623 ms  interactive  modulo.js se ejecuta; this === undefined
+ 623 ms  interactive  DOMContentLoaded
+ 726 ms  interactive  async1.js se ejecuta
+1227 ms  complete     load
+</script>
+<p>Cada línea enseña una regla:</p>
+<ol>
+  <li>El script en línea del <code>head</code> no encuentra el canvas: el parser ejecuta cada script <em>en cuanto llega a él</em>, y lo que hay debajo todavía no existe.</li>
+  <li><code>defer</code> (y <code>async</code>) en un script en línea <strong>se ignoran</strong>: solo tienen efecto en scripts con <code>src</code>.</li>
+  <li><code>lento.js</code> paró el parser 400 ms. Cuando por fin se ejecutó, <code>#despues</code> aún no existía, y el script en línea que venía detrás tuvo que esperar. Todo lo que va después de un script clásico lento se retrasa.</li>
+  <li><code>async2</code> (50 ms) se ejecutó en mitad del parseo, y <code>async1</code> (700 ms), después de <code>DOMContentLoaded</code>. Un script <code>async</code> se ejecuta en cuanto llega, interrumpiendo al parser si hace falta, sin orden garantizado entre ellos, y <code>DOMContentLoaded</code> no lo espera.</li>
+  <li><code>defer1</code> llegó a los 600 ms y <code>defer2</code> a los 100 ms, pero se ejecutó primero <code>defer1</code>: los scripts <code>defer</code> se ejecutan <strong>en el orden del documento</strong>, cuando el parseo ha terminado y <strong>antes</strong> de <code>DOMContentLoaded</code>. Cuando se ejecutan, el árbol está completo (<code>#final</code> existe).</li>
+  <li>El módulo se ejecutó junto a los <code>defer</code>: <code>type="module"</code> implica <code>defer</code> por defecto. (Dentro de un módulo, <code>this</code> vale <code>undefined</code> en el nivel superior. Este curso no usa módulos porque no funcionan con <code>file://</code>; lo explicamos en la lección <a href="03-js-lenguaje.html">1.3</a>).</li>
+  <li><code>readyState</code> pasa de <code>"loading"</code> (parseando) a <code>"interactive"</code> (parseo terminado, antes de los <code>defer</code>) y a <code>"complete"</code> (justo antes de <code>load</code>).</li>
+  <li><code>load</code> esperó a la imagen de 1200 ms. <code>DOMContentLoaded</code> significa «el árbol está completo y los <code>defer</code> se han ejecutado»; <code>load</code> significa «además, han terminado de cargar imágenes, hojas de estilo e iframes».</li>
+</ol>
+
+<div class="callout senior" data-titulo="El escáner de precarga">
+  <p>Mira otra vez la imagen: tenía un retraso de 1200 ms y <code>load</code> llegó a los 1227 ms, así que su descarga empezó hacia el milisegundo 27… cuando el parser estaba parado esperando a <code>lento.js</code> (hasta el 422). Mientras el parser espera, un segundo lector, el <em>preload scanner</em>, sigue leyendo el HTML por delante y lanza las descargas de lo que ve (<code>src</code>, <code>href</code>). Un script clásico para el parseo, no necesariamente las descargas. Pero ese escáner solo ve el HTML: los recursos que crea tu JavaScript (un <code>new Image()</code>, por ejemplo) no se descubren hasta que el script se ejecuta.</p>
+</div>
+
+<table class="m1-tabla-compacta">
+  <thead><tr><th></th><th>Descarga</th><th>Se ejecuta</th><th>Orden entre ellos</th><th>¿Lo espera <code>DOMContentLoaded</code>?</th></tr></thead>
+  <tbody>
+    <tr><td><code>&lt;script src&gt;</code> clásico</td><td>parando el parser</td><td>al llegar a él</td><td>el del documento</td><td>sí</td></tr>
+    <tr><td><code>&lt;script defer src&gt;</code></td><td>en paralelo</td><td>al terminar el parseo</td><td>el del documento</td><td>sí</td></tr>
+    <tr><td><code>&lt;script async src&gt;</code></td><td>en paralelo</td><td>en cuanto llega</td><td>ninguno</td><td>no</td></tr>
+    <tr><td><code>&lt;script type="module"&gt;</code></td><td>en paralelo</td><td>como <code>defer</code></td><td>el del documento</td><td>sí</td></tr>
+    <tr><td>en línea (sin <code>src</code>)</td><td>—</td><td>al llegar a él</td><td>el del documento</td><td>sí</td></tr>
+  </tbody>
+</table>
+<p>Recomendaciones:</p>
+<ul>
+  <li>Pon tus scripts al final del <code>&lt;body&gt;</code>, como hace este curso, o en el <code>&lt;head&gt;</code> con <code>defer</code>. Las dos opciones garantizan que el árbol existe cuando el código se ejecuta; <code>defer</code> tiene la ventaja de que la descarga empieza antes.</li>
+  <li>Reserva <code>async</code> para scripts independientes, que no tocan el DOM ni dependen de otros scripts (estadísticas, por ejemplo).</li>
+  <li>Espera a <code>load</code> solo si necesitas que las imágenes estén descargadas, por ejemplo para medirlas o usarlas como textura (con las precauciones de <code>file://</code> que verás en la lección <a href="07-herramientas.html">1.7</a>).</li>
+  <li>Si tu código puede cargarse antes o después de que el DOM esté listo (una librería, por ejemplo), usa este patrón. Es exactamente el que usa <code>curso.js</code> para arrancar:</li>
+</ul>
+<script type="text/plain" class="codigo" data-lang="js">
+function iniciar() { /* aquí el DOM ya está completo */ }
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", iniciar);   // aún parseando: espera
+} else {
+  iniciar();                                                // ya pasó: arranca ahora
+}
+</script>
+<p>¿Por qué no basta con <code>addEventListener("DOMContentLoaded", …)</code> a secas? Porque si tu script se ejecuta después de que el evento haya sucedido (un script <code>async</code> lento, o uno añadido por otro script), el evento no se repite y tu función no se llama nunca.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.1.2 — «Cannot read properties of null (reading 'getContext')»</h3>
+  <p>Es el primer error que se encuentra casi todo el mundo al empezar con canvas. En el editor, la pestaña HTML tiene un script <em>encima</em> del canvas; la pestaña JS se inserta al <em>final</em> del <code>&lt;body&gt;</code>. Ejecuta y compara lo que ve cada uno:</p>
+  <div class="js-playground" data-titulo="Un script que llega demasiado pronto" data-altura="190" data-pestaña="html">
+<script type="text/x-html">
+<script>
+  console.log("script de ARRIBA → lienzo =", document.getElementById("lienzo"));
+  // Si aquí hiciéramos document.getElementById("lienzo").getContext("2d"),
+  // saltaría: TypeError: Cannot read properties of null (reading 'getContext')
+<\/script>
+<canvas id="lienzo" width="300" height="120"></canvas>
+</script>
+<script type="text/x-css">
+body { padding: 10px; }
+canvas { border: 1px solid #888; }
+</script>
+<script type="text/x-js">
+// Este código se inserta al FINAL del <body>: el canvas ya existe.
+const canvas = document.getElementById("lienzo");
+console.log("pestaña JS (al final) → lienzo =", canvas);
+
+const ctx = canvas.getContext("2d");
+ctx.fillStyle = "#3fd0e8";
+ctx.fillRect(20, 20, 160, 70);
+</script>
+  </div>
+  <p><strong>Diagnóstico.</strong> <code>getElementById</code> no lanza error cuando no encuentra nada: devuelve <code>null</code>. El error salta una línea después, al pedirle <code>.getContext</code> a <code>null</code>. El mensaje de V8, el motor JavaScript de Chrome, lo dice con exactitud: «no puedo leer propiedades de <code>null</code> (leyendo <code>'getContext'</code>)». Cuando veas <em>reading 'algo'</em>, pregúntate por qué lo que va delante de <code>.algo</code> vale <code>null</code> o <code>undefined</code>.</p>
+  <p><strong>Tres arreglos</strong>, de más simple a más flexible:</p>
+  <script type="text/plain" class="codigo" data-lang="html">
+<!-- 1. Mover el script debajo del canvas (lo más simple) -->
+<canvas id="lienzo"></canvas>
+<script src="app.js"><\/script>
+
+<!-- 2. Dejarlo en el head, pero con defer: se ejecuta al terminar el parseo -->
+<script defer src="app.js"><\/script>
+
+<!-- 3. Esperar al evento DOMContentLoaded dentro del propio código -->
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const ctx = document.getElementById("lienzo").getContext("2d");
+  });
+<\/script>
+</script>
+  <p>Fíjate en que la opción 2 solo sirve con <code>src</code>: en un script en línea, <code>defer</code> se ignora, como vimos en el experimento.</p>
+</section>
+
+<div class="callout bestiario" data-id="m1-getcontext-null" data-titulo="«Cannot read properties of null (reading 'getContext')»">
+  <p><strong>Síntoma:</strong> <code>TypeError: Cannot read properties of null (reading 'getContext')</code> nada más cargar la página.</p>
+  <p><strong>Causa:</strong> <code>document.getElementById("…")</code> devolvió <code>null</code>. O el script se ejecutó antes de que el parser llegara al canvas (script en el <code>&lt;head&gt;</code> sin <code>defer</code>), o el <code>id</code> no coincide (mayúsculas, una errata, un <code>#</code> de más: <code>getElementById("#lienzo")</code> busca un id que empieza por almohadilla).</p>
+  <p><strong>Solución:</strong> script al final del <code>&lt;body&gt;</code>, <code>defer</code> o <code>DOMContentLoaded</code>, y comprueba el id: <code>console.log(document.getElementById("lienzo"))</code> antes de usarlo.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta"><code>a.js</code> contiene <code>console.log("A")</code>. ¿En qué orden aparecen los mensajes?</p>
+  <script type="text/plain" class="codigo" data-lang="html">
+<head>
+  <script defer src="a.js"><\/script>
+  <script>console.log("B");<\/script>
+  <script>document.addEventListener("DOMContentLoaded", () => console.log("C"));<\/script>
+</head>
+<body>
+  <script>console.log("D");<\/script>
+</body>
+</script>
+  <ul>
+    <li>A, B, C, D<div class="explicacion">Es el orden en que aparecen en el código, pero <code>defer</code> retrasa la ejecución de <code>a.js</code> hasta el final del parseo, y el callback de <code>DOMContentLoaded</code> no se ejecuta cuando se registra, sino cuando ocurre el evento.</div></li>
+    <li>B, A, D, C<div class="explicacion">Un script <code>defer</code> no se ejecuta en cuanto llega, aunque llegue muy rápido: espera a que el parser termine, y el parser todavía tiene que ejecutar el script en línea «D».</div></li>
+    <li data-correcta>B, D, A, C<div class="explicacion">Correcto. Los scripts en línea se ejecutan cuando el parser llega a ellos (B, luego D). Al terminar el parseo se ejecutan los <code>defer</code> (A) y, después, se dispara <code>DOMContentLoaded</code> (C).</div></li>
+    <li>B, D, C, A<div class="explicacion"><code>DOMContentLoaded</code> espera a los scripts <code>defer</code>: se dispara justo después de que se hayan ejecutado todos. Lo viste en el experimento: <code>defer1</code> y <code>defer2</code>, y después <code>DOMContentLoaded</code>.</div></li>
+  </ul>
+</div>
+
+<div class="callout hack" data-titulo="Scripts que no se ejecutan: un cajón para tus shaders">
+  <p>Un <code>&lt;script&gt;</code> con un <code>type</code> que el navegador no conoce no se ejecuta, y su contenido se guarda como texto en crudo, sin interpretar el HTML de dentro. Lo comprobé con un shader: <code>&lt;script type="x-shader/x-fragment"&gt;</code> que contenía <code>if (a &lt; b &amp;&amp; c &gt; 0.0)</code> conservó el texto intacto y no creó ningún elemento hijo. Se lee con <code>document.getElementById("fs").textContent</code>. Muchos tutoriales de WebGL guardan así sus shaders, y todos los editores de GLSL de este curso están escritos de esta forma dentro del HTML de la lección. La única limitación: el texto no puede contener <code>&lt;/script</code>.</p>
+</div>
+
+<h2>El <code>&lt;canvas&gt;</code>: un elemento con dos tamaños</h2>
+<p>Un canvas recién creado, sin atributos, tiene un búfer de 300 × 150 píxeles; lo comprobé con <code>canvas.width</code>/<code>canvas.height</code> y también con un contexto WebGL2, cuyo <code>gl.drawingBufferWidth</code> × <code>gl.drawingBufferHeight</code> vale lo mismo. Pero un canvas tiene <strong>dos tamaños independientes</strong>:</p>
+<ul>
+  <li><strong>El búfer de dibujo</strong>: lo fijan los atributos <code>width</code>/<code>height</code> (o las propiedades <code>canvas.width</code>/<code>canvas.height</code>). Es la rejilla de píxeles donde escriben tus órdenes de dibujo; en WebGL, es la imagen cuyos píxeles colorea el fragment shader.</li>
+  <li><strong>La caja en pantalla</strong>: la fija el CSS (<code>width</code>/<code>height</code>) y se lee con <code>canvas.clientWidth</code>/<code>clientHeight</code>. Si el CSS no dice nada, la caja toma el tamaño del búfer: un píxel del búfer por cada píxel CSS.</li>
+</ul>
+<p>Cuando no coinciden, el navegador estira la imagen del búfer hasta llenar la caja. Si el búfer tiene menos píxeles que la caja, se ve borroso (el navegador interpola); si las proporciones son distintas, se ve deformado.</p>
+
+<svg class="diagrama" viewBox="0 0 760 230" width="760" role="img" aria-label="Un búfer de 8 por 4 píxeles estirado a una caja CSS de 360 por 150">
+  <defs>
+    <marker id="m11-fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+    <pattern id="m11-rejilla" width="18" height="18" patternUnits="userSpaceOnUse"><path d="M18 0 L0 0 0 18" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/></pattern>
+    <pattern id="m11-rejilla2" width="45" height="37.5" patternUnits="userSpaceOnUse"><path d="M45 0 L0 0 0 37.5" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/></pattern>
+  </defs>
+  <text x="102" y="30" text-anchor="middle" style="font-weight:700">búfer de dibujo</text>
+  <text x="102" y="48" text-anchor="middle" class="texto-tenue" style="font-size:12px">width="8" height="4" (atributos)</text>
+  <g transform="translate(30,62)">
+    <rect x="36" y="0" width="72" height="18" class="acento-relleno" opacity=".85"/>
+    <rect x="18" y="18" width="108" height="36" class="acento-relleno" opacity=".85"/>
+    <rect x="36" y="54" width="72" height="18" class="acento-relleno" opacity=".85"/>
+    <rect x="0" y="0" width="144" height="72" fill="url(#m11-rejilla)" stroke="currentColor" stroke-width="1.5"/>
+  </g>
+  <text x="102" y="160" text-anchor="middle" class="texto-tenue" style="font-size:12px">8 × 4 = 32 píxeles reales</text>
+  <path d="M190 98 L350 98" stroke="currentColor" stroke-width="2" marker-end="url(#m11-fl2)"/>
+  <text x="270" y="88" text-anchor="middle" class="texto-tenue" style="font-size:12px">el navegador estira</text>
+  <text x="270" y="118" text-anchor="middle" class="texto-tenue" style="font-size:12px">(e interpola)</text>
+  <text x="550" y="22" text-anchor="middle" style="font-weight:700">caja en pantalla</text>
+  <text x="550" y="40" text-anchor="middle" class="texto-tenue" style="font-size:12px">CSS: width: 360px; height: 150px</text>
+  <g transform="translate(370,50)">
+    <rect x="90" y="0" width="180" height="37.5" class="acento-relleno" opacity=".85"/>
+    <rect x="45" y="37.5" width="270" height="75" class="acento-relleno" opacity=".85"/>
+    <rect x="90" y="112.5" width="180" height="37.5" class="acento-relleno" opacity=".85"/>
+    <rect x="0" y="0" width="360" height="150" fill="url(#m11-rejilla2)" stroke="currentColor" stroke-width="1.5"/>
+  </g>
+  <text x="550" y="220" text-anchor="middle" class="texto-tenue" style="font-size:12px">cada píxel del búfer ocupa 45 × 37,5 px CSS: borroso y deformado</text>
+</svg>
+
+<p>Tres comportamientos que comprobé y que usarás mucho:</p>
+<ul>
+  <li><strong>El CSS nunca cambia el búfer.</strong> Con <code>canvas.style.width = "600px"</code>, <code>clientWidth</code> pasa a 600 pero <code>canvas.width</code> sigue en 300.</li>
+  <li><strong>Asignar <code>canvas.width</code> o <code>canvas.height</code> borra el búfer y reinicia el contexto</strong>, aunque asignes el mismo valor. En mi prueba, tras <code>canvas.width = canvas.width</code>, el píxel pintado de rojo pasó a transparente, la traslación del contexto volvió a 0 y <code>fillStyle</code> volvió a <code>"#000000"</code>.</li>
+  <li><strong>Un canvas tiene un solo tipo de contexto.</strong> Tras <code>getContext("2d")</code>, <code>getContext("webgl2")</code> devuelve <code>null</code>, y al revés. Pedir otra vez el mismo tipo devuelve el mismo objeto.</li>
+</ul>
+<p>Juega con el búfer de este canvas. La caja CSS no cambia: ocupa todo el ancho del resultado. Lo que cambias es cuántos píxeles tiene el búfer.</p>
+
+<div class="js-playground" data-titulo="Un canvas, dos tamaños" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="panel">
+  <label>canvas.width <input id="ancho" type="range" min="4" max="480" value="24"></label>
+  <output id="valor"></output>
+  <label><input id="proporcion" type="checkbox" checked> mantener proporción</label>
+  <label><input id="pixelado" type="checkbox"> image-rendering: pixelated</label>
+</div>
+<canvas id="lienzo"></canvas>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; font: 13px sans-serif; }
+.panel { padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; background: #1a1d24; }
+canvas.pixelado { image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+const ancho = document.getElementById("ancho");
+const valor = document.getElementById("valor");
+const proporcion = document.getElementById("proporcion");
+const pixelado = document.getElementById("pixelado");
+
+function dibujar() {
+  const w = Number(ancho.value);
+  // Con "mantener proporción", el búfer tiene la misma forma que la caja;
+  // sin ella, el alto se queda en 150 (el valor por defecto) y todo se deforma.
+  const h = proporcion.checked
+    ? Math.max(1, Math.round(w * canvas.clientHeight / canvas.clientWidth))
+    : 150;
+  canvas.width = w;        // cambia el búfer... y lo borra
+  canvas.height = h;
+  valor.textContent = w + " × " + h + " píxeles de búfer";
+
+  ctx.fillStyle = "#8b7bff";
+  ctx.beginPath();
+  ctx.arc(w / 2, h / 2, Math.min(w, h) * 0.35, 0, 2 * Math.PI);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = Math.max(3, h * 0.12) + "px sans-serif";
+  ctx.fillText("búfer " + w + "×" + h, w * 0.03, h * 0.14);
+}
+
+ancho.addEventListener("input", dibujar);
+proporcion.addEventListener("change", dibujar);
+pixelado.addEventListener("change", () => canvas.classList.toggle("pixelado", pixelado.checked));
+dibujar();
+console.log("caja CSS:", canvas.clientWidth, "×", canvas.clientHeight, "px");
+</script>
+</div>
+<p>Con 24 píxeles de ancho, el círculo es una mancha borrosa: el navegador interpola 24 píxeles para cubrir cientos. Activa <code>pixelated</code> y verás los píxeles reales, como bloques. Sube el deslizador hasta el ancho de la caja (lo imprime la consola) y el borde se vuelve nítido. Desactiva «mantener proporción» y el círculo se convierte en un óvalo.</p>
+
+<div class="callout cuidado">
+  <p><code>canvas.width = canvas.width</code> es un truco antiguo para «borrar» el canvas. Funciona porque, como acabas de ver, asignar el tamaño borra el búfer; pero también reinicia todo el estado del contexto (transformaciones, colores, fuente) y obliga al navegador a reasignar memoria. Para borrar en cada frame usa <code>ctx.clearRect(0, 0, canvas.width, canvas.height)</code> en Canvas 2D (lección <a href="../02-animacion/06-canvas2d.html">2.6</a>) o <code>gl.clear()</code> en WebGL (lección <a href="../05-webgl/02-primer-triangulo.html">5.2</a>).</p>
+</div>
+
+<div class="callout bestiario" data-id="m1-circulo-ovalado" data-titulo="Dibujo un círculo y sale un óvalo borroso">
+  <p><strong>Síntoma:</strong> <code>ctx.arc(…)</code> dibuja un óvalo; las líneas y el texto se ven borrosos o gruesos.</p>
+  <p><strong>Causa:</strong> el canvas tiene su búfer por defecto (300 × 150) o uno que no coincide con su caja CSS. El navegador estira la imagen con una escala horizontal distinta de la vertical (óvalo) y mayor que 1 (borroso).</p>
+  <p><strong>Solución:</strong> haz que el búfer tenga los píxeles de la caja: <code>canvas.width = canvas.clientWidth * devicePixelRatio</code> (y lo mismo con el alto), y vuelve a hacerlo si la caja cambia de tamaño. La receta completa, con <code>ResizeObserver</code>, está en la lección <a href="../02-animacion/06-canvas2d.html">2.6</a>; para WebGL, en la <a href="../05-webgl/01-contexto.html">5.1</a>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un canvas tiene <code>width="200" height="100"</code> y el CSS <code>width: 400px; height: 400px</code>. Dibujas <code>ctx.arc(100, 50, 40, 0, 2 * Math.PI)</code> y lo rellenas. ¿Qué ves?</p>
+  <ul>
+    <li>Un círculo nítido de 40 px de radio en el centro.<div class="explicacion">Las coordenadas de <code>arc</code> están en píxeles del <em>búfer</em>, no de la caja CSS. El búfer se estira ×2 en horizontal (200 → 400) y ×4 en vertical (100 → 400).</div></li>
+    <li>Un círculo de 80 px de radio, nítido.<div class="explicacion">Tendrías un círculo si las dos escalas fueran iguales, pero son ×2 en horizontal y ×4 en vertical. Y nunca sería nítido: cada píxel del búfer ocupa varios píxeles de pantalla.</div></li>
+    <li data-correcta>Un óvalo borroso de unos 160 px de ancho y 320 px de alto, en el centro.<div class="explicacion">Exacto: diámetro de 80 px de búfer × 2 = 160 px de ancho y × 4 = 320 px de alto. El centro (100, 50) del búfer cae en el centro de la caja (200, 200). Borroso, porque el navegador interpola píxeles del búfer para cubrir más píxeles de pantalla.</div></li>
+    <li>Solo se ve la mitad, porque el círculo no cabe.<div class="explicacion">El círculo cabe en el búfer: su centro es (100, 50) y su radio 40, así que llega de y = 10 a y = 90, dentro de los 100 de alto. Y el búfer entero se muestra estirado en la caja.</div></li>
+  </ul>
+</div>
+
+<h2>Etiquetas semánticas, en dos líneas</h2>
+<p><code>&lt;header&gt;</code>, <code>&lt;nav&gt;</code>, <code>&lt;main&gt;</code>, <code>&lt;article&gt;</code>, <code>&lt;section&gt;</code>, <code>&lt;aside&gt;</code> y <code>&lt;footer&gt;</code> se comportan como un <code>&lt;div&gt;</code> en pantalla, pero les dicen al navegador, a los buscadores y a los lectores de pantalla qué papel tiene cada parte (esta misma lección usa <code>main</code>, <code>header</code> y <code>section</code>). Y para los controles, usa elementos de verdad: un <code>&lt;button&gt;</code> se enfoca con el teclado, se activa con <kbd>Enter</kbd> y <kbd>Espacio</kbd> y se anuncia como botón, cosas que un <code>&lt;div&gt;</code> con un evento <code>click</code> no hace.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 1.1.1 — Cuenta los nodos</h3>
+  <p>Antes de ejecutar, apunta en un papel cuántos <code>childNodes</code> y cuántos <code>children</code> tiene <code>#caja</code>. Después completa el código para que imprima una línea por cada nodo hijo con su <code>nodeType</code>, su <code>nodeName</code> y su texto pasado por <code>JSON.stringify</code> (así los espacios y los saltos de línea se ven como <code>" "</code> y <code>"\n"</code>). Al terminar, la consola debe mostrar las dos cantidades y siete líneas, una por nodo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.1.1" data-altura="150" data-pestaña="js">
+<script type="text/x-html">
+<div id="caja">
+  <span>A</span> <span>B</span>
+  <!-- nota -->
+</div>
+</script>
+<script type="text/x-js">
+const caja = document.getElementById("caja");
+console.log("childNodes:", caja.childNodes.length, "· children:", caja.children.length);
+
+// Recorre caja.childNodes e imprime, para cada nodo:
+// nodeType, nodeName y JSON.stringify(nodo.textContent)
+</script>
+<script type="text/x-js" data-solucion>
+const caja = document.getElementById("caja");
+console.log("childNodes:", caja.childNodes.length, "· children:", caja.children.length);
+
+for (const nodo of caja.childNodes) {
+  console.log(nodo.nodeType, nodo.nodeName, JSON.stringify(nodo.textContent));
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>childNodes</code> se puede recorrer con <code>for (const nodo of caja.childNodes) { … }</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Cuenta los tramos de texto que hay entre etiquetas: antes del primer <code>span</code>, entre los dos <code>span</code>, entre el segundo <code>span</code> y el comentario, y entre el comentario y <code>&lt;/div&gt;</code>. El comentario también es un nodo.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Hay 7 nodos hijos y 2 elementos. En orden: texto <code>"\n  "</code> (tipo 3), <code>SPAN</code> (1), texto <code>" "</code> (3), <code>SPAN</code> (1), texto <code>"\n  "</code> (3), el comentario <code>" nota "</code> (tipo 8, <code>#comment</code>) y el texto <code>"\n"</code> (3) antes del cierre.</p>
+    <p>El espacio entre los dos <code>span</code> es el único nodo de espacios que <em>se ve</em> en pantalla: separa la A de la B. Los otros se «colapsan» al pintar, porque CSS reduce cada tramo de espacios a uno solo y elimina los del principio y el final de la línea. Pero en el árbol están todos. Por eso <code>children</code> (2) y <code>childNodes</code> (7) no coinciden.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.1.2 — El canvas que se tragó la página</h3>
+  <p>El párrafo y el botón no se ven, pero el JavaScript los encuentra y no da ningún error. Haz que aparezcan <strong>sin tocar el JavaScript</strong>. Al terminar, la consola debe decir que el padre del botón es <code>BODY</code> y que su altura es mayor que 0, y al pulsar el botón el canvas debe cambiar de color.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.1.2" data-altura="220" data-pestaña="html">
+<script type="text/x-html">
+<canvas id="lienzo" width="200" height="80"/>
+<p>Pulsa el botón para cambiar el color.</p>
+<button id="boton">Cambiar color</button>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font-family: sans-serif; }
+canvas { border: 1px solid #888; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+const boton = document.getElementById("boton");
+let tono = 200;
+
+function pintar() {
+  ctx.fillStyle = `hsl(${tono}, 80%, 60%)`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+boton.addEventListener("click", () => { tono = (tono + 40) % 360; pintar(); });
+pintar();
+
+// El botón existe (getElementById lo encuentra)... pero ¿dónde está?
+console.log("padre del botón:", boton.parentNode.nodeName, "· alto del botón:", boton.offsetHeight);
+</script>
+<script type="text/x-html" data-solucion>
+<canvas id="lienzo" width="200" height="80"></canvas>
+<p>Pulsa el botón para cambiar el color.</p>
+<button id="boton">Cambiar color</button>
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La consola ya te dice quién es el padre del botón. ¿Debería serlo?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Es <code>canvas</code> un elemento vacío, como <code>img</code> o <code>br</code>? ¿Qué hace el parser HTML con <code>/&gt;</code> en un elemento que no es vacío?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Basta con cerrar el canvas de verdad: <code>&lt;canvas id="lienzo" width="200" height="80"&gt;&lt;/canvas&gt;</code>.</p>
+    <p>Con <code>/&gt;</code>, el parser descarta la barra y deja el canvas abierto, así que el <code>p</code> y el <code>button</code> se convierten en sus hijos: su contenido de respaldo. Ese contenido existe en el DOM (por eso <code>getElementById</code> encuentra el botón y <code>addEventListener</code> funciona), pero no se pinta porque el navegador sí soporta canvas. Un elemento que no se pinta no tiene caja: <code>offsetHeight</code> es 0 y nadie puede hacer clic en él.</p>
+    <p>La lección general: «existe en el DOM» y «se pinta» son cosas distintas. Cuando algo no aparece, comprueba primero dónde está en el árbol (su <code>parentNode</code>, o el panel Elements) y después su caja (<code>offsetHeight</code>, <code>getBoundingClientRect()</code>).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.1.3 — Configura la animación desde el HTML</h3>
+  <p>El canvas lleva su configuración en atributos <code>data-*</code>: color, radio del punto, radio de la órbita y vueltas por segundo. El punto debería girar alrededor del centro en una órbita de <code>orbita + radio</code> = 72 px, a media vuelta por segundo, pero no se ve nada. Arregla la lectura de la configuración. Al terminar, el punto gira y la consola muestra la configuración con <strong>números</strong> (sin comillas) y <code>orbita: 72</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.1.3" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo" data-color="#ff6b7a" data-radio="12" data-orbita="60" data-vueltas-por-segundo="0.5"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth;     // búfer = caja (sin devicePixelRatio, para simplificar)
+canvas.height = canvas.clientHeight;
+
+// Configuración leída de los atributos data-*
+const color = canvas.dataset.color;
+const radio = canvas.dataset.radio;
+const orbita = canvas.dataset.orbita + radio;               // queremos 60 + 12 = 72
+const vueltas = canvas.dataset["vueltas-por-segundo"];
+console.log({ color, radio, orbita, vueltas });
+
+function dibujar(ms) {
+  const t = ms / 1000;                                       // segundos
+  const angulo = t * vueltas * 2 * Math.PI;                  // radianes
+  const x = canvas.width / 2 + Math.cos(angulo) * orbita;
+  const y = canvas.height / 2 + Math.sin(angulo) * orbita;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, radio, 0, 2 * Math.PI);
+  ctx.fill();
+  requestAnimationFrame(dibujar);
+}
+requestAnimationFrame(dibujar);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth;     // búfer = caja (sin devicePixelRatio, para simplificar)
+canvas.height = canvas.clientHeight;
+
+// Los valores de dataset son strings: los convertimos a número al leerlos
+const color = canvas.dataset.color;                          // este sí es un string
+const radio = Number(canvas.dataset.radio);
+const orbita = Number(canvas.dataset.orbita) + radio;        // 60 + 12 = 72
+const vueltas = Number(canvas.dataset.vueltasPorSegundo);    // guiones → camelCase
+console.log({ color, radio, orbita, vueltas });
+
+function dibujar(ms) {
+  const t = ms / 1000;                                       // segundos
+  const angulo = t * vueltas * 2 * Math.PI;                  // radianes
+  const x = canvas.width / 2 + Math.cos(angulo) * orbita;
+  const y = canvas.height / 2 + Math.sin(angulo) * orbita;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, radio, 0, 2 * Math.PI);
+  ctx.fill();
+  requestAnimationFrame(dibujar);
+}
+requestAnimationFrame(dibujar);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Mira la consola: ¿qué valores tienen comillas? ¿Cuál es <code>undefined</code>?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Cómo se llama en <code>dataset</code> el atributo <code>data-vueltas-por-segundo</code>? Repasa la regla de los guiones.</p></details>
+  <details class="pista"><summary>Pista 3</summary><p><code>"60" + "12"</code> no es 72. ¿Qué es? ¿Y qué pasa luego al multiplicarlo por <code>Math.cos(angulo)</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Había dos errores, y los dos vienen de olvidar que <code>dataset</code> devuelve strings con nombres en camelCase:</p>
+    <ul>
+      <li><code>canvas.dataset["vueltas-por-segundo"]</code> es <code>undefined</code>: la propiedad se llama <code>vueltasPorSegundo</code>. Con <code>undefined</code>, <code>t * vueltas</code> da <code>NaN</code>, <code>x</code> e <code>y</code> son <code>NaN</code> y <code>arc</code> no dibuja nada (no lanza error: ignora las coordenadas <code>NaN</code> en silencio).</li>
+      <li><code>canvas.dataset.orbita + radio</code> es <code>"60" + "12"</code> = <code>"6012"</code>, una concatenación. Al multiplicarlo por <code>Math.cos</code>, JavaScript convierte <code>"6012"</code> en el número 6012, así que el punto habría girado a 6012 px del centro, muy fuera del canvas.</li>
+    </ul>
+    <p>Curiosamente, <code>radio</code> como string «funcionaba»: <code>arc</code> convierte sus argumentos a número. Por eso los errores de tipos en JavaScript son traicioneros: unas operaciones convierten solas (<code>*</code>, <code>arc</code>) y otras no (<code>+</code> con un string concatena). Convertir una vez, al leer la configuración, elimina el problema de raíz.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 1.1.4 — El círculo ovalado</h3>
+  <p>El código dibuja un círculo de 60 px de radio en el centro y un texto de 16 px, pero sale un óvalo borroso con un texto emborronado. Consigue un círculo perfecto, de 60 px CSS de radio, centrado en la caja, y un texto nítido, sea cual sea el tamaño que tenga el panel de resultado cuando pulses Ejecutar (reaccionar a cambios de tamaño posteriores queda fuera del ejercicio; la solución explicada dice cómo se haría). No toques el CSS. La consola debe mostrar que el búfer tiene los píxeles de la caja multiplicados por <code>devicePixelRatio</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.1.4" data-altura="280" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+
+console.log("búfer:", canvas.width, "×", canvas.height);
+console.log("caja CSS:", canvas.clientWidth, "×", canvas.clientHeight);
+
+ctx.fillStyle = "#8b7bff";
+ctx.beginPath();
+ctx.arc(canvas.width / 2, canvas.height / 2, 60, 0, 2 * Math.PI);
+ctx.fill();
+
+ctx.fillStyle = "white";
+ctx.font = "16px sans-serif";
+ctx.fillText("¿redondo y nítido?", 12, 26);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+
+// 1. El búfer, del tamaño de la caja en píxeles FÍSICOS
+const dpr = window.devicePixelRatio || 1;
+const w = canvas.clientWidth, h = canvas.clientHeight;   // caja, en px CSS
+canvas.width = Math.round(w * dpr);                       // esto borra y reinicia el contexto...
+canvas.height = Math.round(h * dpr);
+// 2. ...así que la escala va DESPUÉS: a partir de aquí dibujamos en px CSS
+ctx.scale(dpr, dpr);
+
+console.log("búfer:", canvas.width, "×", canvas.height, "· caja CSS:", w, "×", h, "· dpr:", dpr);
+
+ctx.fillStyle = "#8b7bff";
+ctx.beginPath();
+ctx.arc(w / 2, h / 2, 60, 0, 2 * Math.PI);                 // centro de la CAJA, radio en px CSS
+ctx.fill();
+
+ctx.fillStyle = "white";
+ctx.font = "16px sans-serif";
+ctx.fillText("¿redondo y nítido?", 12, 26);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Compara los dos tamaños que imprime la consola. ¿Cuánto se estira el búfer en horizontal? ¿Y en vertical?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si el búfer tuviera exactamente tantos píxeles como la caja, no habría que estirar nada. ¿Qué propiedades del canvas controlan el búfer?</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>En pantallas de alta densidad, un píxel CSS son varios píxeles físicos (<code>window.devicePixelRatio</code>). Si multiplicas el búfer por ese factor, dibuja luego con <code>ctx.scale(dpr, dpr)</code> para seguir pensando en píxeles CSS. ¿Importa en qué orden haces las dos cosas?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con el búfer por defecto (300 × 150) y una caja de, por ejemplo, 390 × 280 px, la escala horizontal es 390 / 300 = 1,3 y la vertical 280 / 150 ≈ 1,87. El radio de 60 píxeles de búfer se convierte en unos 78 px de ancho y 112 px de alto: un óvalo. Y como cada píxel del búfer cubre más de un píxel de pantalla, el navegador interpola y todo se emborrona.</p>
+    <p>La solución da al búfer exactamente los píxeles físicos de la caja: <code>clientWidth × devicePixelRatio</code> por <code>clientHeight × devicePixelRatio</code>. Así cada píxel del búfer es un píxel de la pantalla y no hay estiramiento. <code>Math.round</code> evita decimales (el búfer solo admite enteros: recuerda que <code>canvas.width = 2.9</code> se queda en 2).</p>
+    <p>El orden importa: asignar <code>canvas.width</code> reinicia el contexto, incluida su transformación. Si llamas a <code>ctx.scale(dpr, dpr)</code> antes de redimensionar, la escala se pierde. Después de la escala, todas las coordenadas están en píxeles CSS: el centro es <code>(w / 2, h / 2)</code> de la caja y el radio es 60 px CSS en cualquier pantalla.</p>
+    <p>Queda un cabo suelto: si el panel cambia de tamaño (gira el móvil, redimensiona la ventana), habría que repetirlo. Eso se hace con <code>ResizeObserver</code> (lección <a href="04-js-dom-eventos.html">1.4</a>), y la receta completa está en la <a href="../02-animacion/06-canvas2d.html">2.6</a>.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>El navegador convierte tu archivo en el DOM en cuatro pasos: decodificar (<code>charset</code>), tokenizar, construir el árbol corrigiendo errores y exponerlo como objetos. JavaScript y CSS trabajan con el árbol, no con tu archivo.</li>
+    <li>El documento mínimo empieza por <code>&lt;!doctype html&gt;</code> (sin él, modo quirks: alturas en % y números sin unidad se comportan distinto), <code>&lt;meta charset="utf-8"&gt;</code> (sin él, «Ã±» al servir por HTTP) y <code>&lt;meta name="viewport"&gt;</code> (sin él, el móvil finge 980 px).</li>
+    <li>Los espacios entre etiquetas son nodos de texto: <code>childNodes</code> ≠ <code>children</code>, <code>firstChild</code> ≠ <code>firstElementChild</code>.</li>
+    <li>El parser nunca falla, corrige: un <code>div</code> cierra el <code>p</code>, se crean <code>tbody</code>, se clonan etiquetas cruzadas y <code>/&gt;</code> no cierra nada (un <code>&lt;canvas/&gt;</code> se traga lo que viene detrás).</li>
+    <li>Dentro de un <code>&lt;script&gt;</code> el tokenizador corta en el primer <code>&lt;/script</code>, aunque esté en un string: escribe <code>&lt;\/script&gt;</code>.</li>
+    <li><code>dataset</code> convierte <code>data-mi-valor</code> en <code>miValor</code> y siempre devuelve strings: convierte a número al leer.</li>
+    <li>Un script clásico para el parser; <code>defer</code> descarga en paralelo y ejecuta en orden al final del parseo, antes de <code>DOMContentLoaded</code>; <code>async</code> ejecuta en cuanto llega, sin orden. <code>defer</code> en un script en línea no hace nada.</li>
+    <li>El canvas tiene dos tamaños: el búfer (atributos <code>width</code>/<code>height</code>, 300 × 150 por defecto) y la caja CSS. Si no coinciden, se estira: borroso o deformado. Asignar <code>canvas.width</code> borra el búfer y reinicia el contexto.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://html.spec.whatwg.org/multipage/parsing.html">HTML Standard, «Parsing HTML documents»</a>: el tokenizador y la construcción del árbol, regla a regla. No se lee de corrido, se consulta.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script">MDN, el elemento <code>&lt;script&gt;</code></a>: todos sus atributos, con <code>defer</code>, <code>async</code> y <code>type="module"</code>.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/HTML/Quirks_Mode_and_Standards_Mode">MDN, «Quirks Mode and Standards Mode»</a>.</li>
+  <li><a href="https://web.dev/articles/preload-scanner">web.dev, «Don't fight the browser preload scanner»</a>: qué ve y qué no ve el escáner de precarga.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script>
+/* Demo: HTML → árbol DOM, con nodos de texto visibles y diferencias con el código. */
+Curso.alListo(() => {
+  const raiz = document.getElementById("demo-dom");
+  const cajaArbol = document.getElementById("demo-dom-arbol");
+  const cajaHtml = document.getElementById("demo-dom-html");
+  const info = raiz.querySelector(".demo-info");
+  const esc = Curso.util.escapar;
+
+  const EJEMPLOS = {
+    errores: "<!doctype html>\n<title>Prueba</title>\n<p>Atención: <div class=\"aviso\">el div cierra el párrafo</div></p>\n<ul>\n  <li>uno\n  <li>dos\n</ul>\n<table><tr><td>celda</td></tr></table>",
+    espacios: "<!doctype html>\n<ul id=\"lista\">\n  <li>uno</li>\n  <li>dos</li>\n</ul>",
+    pdiv: "<!doctype html>\n<p>hola<div>mundo</div></p>",
+    tabla: "<!doctype html>\n<table>\n  texto suelto\n  <tr><td>x</td></tr>\n</table>",
+    cruzadas: "<!doctype html>\n<p><b>negrita <i>las dos</b> cursiva</i></p>",
+    script: "<!doctype html>\n<script>\n  const etiqueta = \"<\/script>\";\n  console.log(etiqueta);\n<\/script>",
+    canvas: "<!doctype html>\n<canvas id=\"lienzo\"/>\n<p>¿Dónde estoy?</p>\n<button>Pulsa</button>",
+    autocierre: "<!doctype html>\n<div/>Hola <span/>mundo",
+    quirks: "<html>\n<body>\n  <p>Sin doctype: modo quirks</p>\n</body>\n</html>",
+    minimo: "hola",
+  };
+  const OPCIONES = [
+    ["errores", "Errores típicos juntos"], ["espacios", "Los espacios son nodos"], ["pdiv", "Un <div> dentro de un <p>"],
+    ["tabla", "Texto suelto en una tabla"], ["cruzadas", "Etiquetas cruzadas"], ["script", "<\/script> dentro de un string"],
+    ["canvas", "Un <canvas/> «autocerrado»"], ["autocierre", "<div/> y <span/>"], ["quirks", "Sin doctype"], ["minimo", "Solo la palabra «hola»"],
+  ];
+
+  const editor = Curso.crearEditor(document.getElementById("demo-dom-editor"), EJEMPLOS.errores, "htmlmixed", Curso.util.debounce(actualizar, 120), {});
+  if (editor.setSize) editor.setSize(null, "100%");
+
+  let verEspacios = true, vista = "arbol";
+  Curso.selector(raiz.querySelector(".demo-controles"), {
+    etiqueta: "Ejemplo:", opciones: OPCIONES, valor: "errores",
+    alCambiar: (v) => { editor.setValue(EJEMPLOS[v]); actualizar(); },
+  });
+  Curso.casilla(raiz.querySelector(".demo-controles"), {
+    etiqueta: "mostrar nodos de texto de solo espacios", valor: true,
+    alCambiar: (v) => { verEspacios = v; actualizar(); },
+  });
+  raiz.querySelectorAll("[data-vista]").forEach((b) => b.addEventListener("click", () => {
+    vista = b.dataset.vista;
+    raiz.querySelectorAll("[data-vista]").forEach((x) => x.classList.toggle("activo", x === b));
+    cajaArbol.style.display = vista === "arbol" ? "" : "none";
+    cajaHtml.style.display = vista === "html" ? "" : "none";
+  }));
+
+  // Espacios visibles: · espacio, ↵ salto de línea, → tabulador
+  const conEspacios = (s) => esc(s)
+    .replace(/ /g, '<span class="ws">·</span>')
+    .replace(/\n/g, '<span class="ws">↵</span>')
+    .replace(/\t/g, '<span class="ws">→</span>');
+
+  // Cuántas etiquetas de apertura de cada tipo hay en el código (aproximado:
+  // quita comentarios y el contenido de script/style/textarea/title, que es texto)
+  function etiquetasEnCodigo(src) {
+    const limpio = src.replace(/<!-{2}[\s\S]*?(-{2}>|$)/g, "")
+      .replace(/<(script|style|textarea|title)\b[^>]*>[\s\S]*?(<\/\1\s*>|$)/gi, "<$1>");
+    const n = {};
+    for (const m of limpio.matchAll(/<([a-zA-Z][a-zA-Z0-9-]*)/g)) { const t = m[1].toLowerCase(); n[t] = (n[t] || 0) + 1; }
+    return n;
+  }
+
+  const esEspacios = (n) => n.nodeType === 3 && !/\S/.test(n.data);
+  function pintarNodo(nodo, prefijo, esUltimo, implicitas, lineas) {
+    const rama = prefijo === null ? "" : prefijo + (esUltimo ? "└─ " : "├─ ");
+    const siguiente = prefijo === null ? "" : prefijo + (esUltimo ? "   " : "│  ");
+    const guia = '<span class="g">' + rama + "</span>";
+    if (nodo.nodeType === 10) {
+      lineas.push('<span class="n">' + guia + '<span class="dt">&lt;!DOCTYPE ' + esc(nodo.name) + (nodo.publicId ? ' "' + esc(nodo.publicId) + '"' : "") + "&gt;</span></span>");
+      return;
+    }
+    if (nodo.nodeType === 3) {
+      const soloEspacios = esEspacios(nodo);
+      lineas.push('<span class="n' + (soloEspacios ? " solo-espacios" : "") + '">' + guia + '<span class="tx-etq">#text </span><span class="tx">"' + conEspacios(nodo.data) + '"</span></span>');
+      return;
+    }
+    if (nodo.nodeType === 8) {
+      lineas.push('<span class="n">' + guia + '<span class="co">&lt;!--' + esc(nodo.data) + "--&gt;</span></span>");
+      return;
+    }
+    if (nodo.nodeType !== 1) return;
+    let attrs = "";
+    for (const a of nodo.attributes) attrs += ' <span class="at">' + esc(a.name) + '</span>=<span class="va">"' + esc(a.value) + '"</span>';
+    const marca = implicitas.has(nodo) ? '<span class="implicito">creado por el parser</span>' : "";
+    lineas.push('<span class="n">' + guia + '<span class="el">&lt;' + esc(nodo.localName) + "</span>" + attrs + '<span class="el">&gt;</span>' + marca + "</span>");
+    const hijos = [...nodo.childNodes].filter((h) => verEspacios || !esEspacios(h));
+    hijos.forEach((h, i) => pintarNodo(h, siguiente, i === hijos.length - 1, implicitas, lineas));
+  }
+
+  function actualizar() {
+    const src = editor.getValue();
+    const doc = new DOMParser().parseFromString(src, "text/html");
+    // Elementos que el parser crea siempre si faltan: los marcamos si no están en el código
+    const enCodigo = etiquetasEnCodigo(src);
+    const enArbol = {};
+    doc.querySelectorAll("*").forEach((el) => { enArbol[el.localName] = (enArbol[el.localName] || 0) + 1; });
+    const implicitas = new Set();
+    ["html", "head", "body", "tbody"].forEach((t) => { if (!enCodigo[t]) doc.querySelectorAll(t).forEach((el) => implicitas.add(el)); });
+
+    // Recuento de nodos por tipo, recorriendo todo el documento
+    const cuenta = { elementos: 0, texto: 0, espacios: 0, comentarios: 0 };
+    const rec = doc.createTreeWalker(doc, NodeFilter.SHOW_ALL);
+    for (let n = rec.nextNode(); n; n = rec.nextNode()) {
+      if (n.nodeType === 1) cuenta.elementos++;
+      else if (n.nodeType === 3) { cuenta.texto++; if (esEspacios(n)) cuenta.espacios++; }
+      else if (n.nodeType === 8) cuenta.comentarios++;
+    }
+    const lineas = [];
+    const nodosRaiz = [...doc.childNodes];
+    lineas.push('<span class="n"><span class="tx-etq">#document</span></span>');
+    nodosRaiz.forEach((n, i) => pintarNodo(n, "", i === nodosRaiz.length - 1, implicitas, lineas));
+    cajaArbol.innerHTML = lineas.join("");
+
+    const dt = doc.doctype ? "<!DOCTYPE " + doc.doctype.name + (doc.doctype.publicId ? ' PUBLIC "' + doc.doctype.publicId + '"' : "") + (doc.doctype.systemId ? ' "' + doc.doctype.systemId + '"' : "") + ">\n" : "";
+    cajaHtml.textContent = dt + doc.documentElement.outerHTML;
+
+    // Diferencias entre etiquetas escritas y elementos en el árbol
+    const difs = [];
+    const nombres = new Set([...Object.keys(enCodigo), ...Object.keys(enArbol)]);
+    for (const t of nombres) {
+      const a = enCodigo[t] || 0, b = enArbol[t] || 0;
+      if (a === b) continue;
+      if (b > a) difs.push('<li class="aviso">&lt;' + esc(t) + "&gt;: escribiste " + a + ", el árbol tiene " + b + (a === 0 ? " (los creó el parser)" : " (el parser creó " + (b - a) + ")") + "</li>");
+      else difs.push('<li class="mal">&lt;' + esc(t) + "&gt;: escribiste " + a + ", el árbol tiene " + b + " (el parser descartó o fusionó " + (a - b) + ")</li>");
+    }
+    const modo = doc.compatMode === "BackCompat"
+      ? '<span style="color:var(--err)">modo QUIRKS (BackCompat): falta un doctype moderno</span>'
+      : '<span style="color:var(--ok)">modo estándar (CSS1Compat)</span>';
+    info.innerHTML = modo + " · " + cuenta.elementos + " elementos · " + cuenta.texto + " nodos de texto (" + cuenta.espacios + " de solo espacios) · " + cuenta.comentarios + " comentarios" +
+      '<ul class="m1-diag">' + (difs.length ? difs.join("") : '<li class="ok">Cada etiqueta que escribiste es exactamente un elemento del árbol.</li>') + "</ul>";
+  }
+  actualizar();
+});
+</script>
+</body>
+</html>

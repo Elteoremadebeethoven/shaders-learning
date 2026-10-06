@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3.5 · Matrices y transformaciones — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m3.css">
+</head>
+<body data-leccion="03-matematicas/matrices">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 3 · Matemáticas para gráficos</p>
+  <h1>Matrices y transformaciones</h1>
+  <p class="resumen">Mover, girar, escalar, inclinar, reflejar, encadenar todo eso y deshacerlo: una matriz lo guarda en una tabla de números que la GPU aplica a millones de vértices. Aquí entiendes qué significa cada número, por qué el orden importa, cómo se cuela la traslación con una coordenada extra, y por qué casi todo el mundo se lía con las filas y las columnas (y cómo no liarte tú).</p>
+  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 3.1–3.3, 1.2</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Leerás una matriz como «adónde van los vectores de la base»: sus columnas son los ejes transformados.</li>
+      <li>Multiplicarás matrices por vectores y matrices entre sí, y sabrás por qué el orden importa.</li>
+      <li>Usarás coordenadas homogéneas (3×3 en 2D, 4×4 en 3D) para incluir la traslación, distinguiendo puntos (w = 1) de direcciones (w = 0).</li>
+      <li>Construirás transformaciones en orden TRS, las invertirás y las encadenarás en jerarquías.</li>
+      <li>Dominarás el almacenamiento column-major de GL/GLSL, los constructores de GLSL y su relación con <code>transform</code> de CSS y Canvas.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>¿Qué es <code>matrix(0, 1, -1, 0, 100, 0)</code>?</h2>
+<p>Escribe en CSS <code>transform: translate(100px, 0) rotate(90deg)</code> y pregunta al navegador qué ha entendido (<code>getComputedStyle(el).transform</code>): te contestará <code>matrix(0, 1, -1, 0, 100, 0)</code>. Seis números que contienen el giro y el desplazamiento. En WebGL harás lo mismo con dieciséis números en un <code>Float32Array</code> que envías con <code>gl.uniformMatrix4fv</code> y que el vertex shader multiplica por cada vértice. Three.js guarda uno en cada objeto (<code>object.matrix</code>). Y todas estas herramientas comparten una idea sencilla que, una vez entendida, hace que las matrices dejen de ser una caja negra.</p>
+<p>En la lección <a href="03-trigonometria.html">3.3</a> derivaste la rotación de dos maneras, y la segunda era la importante: para girar un punto $P = x\,\hat\imath + y\,\hat\jmath$ basta con girar los dos ejes y recombinar. Esa idea, generalizada, <em>es</em> la matriz.</p>
+
+<h2>Una matriz es adónde van los vectores de la base</h2>
+<p>Una transformación $f$ es <strong>lineal</strong> si respeta las sumas y los escalados: $f(\vec a + \vec b) = f(\vec a) + f(\vec b)$ y $f(k\vec a) = k f(\vec a)$. Rotaciones, escalados, cizallas y reflejos alrededor del origen lo son (la traslación no, y ese será el problema de más adelante). Todo punto del plano es una combinación de los ejes: $\vec v = x\,\hat\imath + y\,\hat\jmath$, con $\hat\imath = (1, 0)$ y $\hat\jmath = (0, 1)$. Aplicando la linealidad:</p>
+$$f(\vec v) = x\,f(\hat\imath) + y\,f(\hat\jmath)$$
+<p>Es decir: <strong>si sabes adónde van $\hat\imath$ y $\hat\jmath$, sabes adónde va cualquier punto</strong>. Llama $f(\hat\imath) = (a, b)$ y $f(\hat\jmath) = (c, d)$ y escríbelos como columnas de una tabla: eso es la matriz.</p>
+$$M = \begin{bmatrix} a & c \\ b & d \end{bmatrix} \qquad\qquad M\vec v = x\begin{bmatrix} a \\ b\end{bmatrix} + y\begin{bmatrix} c \\ d\end{bmatrix} = \begin{bmatrix} a x + c y \\ b x + d y\end{bmatrix}$$
+<p>La primera columna es el eje x transformado, la segunda el eje y transformado. Multiplicar una matriz por un vector es combinar sus columnas con las coordenadas del vector como pesos. Arrastra las puntas de $\hat\imath'$ (rosa) y $\hat\jmath'$ (azul) y mira cómo se deforma el plano entero, con la F y la rejilla. El punto <strong>P</strong> se construye igual que en la fórmula: $x$ veces el eje rosa más $y$ veces el azul.</p>
+
+<div class="demo" id="demo-base">
+  <div class="demo-lienzo" style="height:380px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<h3>El determinante</h3>
+<p>El cuadrado unidad (el formado por $\hat\imath$ y $\hat\jmath$, área 1) se convierte en el paralelogramo de las dos columnas, sombreado en verde. Su área con signo es el producto cruz 2D de la lección <a href="02-producto-punto-cruz.html">3.2</a>, y tiene nombre propio: el <strong>determinante</strong>.</p>
+$$\det M = ad - bc$$
+<p>Es el factor por el que la transformación multiplica todas las áreas. Si vale 2, todo ocupa el doble; si vale 0, el plano se aplasta sobre una recta (o un punto) y la transformación <strong>no tiene vuelta atrás</strong>; si es negativo, la figura sale <strong>reflejada</strong> (prueba el botón «reflejo»: la F sale al revés), y con ella se invierte la orientación de todos los triángulos, así que lo que era antihorario pasa a horario y la GPU lo tratará como cara trasera.</p>
+
+<h3>El catálogo de matrices 2×2</h3>
+<table>
+  <thead><tr><th>Transformación</th><th>Matriz</th><th>Columnas (adónde van los ejes)</th></tr></thead>
+  <tbody>
+    <tr><td>Rotación de ángulo θ</td><td>$\begin{bmatrix}\cos\theta & -\sin\theta\\ \sin\theta & \cos\theta\end{bmatrix}$</td><td>$\hat\imath \to (\cos\theta, \sin\theta)$, $\hat\jmath \to (-\sin\theta, \cos\theta)$. Determinante 1.</td></tr>
+    <tr><td>Escala</td><td>$\begin{bmatrix}s_x & 0\\ 0 & s_y\end{bmatrix}$</td><td>cada eje se estira por su factor. Determinante $s_x s_y$.</td></tr>
+    <tr><td>Cizalla horizontal</td><td>$\begin{bmatrix}1 & k\\ 0 & 1\end{bmatrix}$</td><td>el eje x no se mueve; el eje y se inclina a $(k, 1)$. Determinante 1: no cambia el área.</td></tr>
+    <tr><td>Reflejo en el eje y</td><td>$\begin{bmatrix}-1 & 0\\ 0 & 1\end{bmatrix}$</td><td>el eje x se da la vuelta. Determinante −1.</td></tr>
+  </tbody>
+</table>
+
+<div class="quiz">
+  <p class="pregunta">La matriz $\begin{bmatrix} 0 & -1 \\ 1 & 0 \end{bmatrix}$ (con la y hacia arriba), ¿qué hace?</p>
+  <ul>
+    <li>Refleja respecto a la diagonal<div class="explicacion">El reflejo en la diagonal sería $\begin{bmatrix} 0 & 1 \\ 1 & 0 \end{bmatrix}$: intercambia x e y. Aquí hay un signo menos, y el determinante es $0\cdot0 - (-1)\cdot1 = 1$, positivo: no hay reflejo.</div></li>
+    <li data-correcta>Gira 90° en sentido antihorario<div class="explicacion">Lee las columnas: $\hat\imath \to (0, 1)$ (el eje x pasa a apuntar hacia arriba) y $\hat\jmath \to (-1, 0)$ (el eje y pasa a apuntar a la izquierda). Es la rotación con θ = 90°: cos = 0, sin = 1.</div></li>
+    <li>Gira 90° en sentido horario<div class="explicacion">En sentido horario, $\hat\imath$ iría a $(0, -1)$, hacia abajo. La primera columna dice dónde acaba $\hat\imath$: $(0, 1)$, arriba. (En pantalla, con la y hacia abajo, esta misma matriz sí se ve como un giro horario: es la de <code>rotate(90deg)</code> de CSS.)</div></li>
+  </ul>
+</div>
+
+<h2>Componer es multiplicar</h2>
+<p>Aplicar primero $B$ y después $A$ a un vector es $A(B\vec v)$. ¿Existe una sola matriz que haga las dos cosas de golpe? Sí, y se obtiene con la misma idea de siempre: mira adónde van los ejes. $\hat\imath$ va primero a $B\hat\imath$ (la primera columna de $B$) y después a $A$ por eso; igual con $\hat\jmath$. Así que las columnas del producto son las columnas de $B$ transformadas por $A$:</p>
+$$AB = \begin{bmatrix} A\,\vec b_0 & A\,\vec b_1 \end{bmatrix}, \qquad (AB)\vec v = A(B\vec v)$$
+<p>Hecho número a número, cada elemento del producto es el producto punto de una <strong>fila</strong> de $A$ con una <strong>columna</strong> de $B$. Lo que importa recordar:</p>
+<ul>
+  <li><strong>$AB$ significa «primero $B$, luego $A$»</strong>: la matriz de la derecha es la que toca antes al vector, porque el vector se escribe a la derecha. Una cadena $ABC\,\vec v$ se lee de derecha a izquierda.</li>
+  <li>Es <strong>asociativo</strong>: $(AB)C = A(BC)$. Por eso puedes multiplicar las matrices una vez (por ejemplo, las de todo un objeto) y aplicar el resultado a sus diez mil vértices, en lugar de aplicar cada matriz a cada vértice.</li>
+  <li><strong>No es conmutativo</strong>: en general $AB \ne BA$. Girar y luego estirar en horizontal no es lo mismo que estirar en horizontal y luego girar.</li>
+</ul>
+
+<div class="demo" id="demo-orden">
+  <div class="demo-lienzo" style="height:360px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>En la demo ya aparece la traslación, que todavía no sabemos meter en una matriz 2×2. Resolvámoslo.</p>
+
+<h2>Coordenadas homogéneas: meter la traslación en la matriz</h2>
+<p>Trasladar, $\vec v \mapsto \vec v + \vec t$, <strong>no es lineal</strong>: una transformación lineal siempre deja el origen en su sitio ($M\vec 0 = \vec 0$), y trasladar lo mueve. Ninguna matriz 2×2 puede trasladar. El truco, antiguo y genial, es añadir una coordenada más, <strong>w</strong>, que vale 1, y trabajar con matrices de 3×3:</p>
+$$\begin{bmatrix} a & c & t_x \\ b & d & t_y \\ 0 & 0 & 1 \end{bmatrix}\begin{bmatrix} x \\ y \\ 1\end{bmatrix} = \begin{bmatrix} a x + c y + t_x \\ b x + d y + t_y \\ 1\end{bmatrix}$$
+<p>La tercera columna se suma multiplicada por $w = 1$: justo la traslación. Geométricamente, has subido el plano 2D a la altura $w = 1$ dentro de un espacio 3D, y la traslación en ese plano es una <strong>cizalla</strong> del espacio 3D, que sí es lineal. Esta forma de matriz (con la última fila <code>0 0 1</code>) se llama <strong>afín</strong>: combina una parte lineal (el bloque 2×2) y una traslación (la última columna). En 3D es lo mismo con una dimensión más: matrices <strong>4×4</strong> que actúan sobre $(x, y, z, 1)$, con la traslación en la cuarta columna.</p>
+
+<svg class="diagrama" viewBox="0 0 700 250" width="700" role="img" aria-label="El plano 2D colocado a la altura w = 1 en un espacio 3D; una cizalla del espacio desplaza la figura dentro de ese plano">
+  <defs>
+    <marker id="m35-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <path d="M60 210 L60 40" stroke="currentColor" stroke-width="2" marker-end="url(#m35-fl)"/>
+  <text x="44" y="38">w</text>
+  <path d="M60 210 L330 210" stroke="currentColor" stroke-width="2" marker-end="url(#m35-fl)"/>
+  <text x="336" y="214">x</text>
+  <path d="M60 210 L140 150" stroke="currentColor" stroke-width="2" marker-end="url(#m35-fl)"/>
+  <text x="146" y="146">y</text>
+  <!-- plano w = 1 -->
+  <path d="M60 110 L330 110 L420 50 L150 50 Z" class="caja" style="opacity:0.7"/>
+  <text x="430" y="54" class="texto-tenue">plano w = 1</text>
+  <!-- figura original y trasladada -->
+  <path d="M120 96 L150 96 L165 86 L135 86 Z" style="fill:var(--muted);opacity:0.7"/>
+  <path d="M250 96 L280 96 L295 86 L265 86 Z" class="acento-relleno"/>
+  <path d="M152 92 L246 92" class="acento" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#m35-fl)"/>
+  <!-- vectores desde el origen -->
+  <path d="M60 210 L140 92" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 4" style="opacity:0.6"/>
+  <path d="M60 210 L270 92" class="acento" stroke-width="1.2" stroke-dasharray="4 4"/>
+  <text x="178" y="126" class="texto-tenue" style="font-size:12px">(x, y, 1)</text>
+  <text x="235" y="140" style="font-size:12px;fill:var(--accent)">(x + tx, y + ty, 1)</text>
+  <text x="520" y="120" text-anchor="middle">En 3D es una cizalla (lineal):</text>
+  <text x="520" y="142" text-anchor="middle">cuanto más alto (w), más se desplaza.</text>
+  <text x="520" y="164" text-anchor="middle" class="texto-tenue">A la altura w = 1, se desplaza exactamente (tx, ty):</text>
+  <text x="520" y="184" text-anchor="middle" class="texto-tenue">una traslación dentro del plano.</text>
+</svg>
+
+<h3>w = 1 para puntos, w = 0 para direcciones</h3>
+<p>¿Y si pones $w = 0$? Entonces la tercera columna se multiplica por 0 y <strong>la traslación no afecta</strong>: solo actúa la parte lineal. Eso es exactamente lo que debe pasarle a una <strong>dirección</strong> (una velocidad, una normal, la dirección de una luz): mover un objeto no cambia hacia dónde apunta su flecha, pero girarlo sí. Así que la coordenada w codifica, por fin, la diferencia entre puntos y vectores de la lección <a href="01-vectores.html">3.1</a>, y las reglas que allí eran de sentido común salen solas: punto − punto $= (\ldots, 1 - 1) = (\ldots, 0)$, un vector; punto + vector $= (\ldots, 1 + 0)$, un punto; punto + punto $= (\ldots, 2)$, algo que no es ni una cosa ni la otra.</p>
+
+<div class="callout hack">
+  <p>Con una sola matriz de modelo transformas posiciones <em>y</em> direcciones: <code>M * vec4(pos, 1.0)</code> para las posiciones, <code>M * vec4(dir, 0.0)</code> para las direcciones. No necesitas extraer la parte de rotación a mano. Una excepción importante que verás en <a href="../05-webgl/06-3d-cubo.html">5.6</a>: las <strong>normales</strong> de una superficie, si la matriz tiene escalas distintas en cada eje, necesitan la inversa traspuesta de la matriz (<code>mat4.normal()</code> de <code>glkit.js</code>), porque deben seguir siendo perpendiculares a la superficie, y una escala no uniforme no conserva los ángulos.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">$T$ es una matriz 4×4 de traslación por $(5, 0, 0)$. ¿Qué dan $T\,(1, 2, 3, 1)$ y $T\,(1, 2, 3, 0)$?</p>
+  <ul>
+    <li>$(6, 2, 3, 1)$ y $(6, 2, 3, 0)$<div class="explicacion">La traslación está en la cuarta columna, que se multiplica por w. Con w = 0 no se suma nada.</div></li>
+    <li data-correcta>$(6, 2, 3, 1)$ y $(1, 2, 3, 0)$<div class="explicacion">El punto (w = 1) se desplaza; la dirección (w = 0) no cambia. Lo comprobamos en la GPU: con <code>m[3] = vec4(5, 6, 7, 1)</code>, <code>m * vec4(1, 1, 1, 1)</code> dio (6, 7, 8, 1) y <code>m * vec4(1, 1, 1, 0)</code> dio (1, 1, 1, 0).</div></li>
+    <li>$(5, 0, 0, 1)$ en los dos casos<div class="explicacion">La traslación se <em>suma</em> a las coordenadas; no las sustituye. La parte lineal de T es la identidad, así que x, y, z pasan intactas.</div></li>
+  </ul>
+</div>
+
+<h3>Rotaciones en 3D: un eje cada vez</h3>
+<p>En 2D solo hay un giro posible, alrededor de un punto. En 3D se gira <strong>alrededor de un eje</strong>, y la matriz sale de la de 2D con la misma idea de «adónde van los ejes»: el eje de giro se queda donde estaba, y en el plano perpendicular a él los otros dos ejes giran como en 2D. Las tres matrices (en papel, vectores columna, mano derecha, ángulo positivo = giro antihorario visto desde el lado positivo del eje hacia el origen):</p>
+<table>
+  <thead><tr><th>Eje</th><th>Matriz 3×3 (la 4×4 añade la fila y columna de w)</th><th>Qué eje va hacia cuál</th></tr></thead>
+  <tbody>
+    <tr><td>x</td><td>$R_x(\theta) = \begin{bmatrix}1 & 0 & 0\\ 0 & \cos\theta & -\sin\theta\\ 0 & \sin\theta & \cos\theta\end{bmatrix}$</td><td>$\hat y \to \hat z$</td></tr>
+    <tr><td>y</td><td>$R_y(\theta) = \begin{bmatrix}\cos\theta & 0 & \sin\theta\\ 0 & 1 & 0\\ -\sin\theta & 0 & \cos\theta\end{bmatrix}$</td><td>$\hat z \to \hat x$</td></tr>
+    <tr><td>z</td><td>$R_z(\theta) = \begin{bmatrix}\cos\theta & -\sin\theta & 0\\ \sin\theta & \cos\theta & 0\\ 0 & 0 & 1\end{bmatrix}$</td><td>$\hat x \to \hat y$</td></tr>
+  </tbody>
+</table>
+<p>$R_z$ es exactamente la matriz de 2D con una fila y una columna de la identidad. Las otras dos son la misma matriz colocada en los planos $yz$ y $zx$. Fíjate en que el $-\sin\theta$ de $R_y$ está «cambiado de sitio» respecto a $R_x$ y $R_z$: no es una errata. El orden cíclico de los ejes es $x \to y \to z \to x$, así que el giro positivo en el plano $zx$ lleva $\hat z$ hacia $\hat x$ (y no $\hat x$ hacia $\hat z$). Son las que construyen <code>mat4.rotacionX</code>, <code>rotacionY</code> y <code>rotacionZ</code> de <code>glkit.js</code>, que usarás en <a href="../05-webgl/06-3d-cubo.html">5.6</a>.</p>
+<p>Una diferencia importante con 2D: las rotaciones en 3D <strong>no conmutan</strong>. Girar 90° alrededor de x y luego 90° alrededor de y no es lo mismo que hacerlo en el orden contrario:</p>
+<div class="js-playground" data-titulo="Las rotaciones en 3D no conmutan" data-altura="40" data-fondo="oscuro" data-apilado data-incluir="glkit">
+<script type="text/x-js">
+const Rx = mat4.rotacionX(Math.PI / 2), Ry = mat4.rotacionY(Math.PI / 2);
+const eje = [1, 0, 0, 0];                                        // una dirección (w = 0): el eje x
+const r = (v) => v.slice(0, 3).map((n) => Math.round(n * 1000) / 1000 + 0);   // redondea y limpia los −0
+
+console.log('Ry · Rx · (1, 0, 0)  (primero Rx, luego Ry):', r(mat4.porVector(mat4.multiplicar(Ry, Rx), eje)));
+console.log('Rx · Ry · (1, 0, 0)  (primero Ry, luego Rx):', r(mat4.porVector(mat4.multiplicar(Rx, Ry), eje)));
+console.log('Ry · (0, 0, 1) →', r(mat4.porVector(Ry, [0, 0, 1, 0])), ' (el eje z va hacia x)');
+</script>
+</div>
+<p>De ahí vienen los <strong>ángulos de Euler</strong> (cada giro por separado, cuyo resultado depende del orden en que los apliques) y su defecto clásico, el <em>gimbal lock</em>: cuando el giro intermedio es de ±90°, otros dos ejes quedan alineados y dos de los tres giros pasan a hacer lo mismo, con lo que se pierde un grado de libertad. Es un problema emparentado con el de la cámara que mira recto hacia arriba de <a href="06-espacios-coordenadas.html">3.6</a>. Los cuaterniones lo evitan, pero quedan fuera de este curso.</p>
+
+<h2>El orden TRS</h2>
+<p>Para colocar un objeto en una escena casi siempre quieres tres cosas: escalarlo, girarlo y ponerlo en su sitio. Con matrices, la <strong>matriz de modelo</strong>:</p>
+$$M = T\cdot R\cdot S$$
+<p>que, leída de derecha a izquierda, significa: <strong>primero escalar</strong> (alrededor del origen del objeto), <strong>después girar</strong> (alrededor del mismo origen) y <strong>por último trasladar</strong> (llevar el origen del objeto a su posición en el mundo). Es el orden natural porque escalar y girar tienen un centro, el origen, y queremos que ese centro sea el del propio objeto. Si trasladas primero, el objeto ya no está en el origen, y la rotación lo hace <strong>orbitar</strong> alrededor del origen del mundo en lugar de girar sobre sí mismo. Y si escalas después de girar, una escala no uniforme deforma el objeto girado en diagonal (una cizalla).</p>
+
+<p>CSS aplica sus funciones exactamente así: <strong><code>transform: A() B() C()</code> es la matriz $A\cdot B\cdot C$</strong>, y al punto le toca primero C. Esta demo usa un <code>div</code> de verdad con <code>transform</code> de CSS: compara la matriz que calcula el navegador con la que calculamos multiplicando matrices.</p>
+
+<div class="demo" id="demo-trs">
+  <div class="m3-escena-css">
+    <svg class="m3-ejes" width="100%" height="100%" aria-hidden="true">
+      <line x1="50%" y1="0" x2="50%" y2="100%" stroke="currentColor" style="color:var(--border-2)" stroke-dasharray="4 5"/>
+      <line x1="0" y1="50%" x2="100%" y2="50%" stroke="currentColor" style="color:var(--border-2)" stroke-dasharray="4 5"/>
+    </svg>
+    <div class="m3-caja fantasma">F</div>
+    <div class="m3-caja" id="trs-caja">F</div>
+  </div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="callout bestiario" data-id="m3-orden-transformaciones" data-titulo="El objeto orbita alrededor del origen en lugar de girar sobre sí mismo">
+  <p><strong>Síntoma:</strong> quieres que un objeto gire sobre sí mismo y, en cambio, describe un círculo enorme alrededor de un punto de la pantalla (la esquina, o el centro del mundo). O bien, al escalarlo, además de crecer se desplaza.</p>
+  <p><strong>Causa:</strong> la traslación se aplicó <em>antes</em> que la rotación o la escala (por ejemplo, <code>M = R · T</code>, o en CSS <code>rotate(…) translate(…)</code>): cuando llega la rotación, el objeto ya está lejos del origen y gira alrededor de él. En CSS hay una segunda causa: <code>transform-origin</code>, el punto alrededor del cual se aplica todo (por defecto, el centro del elemento; en SVG, la esquina del lienzo).</p>
+  <p><strong>Solución:</strong> orden TRS (<code>translate(…) rotate(…) scale(…)</code> en CSS, <code>T · R · S</code> con matrices). Para girar alrededor de un pivote $C$ que no es el origen del objeto: <code>T(C) · R · T(−C)</code>, que es exactamente lo que hace <code>transform-origin</code> por dentro: $M_{final} = T(o)\cdot M\cdot T(-o)$.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En CSS, <code>transform: rotate(90deg) translate(100px, 0)</code>. ¿Dónde acaba el elemento?</p>
+  <ul>
+    <li>100 px a la derecha, girado 90°<div class="explicacion">Eso sería <code>translate(100px, 0) rotate(90deg)</code>: primero gira en su sitio, después se desplaza. Aquí el orden es el contrario.</div></li>
+    <li data-correcta>100 px más abajo, girado 90°<div class="explicacion">La matriz es R·T: al punto le toca primero la traslación (100 px a la derecha) y después la rotación de 90°, que, con la y hacia abajo, lleva «derecha» a «abajo». El navegador lo confirma: <code>matrix(0, 1, -1, 0, 0, 100)</code>, traslación (0, 100).</div></li>
+    <li>100 px a la derecha, sin girar: la rotación se aplica antes y la traslación la anula<div class="explicacion">Las transformaciones no se anulan entre sí: se componen. El elemento sale girado y desplazado; lo que cambia con el orden es la dirección del desplazamiento.</div></li>
+  </ul>
+</div>
+
+<h2>La inversa y la traspuesta</h2>
+<p>La <strong>inversa</strong> $M^{-1}$ deshace la transformación: $M^{-1}M = I$, la identidad. Se necesita constantemente: para convertir el ratón (en coordenadas del mundo) a coordenadas locales de un objeto, para saber si has hecho clic dentro de él (<em>picking</em>), y para construir la cámara, cuya matriz es la inversa de su colocación en el mundo (lección <a href="06-espacios-coordenadas.html">3.6</a>). Para una 2×2:</p>
+$$\begin{bmatrix} a & c \\ b & d \end{bmatrix}^{-1} = \frac{1}{ad - bc}\begin{bmatrix} d & -c \\ -b & a \end{bmatrix}$$
+<p>Aparece el determinante dividiendo: si vale 0, no hay inversa (la transformación aplastó el plano y perdió información). La función <code>mat4.invertir()</code> de <code>glkit.js</code> devuelve <code>null</code> en ese caso, y GLSL tiene <code>inverse()</code>, que en ese caso es indefinida.</p>
+<p>Pero casi nunca necesitas la fórmula general, porque conoces la estructura de tus matrices:</p>
+<ul>
+  <li>La inversa de una rotación es la rotación del ángulo opuesto, y además coincide con su <strong>traspuesta</strong> (intercambiar filas por columnas): $R^{-1} = R^T$. Las columnas de una rotación son unitarias y perpendiculares entre sí (una base ortonormal), y para esas matrices trasponer es invertir.</li>
+  <li>La inversa de un producto es el producto de las inversas <strong>en orden contrario</strong>: $(TRS)^{-1} = S^{-1}R^{-1}T^{-1}$. Para deshacer «escalar, girar, trasladar» hay que «destrasladar, desgirar, desescalar»: como quitarse los calcetines después de los zapatos.</li>
+</ul>
+<p>La <strong>traspuesta</strong> $M^T$ tiene además un papel en la gran confusión de la sección siguiente: multiplicar un vector fila por la izquierda, $\vec v^{\,T} M$, da lo mismo que $M^T\vec v$.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.5.1 — Un brazo articulado, y el ratón en coordenadas del antebrazo</h3>
+  <p>Un brazo con hombro y codo. Cada pieza tiene su propio sistema de coordenadas (sus ejes locales se dibujan en cada articulación) y su matriz se obtiene multiplicando la de su padre por la suya: <strong>una jerarquía</strong>. Mueve los ángulos y arrastra el punto <strong>Q</strong>: con la inversa de la matriz del antebrazo sabemos dónde está Q en coordenadas del antebrazo y, por tanto, si lo estamos tocando.</p>
+  <div class="demo" id="demo-brazo">
+    <div class="demo-lienzo" style="height:360px"></div>
+    <div class="demo-controles"></div>
+    <div class="demo-info"></div>
+  </div>
+  <p>Las matrices, de la raíz a la punta:</p>
+  $$M_{hombro} = T(\text{base})\,R(\alpha_1), \qquad M_{codo} = M_{hombro}\,T(L_1, 0)\,R(\alpha_2), \qquad M_{mano} = M_{codo}\,T(L_2, 0)$$
+  <ol>
+    <li><strong>Cada pieza se dibuja en su propio espacio</strong>: el brazo es siempre el segmento de $(0,0)$ a $(L_1, 0)$ en sus coordenadas locales; la matriz lo coloca en el mundo. El antebrazo no sabe nada del hombro.</li>
+    <li><strong>La jerarquía es un producto</strong>: la matriz del codo empieza con la del hombro, así que al girar el hombro el antebrazo se mueve con él sin tocar su código. Leído de derecha a izquierda para un punto del antebrazo: se gira con el codo, se lleva al final del brazo, se gira con el hombro y se lleva a la base.</li>
+    <li><strong>La posición de la mano</strong> es $M_{mano}\,(0, 0, 1)$: el origen local de la mano, llevado al mundo.</li>
+    <li><strong>El ratón al revés</strong>: $M_{codo}^{-1}\,Q$ convierte el punto del mundo a coordenadas del antebrazo. Allí la pregunta «¿lo toco?» es trivial: $0 \le x \le L_2$ y $|y| \le$ la mitad del grosor. Es el <em>picking</em>: en lugar de transformar la forma para compararla con el ratón, transformas el ratón a la forma. Así funcionan los editores gráficos, Three.js con sus <em>raycasters</em> y los eventos de ratón sobre elementos CSS girados.</li>
+  </ol>
+</section>
+
+<h2>Filas, columnas y la gran confusión</h2>
+<p>Esta sección vale oro, porque es donde más tiempo pierde la gente. Hay <strong>dos elecciones independientes</strong> que suelen confundirse:</p>
+<ol>
+  <li><strong>Convención matemática</strong>: ¿el vector es una columna a la derecha ($M\vec v$) o una fila a la izquierda ($\vec v M$)? Con vectores columna, la traslación va en la última <em>columna</em> y las cadenas se leen de derecha a izquierda ($T R S \vec v$). Con vectores fila, todo sale traspuesto: la traslación va en la última <em>fila</em> y las cadenas se leen de izquierda a derecha ($\vec v S R T$). OpenGL, GLSL y casi todos los libros usan vectores columna; Direct3D y HLSL usaron tradicionalmente vectores fila.</li>
+  <li><strong>Almacenamiento en memoria</strong>: los 16 números de una matriz se guardan en un array de 16 posiciones, ¿fila tras fila (<em>row-major</em>) o columna tras columna (<em>column-major</em>)? OpenGL y GLSL guardan <strong>column-major</strong>: el array es la primera columna, luego la segunda, etc. C y la mayoría de los lenguajes, cuando escribes una tabla, la escriben fila a fila.</li>
+</ol>
+<p>Y aquí el giro: una matriz de GL (vectores columna) guardada column-major y la «misma» matriz de Direct3D clásico (vectores fila, por tanto traspuesta) guardada row-major <strong>ocupan exactamente los mismos bytes</strong>. Trasponer dos veces es no trasponer. Por eso, en memoria, la traslación de una matriz 4×4 está en los elementos 12, 13 y 14 en las dos APIs, y por eso tanta gente cree que «son iguales» hasta que escribe una matriz a mano.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+// La traslación (5, 6, 7) escrita "como en papel" (vectores columna):
+//   | 1 0 0 5 |
+//   | 0 1 0 6 |
+//   | 0 0 1 7 |
+//   | 0 0 0 1 |
+// En memoria, column-major: una columna detrás de otra.
+const T = new Float32Array([
+  1, 0, 0, 0,     // columna 0: adónde va el eje x
+  0, 1, 0, 0,     // columna 1: adónde va el eje y
+  0, 0, 1, 0,     // columna 2: adónde va el eje z
+  5, 6, 7, 1,     // columna 3: la traslación (y w)
+]);
+gl.uniformMatrix4fv(loc, false, T);
+</script>
+<ol>
+  <li data-l="1-6">La matriz como la escribirías en un libro, con la traslación en la cuarta columna.</li>
+  <li data-l="7-12">En el código aparece <strong>visualmente traspuesta</strong>: cada línea del array es una columna, no una fila. Si escribes la matriz del papel fila a fila en el array, obtienes su traspuesta, y es el error más frecuente de todos.</li>
+  <li data-l="11">Por eso la traslación está en los índices 12, 13 y 14. En general, el elemento de la fila <code>r</code> y la columna <code>c</code> vive en <code>m[c * 4 + r]</code>: el convenio de <code>glkit.js</code>.</li>
+  <li data-l="13">El segundo argumento es <code>transpose</code>. En WebGL1 debía ser <code>false</code> obligatoriamente (con <code>true</code>, la llamada no hace nada, genera el error <code>INVALID_VALUE</code> y Chrome avisa en la consola «uniformMatrix4fv: transpose not FALSE»); en WebGL2 se permite <code>true</code>, que traspone al subir. Lo verás en <a href="../05-webgl/04-uniforms-animacion.html">5.4</a>.</li>
+</ol>
+</div>
+
+<h3>Las matrices en GLSL</h3>
+<p>GLSL es coherente con todo lo anterior. Los constructores <strong>rellenan por columnas</strong>, <code>m[i]</code> <strong>es la columna i</strong> (y <code>m[i][j]</code> el elemento de la columna i, fila j), y <code>m * v</code> es el producto con vector columna:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+mat2 m = mat2(1.0, 2.0,
+              3.0, 4.0);
+vec2 a = m * vec2(1.0, 0.0);
+vec2 b = vec2(1.0, 0.0) * m;
+vec2 col1 = m[1];
+float e = m[1][0];
+mat4 M = mat4(1.0);
+M[3] = vec4(5.0, 6.0, 7.0, 1.0);
+mat3x2 r;
+</script>
+<ol>
+  <li data-l="1-2">Aunque lo escribas en dos líneas, <code>mat2(1, 2, 3, 4)</code> tiene como <strong>primera columna (1, 2)</strong> y segunda (3, 4). En papel, su primera fila es (1, 3) y la segunda (2, 4). El formato del código engaña: cada «línea» es una columna.</li>
+  <li data-l="3"><code>m * (1, 0)</code> = la primera columna: (1, 2). Comprobado en la GPU.</li>
+  <li data-l="4">Vector a la izquierda: GLSL lo trata como vector fila y el resultado es el de la traspuesta: (1, 3), la primera <em>fila</em>. <code>v * m == transpose(m) * v</code>. No es un error de compilación: es un error silencioso.</li>
+  <li data-l="5-6"><code>m[1]</code> es la segunda columna, (3, 4), y <code>m[1][0]</code> es 3: columna 1, fila 0.</li>
+  <li data-l="7-8"><code>mat4(1.0)</code> es la identidad (un escalar en el constructor rellena la diagonal). Asignar <code>M[3]</code> pone la traslación en la cuarta columna: la forma más legible de construir una traslación.</li>
+  <li data-l="9"><code>mat3x2</code> tiene <strong>3 columnas y 2 filas</strong>: el primer número son las columnas, al revés que la notación matemática «filas × columnas». Multiplica un <code>vec3</code> y devuelve un <code>vec2</code>; <code>mat3x2 * vec2</code> no compila.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m3-matriz-traspuesta" data-titulo="El objeto gira al revés y no se traslada (o se deforma)">
+  <p><strong>Síntoma:</strong> la rotación va en sentido contrario, la traslación no tiene efecto o hace algo absurdo, y en 3D la geometría se deforma en perspectiva o desaparece. Con la matriz identidad todo va bien.</p>
+  <p><strong>Causa:</strong> la matriz está <strong>traspuesta</strong>: se escribió fila a fila en un array que GL interpreta columna a columna, se pasó a un constructor de GLSL en el orden de filas, o se multiplicó <code>v * M</code> en lugar de <code>M * v</code>. La traspuesta de una rotación es la rotación inversa (gira al revés), y la traslación, que debía estar en la última columna, acaba en la última fila, la que calcula w. En un vertex shader, esa w distinta de 1 hace que la división de perspectiva (<a href="06-espacios-coordenadas.html">3.6</a>) deforme toda la geometría.</p>
+  <p><strong>Solución:</strong> comprueba con una matriz de traslación pura, que es asimétrica y delata el problema: sus números 12, 13, 14 deben ser la traslación. Imprime las matrices como en papel (<code>mat4.texto(m)</code> de <code>glkit.js</code>). En GLSL, multiplica siempre <code>M * v</code>. En el editor de abajo, activa la casilla para ver el error en vivo.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.5.2 — Transformar una imagen en un fragment shader</h3>
+  <p>Queremos dibujar la textura de una F colocada en la escena con una matriz $M = T\,R\,S$ (posición, ángulo y escala con los deslizadores). Pero un fragment shader no mueve la imagen: cada píxel de la pantalla tiene que averiguar <strong>qué punto de la imagen le toca</strong>. Es la operación contraria, así que necesitamos la inversa.</p>
+  <div class="glsl-playground" data-titulo="Colocar una imagen con T·R·S (y su inversa)" data-altura="340" data-apilado data-texturas="letraF:clamp"
+       data-uniforms='{"u_angulo":{"tipo":"float","min":-180,"max":180,"valor":30,"etiqueta":"ángulo (°)"},"u_escala":{"tipo":"float","min":0.2,"max":1.5,"valor":0.6,"etiqueta":"escala"},"u_pos":{"tipo":"vec2","min":-1,"max":1,"valor":[0.5,0.1],"etiqueta":"posición"},"u_traspuesta":{"tipo":"bool","valor":false,"etiqueta":"matriz traspuesta (el bicho)"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform sampler2D u_tex0;
+uniform float u_angulo;
+uniform float u_escala;
+uniform vec2 u_pos;
+uniform bool u_traspuesta;
+out vec4 fragColor;
+
+// Constructores por COLUMNAS: la última columna de la traslación es (tx, ty, 1)
+mat3 traslacion(vec2 t) { return mat3(1.0, 0.0, 0.0,   0.0, 1.0, 0.0,   t.x, t.y, 1.0); }
+mat3 rotacion(float a)  { float c = cos(a), s = sin(a); return mat3(c, s, 0.0,   -s, c, 0.0,   0.0, 0.0, 1.0); }
+mat3 escala(float k)    { return mat3(k, 0.0, 0.0,   0.0, k, 0.0,   0.0, 0.0, 1.0); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;   // punto de la escena
+  // Matriz de modelo: del espacio de la imagen ([-1,1]²) a la escena
+  mat3 M = traslacion(u_pos) * rotacion(radians(u_angulo)) * escala(u_escala);
+  if (u_traspuesta) M = transpose(M);             // el error clásico, a propósito
+  // Cada píxel necesita el camino contrario: de la escena a la imagen
+  vec3 local = inverse(M) * vec3(p, 1.0);          // w = 1: es un punto
+  vec2 uv = local.xy * 0.5 + 0.5;                  // de [-1,1] a [0,1] para leer la textura
+
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0))))
+    color = texture(u_tex0, uv).rgb;
+  // el origen de la escena, para orientarse
+  if (length(p) < 0.02) color = vec3(1.0, 0.8, 0.2);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>Constructores por columnas</strong>: en <code>traslacion</code>, los tres últimos números <code>t.x, t.y, 1.0</code> son la tercera columna. En <code>rotacion</code>, la primera columna es <code>(c, s)</code>, adónde va el eje x, y la segunda <code>(−s, c)</code>. Si lees el código como filas, te parecerán traspuestas: esa es la trampa.</li>
+    <li><strong>$M = T R S$</strong>: primero escala, luego gira, luego traslada. La imagen gira alrededor de su propio centro y después se coloca en <code>u_pos</code>.</li>
+    <li><strong>El camino inverso</strong>: <code>inverse(M)</code> lleva un punto de la escena al espacio de la imagen. Si el punto cae dentro del cuadrado $[-1, 1]^2$, el píxel está sobre la imagen. Calcular una inversa por píxel es derrochador (es la misma para todos los píxeles): en una aplicación real se calcula una vez en JavaScript y se envía como uniform.</li>
+    <li><strong>La casilla del bicho</strong> traspone M: la F gira en sentido contrario y deja de responder a la posición, porque la traslación ha ido a parar a la fila de w, que aquí ignoramos.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m3-rotacion-inversa-shader" data-titulo="En el shader todo se mueve al revés">
+  <p><strong>Síntoma:</strong> en un fragment shader, sumas un desplazamiento a las coordenadas y el dibujo se mueve hacia el lado contrario; aplicas una rotación y gira en sentido opuesto; multiplicas por 2 para agrandarlo y se hace más pequeño.</p>
+  <p><strong>Causa:</strong> no estás transformando el dibujo, sino las <strong>coordenadas con las que cada píxel lo consulta</strong>. Si el píxel pregunta por el punto <code>p + (0.3, 0)</code>, ve lo que en el dibujo está 0.3 a la derecha: el dibujo parece haberse movido a la <em>izquierda</em>. Transformar las coordenadas equivale a aplicar al dibujo la transformación inversa.</p>
+  <p><strong>Solución:</strong> aplica a las coordenadas la inversa de lo que quieres ver: para mover el dibujo a la derecha, resta; para girarlo θ, gira las coordenadas −θ; para agrandarlo ×2, divide por 2. Con matrices: <code>inverse(M) * p</code>, como en el ejemplo. Es la misma relación que hay entre mover un objeto y mover la cámara en sentido contrario, que verás en <a href="06-espacios-coordenadas.html">3.6</a>.</p>
+</div>
+
+<div class="glsl-playground" data-titulo="rotate2D: girar el espacio gira el dibujo al revés" data-altura="280" data-apilado data-texturas="letraF:clamp">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+out vec4 fragColor;
+
+// La rotación antihoraria de ángulo a (columnas: adónde van los ejes)
+mat2 rotate2D(float a) {
+  float c = cos(a), s = sin(a);
+  return mat2(c, s, -s, c);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 q = rotate2D(u_time) * p;       // giramos las COORDENADAS en sentido antihorario...
+  vec2 uv = q * 0.7 + 0.5;             // ...y la F, en pantalla, gira en sentido HORARIO
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0))))
+    color = texture(u_tex0, uv).rgb;
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<h2>CSS y Canvas: las mismas matrices</h2>
+<p>El navegador usa exactamente estas matrices, en coordenadas de pantalla (y hacia abajo), y con el mismo convenio de columnas:</p>
+<ul>
+  <li><strong><code>matrix(a, b, c, d, e, f)</code></strong> de CSS es la matriz afín $\begin{bmatrix} a & c & e\\ b & d & f\\ 0 & 0 & 1\end{bmatrix}$: los seis números van <strong>por columnas</strong>, (a, b) es adónde va el eje x, (c, d) adónde va el eje y y (e, f) la traslación. Por eso <code>rotate(90deg)</code> se resuelve como <code>matrix(0, 1, -1, 0, 0, 0)</code>: el eje x pasa a apuntar a (0, 1), que en pantalla es hacia abajo.</li>
+  <li><strong><code>matrix3d(…)</code></strong> recibe los 16 números de una 4×4 también en <strong>column-major</strong>, como WebGL: <code>translateX(10px) rotateY(30deg)</code> se resuelve como <code>matrix3d(0.866025, 0, -0.5, 0, 0, 1, 0, 0, 0.5, 0, 0.866025, 0, 10, 0, 0, 1)</code>, con la traslación en los elementos 12 a 14.</li>
+  <li><strong><code>DOMMatrix</code></strong> es la clase del navegador para estas matrices. <code>A.multiply(B)</code> es $A\cdot B$, <code>m.inverse()</code> la inversa, <code>m.transformPoint(new DOMPoint(x, y, 0, w))</code> aplica la matriz a un punto (w = 1) o a una dirección (w = 0), y <code>m.toFloat32Array()</code> devuelve los 16 números en column-major, listos para <code>gl.uniformMatrix4fv</code>.</li>
+  <li><strong>Canvas 2D</strong>: <code>ctx.translate</code>, <code>ctx.rotate</code> y <code>ctx.scale</code> multiplican la matriz actual <em>por la derecha</em>, igual que las funciones de CSS en el orden en que se escriben: <code>ctx.translate(100, 0); ctx.rotate(Math.PI / 2)</code> deja la matriz $T\cdot R$ (<code>ctx.getTransform()</code> lo confirma: b = 1, c = −1, e = 100, f = 0, y a y d valen 0… casi: salen <code>6.1e-17</code>, porque <code>Math.cos(Math.PI / 2)</code> no es exactamente 0 en coma flotante, y el navegador no lo redondea). <code>ctx.setTransform(a, b, c, d, e, f)</code> la sustituye con el mismo orden de argumentos que <code>matrix()</code>.</li>
+</ul>
+
+<div class="callout senior" data-titulo="Acumular rotaciones degrada la matriz">
+  <p>Un patrón tentador para animar un giro continuo es multiplicar la matriz del objeto por una pequeña rotación en cada frame: <code>M = R(dθ) · M</code>. Cada multiplicación redondea, y los errores se acumulan: las columnas dejan de ser exactamente unitarias y perpendiculares. En una prueba en float32, tras 100 000 rotaciones de 0.01 rad (unos 28 minutos a 60 fps) el determinante había bajado a 0.998: el objeto había encogido un 0.1&nbsp;% y seguía encogiendo. La solución es guardar el <strong>ángulo</strong> (o un cuaternión, en 3D) y reconstruir la matriz desde cero en cada frame; si de verdad necesitas acumular, reortonormaliza las columnas de vez en cuando.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 3.5.1 — Escribe las matrices</h3>
+  <p>Escribe cada matriz 2×2 como un array <strong>column-major</strong> <code>[a, b, c, d]</code> (primera columna <code>(a, b)</code>, segunda <code>(c, d)</code>), pensando solo en adónde deben ir los ejes. Las pruebas aplican cada matriz a dos puntos.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.5.1" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+// Aplicar una matriz column-major [a, b, c, d] a un punto: x·(a, b) + y·(c, d)
+const aplicar = (m, p) => ({ x: m[0] * p.x + m[2] * p.y, y: m[1] * p.x + m[3] * p.y });
+
+const reflejoEjeY = [1, 0, 0, 1];      // TODO: espejo respecto al eje y (x → −x)
+const rota90 = [1, 0, 0, 1];           // TODO: giro de 90° antihorario (y hacia arriba)
+const escala3 = [1, 0, 0, 1];          // TODO: escala uniforme ×3
+const cizalla = [1, 0, 0, 1];          // TODO: el eje x no se mueve; (0, 1) va a (0.5, 1)
+
+// --- pruebas ---
+const iguales = (a, b) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
+function comprobar(nombre, m, p, esperado) {
+  const r = aplicar(m, p);
+  console.log((iguales(r, esperado) ? '✓ ' : '✗ ') + nombre + ' (' + p.x + ', ' + p.y + ') → (' + r.x + ', ' + r.y + ')' + (iguales(r, esperado) ? '' : '   esperaba (' + esperado.x + ', ' + esperado.y + ')'));
+}
+comprobar('reflejo', reflejoEjeY, { x: 2, y: 1 }, { x: -2, y: 1 });
+comprobar('reflejo', reflejoEjeY, { x: -1, y: 3 }, { x: 1, y: 3 });
+comprobar('rota90', rota90, { x: 1, y: 0 }, { x: 0, y: 1 });
+comprobar('rota90', rota90, { x: 2, y: 1 }, { x: -1, y: 2 });
+comprobar('escala3', escala3, { x: 1, y: -2 }, { x: 3, y: -6 });
+comprobar('cizalla', cizalla, { x: 0, y: 2 }, { x: 1, y: 2 });
+comprobar('cizalla', cizalla, { x: 3, y: 0 }, { x: 3, y: 0 });
+</script>
+<script type="text/x-js" data-solucion>
+const aplicar = (m, p) => ({ x: m[0] * p.x + m[2] * p.y, y: m[1] * p.x + m[3] * p.y });
+
+const reflejoEjeY = [-1, 0, 0, 1];     // el eje x se da la vuelta; el eje y se queda
+const rota90 = [0, 1, -1, 0];          // eje x → (0, 1); eje y → (−1, 0)
+const escala3 = [3, 0, 0, 3];          // cada eje ×3
+const cizalla = [1, 0, 0.5, 1];        // eje x → (1, 0); eje y → (0.5, 1)
+
+const iguales = (a, b) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
+function comprobar(nombre, m, p, esperado) {
+  const r = aplicar(m, p);
+  console.log((iguales(r, esperado) ? '✓ ' : '✗ ') + nombre + ' (' + p.x + ', ' + p.y + ') → (' + r.x + ', ' + r.y + ')' + (iguales(r, esperado) ? '' : '   esperaba (' + esperado.x + ', ' + esperado.y + ')'));
+}
+comprobar('reflejo', reflejoEjeY, { x: 2, y: 1 }, { x: -2, y: 1 });
+comprobar('reflejo', reflejoEjeY, { x: -1, y: 3 }, { x: 1, y: 3 });
+comprobar('rota90', rota90, { x: 1, y: 0 }, { x: 0, y: 1 });
+comprobar('rota90', rota90, { x: 2, y: 1 }, { x: -1, y: 2 });
+comprobar('escala3', escala3, { x: 1, y: -2 }, { x: 3, y: -6 });
+comprobar('cizalla', cizalla, { x: 0, y: 2 }, { x: 1, y: 2 });
+comprobar('cizalla', cizalla, { x: 3, y: 0 }, { x: 3, y: 0 });
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>No intentes recordar fórmulas: la primera pareja del array es adónde va $(1, 0)$ y la segunda adónde va $(0, 1)$. Para el giro de 90° antihorario, ¿hacia dónde apunta el eje x después de girar? ¿Y el eje y?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada matriz se escribe mirando adónde van los ejes. Reflejo en el eje y: $\hat\imath \to (-1, 0)$, $\hat\jmath$ se queda en $(0, 1)$: <code>[-1, 0, 0, 1]</code>. Giro de 90° antihorario: $\hat\imath$ pasa a apuntar hacia arriba, $(0, 1)$, y $\hat\jmath$ hacia la izquierda, $(-1, 0)$: <code>[0, 1, -1, 0]</code> (compáralo con cos 90° = 0, sin 90° = 1 en la fórmula de la rotación). Escala ×3: <code>[3, 0, 0, 3]</code>. Cizalla: $\hat\imath$ fijo, $\hat\jmath \to (0.5, 1)$: <code>[1, 0, 0.5, 1]</code>.</p>
+    <p>Fíjate en que la cizalla, escrita «como en papel», es $\begin{bmatrix}1 & 0.5\\0 & 1\end{bmatrix}$: el 0.5 está arriba a la derecha, pero en el array column-major aparece en la tercera posición. Si la hubieras escrito fila a fila (<code>[1, 0.5, 0, 1]</code>) tendrías la cizalla vertical, la traspuesta: la prueba de la cizalla te lo habría dicho.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.5.2 — Tu propia mat3, contrastada con DOMMatrix</h3>
+  <p>Implementa, con matrices 3×3 afines guardadas en un <code>Float32Array</code> <strong>column-major</strong> (9 números): <code>multiplicar(a, b)</code> (= a·b), <code>aplicarPunto(m, p)</code> (w = 1) y <code>aplicarDireccion(m, d)</code> (w = 0). Las pruebas construyen T·R·S con tus funciones y con <code>DOMMatrix</code> y comparan.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.5.2" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+// Elemento (fila r, columna c) en m[c * 3 + r]
+const traslacion = (x, y) => new Float32Array([1, 0, 0,  0, 1, 0,  x, y, 1]);
+const rotacion = (a) => { const c = Math.cos(a), s = Math.sin(a); return new Float32Array([c, s, 0,  -s, c, 0,  0, 0, 1]); };
+const escala = (sx, sy) => new Float32Array([sx, 0, 0,  0, sy, 0,  0, 0, 1]);
+
+function multiplicar(a, b) {
+  const o = new Float32Array(9);
+  // TODO: o = a · b   (o[c*3 + r] = suma sobre k de a[k*3 + r] * b[c*3 + k])
+  return o;
+}
+function aplicarPunto(m, p) {
+  // TODO: m · (x, y, 1)
+  return { x: 0, y: 0 };
+}
+function aplicarDireccion(m, d) {
+  // TODO: m · (x, y, 0)
+  return { x: 0, y: 0 };
+}
+
+// --- pruebas ---
+const M = multiplicar(traslacion(100, 50), multiplicar(rotacion(Math.PI / 6), escala(2, 3)));
+const D = new DOMMatrix().translate(100, 50).rotate(30).scale(2, 3);   // mismo orden que CSS
+const cerca = (a, b) => Math.abs(a - b) < 1e-4;
+const p = aplicarPunto(M, { x: 1, y: 1 }), pd = D.transformPoint(new DOMPoint(1, 1, 0, 1));
+const d = aplicarDireccion(M, { x: 1, y: 1 }), dd = D.transformPoint(new DOMPoint(1, 1, 0, 0));
+console.log((cerca(p.x, pd.x) && cerca(p.y, pd.y) ? '✓' : '✗') + ' punto (1,1): tuyo', p.x.toFixed(3), p.y.toFixed(3), '| DOMMatrix', pd.x.toFixed(3), pd.y.toFixed(3));
+console.log((cerca(d.x, dd.x) && cerca(d.y, dd.y) ? '✓' : '✗') + ' dirección (1,1): tuya', d.x.toFixed(3), d.y.toFixed(3), '| DOMMatrix', dd.x.toFixed(3), dd.y.toFixed(3));
+console.log('tu matriz (column-major):', Array.from(M, (v) => +v.toFixed(3)));
+console.log('DOMMatrix a..f:', [D.a, D.b, D.c, D.d, D.e, D.f].map((v) => +v.toFixed(3)));
+</script>
+<script type="text/x-js" data-solucion>
+const traslacion = (x, y) => new Float32Array([1, 0, 0,  0, 1, 0,  x, y, 1]);
+const rotacion = (a) => { const c = Math.cos(a), s = Math.sin(a); return new Float32Array([c, s, 0,  -s, c, 0,  0, 0, 1]); };
+const escala = (sx, sy) => new Float32Array([sx, 0, 0,  0, sy, 0,  0, 0, 1]);
+
+function multiplicar(a, b) {
+  const o = new Float32Array(9);
+  for (let c = 0; c < 3; c++)          // cada columna del resultado…
+    for (let r = 0; r < 3; r++) {      // …y cada fila:
+      let s = 0;
+      for (let k = 0; k < 3; k++) s += a[k * 3 + r] * b[c * 3 + k];   // fila r de a · columna c de b
+      o[c * 3 + r] = s;
+    }
+  return o;
+}
+function aplicarPunto(m, p) {
+  // x·columna0 + y·columna1 + 1·columna2
+  return { x: m[0] * p.x + m[3] * p.y + m[6], y: m[1] * p.x + m[4] * p.y + m[7] };
+}
+function aplicarDireccion(m, d) {
+  // la columna de la traslación se multiplica por w = 0
+  return { x: m[0] * d.x + m[3] * d.y, y: m[1] * d.x + m[4] * d.y };
+}
+
+const M = multiplicar(traslacion(100, 50), multiplicar(rotacion(Math.PI / 6), escala(2, 3)));
+const D = new DOMMatrix().translate(100, 50).rotate(30).scale(2, 3);
+const cerca = (a, b) => Math.abs(a - b) < 1e-4;
+const p = aplicarPunto(M, { x: 1, y: 1 }), pd = D.transformPoint(new DOMPoint(1, 1, 0, 1));
+const d = aplicarDireccion(M, { x: 1, y: 1 }), dd = D.transformPoint(new DOMPoint(1, 1, 0, 0));
+console.log((cerca(p.x, pd.x) && cerca(p.y, pd.y) ? '✓' : '✗') + ' punto (1,1): tuyo', p.x.toFixed(3), p.y.toFixed(3), '| DOMMatrix', pd.x.toFixed(3), pd.y.toFixed(3));
+console.log((cerca(d.x, dd.x) && cerca(d.y, dd.y) ? '✓' : '✗') + ' dirección (1,1): tuya', d.x.toFixed(3), d.y.toFixed(3), '| DOMMatrix', dd.x.toFixed(3), dd.y.toFixed(3));
+console.log('tu matriz (column-major):', Array.from(M, (v) => +v.toFixed(3)));
+console.log('DOMMatrix a..f:', [D.a, D.b, D.c, D.d, D.e, D.f].map((v) => +v.toFixed(3)));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En column-major, la columna <code>c</code> ocupa <code>m[c*3]</code>, <code>m[c*3+1]</code>, <code>m[c*3+2]</code>. Aplicar a un punto es «x veces la columna 0, más y veces la columna 1, más 1 vez la columna 2».</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para el producto: el elemento (fila r, columna c) de a·b es el producto punto de la fila r de a con la columna c de b. La fila r de a son los elementos <code>a[0*3+r]</code>, <code>a[1*3+r]</code>, <code>a[2*3+r]</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El producto recorre las 9 posiciones del resultado y en cada una suma tres productos (fila de a por columna de b), con los índices column-major: fila r, columna k de a es <code>a[k*3 + r]</code>; fila k, columna c de b es <code>b[c*3 + k]</code>. Es exactamente <code>mat4.multiplicar</code> de <code>glkit.js</code> con 3 en vez de 4.</p>
+    <p>Aplicar a un punto combina las columnas con pesos (x, y, 1); a una dirección, con (x, y, 0), así que la traslación desaparece. <code>DOMMatrix</code> da los mismos números: <code>.translate().rotate().scale()</code> multiplica por la derecha en cada llamada, igual que las funciones de CSS, así que construye T·R·S. Mira además la última línea: los seis números <code>a..f</code> de DOMMatrix son las posiciones 0, 1, 3, 4, 6 y 7 de tu array column-major, el mismo orden que <code>matrix()</code> de CSS. Y una curiosidad: la rotación de 30° de DOMMatrix va en grados, y en pantalla gira en sentido horario, pero los números de la matriz son los mismos que los de tu <code>rotacion(π/6)</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.5.3 — Girar sobre su propio centro</h3>
+  <p>En este shader la F (que ocupa el cuadrado $[0, 1]^2$ en sus coordenadas) gira alrededor de su esquina inferior izquierda. Haz que gire alrededor de su <strong>centro</strong> y que además lata, escalando entre 0.8 y 1.2 una vez por segundo, sin moverse de su sitio. Construye las transformaciones con matrices y recuerda que el shader necesita la inversa.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.5.3" data-altura="300" data-apilado data-texturas="letraF:clamp">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+out vec4 fragColor;
+
+mat3 traslacion(vec2 t) { return mat3(1.0, 0.0, 0.0,  0.0, 1.0, 0.0,  t.x, t.y, 1.0); }
+mat3 rotacion(float a)  { float c = cos(a), s = sin(a); return mat3(c, s, 0.0,  -s, c, 0.0,  0.0, 0.0, 1.0); }
+mat3 escala(float k)    { return mat3(k, 0.0, 0.0,  0.0, k, 0.0,  0.0, 0.0, 1.0); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  // Modelo: la F ocupa [0,1]² en su espacio; la colocamos con la esquina en (-0.5, -0.5)
+  mat3 M = traslacion(vec2(-0.5)) * rotacion(u_time);     // TODO: centro + latido
+  vec2 uv = (inverse(M) * vec3(p, 1.0)).xy;               // de la escena a la F
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0))))
+    color = texture(u_tex0, uv).rgb;
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+out vec4 fragColor;
+
+mat3 traslacion(vec2 t) { return mat3(1.0, 0.0, 0.0,  0.0, 1.0, 0.0,  t.x, t.y, 1.0); }
+mat3 rotacion(float a)  { float c = cos(a), s = sin(a); return mat3(c, s, 0.0,  -s, c, 0.0,  0.0, 0.0, 1.0); }
+mat3 escala(float k)    { return mat3(k, 0.0, 0.0,  0.0, k, 0.0,  0.0, 0.0, 1.0); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float latido = 1.0 + 0.2 * sin(6.2832 * u_time);          // 0.8 .. 1.2, un ciclo por segundo
+  vec2 centro = vec2(0.5);                                   // centro de la F en su espacio
+  // Leído de derecha a izquierda: llevar el centro al origen, escalar, girar,
+  // devolver el centro a su sitio y colocar la F en la escena.
+  mat3 M = traslacion(vec2(-0.5)) * traslacion(centro)
+         * rotacion(u_time) * escala(latido) * traslacion(-centro);
+  vec2 uv = (inverse(M) * vec3(p, 1.0)).xy;
+  vec3 color = vec3(0.07, 0.08, 0.10);
+  if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0))))
+    color = texture(u_tex0, uv).rgb;
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Girar alrededor de un pivote $C$ es $T(C)\,R\,T(-C)$: llevar el pivote al origen, girar y devolverlo. Aquí el pivote es el centro de la F en su propio espacio, $(0.5, 0.5)$.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La escala va junto a la rotación, entre las dos traslaciones del pivote, para que también se haga alrededor del centro. El latido: <code>1.0 + 0.2 * sin(6.2832 * u_time)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La matriz, de derecha a izquierda: <code>traslacion(-centro)</code> lleva el centro de la F al origen; <code>escala</code> y <code>rotacion</code> actúan alrededor del origen, es decir, del centro de la F; <code>traslacion(centro)</code> deshace el primer paso; y <code>traslacion(vec2(-0.5))</code> coloca la F en la escena como antes. Las dos traslaciones del pivote forman el sándwich $T(C)\,X\,T(-C)$, que es lo que hace <code>transform-origin</code> en CSS.</p>
+    <p>El shader aplica <code>inverse(M)</code> a cada píxel porque necesita el camino de la escena a la imagen. Si en lugar de construir M quisieras escribir directamente la inversa (más barato), tendrías que invertir cada pieza y el orden: $M^{-1} = T(C)\,S^{-1}R^{-1}\,T(-C)\,T(0.5, 0.5)$. Es fácil equivocarse, y por eso es buena práctica construir la matriz «hacia delante», como un objeto normal, e invertirla una vez (en JavaScript, en una aplicación real).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 3.5.4 — Picking: ¿está el ratón sobre la carta?</h3>
+  <p>Una carta (un rectángulo de 120×170 px en sus coordenadas locales, centrado en su origen) está girada, escalada y colocada en la escena con una matriz <code>DOMMatrix</code> que cambia con el tiempo. Haz que se ilumine cuando el ratón está <strong>encima</strong> y muestra en ella la posición del ratón en sus coordenadas locales. Solo puedes usar la matriz: nada de trigonometría a mano.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.5.4" data-altura="300" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const raton = { x: -1000, y: -1000 };
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = e.clientX - r.left; raton.y = e.clientY - r.top;
+});
+const W = 120, H = 170;
+
+function frame(ms) {
+  const t = ms / 1000;
+  // Matriz de modelo de la carta: T · R · S (en coordenadas de pantalla)
+  const M = new DOMMatrix()
+    .translate(canvas.width / 2 + 120 * Math.sin(t * 0.7), canvas.height / 2)
+    .rotate(25 * Math.sin(t))
+    .scale(1 + 0.15 * Math.sin(t * 1.3));
+
+  // TODO: el ratón en coordenadas locales de la carta, y si está dentro
+  const local = { x: 0, y: 0 };
+  const encima = false;
+
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.setTransform(M);                       // Canvas acepta una DOMMatrix directamente
+  ctx.fillStyle = encima ? '#8b7bff' : '#2a3040';
+  ctx.fillRect(-W / 2, -H / 2, W, H);        // la carta, dibujada en su espacio local
+  ctx.fillStyle = '#e4e7ee'; ctx.font = '14px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('(' + local.x.toFixed(0) + ', ' + local.y.toFixed(0) + ')', 0, 5);
+  ctx.restore();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const raton = { x: -1000, y: -1000 };
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = e.clientX - r.left; raton.y = e.clientY - r.top;
+});
+const W = 120, H = 170;
+let avisado = false;
+
+function frame(ms) {
+  const t = ms / 1000;
+  const M = new DOMMatrix()
+    .translate(canvas.width / 2 + 120 * Math.sin(t * 0.7), canvas.height / 2)
+    .rotate(25 * Math.sin(t))
+    .scale(1 + 0.15 * Math.sin(t * 1.3));
+
+  // De la pantalla al espacio de la carta: la matriz inversa aplicada al ratón (w = 1)
+  const q = M.inverse().transformPoint(new DOMPoint(raton.x, raton.y, 0, 1));
+  const local = { x: q.x, y: q.y };
+  // En su propio espacio, la carta es un rectángulo alineado con los ejes: la prueba es trivial
+  const encima = Math.abs(local.x) <= W / 2 && Math.abs(local.y) <= H / 2;
+  if (encima && !avisado) { console.log('¡Encima! Coordenadas locales:', local.x.toFixed(1), local.y.toFixed(1)); avisado = true; }
+
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.setTransform(M);
+  ctx.fillStyle = encima ? '#8b7bff' : '#2a3040';
+  ctx.fillRect(-W / 2, -H / 2, W, H);
+  ctx.fillStyle = '#e4e7ee'; ctx.font = '14px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('(' + local.x.toFixed(0) + ', ' + local.y.toFixed(0) + ')', 0, 5);
+  ctx.restore();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La matriz lleva de la carta a la pantalla. Tú necesitas el camino contrario para el ratón: <code>M.inverse()</code>, aplicada con <code>transformPoint</code> a un <code>DOMPoint</code> con w = 1.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En coordenadas locales la carta es el rectángulo $|x| \le 60$, $|y| \le 85$, sin giros ni escalas: la comprobación es una comparación por eje.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>En el mundo, la carta es un rectángulo girado y escalado, y comprobar si un punto está dentro requeriría geometría. En su propio espacio es un rectángulo alineado con los ejes. Así que, en lugar de llevar la carta al ratón, llevamos el ratón a la carta: <code>M.inverse().transformPoint(…)</code> deshace la traslación, la rotación y la escala en el orden correcto ($M^{-1} = S^{-1}R^{-1}T^{-1}$) sin que tengas que pensar en ello.</p>
+    <p>Las coordenadas locales que se dibujan en la carta no dependen de cómo esté girada o escalada: el centro de la carta siempre es (0, 0) y sus esquinas siempre (±60, ±85). Es la misma técnica que usa el navegador para los eventos del ratón sobre elementos con <code>transform</code>, y la que usarás en 3D para saber qué objeto hay bajo el cursor (lo retomamos en <a href="06-espacios-coordenadas.html">3.6</a> con la cámara).</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Una matriz guarda <strong>adónde van los ejes</strong>: sus columnas son los vectores de la base transformados. $M\vec v$ = combinación de columnas con las coordenadas como pesos.</li>
+    <li>El <strong>determinante</strong> es el factor de área: 0 = aplasta (sin inversa), negativo = refleja (invierte la orientación de los triángulos).</li>
+    <li><strong>Componer es multiplicar</strong>: $AB$ = primero $B$, después $A$ (de derecha a izquierda). Asociativo, no conmutativo.</li>
+    <li><strong>Coordenadas homogéneas</strong>: una coordenada extra w convierte la traslación en lineal (3×3 en 2D, 4×4 en 3D, traslación en la última columna). w = 1 para puntos, w = 0 para direcciones (la traslación no les afecta).</li>
+    <li><strong>3D</strong>: una rotación por eje ($R_x$, $R_y$, $R_z$: el eje de giro se queda y los otros dos giran como en 2D); no conmutan, de ahí el orden de los ángulos de Euler y el <em>gimbal lock</em>.</li>
+    <li><strong>TRS</strong>: $M = T R S$ (escala, rotación y traslación, aplicadas en ese orden). Pivote: $T(C)\,R\,T(-C)$. Jerarquías: $M_{hijo} = M_{padre}\,M_{local}$.</li>
+    <li><strong>Inversa</strong>: deshace ($R^{-1} = R^T$; $(TRS)^{-1} = S^{-1}R^{-1}T^{-1}$). Sirve para el picking y para la cámara. En un fragment shader transformas coordenadas, lo que equivale a la inversa del dibujo.</li>
+    <li><strong>GL/GLSL</strong>: vectores columna, almacenamiento <strong>column-major</strong>; <code>mat4(…)</code> rellena por columnas; <code>m[i]</code> es la columna i; <code>v * m</code> = <code>transpose(m) * v</code>; <code>mat3x2</code> = 3 columnas y 2 filas. Una matriz traspuesta gira al revés y pierde la traslación.</li>
+    <li><strong>CSS y Canvas</strong>: <code>transform: A B C</code> = $A\cdot B\cdot C$; <code>matrix(a, b, c, d, e, f)</code> y <code>matrix3d</code> van por columnas; <code>DOMMatrix</code> calcula productos, inversas y exporta a <code>Float32Array</code> column-major.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://www.3blue1brown.com/topics/linear-algebra">3Blue1Brown — Essence of linear algebra</a>, capítulos 3 a 6: transformaciones lineales, matrices como transformaciones, composición y determinante.</li>
+  <li><a href="https://developer.mozilla.org/es/docs/Web/CSS/transform-function/matrix">MDN — matrix()</a> y <a href="https://developer.mozilla.org/en-US/docs/Web/API/DOMMatrix">DOMMatrix</a>.</li>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">Especificación de GLSL ES 3.00</a>: 5.4.2 (constructores de matrices, «in column major order») y 5.6 (componentes de matrices).</li>
+  <li><a href="https://www.scratchapixel.com/lessons/mathematics-physics-for-computer-graphics/geometry/row-major-vs-column-major-vector.html">Scratchapixel — Row major vs column major vector</a>: la confusión de filas y columnas, desmontada con calma.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m3.js"></script>
+<script src="recursos/demos-05.js"></script>
+</body>
+</html>

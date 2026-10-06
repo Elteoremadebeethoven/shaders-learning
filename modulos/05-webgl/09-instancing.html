@@ -1,0 +1,1438 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.9 · Instancing: miles de objetos en un draw call — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/instancing">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>Instancing: miles de objetos en un draw call</h1>
+  <p class="resumen">Dibujar diez mil objetos con diez mil llamadas es lento aunque cada objeto sea un triángulo: cada llamada tiene un coste fijo. El <em>instancing</em> le pide a la GPU que dibuje la misma malla muchas veces en una sola llamada, cada copia con sus propios datos. Es la técnica detrás de las partículas, la hierba, las multitudes y cualquier escena con muchas cosas parecidas.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 5.3, 5.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Dibujarás muchas copias de una malla con <code>drawArraysInstanced</code> y <code>drawElementsInstanced</code>.</li>
+      <li>Distinguirás atributos por vértice y por instancia con <code>vertexAttribDivisor</code>, y usarás <code>gl_InstanceID</code>.</li>
+      <li>Diseñarás el formato de los datos de cada instancia (desplazamiento, escala, rotación, color) y los actualizarás cada frame con <code>bufferSubData</code>.</li>
+      <li>Medirás cuánto cuestan N llamadas de dibujo frente a una instanciada, y sabrás dónde se va ese tiempo.</li>
+      <li>Pasarás una matriz por instancia sabiendo que ocupa cuatro locations, y conocerás el transform feedback que usarás en 7.5.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El problema: una llamada por objeto</h2>
+<p>Con lo que sabes hasta ahora, dibujar muchos objetos es un bucle: para cada uno, fijar sus uniforms (posición, color) y llamar a <code>drawArrays</code>. Funciona, y para decenas o cientos de objetos es lo correcto. Pero cada llamada de dibujo tiene un coste fijo que no depende de su tamaño: WebGL la valida en el proceso de la página, la serializa hacia el proceso de la GPU (el viaje del diagrama de 5.1), allí se valida otra vez, ANGLE la traduce a Metal, Direct3D o Vulkan, y el driver la prepara para la GPU. Si el objeto es un triángulo, casi todo el tiempo se va en ese papeleo y no en dibujar.</p>
+<p>El <strong>instancing</strong> resuelve esto con una sola llamada: «dibuja esta malla N veces». La GPU ejecuta el vertex shader para cada vértice de cada copia (cada <strong>instancia</strong>), y el shader recibe datos distintos para cada una: los <strong>atributos por instancia</strong>.</p>
+
+<svg class="diagrama" viewBox="0 0 760 270" width="760" role="img" aria-label="Cómo lee la GPU los atributos por vértice y por instancia">
+  <text x="20" y="44" style="font-size:13px">búfer de vértices</text>
+  <text x="20" y="60" class="texto-tenue" style="font-size:12px">divisor 0: uno por vértice</text>
+  <rect class="caja" x="250" y="28" width="60" height="34" rx="5"/><text x="280" y="50" text-anchor="middle">v0</text>
+  <rect class="caja" x="315" y="28" width="60" height="34" rx="5"/><text x="345" y="50" text-anchor="middle">v1</text>
+  <rect class="caja" x="380" y="28" width="60" height="34" rx="5"/><text x="410" y="50" text-anchor="middle">v2</text>
+  <text x="20" y="104" style="font-size:13px">búfer de instancias</text>
+  <text x="20" y="120" class="texto-tenue" style="font-size:12px">divisor 1: uno por instancia</text>
+  <rect x="250" y="88" width="60" height="34" rx="5" class="acento" stroke-width="2"/><text x="280" y="110" text-anchor="middle">i0</text>
+  <rect x="315" y="88" width="60" height="34" rx="5" class="acento" stroke-width="2"/><text x="345" y="110" text-anchor="middle">i1</text>
+  <rect x="380" y="88" width="60" height="34" rx="5" class="acento" stroke-width="2"/><text x="410" y="110" text-anchor="middle">i2</text>
+  <rect x="445" y="88" width="60" height="34" rx="5" class="acento" stroke-width="2"/><text x="475" y="110" text-anchor="middle">i3</text>
+  <text x="20" y="168" style="font-size:13px">invocaciones del vertex shader</text>
+  <g style="font-size:12px">
+    <rect class="caja" x="20" y="182" width="176" height="44" rx="6"/>
+    <text x="108" y="200" text-anchor="middle" class="texto-tenue">instancia 0</text>
+    <text x="108" y="217" text-anchor="middle">v0·i0  v1·i0  v2·i0</text>
+    <rect class="caja" x="205" y="182" width="176" height="44" rx="6"/>
+    <text x="293" y="200" text-anchor="middle" class="texto-tenue">instancia 1</text>
+    <text x="293" y="217" text-anchor="middle">v0·i1  v1·i1  v2·i1</text>
+    <rect class="caja" x="390" y="182" width="176" height="44" rx="6"/>
+    <text x="478" y="200" text-anchor="middle" class="texto-tenue">instancia 2</text>
+    <text x="478" y="217" text-anchor="middle">v0·i2  v1·i2  v2·i2</text>
+    <rect class="caja" x="575" y="182" width="176" height="44" rx="6"/>
+    <text x="663" y="200" text-anchor="middle" class="texto-tenue">instancia 3</text>
+    <text x="663" y="217" text-anchor="middle">v0·i3  v1·i3  v2·i3</text>
+  </g>
+  <text x="380" y="256" text-anchor="middle" class="texto-tenue">12 invocaciones en una llamada: drawArraysInstanced(gl.TRIANGLES, 0, 3, 4)</text>
+</svg>
+
+<h2>Instancing, llamada por llamada</h2>
+<p>Solo hay dos piezas nuevas. La primera es <code>gl.vertexAttribDivisor(location, divisor)</code>, que dice cada cuánto avanza un atributo: con divisor 0 (el valor por defecto) avanza un elemento por vértice, como siempre; con divisor 1, un elemento por instancia. La segunda son las variantes instanciadas de las llamadas de dibujo, con un argumento más al final: el número de instancias.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+// Por vértice: la forma (un triángulo, 3 vértices)
+GLKit.crearBuffer(gl, triangulo);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+// Por instancia: desplazamiento (2 floats) + color (3 floats)
+GLKit.crearBuffer(gl, instancias);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 0);
+gl.vertexAttribDivisor(1, 1);
+gl.enableVertexAttribArray(2);
+gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 20, 8);
+gl.vertexAttribDivisor(2, 1);
+// Dibujar: 3 vértices × N instancias
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, N);
+</script>
+<ol>
+  <li data-l="1-2">Un VAO, como siempre: todo lo que sigue queda guardado en él, divisores incluidos.</li>
+  <li data-l="4-6">El buffer de la forma y su atributo en la location 0, exactamente igual que en 5.3. Su divisor es 0: un elemento por vértice.</li>
+  <li data-l="8">Un segundo buffer con los datos de todas las instancias, uno detrás de otro: 5 floats (20 bytes) por instancia.</li>
+  <li data-l="9-10">El desplazamiento: 2 floats, stride de 20 bytes (una instancia entera), desde el byte 0. Nada nuevo todavía.</li>
+  <li data-l="11"><code>vertexAttribDivisor(1, 1)</code>: la location 1 avanza <strong>una vez por instancia</strong>. Los tres vértices de la instancia 7 leen el desplazamiento número 7.</li>
+  <li data-l="12-14">El color, desde el byte 8 del mismo buffer, también con divisor 1.</li>
+  <li data-l="16"><code>drawArraysInstanced</code> recibe lo mismo que <code>drawArrays</code> (modo, primer vértice, número de vértices) y, al final, el número de instancias. Para mallas con índices, <code>drawElementsInstanced</code>, también con las instancias al final.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.9.1 — Diez triángulos, un dibujo</h3>
+  <p>La forma es un triángulo; cada instancia aporta su desplazamiento y su color. El vertex shader los suma: no sabe ni le importa que haya instancias, solo recibe atributos.</p>
+  <div class="js-playground" data-titulo="Primer instancing" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;        // por vértice
+layout(location = 1) in vec2 a_desplazamiento;  // por instancia
+layout(location = 2) in vec3 a_color;           // por instancia
+uniform float u_aspecto;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  vec2 p = a_posicion * vec2(u_aspecto, 1.0) + a_desplazamiento;   // la forma, sin deformar
+  gl_Position = vec4(p, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+// La forma: UN triángulo
+const triangulo = new Float32Array([-0.12, -0.1,  0.12, -0.1,  0.0, 0.14]);
+// Los datos de cada instancia: desplazamiento (x, y) + color (r, g, b) = 5 floats = 20 bytes
+const N = 10;
+const instancias = new Float32Array(N * 5);
+for (let i = 0; i < N; i++) {
+  const x = -0.85 + i * 0.19, y = 0.5 * Math.sin(i * 0.9);
+  const r = 0.55 + 0.45 * Math.cos(i * 0.6), g = 0.55 + 0.45 * Math.cos(i * 0.6 + 2.1), b = 0.55 + 0.45 * Math.cos(i * 0.6 + 4.2);
+  instancias.set([x, y, r, g, b], i * 5);
+}
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, triangulo);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+GLKit.crearBuffer(gl, instancias);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 0);
+gl.vertexAttribDivisor(1, 1);                          // una vez por instancia
+gl.enableVertexAttribArray(2);
+gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 20, 8);
+gl.vertexAttribDivisor(2, 1);
+
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, N);         // 3 vértices × 10 instancias, UNA llamada
+console.log('divisor de la location 1:', gl.getVertexAttrib(1, gl.VERTEX_ATTRIB_ARRAY_DIVISOR));
+</script>
+  </div>
+  <p>Prueba a cambiar <code>N</code> a 5 en la llamada de dibujo (sin tocar los datos): se dibujan solo las cinco primeras instancias. Dibujar menos instancias de las que caben en el buffer es perfectamente válido, y lo aprovecharemos más adelante. Lo contrario, pedir más de las que hay, no lo es.</p>
+</section>
+
+<h2>El divisor, a fondo</h2>
+<p>El divisor no es un interruptor entre «por vértice» y «por instancia»: es un número. Con divisor <em>d</em> mayor que 0, la instancia <em>i</em> lee el elemento <code>floor(i / d)</code>. Lo comprobamos dibujando 6 instancias de un punto con un atributo que valía 10, 20, 30…:</p>
+<table>
+  <thead><tr><th>Divisor</th><th>Instancias 0 a 5 leen</th><th>Significado</th></tr></thead>
+  <tbody>
+    <tr><td>0</td><td>10, 10, 10, 10, 10, 10</td><td>Por vértice: cada instancia empieza otra vez por el elemento 0 (aquí solo hay un vértice por instancia).</td></tr>
+    <tr><td>1</td><td>10, 20, 30, 40, 50, 60</td><td>Un elemento por instancia: lo habitual.</td></tr>
+    <tr><td>2</td><td>10, 10, 20, 20, 30, 30</td><td>Cada elemento lo comparten 2 instancias seguidas.</td></tr>
+    <tr><td>3</td><td>10, 10, 10, 20, 20, 20</td><td>Cada elemento lo comparten 3.</td></tr>
+  </tbody>
+</table>
+<p>Los divisores mayores que 1 sirven para datos que cambian más despacio que las instancias (un color por cada grupo de 4 objetos, por ejemplo) sin repetirlos en el buffer. Y el divisor es <strong>estado del VAO</strong>, como el resto de la configuración de atributos: lo comprobamos leyendo <code>gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_DIVISOR)</code>, que devolvía 3 en el VAO donde lo fijamos y 0 en otro VAO recién creado.</p>
+
+<div class="quiz">
+  <p class="pregunta">Un atributo tiene divisor 2 y sus datos son <code>[A, B, C, D]</code>. Dibujas 6 instancias. ¿Qué dato lee la instancia 5 (la sexta)?</p>
+  <ul>
+    <li><code>D</code><div class="explicacion">Eso sería con divisor 1 y la instancia 3. Con divisor 2, la instancia <em>i</em> lee el elemento <code>floor(i / 2)</code>.</div></li>
+    <li data-correcta><code>C</code><div class="explicacion">Correcto: <code>floor(5 / 2) = 2</code>, el tercer elemento. Las instancias 4 y 5 comparten <code>C</code>.</div></li>
+    <li>Nada: con 6 instancias y divisor 2 hacen falta 6 datos.<div class="explicacion">Con divisor 2, 6 instancias solo necesitan 3 datos (A, B, C). Sobra <code>D</code>.</div></li>
+  </ul>
+</div>
+
+<div class="callout bestiario" data-id="m5-divisor-olvidado" data-titulo="Todas las instancias salen en el mismo sitio (o una sola figura deformada)">
+  <p><strong>Síntoma:</strong> en lugar de N copias repartidas, ves una sola figura, a menudo deformada o más grande de lo esperado. No hay ningún error.</p>
+  <p><strong>Causa:</strong> falta <code>vertexAttribDivisor(loc, 1)</code> en el atributo por instancia (o se llamó con otro VAO enlazado, porque es estado del VAO). Con divisor 0, cada <em>vértice</em> lee un desplazamiento distinto (el vértice 0 el primero, el 1 el segundo…) y todas las instancias son idénticas: una figura deformada, dibujada N veces en el mismo sitio.</p>
+  <p><strong>Solución:</strong> un <code>vertexAttribDivisor(loc, 1)</code> por cada atributo por instancia, con el VAO correcto enlazado. Para comprobarlo: <code>gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_DIVISOR)</code>.</p>
+</div>
+
+<h2>gl_InstanceID: el número de la instancia</h2>
+<p>El vertex shader tiene una variable predefinida más: <code>gl_InstanceID</code>, un <code>int</code> con el número de la instancia que se está procesando (0, 1, 2…). Igual que <code>gl_VertexID</code> en 5.2, permite dibujar sin buffers: si la posición o el color de cada copia se pueden <em>calcular</em> a partir de su número, no hace falta guardarlos en ningún sitio. Dos detalles comprobados: en un dibujo no instanciado, <code>gl_InstanceID</code> vale 0; y en cada llamada empieza otra vez en 0 (la extensión que permitiría empezar en otro número, <code>WEBGL_draw_instanced_base_vertex_base_instance</code>, no está disponible en el Chrome de pruebas).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.9.2 — Una rejilla calculada, sin buffers</h3>
+  <p>Miles de cuadrados en una rejilla. Cada cuadrado son 6 vértices sacados de <code>gl_VertexID</code>, y su celda sale de <code>gl_InstanceID</code>: la columna es el resto de dividir entre el número de columnas, y la fila, el cociente entero. Una onda que sale del centro cambia su tamaño y su color. No hay ni un solo buffer: el VAO está vacío.</p>
+  <div class="js-playground" data-titulo="Rejilla con gl_InstanceID" data-altura="280" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_t;
+uniform ivec2 u_rejilla;               // columnas y filas
+out vec3 v_color;
+void main() {
+  vec2 P[6] = vec2[6](vec2(0, 0), vec2(1, 0), vec2(0, 1), vec2(0, 1), vec2(1, 0), vec2(1, 1));
+  int columna = gl_InstanceID % u_rejilla.x;
+  int fila = gl_InstanceID / u_rejilla.x;           // división ENTERA: 0, 0, 0… 1, 1, 1…
+  vec2 celda = vec2(columna, fila);
+  vec2 n = vec2(u_rejilla);
+  float onda = sin(u_t * 2.5 - length(celda - n * 0.5) * 0.4);
+  float lado = 0.5 + 0.4 * onda;                    // tamaño del cuadrado dentro de su celda
+  vec2 p = (celda + 0.5 + (P[gl_VertexID] - 0.5) * lado) / n;   // de 0 a 1
+  v_color = mix(vec3(0.16, 0.18, 0.45), vec3(0.3, 0.9, 0.95), 0.5 + 0.5 * onda);
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+const vaoVacio = gl.createVertexArray();
+const locT = gl.getUniformLocation(programa, 'u_t'), locRejilla = gl.getUniformLocation(programa, 'u_rejilla');
+
+GLKit.bucle((t, dt, frame) => {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  const columnas = Math.round(gl.drawingBufferWidth / 10), filas = Math.round(gl.drawingBufferHeight / 10);
+  if (frame === 0) console.log(columnas + ' × ' + filas + ' = ' + columnas * filas + ' instancias, 0 buffers');
+  gl.clearColor(0.05, 0.06, 0.09, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform1f(locT, t);
+  gl.uniform2i(locRejilla, columnas, filas);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, columnas * filas);    // 6 vértices × miles de instancias
+});
+</script>
+  </div>
+  <p>La división entera es la clave de las rejillas: en GLSL, <code>int / int</code> descarta los decimales, así que las instancias 0 a <em>columnas − 1</em> tienen fila 0, las siguientes fila 1, etcétera. Si conviertes a <code>float</code> antes de dividir, la fila tiene decimales y la rejilla se tuerce (es el ejercicio 5.9.2). WebGL2 permite además dibujar sin ningún atributo activado: lo comprobamos, y no hay error.</p>
+</section>
+
+<h2>Los datos de cada instancia</h2>
+<p>Cuando los datos no se pueden calcular (posiciones que vienen de una simulación, colores elegidos por el usuario), van en un buffer. Lo típico es guardar todos los datos de una instancia juntos, uno detrás de otro (<em>intercalados</em>, como los vértices de 5.3), y usar el tipo más pequeño que baste para cada campo. Este es el formato que usa el ejemplo siguiente, 20 bytes por instancia:</p>
+<table>
+  <thead><tr><th>Bytes</th><th>Campo</th><th>En el buffer</th><th>En el shader</th></tr></thead>
+  <tbody>
+    <tr><td>0–7</td><td>desplazamiento</td><td>2 × <code>FLOAT</code></td><td><code>vec2</code>, location 1</td></tr>
+    <tr><td>8–11</td><td>escala</td><td><code>FLOAT</code></td><td><code>float</code>, location 2</td></tr>
+    <tr><td>12–15</td><td>rotación</td><td><code>FLOAT</code></td><td><code>float</code>, location 3</td></tr>
+    <tr><td>16–19</td><td>color</td><td>4 × <code>UNSIGNED_BYTE</code>, normalizados</td><td><code>vec4</code>, location 4</td></tr>
+  </tbody>
+</table>
+<script type="text/plain" class="codigo" data-lang="js">
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 0);           // desplazamiento
+gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 20, 8);           // escala
+gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 20, 12);          // rotación
+gl.vertexAttribPointer(4, 4, gl.UNSIGNED_BYTE, true, 20, 16);   // color
+// …y para las cuatro: enableVertexAttribArray(loc) y vertexAttribDivisor(loc, 1)
+</script>
+<p>El color en 4 bytes normalizados (de 0 a 255, que el shader recibe de 0 a 1, como en 5.3) ocupa 4 bytes en lugar de los 12 de tres floats. Con 100 000 instancias son 800 KB menos que subir en cada frame. Para escribir floats y bytes en la misma memoria desde JavaScript, se crean dos vistas del mismo <code>ArrayBuffer</code>:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+const STRIDE = 20;                        // bytes por instancia
+const datos = new ArrayBuffer(MAX * STRIDE);
+const f32 = new Float32Array(datos);      // la memoria vista como floats…
+const u8 = new Uint8Array(datos);         // …y como bytes
+f32[i * 5 + 0] = x;                       // bytes 0-3
+f32[i * 5 + 1] = y;                       // bytes 4-7
+f32[i * 5 + 2] = escala;                  // bytes 8-11
+f32[i * 5 + 3] = rotacion;                // bytes 12-15
+u8.set([r, g, b, 255], i * STRIDE + 16);  // bytes 16-19
+</script>
+<p>Cada instancia ocupa 5 posiciones de <code>f32</code>: cuatro floats y un quinto «float» que en realidad son los 4 bytes del color, escritos a través de <code>u8</code>.</p>
+<p>Para actualizar el buffer en cada frame sin crearlo de nuevo se usa <code>bufferSubData</code>, que en WebGL2 tiene una firma con trampa: <code>gl.bufferSubData(destino, desplazamientoEnBytes, arrayOrigen, desdeElemento, nElementos)</code>. El destino se mide en <strong>bytes</strong>, pero el origen en <strong>elementos</strong> del array tipado (floats, si es un <code>Float32Array</code>). Lo comprobamos: <code>bufferSubData(gl.ARRAY_BUFFER, 8, [1…8], 2, 3)</code> escribió 3, 4 y 5 a partir del byte 8. Para subir N instancias de 5 floats: <code>gl.bufferSubData(gl.ARRAY_BUFFER, 0, f32, 0, N * 5)</code>.</p>
+
+<div class="callout bestiario" data-id="m5-buffersubdata-elementos" data-titulo="bufferSubData actualiza solo una parte (o «srcOffset + length too large»)">
+  <p><strong>Síntoma:</strong> tras actualizar el buffer de instancias, solo se mueve una parte de ellas (las primeras: una quinta parte, por ejemplo) y el resto se queda congelado. O la consola dice <code>INVALID_VALUE: bufferSubData: srcOffset + length too large</code> o <code>bufferSubData: buffer overflow</code>.</p>
+  <p><strong>Causa:</strong> se mezclan unidades. En <code>bufferSubData(destino, desplazamiento, origen, desdeElemento, nElementos)</code>, el desplazamiento va en bytes y los dos últimos argumentos en elementos del array. Pasar <code>N</code> (instancias) en lugar de <code>N * 5</code> (floats) sube solo la quinta parte, sin error. Pasar bytes donde van elementos se sale del array (<code>srcOffset + length too large</code>), y escribir más allá del final del buffer da <code>buffer overflow</code>; en los dos casos no se sube nada.</p>
+  <p><strong>Solución:</strong> piensa en «floats por instancia × instancias» para el origen y en bytes para el destino (<code>primeraInstancia * STRIDE</code>).</p>
+</div>
+
+<div class="callout bestiario" data-id="m5-instancias-buffer-corto" data-titulo="«Vertex buffer is not big enough for the draw call»">
+  <p><strong>Síntoma:</strong> no se dibuja nada y la consola del navegador muestra <code>GL_INVALID_OPERATION: glDrawArraysInstanced: Vertex buffer is not big enough for the draw call</code>.</p>
+  <p><strong>Causa:</strong> pides más instancias de las que caben en el buffer de instancias (o más vértices de los que tiene el de vértices). WebGL comprueba que ninguna lectura se salga del buffer y, si alguna lo haría, rechaza el dibujo entero. Lo comprobamos: con datos para 8 instancias, dibujar 8 funcionó y dibujar 9 dio el error. Pasa mucho al aumentar el número de objetos sin agrandar el buffer que se creó con el tamaño antiguo.</p>
+  <p><strong>Solución:</strong> reserva el buffer con el máximo de instancias que vayas a usar (<code>bufferData(destino, MAX * STRIDE, gl.DYNAMIC_DRAW)</code>) y dibuja las que toquen, o recrea el buffer con <code>bufferData</code> cuando el número crezca por encima de lo reservado.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.9.3 — Un banco de flechas: datos nuevos en cada frame</h3>
+  <p>Hasta 100 000 flechas que nadan siguiendo un campo de direcciones que cambia con el tiempo. La simulación corre en JavaScript: en cada frame se actualizan la posición y la rotación de cada flecha en el <code>ArrayBuffer</code>, se sube con un solo <code>bufferSubData</code> y se dibuja todo con una llamada. El texto de abajo muestra los fps y lo que tarda el JavaScript de cada frame (simulación incluida).</p>
+  <div class="js-playground" data-titulo="Instancias actualizadas cada frame" data-altura="320" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label>instancias <input id="n" type="range" min="1000" max="100000" step="1000" value="10000"></label>
+  <span id="info"></span>
+</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 14px; align-items: center; padding: 8px 12px; font: 12px ui-monospace, monospace; color: #b4bccb; }
+#info { color: #3fd0e8; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;         // vértice de la flecha (por vértice)
+layout(location = 1) in vec2 a_desplazamiento;   // por instancia…
+layout(location = 2) in float a_escala;
+layout(location = 3) in float a_rotacion;
+layout(location = 4) in vec4 a_color;            // 4 bytes normalizados: llega de 0 a 1
+uniform float u_aspecto;
+out vec4 v_color;
+void main() {
+  float c = cos(a_rotacion), s = sin(a_rotacion);
+  vec2 p = mat2(c, s, -s, c) * (a_posicion * a_escala) + a_desplazamiento;
+  v_color = a_color;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec4 v_color;
+out vec4 color;
+void main() { color = v_color; }`);
+
+const MAX = 100000, STRIDE = 20;                 // bytes por instancia (ver la tabla)
+const datos = new ArrayBuffer(MAX * STRIDE);
+const f32 = new Float32Array(datos);
+const u8 = new Uint8Array(datos);
+const velocidad = new Float32Array(MAX);         // estado que solo necesita la CPU
+for (let i = 0; i < MAX; i++) {
+  f32[i * 5 + 0] = (Math.random() * 2 - 1) * 3;  // x
+  f32[i * 5 + 1] = Math.random() * 2 - 1;        // y
+  f32[i * 5 + 2] = 0.018 + 0.02 * Math.random(); // escala
+  f32[i * 5 + 3] = Math.random() * 6.2832;       // rotación = dirección de avance
+  const v = Math.random();
+  velocidad[i] = 0.1 + 0.25 * v;
+  u8.set([40 + 130 * v, 80 + 165 * v, 190 + 65 * v, 255], i * STRIDE + 16);   // las rápidas, más claras
+}
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, new Float32Array([1, 0,  -0.7, 0.5,  -0.7, -0.5]));   // la flecha
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const bufInstancias = GLKit.crearBuffer(gl, datos, gl.DYNAMIC_DRAW);       // DYNAMIC: cambia cada frame
+const atributosInstancia = [      // [location, componentes, tipo, normalizado, offset]
+  [1, 2, gl.FLOAT, false, 0],
+  [2, 1, gl.FLOAT, false, 8],
+  [3, 1, gl.FLOAT, false, 12],
+  [4, 4, gl.UNSIGNED_BYTE, true, 16],
+];
+for (const [loc, n, tipo, norm, offset] of atributosInstancia) {
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, n, tipo, norm, STRIDE, offset);
+  gl.vertexAttribDivisor(loc, 1);
+}
+const locAspecto = gl.getUniformLocation(programa, 'u_aspecto');
+const entradaN = document.getElementById('n'), info = document.getElementById('info');
+let frames = 0, msJS = 0, tInfo = 0;
+
+GLKit.bucle((t, dt) => {
+  const inicio = performance.now();
+  const N = +entradaN.value;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  const A = gl.drawingBufferWidth / gl.drawingBufferHeight;     // el mundo mide 2A × 2
+  // 1) simular en la CPU
+  for (let i = 0; i < N; i++) {
+    const k = i * 5;
+    let x = f32[k], y = f32[k + 1], ang = f32[k + 3];
+    const objetivo = 2 * Math.sin(x * 0.9 + t * 0.3) + 2 * Math.cos(y * 1.6 - t * 0.25);
+    ang += Math.sin(objetivo - ang) * dt * 2;                   // girar hacia el campo
+    x += Math.cos(ang) * velocidad[i] * dt;
+    y += Math.sin(ang) * velocidad[i] * dt;
+    if (x > A) x -= 2 * A; else if (x < -A) x += 2 * A;         // el mundo da la vuelta
+    if (y > 1) y -= 2; else if (y < -1) y += 2;
+    f32[k] = x; f32[k + 1] = y; f32[k + 3] = ang;
+  }
+  // 2) subir las N instancias: N · 5 floats (el origen se mide en elementos)
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufInstancias);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, f32, 0, N * 5);
+  // 3) una sola llamada de dibujo
+  gl.clearColor(0.04, 0.05, 0.08, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform1f(locAspecto, 1 / A);
+  gl.bindVertexArray(vao);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, N);
+  msJS += performance.now() - inicio; frames++;
+  if (t - tInfo > 0.5) {
+    info.textContent = N.toLocaleString('es') + ' instancias · ' + Math.round(frames / (t - tInfo)) + ' fps · JS ' + (msJS / frames).toFixed(2) + ' ms/frame';
+    frames = 0; msJS = 0; tInfo = t;
+  }
+});
+</script>
+  </div>
+  <p>El buffer se reserva una vez con el máximo (100 000) y el control solo cambia cuántas instancias se simulan, se suben y se dibujan. En la máquina de pruebas, la mayor parte del tiempo de JavaScript se va en el bucle de simulación, no en WebGL: medimos que subir 1 000 000 de instancias de 8 bytes (8 MB) en cada frame costaba unos 0,64 ms de JavaScript por frame, sin bajar de 60 fps. Si la simulación fuera demasiado cara para la CPU, el siguiente paso es moverla a la GPU: el ping-pong de 5.8 o el transform feedback del final de esta lección.</p>
+</section>
+
+<div class="callout hack" data-titulo="Quitar una instancia sin reconstruir nada">
+  <p>Si una partícula muere o un objeto desaparece, no hace falta rehacer el buffer ni desplazar todo lo que va detrás: copia los datos de la <em>última</em> instancia en el hueco, sube solo esos bytes (<code>bufferSubData(gl.ARRAY_BUFFER, k * STRIDE, f32, k * 5, 5)</code>) y dibuja una instancia menos. Como el número de instancias de la llamada puede ser menor que la capacidad del buffer, las instancias vivas quedan siempre juntas al principio y las muertas simplemente no se dibujan. El orden cambia, pero para partículas no importa. Se conoce como <em>swap and pop</em>, «intercambiar y quitar la última».</p>
+</div>
+
+<h2>¿Cuánto se ahorra?</h2>
+<p>Medimos la misma escena (cuadraditos de colores en posiciones aleatorias) dibujada de dos formas en el portátil de pruebas (Apple M1, Chrome con ANGLE sobre Metal): un <code>uniform2f</code> y un <code>drawArrays</code> por objeto, o todos en una llamada instanciada.</p>
+<table>
+  <thead><tr><th>Prueba</th><th>fps</th><th>JavaScript por frame</th></tr></thead>
+  <tbody>
+    <tr><td>20 000 llamadas de dibujo</td><td>60</td><td>0,85 ms</td></tr>
+    <tr><td>50 000 llamadas</td><td>60</td><td>entre 3,4 y 7,7 ms, según la ejecución</td></tr>
+    <tr><td>100 000 llamadas</td><td>57</td><td>17 ms</td></tr>
+    <tr><td>200 000 llamadas</td><td>29</td><td>35 ms</td></tr>
+    <tr><td>100 000 llamadas con una <code>mat4</code> y un color por objeto</td><td>50</td><td>20 ms</td></tr>
+    <tr><td>1 000 000 de instancias, una llamada</td><td>60</td><td>0,02 ms</td></tr>
+    <tr><td>4 000 000 de instancias, una llamada</td><td>19</td><td>0,02 ms</td></tr>
+  </tbody>
+</table>
+<p>Tres lecturas. La primera: esta máquina es rápida, y en Chrome cada llamada cuesta poco en el hilo de JavaScript (unos 40 nanosegundos con 20 000), porque solo se escribe en la cola de órdenes hacia el proceso de la GPU. El trabajo de verdad lo hace ese otro proceso, y cuando no da abasto, la cola se llena y el JavaScript también tiene que esperar: con 200 000 llamadas, cada una costó unos 170 nanosegundos, cuatro veces más. La segunda: con instancing, la CPU no hace prácticamente nada, y el límite pasa a ser la GPU, que con 4 millones de cuadrados (24 millones de vértices) ya no llega a 60 fps. La tercera: en un móvil o un portátil modesto, todas estas cifras serán bastante peores. No te fíes de nuestras tablas: mide en tus dispositivos con la demo siguiente.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.9.4 — N llamadas contra una</h3>
+  <p>La misma escena en los dos modos. Sube el número de objetos en el modo «una llamada por objeto» hasta que los fps bajen, y cambia al modo instanciado con el mismo número.</p>
+  <div class="js-playground" data-titulo="Comparativa: draw calls frente a instancing" data-altura="320" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label>modo <select id="modo"><option value="individual" selected>una llamada por objeto</option><option value="instanciado">una llamada instanciada</option></select></label>
+  <label>objetos <input id="n" type="range" min="1000" max="150000" step="1000" value="20000"></label>
+</div>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 16px; align-items: center; padding: 6px 12px 0; font: 12px ui-monospace, monospace; color: #b4bccb; }
+select { font: 12px ui-monospace, monospace; }
+#info { font: 12px ui-monospace, monospace; color: #3fd0e8; padding: 6px 12px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const FS = `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`;
+// Modo 1: posición y color como UNIFORMS (cambian antes de cada llamada)
+const progIndividual = GLKit.crearPrograma(gl, `#version 300 es
+uniform vec2 u_pos;
+uniform vec3 u_color;
+uniform float u_t, u_aspecto;
+out vec3 v_color;
+void main() {
+  vec2 P[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(-1, 1), vec2(1, -1), vec2(1, 1));
+  float c = cos(u_t * 0.2), s = sin(u_t * 0.2);
+  vec2 p = mat2(c, s, -s, c) * u_pos + P[gl_VertexID] * 0.008;
+  v_color = u_color;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, FS);
+// Modo 2: posición y color como ATRIBUTOS POR INSTANCIA
+const progInstanciado = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec3 a_color;
+uniform float u_t, u_aspecto;
+out vec3 v_color;
+void main() {
+  vec2 P[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(-1, 1), vec2(1, -1), vec2(1, 1));
+  float c = cos(u_t * 0.2), s = sin(u_t * 0.2);
+  vec2 p = mat2(c, s, -s, c) * a_pos + P[gl_VertexID] * 0.008;
+  v_color = a_color;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, FS);
+
+const MAX = 150000;
+const posiciones = new Float32Array(MAX * 2), colores = new Float32Array(MAX * 3);
+for (let i = 0; i < MAX; i++) {
+  const r = 1.4 * Math.sqrt(Math.random()), a = Math.random() * 6.2832;
+  posiciones.set([r * Math.cos(a), r * Math.sin(a)], i * 2);
+  colores.set([0.4 + 0.6 * Math.random(), 0.3 + 0.5 * Math.random(), 0.8], i * 3);
+}
+const vaoVacio = gl.createVertexArray();
+// Esta vez, un buffer por atributo (no intercalados): también vale
+const vaoInstancias = gl.createVertexArray();
+gl.bindVertexArray(vaoInstancias);
+GLKit.crearBuffer(gl, posiciones);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.vertexAttribDivisor(0, 1);
+GLKit.crearBuffer(gl, colores);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+gl.vertexAttribDivisor(1, 1);
+gl.bindVertexArray(null);
+
+const locI = { pos: gl.getUniformLocation(progIndividual, 'u_pos'), color: gl.getUniformLocation(progIndividual, 'u_color'),
+               t: gl.getUniformLocation(progIndividual, 'u_t'), aspecto: gl.getUniformLocation(progIndividual, 'u_aspecto') };
+const locN = { t: gl.getUniformLocation(progInstanciado, 'u_t'), aspecto: gl.getUniformLocation(progInstanciado, 'u_aspecto') };
+const selModo = document.getElementById('modo'), entradaN = document.getElementById('n'), info = document.getElementById('info');
+let frames = 0, msJS = 0, tInfo = 0;
+
+GLKit.bucle((t) => {
+  const inicio = performance.now();
+  const N = +entradaN.value, modo = selModo.value;
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  const aspecto = gl.drawingBufferHeight / gl.drawingBufferWidth;
+  gl.clearColor(0.04, 0.05, 0.08, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (modo === 'individual') {
+    gl.useProgram(progIndividual);
+    gl.uniform1f(locI.t, t);
+    gl.uniform1f(locI.aspecto, aspecto);
+    gl.bindVertexArray(vaoVacio);
+    for (let i = 0; i < N; i++) {                                     // N llamadas
+      gl.uniform2f(locI.pos, posiciones[i * 2], posiciones[i * 2 + 1]);
+      gl.uniform3f(locI.color, colores[i * 3], colores[i * 3 + 1], colores[i * 3 + 2]);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+  } else {
+    gl.useProgram(progInstanciado);
+    gl.uniform1f(locN.t, t);
+    gl.uniform1f(locN.aspecto, aspecto);
+    gl.bindVertexArray(vaoInstancias);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, N);                   // 1 llamada
+  }
+  msJS += performance.now() - inicio; frames++;
+  if (t - tInfo > 0.5) {
+    info.textContent = N.toLocaleString('es') + ' objetos · ' + (modo === 'individual' ? N.toLocaleString('es') : 1) + ' llamadas por frame · '
+      + Math.round(frames / (t - tInfo)) + ' fps · JS ' + (msJS / frames).toFixed(2) + ' ms/frame';
+    frames = 0; msJS = 0; tInfo = t;
+  }
+});
+</script>
+  </div>
+  <p>Fíjate en que el modo instanciado no necesita tocar los buffers en cada frame: los datos no cambian, y lo que se mueve (el giro de todo el conjunto) lo calcula el vertex shader con un único uniform. Cuanto más trabajo puedas pasarle al shader a partir de datos fijos y del tiempo, menos datos tendrás que subir.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Con 50 000 llamadas de dibujo por frame (un cuadradito cada una) tu app va lenta en un móvil. La GPU del móvil puede dibujar millones de triángulos por frame. ¿Dónde se va el tiempo?</p>
+  <ul>
+    <li>En rasterizar los cuadraditos: 50 000 son demasiados triángulos.<div class="explicacion">100 000 triángulos pequeños no son nada para una GPU; con instancing, la misma escena se dibuja sobrada.</div></li>
+    <li data-correcta>En el coste fijo de cada llamada: validarla, enviarla al proceso de la GPU, traducirla y prepararla para el driver.<div class="explicacion">Correcto. Ese coste se paga por llamada, no por triángulo. Con instancing se paga una vez.</div></li>
+    <li>En el fragment shader, que se ejecuta una vez por llamada.<div class="explicacion">El fragment shader se ejecuta una vez por fragmento, haya una llamada o cincuenta mil.</div></li>
+  </ul>
+</div>
+
+<h2>Una matriz por instancia</h2>
+<p>En 3D, lo natural es dar a cada instancia su matriz de modelo (5.6). Pero un atributo puede tener como mucho 4 componentes, y una <code>mat4</code> tiene 16. La solución de GLSL: un atributo <code>mat4</code> ocupa <strong>cuatro locations consecutivas</strong>, una por columna. Si lo declaras en la location 3, ocupa la 3, la 4, la 5 y la 6, y desde JavaScript hay que configurar las cuatro por separado, cada una con su divisor:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+// a_modelo es 'layout(location = 3) in mat4': columnas en las locations 3, 4, 5 y 6
+for (let k = 0; k < 4; k++) {
+  gl.enableVertexAttribArray(3 + k);
+  gl.vertexAttribPointer(3 + k, 4, gl.FLOAT, false, STRIDE, k * 16);   // columna k: 16 bytes más allá
+  gl.vertexAttribDivisor(3 + k, 1);
+}
+</script>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.9.5 — Diez mil cubos, una llamada</h3>
+  <p>Una rejilla de 25 × 16 × 25 cubos, cada uno con su matriz de modelo (posición, giro y escala aleatorios) y su color, en un buffer de 76 bytes por instancia (una <code>mat4</code> de 64 bytes y un <code>vec3</code> de 12). Los cubos son la malla indexada de 5.6, así que se dibujan con <code>drawElementsInstanced</code>. La cámara gira alrededor.</p>
+  <div class="js-playground" data-titulo="10 000 cubos con mat4 por instancia" data-altura="340" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+layout(location = 3) in mat4 a_modelo;      // ocupa las locations 3, 4, 5 y 6
+layout(location = 7) in vec3 a_color;
+uniform mat4 u_vistaProyeccion;
+out vec3 v_normal;
+out vec3 v_color;
+void main() {
+  v_normal = mat3(a_modelo) * a_normal;     // giro + escala uniforme: basta con mat3 (5.6)
+  v_color = a_color;
+  gl_Position = u_vistaProyeccion * a_modelo * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_normal;
+in vec3 v_color;
+out vec4 color;
+void main() {
+  float luz = 0.3 + 0.7 * max(dot(normalize(v_normal), normalize(vec3(0.4, 0.8, 0.5))), 0.0);
+  color = vec4(v_color * luz, 1.0);
+}`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+
+// Datos por instancia: mat4 (16 floats) + color (3 floats) = 19 floats = 76 bytes
+const N = 25 * 16 * 25, STRIDE = 76;
+const instancias = new Float32Array(N * 19);
+let i = 0;
+for (let gx = 0; gx < 25; gx++) for (let gy = 0; gy < 16; gy++) for (let gz = 0; gz < 25; gz++) {
+  const modelo = mat4.producto(
+    mat4.traslacion((gx - 12) * 0.5, (gy - 7.5) * 0.5, (gz - 12) * 0.5),
+    mat4.rotacionY(Math.random() * 6.28), mat4.rotacionX(Math.random() * 6.28),
+    mat4.escala(0.1 + 0.12 * Math.random()));
+  instancias.set(modelo, i * 19);                                          // floats 0-15: las 4 columnas
+  instancias.set([0.3 + 0.7 * gx / 24, 0.3 + 0.6 * gy / 15, 0.9 - 0.6 * gz / 24], i * 19 + 16);   // 16-18
+  i++;
+}
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+GLKit.crearBuffer(gl, instancias);
+for (let k = 0; k < 4; k++) {                          // la mat4: cuatro locations, cuatro columnas
+  gl.enableVertexAttribArray(3 + k);
+  gl.vertexAttribPointer(3 + k, 4, gl.FLOAT, false, STRIDE, k * 16);
+  gl.vertexAttribDivisor(3 + k, 1);
+}
+gl.enableVertexAttribArray(7);
+gl.vertexAttribPointer(7, 3, gl.FLOAT, false, STRIDE, 64);
+gl.vertexAttribDivisor(7, 1);
+const locVP = gl.getUniformLocation(programa, 'u_vistaProyeccion');
+
+GLKit.bucle((t) => {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.clearColor(0.05, 0.06, 0.09, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const a = t * 0.25;
+  const vp = mat4.producto(mat4.perspectiva(Math.PI / 4, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+                           mat4.mirarA([15 * Math.sin(a), 5, 15 * Math.cos(a)], [0, 0, 0], [0, 1, 0]));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(locVP, false, vp);
+  gl.bindVertexArray(vao);
+  gl.drawElementsInstanced(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0, N);   // 36 índices × 10 000 instancias
+});
+</script>
+  </div>
+  <p>La matriz de cada instancia se calcula una sola vez, al crear los datos. Como la escena no cambia, el buffer no se vuelve a tocar: por frame solo se sube la matriz de la cámara, un uniform compartido por todas las instancias. El stride de 76 bytes no es múltiplo de 16, y no importa: solo tiene que ser múltiplo del tamaño del tipo (4 bytes para <code>FLOAT</code>) y no pasar de 255 (5.3).</p>
+</section>
+
+<div class="callout senior" data-titulo="Una mat4 son cuatro atributos (y los atributos se acaban)">
+  <p>Lo comprobamos con el compilador de la GPU de pruebas: con <code>layout(location = 3) in mat4 a_modelo</code>, <code>getAttribLocation</code> devuelve 3 y las locations 4 a 6 quedan ocupadas. Sin <code>layout</code>, el enlazador colocó la <code>mat4</code> en la 0 y los siguientes atributos en la 4 y la 5. Si fuerzas la <code>mat4</code> en la location 14 con <code>bindAttribLocation</code>, el enlace falla: <code>Attribute (a_modelo) at location 14 is too big to fit</code>, porque necesitaría la 14, la 15, la 16 y la 17, y solo hay 16 (<code>MAX_VERTEX_ATTRIBS</code>, que en WebGL2 vale como mínimo 16).</p>
+  <p>Con 16 locations, una malla con posición, normal y UV (3) más una <code>mat4</code> y un color por instancia (5) va sobrada, pero una <code>mat4</code> de modelo, otra para las normales y varios parámetros más se comen el presupuesto enseguida. Cuando no caben, la alternativa profesional es guardar los datos de las instancias en una textura float y leerlos en el vertex shader con <code>texelFetch(u_datos, ivec2(gl_InstanceID % ancho, gl_InstanceID / ancho), 0)</code>: no hay límite de atributos, y esa textura la puede escribir otro shader (el ping-pong de 5.8), que es exactamente como funcionan las partículas en la GPU.</p>
+</div>
+
+<div class="callout bestiario" data-id="m5-location-solapada" data-titulo="«Attribute 'a_pos' aliases attribute 'a_modelo' at location 5»">
+  <p><strong>Síntoma:</strong> el programa no enlaza y el log dice <code>Attribute 'a_pos' aliases attribute 'a_modelo' at location 5</code> (texto exacto de la GPU de pruebas).</p>
+  <p><strong>Causa:</strong> has declarado <code>layout(location = 3) in mat4 a_modelo</code> y otro atributo en la location 5, creyendo que la <code>mat4</code> ocupa solo la 3. Ocupa de la 3 a la 6.</p>
+  <p><strong>Solución:</strong> el siguiente atributo va en la 7 (o en las libres por debajo de la 3). Una <code>mat3</code> ocupa 3 locations y una <code>mat2</code>, 2.</p>
+</div>
+
+<div class="callout bestiario" data-id="m5-mat4-columnas" data-titulo="Con una mat4 por instancia no se ve nada">
+  <p><strong>Síntoma:</strong> tras pasar a una matriz por instancia, los objetos desaparecen (queda, como mucho, algún píxel suelto), sin ningún error. O la consola dice <code>Vertex buffer is not big enough for the draw call</code>.</p>
+  <p><strong>Causa:</strong> solo se configuró la primera location de la <code>mat4</code>. Las otras tres columnas, desactivadas, leen el valor constante por defecto (0, 0, 0, 1), y la matriz resultante aplasta cada objeto en una línea sin área: comprobamos que un triángulo dibujado así no pintó ni un píxel. Si se activan las cuatro pero el divisor solo se pone en la primera, las otras tres avanzan por vértice, se salen del buffer y el dibujo se rechaza con el error de arriba.</p>
+  <p><strong>Solución:</strong> un bucle de 4 vueltas: <code>enableVertexAttribArray(loc + k)</code>, <code>vertexAttribPointer(loc + k, 4, gl.FLOAT, false, STRIDE, offset + k * 16)</code> y <code>vertexAttribDivisor(loc + k, 1)</code>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu vertex shader declara <code>layout(location = 2) in mat4 a_modelo;</code>. ¿En qué location puedes declarar el color por instancia?</p>
+  <ul>
+    <li>En la 3.<div class="explicacion">La 3 es la segunda columna de <code>a_modelo</code>. El enlace fallaría con <code>Attribute … aliases attribute 'a_modelo'</code>.</div></li>
+    <li data-correcta>En la 6 o posteriores (o en la 0 o la 1, si están libres).<div class="explicacion">Correcto: la <code>mat4</code> ocupa la 2, 3, 4 y 5.</div></li>
+    <li>En cualquiera: las matrices van en un espacio de locations aparte.<div class="explicacion">No hay espacio aparte: una <code>mat4</code> consume cuatro de las 16 locations de atributos.</div></li>
+  </ul>
+</div>
+
+<div class="callout senior" data-titulo="Un avance: transform feedback">
+  <p>En el banco de flechas, la CPU simula y la GPU solo dibuja. WebGL2 tiene una forma de que la GPU también simule sin texturas: el <strong>transform feedback</strong>, que guarda las salidas (<code>out</code>) del vertex shader en un buffer en lugar de, o además de, rasterizarlas. Un vertex shader que lee la posición y la velocidad de cada partícula y escribe las nuevas en otro buffer es una simulación completa en la GPU; en el frame siguiente, los buffers se intercambian (el ping-pong otra vez, con buffers en vez de texturas). Lo comprobamos con el caso mínimo: un vertex shader que duplica sus entradas, con <code>gl.RASTERIZER_DISCARD</code> activado para no dibujar nada, convirtió <code>[1, 2, 3, 4]</code> en <code>[2, 4, 6, 8]</code>. La opción <code>varyingsTF</code> de <code>GLKit.crearPrograma</code> existe para esto: le dice al enlazador qué salidas capturar. Lo usarás a fondo en <a href="../07-integracion/05-particulas-gpu.html">7.5</a>.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.9.1 — Diez triángulos que son uno</h3>
+  <p>Este código debería dibujar diez triángulos repartidos por el canvas, cada uno de un color. Solo aparece uno, deformado, y de un solo color. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.9.1" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec2 a_desplazamiento;
+layout(location = 2) in vec3 a_color;
+uniform float u_aspecto;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  gl_Position = vec4(a_posicion * vec2(u_aspecto, 1.0) + a_desplazamiento, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+const N = 10;
+const instancias = new Float32Array(N * 5);
+for (let i = 0; i < N; i++) {
+  instancias.set([-0.85 + i * 0.19, 0.5 * Math.sin(i * 0.9),
+                  0.55 + 0.45 * Math.cos(i * 0.6), 0.55 + 0.45 * Math.cos(i * 0.6 + 2.1), 0.55 + 0.45 * Math.cos(i * 0.6 + 4.2)], i * 5);
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, new Float32Array([-0.12, -0.1, 0.12, -0.1, 0.0, 0.14]));
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+GLKit.crearBuffer(gl, instancias);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 0);
+gl.enableVertexAttribArray(2);
+gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 20, 8);
+gl.vertexAttribDivisor(2, 1);
+
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, N);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec2 a_desplazamiento;
+layout(location = 2) in vec3 a_color;
+uniform float u_aspecto;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  gl_Position = vec4(a_posicion * vec2(u_aspecto, 1.0) + a_desplazamiento, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+const N = 10;
+const instancias = new Float32Array(N * 5);
+for (let i = 0; i < N; i++) {
+  instancias.set([-0.85 + i * 0.19, 0.5 * Math.sin(i * 0.9),
+                  0.55 + 0.45 * Math.cos(i * 0.6), 0.55 + 0.45 * Math.cos(i * 0.6 + 2.1), 0.55 + 0.45 * Math.cos(i * 0.6 + 4.2)], i * 5);
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, new Float32Array([-0.12, -0.1, 0.12, -0.1, 0.0, 0.14]));
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+GLKit.crearBuffer(gl, instancias);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 0);
+gl.vertexAttribDivisor(1, 1);                        // ← faltaba: el desplazamiento es POR INSTANCIA
+gl.enableVertexAttribArray(2);
+gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 20, 8);
+gl.vertexAttribDivisor(2, 1);
+
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, N);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El color sí cambia por instancia, pero como todas las instancias ocupan el mismo sitio, solo ves la última. ¿Qué diferencia hay entre cómo se configuran la location 1 y la 2?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Consulta <code>gl.getVertexAttrib(1, gl.VERTEX_ATTRIB_ARRAY_DIVISOR)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Falta <code>gl.vertexAttribDivisor(1, 1)</code>. Sin él, el desplazamiento avanza por vértice: el vértice 0 de cada instancia lee el desplazamiento 0, el vértice 1 el desplazamiento 1 y el vértice 2 el desplazamiento 2. Las diez instancias son el mismo triángulo deformado (cada esquina desplazada a un sitio distinto), dibujado diez veces en el mismo lugar; como el color sí es por instancia, la última en dibujarse tapa a las demás. No hay error porque el buffer tiene datos de sobra para 3 vértices.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.9.2 — La rejilla torcida</h3>
+  <p>Queríamos una rejilla ordenada de cuadrados, con su posición calculada a partir de <code>gl_InstanceID</code>. Sale una especie de escalera en diagonal. Arréglalo tocando una sola línea del shader.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.9.2" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const COLUMNAS = 24, FILAS = 8;
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+out vec3 v_color;
+const int COLUMNAS = ${COLUMNAS};
+const int FILAS = ${FILAS};
+void main() {
+  vec2 P[6] = vec2[6](vec2(0, 0), vec2(1, 0), vec2(0, 1), vec2(0, 1), vec2(1, 0), vec2(1, 1));
+  float columna = float(gl_InstanceID % COLUMNAS);
+  float fila = float(gl_InstanceID) / float(COLUMNAS);
+  vec2 p = (vec2(columna, fila) + 0.15 + P[gl_VertexID] * 0.7) / vec2(COLUMNAS, FILAS);
+  v_color = vec3(0.3 + 0.7 * columna / float(COLUMNAS), 0.5, 0.9);
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, COLUMNAS * FILAS);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const COLUMNAS = 24, FILAS = 8;
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+out vec3 v_color;
+const int COLUMNAS = ${COLUMNAS};
+const int FILAS = ${FILAS};
+void main() {
+  vec2 P[6] = vec2[6](vec2(0, 0), vec2(1, 0), vec2(0, 1), vec2(0, 1), vec2(1, 0), vec2(1, 1));
+  float columna = float(gl_InstanceID % COLUMNAS);
+  float fila = float(gl_InstanceID / COLUMNAS);      // dividir ENTEROS y luego convertir
+  vec2 p = (vec2(columna, fila) + 0.15 + P[gl_VertexID] * 0.7) / vec2(COLUMNAS, FILAS);
+  v_color = vec3(0.3 + 0.7 * columna / float(COLUMNAS), 0.5, 0.9);
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, COLUMNAS * FILAS);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Calcula a mano la fila de la instancia 30 con la fórmula del shader. ¿Debería tener decimales?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El orden de las operaciones importa: ¿conviertes a <code>float</code> antes o después de dividir?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>float(gl_InstanceID) / float(COLUMNAS)</code> es una división con decimales: la instancia 30 tiene fila 1,25 en lugar de 1, así que cada cuadrado de una fila queda un poco más alto que el anterior y las filas se convierten en rampas. La fila tiene que ser el cociente entero, <code>gl_InstanceID / COLUMNAS</code> con los dos operandos <code>int</code> (en GLSL, como en C, la división entera descarta los decimales), y convertirlo a <code>float</code> después. La columna ya estaba bien: el resto <code>%</code> solo existe para enteros.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.9.3 — Los cubos invisibles</h3>
+  <p>Mil cubos, cada uno con su matriz de modelo por instancia. No se ve ninguno (como mucho, algún píxel suelto), y no hay errores en ninguna consola. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.9.3" data-altura="280" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in mat4 a_modelo;
+uniform mat4 u_vistaProyeccion;
+out vec3 v_normal;
+void main() {
+  v_normal = mat3(a_modelo) * a_normal;
+  gl_Position = u_vistaProyeccion * a_modelo * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_normal;
+out vec4 color;
+void main() {
+  float luz = 0.3 + 0.7 * max(dot(normalize(v_normal), normalize(vec3(0.4, 0.8, 0.5))), 0.0);
+  color = vec4(vec3(1.0, 0.7, 0.3) * luz, 1.0);
+}`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const N = 1000;
+const matrices = new Float32Array(N * 16);           // solo la mat4: 64 bytes por instancia
+for (let i = 0; i < N; i++) {
+  const x = (i % 10) - 4.5, y = Math.floor(i / 10) % 10 - 4.5, z = Math.floor(i / 100) - 4.5;
+  matrices.set(mat4.producto(mat4.traslacion(x * 0.6, y * 0.6, z * 0.6), mat4.rotacionY(i), mat4.escala(0.25)), i * 16);
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+GLKit.crearBuffer(gl, matrices);
+gl.enableVertexAttribArray(2);
+gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 64, 0);
+gl.vertexAttribDivisor(2, 1);
+
+GLKit.bucle((t) => {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.enable(gl.DEPTH_TEST);
+  gl.clearColor(0.05, 0.06, 0.09, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const vp = mat4.producto(mat4.perspectiva(Math.PI / 4, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+                           mat4.mirarA([9 * Math.sin(t * 0.3), 4, 9 * Math.cos(t * 0.3)], [0, 0, 0], [0, 1, 0]));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(gl.getUniformLocation(programa, 'u_vistaProyeccion'), false, vp);
+  gl.bindVertexArray(vao);
+  gl.drawElementsInstanced(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0, N);
+});
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec3 a_posicion;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in mat4 a_modelo;
+uniform mat4 u_vistaProyeccion;
+out vec3 v_normal;
+void main() {
+  v_normal = mat3(a_modelo) * a_normal;
+  gl_Position = u_vistaProyeccion * a_modelo * vec4(a_posicion, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_normal;
+out vec4 color;
+void main() {
+  float luz = 0.3 + 0.7 * max(dot(normalize(v_normal), normalize(vec3(0.4, 0.8, 0.5))), 0.0);
+  color = vec4(vec3(1.0, 0.7, 0.3) * luz, 1.0);
+}`);
+function crearCubo() {
+  const caras = [[[1,0,0],[0,0,-1],[0,1,0]], [[-1,0,0],[0,0,1],[0,1,0]], [[0,1,0],[1,0,0],[0,0,-1]],
+                 [[0,-1,0],[1,0,0],[0,0,1]], [[0,0,1],[1,0,0],[0,1,0]], [[0,0,-1],[-1,0,0],[0,1,0]]];
+  const datos = [], indices = [];
+  caras.forEach(([n, u, v], k) => {
+    for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      datos.push(0.5 * (n[0] + su * u[0] + sv * v[0]), 0.5 * (n[1] + su * u[1] + sv * v[1]), 0.5 * (n[2] + su * u[2] + sv * v[2]), n[0], n[1], n[2]);
+    }
+    indices.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3);
+  });
+  return { datos: new Float32Array(datos), indices: new Uint16Array(indices) };
+}
+const cubo = crearCubo();
+const N = 1000;
+const matrices = new Float32Array(N * 16);
+for (let i = 0; i < N; i++) {
+  const x = (i % 10) - 4.5, y = Math.floor(i / 10) % 10 - 4.5, z = Math.floor(i / 100) - 4.5;
+  matrices.set(mat4.producto(mat4.traslacion(x * 0.6, y * 0.6, z * 0.6), mat4.rotacionY(i), mat4.escala(0.25)), i * 16);
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, cubo.datos);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+GLKit.crearBuffer(gl, cubo.indices, gl.STATIC_DRAW, gl.ELEMENT_ARRAY_BUFFER);
+GLKit.crearBuffer(gl, matrices);
+for (let k = 0; k < 4; k++) {                          // la mat4 ocupa las locations 2, 3, 4 y 5
+  gl.enableVertexAttribArray(2 + k);
+  gl.vertexAttribPointer(2 + k, 4, gl.FLOAT, false, 64, k * 16);   // columna k
+  gl.vertexAttribDivisor(2 + k, 1);
+}
+
+GLKit.bucle((t) => {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.enable(gl.DEPTH_TEST);
+  gl.clearColor(0.05, 0.06, 0.09, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const vp = mat4.producto(mat4.perspectiva(Math.PI / 4, gl.drawingBufferWidth / gl.drawingBufferHeight, 0.1, 100),
+                           mat4.mirarA([9 * Math.sin(t * 0.3), 4, 9 * Math.cos(t * 0.3)], [0, 0, 0], [0, 1, 0]));
+  gl.useProgram(programa);
+  gl.uniformMatrix4fv(gl.getUniformLocation(programa, 'u_vistaProyeccion'), false, vp);
+  gl.bindVertexArray(vao);
+  gl.drawElementsInstanced(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0, N);
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Cuántas locations ocupa <code>layout(location = 2) in mat4 a_modelo</code>? ¿Cuántas se configuran en JavaScript?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Las locations desactivadas leen (0, 0, 0, 1). ¿Qué matriz sale con esas tres columnas?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La <code>mat4</code> ocupa las locations 2 a 5, pero solo se configuró la 2 (la primera columna). Las otras tres, desactivadas, leen el valor por defecto (0, 0, 0, 1): la matriz queda con la columna 0 correcta y las otras tres iguales a (0, 0, 0, 1). Toda la información de <em>y</em> y <em>z</em> de cada vértice va a parar a la componente <em>w</em>, y cada cubo se aplasta en una línea sin área, que no produce fragmentos (los pocos píxeles sueltos que se ven salen de errores de redondeo al proyectar esos triángulos degenerados). La solución configura las cuatro columnas en un bucle, cada una 16 bytes más allá que la anterior y con su propio divisor.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.9.4 — El banco congelado</h3>
+  <p>Una versión reducida del banco de flechas, con 5000. Solo se mueve una quinta parte (las primeras flechas); el resto se queda quieta, sin errores. El problema está en la subida de datos. Arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.9.4" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec2 a_desplazamiento;
+layout(location = 2) in float a_escala;
+layout(location = 3) in float a_rotacion;
+layout(location = 4) in vec4 a_color;
+uniform float u_aspecto;
+out vec4 v_color;
+void main() {
+  float c = cos(a_rotacion), s = sin(a_rotacion);
+  vec2 p = mat2(c, s, -s, c) * (a_posicion * a_escala) + a_desplazamiento;
+  v_color = a_color;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec4 v_color;
+out vec4 color;
+void main() { color = v_color; }`);
+const N = 5000, STRIDE = 20;
+const datos = new ArrayBuffer(N * STRIDE);
+const f32 = new Float32Array(datos), u8 = new Uint8Array(datos);
+for (let i = 0; i < N; i++) {
+  f32.set([(Math.random() * 2 - 1) * 3, Math.random() * 2 - 1, 0.025, Math.random() * 6.2832], i * 5);
+  u8.set([120 + 135 * Math.random(), 200, 255, 255], i * STRIDE + 16);
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, new Float32Array([1, 0, -0.7, 0.5, -0.7, -0.5]));
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const buf = GLKit.crearBuffer(gl, datos, gl.DYNAMIC_DRAW);
+for (const [loc, n, tipo, norm, offset] of [[1, 2, gl.FLOAT, false, 0], [2, 1, gl.FLOAT, false, 8], [3, 1, gl.FLOAT, false, 12], [4, 4, gl.UNSIGNED_BYTE, true, 16]]) {
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, n, tipo, norm, STRIDE, offset);
+  gl.vertexAttribDivisor(loc, 1);
+}
+const locAspecto = gl.getUniformLocation(programa, 'u_aspecto');
+
+GLKit.bucle((t, dt) => {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  const A = gl.drawingBufferWidth / gl.drawingBufferHeight;
+  for (let i = 0; i < N; i++) {
+    const k = i * 5;
+    f32[k + 3] += dt * 0.8;                                   // girar
+    f32[k] += Math.cos(f32[k + 3]) * 0.25 * dt;
+    f32[k + 1] += Math.sin(f32[k + 3]) * 0.25 * dt;
+    if (f32[k] > A) f32[k] -= 2 * A; else if (f32[k] < -A) f32[k] += 2 * A;
+    if (f32[k + 1] > 1) f32[k + 1] -= 2; else if (f32[k + 1] < -1) f32[k + 1] += 2;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, f32, 0, N);             // subir las N instancias
+  gl.clearColor(0.04, 0.05, 0.08, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform1f(locAspecto, 1 / A);
+  gl.bindVertexArray(vao);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, N);
+});
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec2 a_desplazamiento;
+layout(location = 2) in float a_escala;
+layout(location = 3) in float a_rotacion;
+layout(location = 4) in vec4 a_color;
+uniform float u_aspecto;
+out vec4 v_color;
+void main() {
+  float c = cos(a_rotacion), s = sin(a_rotacion);
+  vec2 p = mat2(c, s, -s, c) * (a_posicion * a_escala) + a_desplazamiento;
+  v_color = a_color;
+  gl_Position = vec4(p.x * u_aspecto, p.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec4 v_color;
+out vec4 color;
+void main() { color = v_color; }`);
+const N = 5000, STRIDE = 20;
+const datos = new ArrayBuffer(N * STRIDE);
+const f32 = new Float32Array(datos), u8 = new Uint8Array(datos);
+for (let i = 0; i < N; i++) {
+  f32.set([(Math.random() * 2 - 1) * 3, Math.random() * 2 - 1, 0.025, Math.random() * 6.2832], i * 5);
+  u8.set([120 + 135 * Math.random(), 200, 255, 255], i * STRIDE + 16);
+}
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, new Float32Array([1, 0, -0.7, 0.5, -0.7, -0.5]));
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const buf = GLKit.crearBuffer(gl, datos, gl.DYNAMIC_DRAW);
+for (const [loc, n, tipo, norm, offset] of [[1, 2, gl.FLOAT, false, 0], [2, 1, gl.FLOAT, false, 8], [3, 1, gl.FLOAT, false, 12], [4, 4, gl.UNSIGNED_BYTE, true, 16]]) {
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, n, tipo, norm, STRIDE, offset);
+  gl.vertexAttribDivisor(loc, 1);
+}
+const locAspecto = gl.getUniformLocation(programa, 'u_aspecto');
+
+GLKit.bucle((t, dt) => {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  const A = gl.drawingBufferWidth / gl.drawingBufferHeight;
+  for (let i = 0; i < N; i++) {
+    const k = i * 5;
+    f32[k + 3] += dt * 0.8;
+    f32[k] += Math.cos(f32[k + 3]) * 0.25 * dt;
+    f32[k + 1] += Math.sin(f32[k + 3]) * 0.25 * dt;
+    if (f32[k] > A) f32[k] -= 2 * A; else if (f32[k] < -A) f32[k] += 2 * A;
+    if (f32[k + 1] > 1) f32[k + 1] -= 2; else if (f32[k + 1] < -1) f32[k + 1] += 2;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, f32, 0, N * 5);         // N instancias × 5 floats (elementos, no instancias)
+  gl.clearColor(0.04, 0.05, 0.08, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform1f(locAspecto, 1 / A);
+  gl.bindVertexArray(vao);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, N);
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿En qué unidades mide <code>bufferSubData</code> su último argumento? ¿Cuántas de esas unidades ocupa una instancia?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El «quinto float» de cada instancia son los 4 bytes del color: también hay que contarlo.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El último argumento de <code>bufferSubData</code> es el número de <em>elementos</em> del array de origen que se suben, no el de instancias. Con <code>f32</code>, un elemento es un float, y cada instancia ocupa 5 (20 bytes: cuatro floats y los 4 bytes del color, que para <code>f32</code> son el quinto). Con <code>N</code> se suben solo los primeros 5000 floats, es decir, las primeras 1000 instancias: esas se mueven y las otras 4000 conservan en la GPU los datos del principio. No hay error porque subir menos de lo que cabe es perfectamente válido. La solución sube <code>N * 5</code> elementos.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.9.5 — El doble de estrellas, cero estrellas</h3>
+  <p>Este cielo tenía 1000 estrellas y funcionaba. Alguien cambió <code>N</code> a 2000 y ahora está vacío. La consola del playground muestra dos códigos de error de <code>getError</code>, y la del navegador (F12), dos avisos. Arréglalo sin volver a 1000.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.9.5" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in float a_brillo;
+uniform float u_aspecto;
+out float v_brillo;
+void main() {
+  vec2 P[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(-1, 1), vec2(1, -1), vec2(1, 1));
+  v_brillo = a_brillo;
+  gl_Position = vec4(a_pos + P[gl_VertexID] * 0.006 * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in float v_brillo;
+out vec4 color;
+void main() { color = vec4(vec3(0.75, 0.85, 1.0) * v_brillo, 1.0); }`);
+const CAPACIDAD = 1000;                      // se reservó para 1000 estrellas…
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, CAPACIDAD * 12, gl.DYNAMIC_DRAW);   // 3 floats (12 bytes) por estrella
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 12, 0);
+gl.vertexAttribDivisor(0, 1);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 12, 8);
+gl.vertexAttribDivisor(1, 1);
+
+const N = 2000;                              // …y ahora queremos 2000
+const estrellas = new Float32Array(N * 3);
+for (let i = 0; i < N; i++) estrellas.set([Math.random() * 2 - 1, Math.random() * 2 - 1, 0.3 + 0.7 * Math.random() ** 3], i * 3);
+gl.bufferSubData(gl.ARRAY_BUFFER, 0, estrellas);
+console.log('getError tras bufferSubData →', gl.getError());
+
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.02, 0.03, 0.07, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, N);
+console.log('getError tras dibujar →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in float a_brillo;
+uniform float u_aspecto;
+out float v_brillo;
+void main() {
+  vec2 P[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(-1, 1), vec2(1, -1), vec2(1, 1));
+  v_brillo = a_brillo;
+  gl_Position = vec4(a_pos + P[gl_VertexID] * 0.006 * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in float v_brillo;
+out vec4 color;
+void main() { color = vec4(vec3(0.75, 0.85, 1.0) * v_brillo, 1.0); }`);
+const N = 2000;
+const CAPACIDAD = N;                         // la capacidad sale del número que vamos a usar
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, CAPACIDAD * 12, gl.DYNAMIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 12, 0);
+gl.vertexAttribDivisor(0, 1);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 12, 8);
+gl.vertexAttribDivisor(1, 1);
+
+const estrellas = new Float32Array(N * 3);
+for (let i = 0; i < N; i++) estrellas.set([Math.random() * 2 - 1, Math.random() * 2 - 1, 0.3 + 0.7 * Math.random() ** 3], i * 3);
+gl.bufferSubData(gl.ARRAY_BUFFER, 0, estrellas);
+console.log('getError tras bufferSubData →', gl.getError());
+
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.02, 0.03, 0.07, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, N);
+console.log('getError tras dibujar →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>1281 es <code>INVALID_VALUE</code> y 1282, <code>INVALID_OPERATION</code>. ¿Cuántos bytes tiene el buffer y cuántos intentas escribir?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Busca en el bestiario de esta lección los dos mensajes de la consola del navegador.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El buffer se reservó con <code>bufferData</code> para 1000 estrellas (12 000 bytes). Subir 2000 (24 000 bytes) con <code>bufferSubData</code> falla con <code>INVALID_VALUE</code> (<code>buffer overflow</code>) y no escribe nada; <code>bufferSubData</code> no agranda el buffer. Después, dibujar 2000 instancias exigiría leer más allá del final, y el dibujo se rechaza con <code>INVALID_OPERATION</code> (<code>Vertex buffer is not big enough for the draw call</code>). La solución reserva la capacidad a partir de <code>N</code>. En un programa donde el número crece durante la ejecución, se reserva un máximo razonable desde el principio o se vuelve a llamar a <code>bufferData</code> con más espacio cuando haga falta.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.9.6 — De dos mil llamadas a una</h3>
+  <p>Este código dibuja 2000 estrellas de colores con una llamada de dibujo cada una: su posición, su color y su tamaño son uniforms. Conviértelo a instancing: los tres datos pasan a ser atributos por instancia en un buffer, y todo se dibuja con una llamada. La imagen debe quedar igual, y la consola debe decir «llamadas de dibujo: 1».</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.9.6" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform vec2 u_pos;
+uniform vec3 u_color;
+uniform float u_tam;
+uniform float u_aspecto;
+out vec3 v_color;
+out vec2 v_local;
+void main() {
+  vec2 P[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(-1, 1), vec2(1, -1), vec2(1, 1));
+  v_color = u_color;
+  v_local = P[gl_VertexID];
+  gl_Position = vec4(u_pos + P[gl_VertexID] * u_tam * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+in vec2 v_local;
+out vec4 color;
+void main() {
+  float d = length(v_local);
+  color = vec4(v_color * max(1.0 - d, 0.0) * 1.6, 1.0);      // un punto con halo
+}`);
+const N = 2000;
+// Datos de cada estrella: x, y, r, g, b, tamaño (6 floats)
+const estrellas = new Float32Array(N * 6);
+let semilla = 7;
+const azar = () => (semilla = (semilla * 16807) % 2147483647) / 2147483647;   // repetible
+for (let i = 0; i < N; i++) {
+  estrellas.set([azar() * 2 - 1, azar() * 2 - 1, 0.6 + 0.4 * azar(), 0.6 + 0.3 * azar(), 1.0, 0.004 + 0.02 * azar() ** 4], i * 6);
+}
+const loc = {};
+for (const n of ['u_pos', 'u_color', 'u_tam', 'u_aspecto']) loc[n] = gl.getUniformLocation(programa, n);
+
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.02, 0.03, 0.07, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE);                                  // aditivo: el orden no importa (5.7)
+gl.useProgram(programa);
+gl.uniform1f(loc.u_aspecto, gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.bindVertexArray(gl.createVertexArray());
+let llamadas = 0;
+for (let i = 0; i < N; i++) {
+  const k = i * 6;
+  gl.uniform2f(loc.u_pos, estrellas[k], estrellas[k + 1]);
+  gl.uniform3f(loc.u_color, estrellas[k + 2], estrellas[k + 3], estrellas[k + 4]);
+  gl.uniform1f(loc.u_tam, estrellas[k + 5]);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  llamadas++;
+}
+console.log('llamadas de dibujo:', llamadas);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_pos;       // antes: uniform u_pos
+layout(location = 1) in vec3 a_color;     // antes: uniform u_color
+layout(location = 2) in float a_tam;      // antes: uniform u_tam
+uniform float u_aspecto;                  // este sí es común a todas: sigue siendo uniform
+out vec3 v_color;
+out vec2 v_local;
+void main() {
+  vec2 P[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(-1, 1), vec2(1, -1), vec2(1, 1));
+  v_color = a_color;
+  v_local = P[gl_VertexID];
+  gl_Position = vec4(a_pos + P[gl_VertexID] * a_tam * vec2(u_aspecto, 1.0), 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+in vec2 v_local;
+out vec4 color;
+void main() {
+  float d = length(v_local);
+  color = vec4(v_color * max(1.0 - d, 0.0) * 1.6, 1.0);
+}`);
+const N = 2000;
+const estrellas = new Float32Array(N * 6);
+let semilla = 7;
+const azar = () => (semilla = (semilla * 16807) % 2147483647) / 2147483647;
+for (let i = 0; i < N; i++) {
+  estrellas.set([azar() * 2 - 1, azar() * 2 - 1, 0.6 + 0.4 * azar(), 0.6 + 0.3 * azar(), 1.0, 0.004 + 0.02 * azar() ** 4], i * 6);
+}
+// El mismo array, tal cual, es el buffer de instancias: 6 floats = 24 bytes por estrella
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+GLKit.crearBuffer(gl, estrellas);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 24, 0);     // x, y
+gl.vertexAttribDivisor(0, 1);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 8);     // r, g, b
+gl.vertexAttribDivisor(1, 1);
+gl.enableVertexAttribArray(2);
+gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 24, 20);    // tamaño
+gl.vertexAttribDivisor(2, 1);
+
+GLKit.ajustarTamaño(canvas);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.02, 0.03, 0.07, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, N);
+console.log('llamadas de dibujo:', 1);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En el shader, cada <code>uniform</code> que cambia de una estrella a otra se convierte en un <code>in</code> con su <code>layout(location)</code>. <code>u_aspecto</code> es igual para todas: se queda como uniform.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El array <code>estrellas</code> ya tiene el formato de un buffer intercalado: 6 floats (24 bytes) por estrella, con la posición en el byte 0, el color en el 8 y el tamaño en el 20.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los datos que varían por estrella pasan de uniforms a atributos por instancia: tres <code>in</code> en el vertex shader y tres atributos en JavaScript, todos del mismo buffer con stride 24 y desplazamientos 0, 8 y 20, cada uno con divisor 1. El array <code>estrellas</code> se sube tal cual con <code>crearBuffer</code>: ya estaba ordenado como un buffer intercalado. El bucle de 2000 llamadas se sustituye por un <code>drawArraysInstanced(gl.TRIANGLES, 0, 6, N)</code>. La imagen es idéntica porque con mezcla aditiva el orden no importa, y el generador de números aleatorios con semilla produce las mismas estrellas. <code>u_aspecto</code> sigue siendo un uniform: lo que es igual para todas las instancias no se repite en el buffer.</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Cada llamada de dibujo tiene un coste fijo (validación, viaje al proceso de la GPU, traducción, driver). Con miles de objetos pequeños, ese coste domina. El instancing dibuja N copias de una malla en una llamada: <code>drawArraysInstanced(modo, primero, nVértices, nInstancias)</code> o <code>drawElementsInstanced(modo, nÍndices, tipo, offset, nInstancias)</code>.</li>
+    <li><code>vertexAttribDivisor(loc, d)</code>: con 0 el atributo avanza por vértice; con <em>d</em> &gt; 0, la instancia <em>i</em> lee el elemento <code>floor(i / d)</code>. Es estado del VAO. Olvidarlo produce una figura deformada repetida en el mismo sitio, sin error.</li>
+    <li><code>gl_InstanceID</code> (int, desde 0 en cada llamada) permite calcular datos sin buffers; para rejillas, división y resto enteros.</li>
+    <li>Datos por instancia intercalados y compactos (colores en <code>UNSIGNED_BYTE</code> normalizados), con dos vistas del mismo <code>ArrayBuffer</code>. Actualización por frame con <code>bufferSubData(destino, bytesDestino, origen, desdeElemento, nElementos)</code>: destino en bytes, origen en elementos.</li>
+    <li>El buffer debe cubrir todas las instancias dibujadas (<code>Vertex buffer is not big enough</code>); dibujar menos de las que caben es válido (<em>swap and pop</em>).</li>
+    <li>Una <code>mat4</code> por instancia ocupa 4 locations consecutivas: cuatro <code>vertexAttribPointer</code> (desplazamientos de 16 en 16 bytes) y cuatro divisores. Solo hay 16 locations; cuando no bastan, datos en una textura leídos con <code>texelFetch</code> y <code>gl_InstanceID</code>.</li>
+    <li>El transform feedback captura las salidas del vertex shader en un buffer: simulación en la GPU (7.5).</li>
+  </ul>
+</div>
+
+<p>En <a href="10-depuracion.html">5.10</a>, la última lección del módulo, juntamos todo lo aprendido sobre los errores de WebGL en un método: qué hacer ante una pantalla negra, cómo ver lo que la GPU calcula de verdad y cómo averiguar si lo que te frena es la CPU o la GPU.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-instanced-drawing.html">WebGL2 Fundamentals: Instanced Drawing</a>.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext/vertexAttribDivisor">MDN: <code>vertexAttribDivisor()</code></a> y <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext/bufferSubData">MDN: <code>bufferSubData()</code></a>, con la firma de WebGL2.</li>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-gpgpu.html">WebGL2 Fundamentals: GPGPU</a>, con transform feedback y datos en texturas.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

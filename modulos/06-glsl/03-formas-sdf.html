@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.3 · Formas, SDF 2D y antialiasing — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/a-estilos.css">
+</head>
+<body data-leccion="06-glsl/formas-sdf">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>Formas, SDF 2D y antialiasing</h1>
+  <p class="resumen">Una máscara solo dice «dentro» o «fuera». Una función de distancia con signo (SDF) dice además «a qué distancia del borde», y con ese número extra aparecen casi gratis el antialiasing perfecto, los contornos, los brillos, las sombras y las uniones redondeadas entre formas. Es la herramienta más potente de este módulo, y la base del raymarching de 6.9.</p>
+  <div class="meta"><span class="chip">⏱ 120 min</span><span class="chip">Requisitos: 6.2, 3.2, 3.4</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás qué es una SDF y escribirás las del círculo, la caja (derivándola), la caja redondeada, el segmento y el anillo.</li>
+      <li>Combinarás formas con <code>min</code>/<code>max</code> y con <em>smooth min</em>, sabiendo qué hace su parámetro y dónde deja de ser una distancia.</li>
+      <li>Pintarás cualquier SDF con un borde de exactamente un píxel, con la escala conocida o con <code>fwidth</code>, y conocerás cómo funcionan las derivadas por dentro y cuándo fallan.</li>
+      <li>Transformarás el dominio (trasladar, girar, reflejar, escalar) sin romper la distancia, y dibujarás contornos, brillos y sombras con la misma función.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Del «dentro o fuera» al «¿a qué distancia?»</h2>
+<p>En <a href="02-pensar-en-paralelo.html">6.2</a> construiste un círculo en seis pasos, y el primero fue calcular <code>length(p - centro)</code>. Después lo convertiste en una máscara y lo usaste para pintar. Pero la máscara tira información: dice que un píxel está fuera, no <em>cuánto</em> fuera. La idea de esta lección es quedarse con el número. Una <strong>función de distancia con signo</strong> (<em>signed distance function</em>, SDF) de una forma devuelve, para cada punto del plano:</p>
+<ul>
+  <li>la distancia desde el punto hasta el borde de la forma más cercano;</li>
+  <li>con signo <strong>negativo dentro</strong> y positivo fuera, y exactamente 0 en el borde.</li>
+</ul>
+<p>El círculo es el ejemplo más directo: la distancia de <code>p</code> al centro, menos el radio. Un punto a distancia 0.7 del centro de un círculo de radio 0.5 está a 0.2 del borde, por fuera; uno a 0.3 está a 0.2, por dentro: −0.2.</p>
+$$d_{\text{círculo}}(p) = |p - c| - r$$
+<p>¿Qué ganas con el número? Casi todo lo de esta lección sale de operar con él:</p>
+<ul>
+  <li><strong>Antialiasing exacto.</strong> Si sabes a qué distancia del borde está el centro del píxel y cuánto mide un píxel, sabes qué parte del píxel cubre la forma.</li>
+  <li><strong>Contornos de cualquier grosor</strong>: <code>abs(d) - w</code> es la SDF de una banda alrededor del borde.</li>
+  <li><strong>Brillos y sombras</strong>: <code>exp(-k * d)</code> es un halo que cae con la distancia; la misma SDF desplazada es una sombra.</li>
+  <li><strong>Combinaciones</strong>: el mínimo de dos SDF es la unión de las dos formas, y hay una versión «suave» que las funde como gotas de mercurio.</li>
+  <li><strong>Raymarching</strong> (<a href="09-raymarching.html">6.9</a>): la distancia te dice cuánto puede avanzar un rayo sin chocar con nada. Es lo que permite dibujar escenas 3D enteras con un fragment shader.</li>
+</ul>
+<p>Para ver una SDF entera hace falta una buena visualización, y la estándar es la que usa Iñigo Quilez en sus ejemplos: naranja fuera, azul dentro, más oscuro cerca del borde, con bandas que son las curvas de nivel (una cada 0.042 unidades) y el borde en blanco. Es la técnica de las isolíneas de <a href="02-pensar-en-paralelo.html">6.2</a> aplicada con cariño. El círculo amarillo es un truco para «ver» la distancia: su centro es el ratón y su radio, el valor absoluto de la SDF en el ratón, así que siempre toca el borde más cercano. Mueve el ratón por dentro y por fuera, y cambia de forma.</p>
+
+<div class="glsl-playground" data-titulo="El campo de distancias de cinco formas" data-altura="300" data-apilado data-uniforms='{"u_forma":{"tipo":"int","min":0,"max":4,"valor":1,"etiqueta":"forma"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform int u_forma;   // 0 círculo · 1 caja · 2 caja redondeada · 3 segmento · 4 anillo
+out vec4 fragColor;
+
+float sdCirculo(vec2 p, float r) { return length(p) - r; }
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+float escena(vec2 p) {
+  if (u_forma == 0) return sdCirculo(p, 0.5);
+  if (u_forma == 1) return sdCaja(p, vec2(0.7, 0.35));
+  if (u_forma == 2) return sdCaja(p, vec2(0.7, 0.35) - 0.15) - 0.15;
+  if (u_forma == 3) return sdSegmento(p, vec2(-0.6, -0.2), vec2(0.6, 0.3)) - 0.1;
+  return abs(sdCirculo(p, 0.5)) - 0.08;
+}
+// Coloración de Iñigo Quilez: naranja fuera, azul dentro
+vec3 campo(float d) {
+  vec3 c = d > 0.0 ? vec3(0.9, 0.6, 0.3) : vec3(0.65, 0.85, 1.0);
+  c *= 1.0 - exp(-6.0 * abs(d));        // más oscuro junto al borde
+  c *= 0.8 + 0.2 * cos(150.0 * d);       // curvas de nivel
+  return mix(c, vec3(1.0), 1.0 - smoothstep(0.0, 0.01, abs(d)));
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  vec3 color = campo(escena(p));
+  float dm = abs(escena(m));             // distancia del ratón al borde
+  float anillo = abs(length(p - m) - dm);
+  color = mix(color, vec3(1.0, 1.0, 0.2), 1.0 - smoothstep(0.003, 0.008, anillo));
+  color = mix(color, vec3(1.0, 1.0, 0.2), 1.0 - smoothstep(0.012, 0.018, length(p - m)));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Mira las curvas de nivel de cada forma, porque cuentan su historia. En el círculo son círculos concéntricos equidistantes. En la caja son rectángulos de esquinas <strong>redondeadas</strong> por fuera (a partir de una esquina, los puntos a igual distancia forman un arco) y rectángulos de esquinas <strong>vivas</strong> por dentro. La caja redondeada no es más que una caja más pequeña con el campo rebajado en el radio <code>r</code>: su curva de nivel <code>c</code> es la curva <code>c + r</code> de la caja pequeña, así que las esquinas tienen radio <code>r + c</code>: redondeadas por fuera, y por dentro hasta una profundidad <code>r</code>, donde se vuelven vivas. Y el anillo es el círculo «doblado» por el valor absoluto: el campo del círculo con su interior plegado hacia fuera.</p>
+
+<div class="quiz">
+  <p class="pregunta">La SDF de una forma vale −0.2 en un píxel. ¿Qué sabes de ese píxel?</p>
+  <ul>
+    <li>Que está fuera de la forma, a 0.2 unidades del borde<div class="explicacion">Al revés: por convenio, la SDF es negativa dentro. Fuera, valdría +0.2.</div></li>
+    <li data-correcta>Que está dentro de la forma, y que el punto del borde más cercano está a 0.2 unidades<div class="explicacion">Exacto: el signo dice de qué lado, el valor absoluto a qué distancia. Un círculo de radio 0.2 centrado en ese píxel toca el borde y cabe entero dentro de la forma.</div></li>
+    <li>Que está a 0.2 del centro de la forma<div class="explicacion">La distancia es al borde, no al centro. Solo en el círculo se calcula a partir del centro (restando el radio).</div></li>
+  </ul>
+</div>
+
+<h2>Las primeras SDF</h2>
+
+<h3>La caja: una derivación completa</h3>
+<p>La SDF de un rectángulo centrado en el origen, con semitamaño <code>b</code> (la mitad del ancho y del alto), es una de las fórmulas más famosas de Iñigo Quilez. Tiene dos líneas que parecen magia:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+</script>
+<p>No es magia; es un razonamiento de cuatro pasos. Síguelo con la demo: arrastra el punto <code>p</code> por todo el plano y el punto <code>b</code> para cambiar la caja.</p>
+
+<div class="demo" id="demo-caja">
+  <div class="demo-lienzo" style="height:330px"></div>
+  <div class="demo-info"></div>
+</div>
+
+<ol>
+  <li><strong>Simetría: <code>abs(p)</code>.</strong> La caja es simétrica respecto a los dos ejes, así que la distancia de <code>(x, y)</code> es la misma que la de <code>(|x|, |y|)</code>. Con <code>abs</code> reducimos todo el plano al primer cuadrante (el punto gris <code>|p|</code> de la demo cuando <code>p</code> está en otro cuadrante). A partir de aquí, solo hay que resolver una esquina.</li>
+  <li><strong>El vector <code>q = abs(p) - b</code></strong> (la flecha rosa) va de la esquina de la caja al punto. Sus componentes son la distancia <em>con signo</em> a cada una de las dos rectas que forman los lados: <code>q.x &gt; 0</code> significa «a la derecha del lado vertical», <code>q.y &gt; 0</code>, «por encima del horizontal».</li>
+  <li><strong>Fuera</strong> hay tres zonas (las tres sombras de colores). Frente al lado vertical (verde: <code>q.x &gt; 0</code>, <code>q.y ≤ 0</code>), el borde más cercano es ese lado y la distancia es <code>q.x</code>. Encima del lado horizontal (azul), es <code>q.y</code>. En la zona de la esquina (naranja, las dos positivas), el punto más cercano es la esquina misma y la distancia es <code>length(q)</code>. Las tres se escriben igual: <code>length(max(q, 0.0))</code>, porque <code>max</code> anula las componentes negativas. En la zona verde, <code>max(q, 0.0) = (q.x, 0)</code> y su longitud es <code>q.x</code>; en la naranja no anula nada.</li>
+  <li><strong>Dentro</strong> (<code>q.x ≤ 0</code> y <code>q.y ≤ 0</code>) el primer término vale 0 y trabaja el segundo. El borde más cercano es el lado al que estamos más próximos, es decir, la componente de <code>q</code> más cercana a cero, que es la mayor: <code>max(q.x, q.y)</code>, negativa. El <code>min(…, 0.0)</code> apaga este término fuera, donde el máximo sería positivo.</li>
+</ol>
+<p>Sumar los dos términos funciona porque nunca trabajan a la vez: fuera, el segundo es 0; dentro, el primero. Y fíjate en la cadena de razonamiento, porque la usarás siempre: <strong>simetrías para reducir el problema, distancias con signo a las rectas o curvas que forman el borde, y un caso por región</strong>.</p>
+
+<h3>Caja redondeada, segmento y anillo</h3>
+<p>Tres formas más, cada una con una idea que se reutiliza:</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+float sdCajaRed(vec2 p, vec2 b, float r) {
+  return sdCaja(p, b - r) - r;
+}
+
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+float capsula = sdSegmento(p, a, b) - grosor;
+float anillo  = abs(sdCirculo(p, r)) - grosor;
+</script>
+<ol>
+  <li data-l="1-3"><strong>Redondear = inflar.</strong> Restar <code>r</code> a una SDF desplaza su borde <code>r</code> unidades hacia fuera: la nueva forma es el conjunto de puntos a menos de <code>r</code> de la antigua, y sus esquinas se vuelven arcos de radio <code>r</code>. Para que el tamaño total no cambie, se parte de una caja más pequeña, <code>b - r</code>. Funciona con cualquier SDF: <code>d - r</code> redondea lo que sea.</li>
+  <li data-l="5-9"><strong>El segmento</strong> de <code>a</code> a <code>b</code>. <code>dot(pa, ba) / dot(ba, ba)</code> es la proyección de <code>p</code> sobre la recta, en fracciones del segmento (la proyección de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>): 0 en <code>a</code>, 1 en <code>b</code>. El <code>clamp</code> la recorta al segmento, así que <code>a + ba * h</code> es el punto del segmento más cercano a <code>p</code> y la línea 8 mide la distancia hasta él. Esta SDF no tiene interior: vale 0 sobre el segmento y es positiva en todas partes.</li>
+  <li data-l="11"><strong>Una cápsula</strong> (o una línea con grosor y extremos redondos) es el segmento inflado: inflar da grosor a algo que no lo tenía.</li>
+  <li data-l="12"><strong>Un anillo</strong> es un círculo con <code>abs</code>: el valor absoluto convierte la SDF en la distancia al borde sin signo (el interior pasa a ser positivo), y restar el grosor la infla. Vale para cualquier forma: <code>abs(d) - w</code> es el contorno de lo que sea. Iñigo Quilez lo llama <em>onion</em> (cebolla), porque repetirlo da capas concéntricas.</li>
+</ol>
+</div>
+<p>Iñigo Quilez mantiene un catálogo con decenas de SDF 2D exactas (triángulos, polígonos, arcos, estrellas, corazones…), todas derivadas con la misma técnica. Enlace al final de la lección.</p>
+
+<h2>Del número al píxel: el borde perfecto</h2>
+<p>Tienes una SDF. ¿Qué opacidad le das a cada píxel? En 6.2 viste que <code>step</code> produce dientes de sierra y que un <code>smoothstep</code> de un píxel de ancho los elimina. Con una SDF podemos afinar más, porque sabemos exactamente qué representa el número: si <code>d</code> está en unidades de la escena y un píxel mide <code>px</code> unidades, entonces <code>d / px</code> es la distancia del centro del píxel al borde <strong>medida en píxeles</strong>. Si el borde es una recta (y a escala de un píxel, cualquier curva suave lo es), la fracción del píxel que queda dentro es aproximadamente:</p>
+$$\text{cobertura} = \operatorname{clamp}\!\left(0.5 - \frac{d}{px},\ 0,\ 1\right)$$
+<p>Con el borde pasando por el centro del píxel (<code>d = 0</code>), la mitad: 0.5. Medio píxel hacia dentro (<code>d = -px/2</code>), cubierto entero. Medio píxel hacia fuera, nada. Es una rampa lineal de un píxel de ancho, centrada en el borde, y es exactamente la cobertura de un semiplano sobre un píxel cuadrado en la dirección de los ejes (el filtro de caja). <code>smoothstep(-px/2, px/2, …)</code> da un resultado casi idéntico; lo importante no es la curva, sino que <strong>la transición mida un píxel</strong>. Hay dos maneras de saber cuánto mide un píxel:</p>
+<ul>
+  <li><strong>Calcularlo</strong>, si conoces la escala: con <code>p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y</code>, un píxel mide <code>2.0 / u_resolution.y</code>; si además escalas el espacio por <code>s</code>, <code>px / s</code> (6.2). Es lo más barato y lo más robusto, cuando es posible.</li>
+  <li><strong>Pedírselo a la GPU</strong> con <code>fwidth(d)</code>: cuánto cambia <code>d</code> de un píxel al siguiente. Como una SDF exacta cambia una unidad por unidad de distancia, <code>fwidth(d)</code> es el tamaño del píxel en las unidades de <code>d</code>, sin que tengas que saber cómo se ha transformado el espacio. Es la única opción cuando la transformación no es uniforme: una deformación, coordenadas polares, una perspectiva.</li>
+</ul>
+<p>Compara las cuatro formas de pintar el borde en el editor de abajo, y usa el zoom: acerca y aleja la escena para ver cuál aguanta.</p>
+
+<div class="glsl-playground" data-titulo="Cuatro maneras de pintar un borde" data-altura="260" data-apilado data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":3,"valor":0,"etiqueta":"modo"},"u_zoom":{"tipo":"float","min":0.25,"max":4,"valor":1,"etiqueta":"zoom"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_modo;     // 0 step · 1 ancho fijo · 2 px calculado · 3 fwidth
+uniform float u_zoom;
+out vec4 fragColor;
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  p /= u_zoom;                                   // acercar la escena
+  float px = 2.0 / u_resolution.y / u_zoom;      // un píxel, en unidades de la escena
+  float anillo = abs(length(p - vec2(-0.55, 0.0)) - 0.35) - 0.02;
+  float caja = sdCaja(rot(-0.35) * (p - vec2(0.55, 0.0)), vec2(0.3, 0.2));
+  float d = min(anillo, caja);
+  float a;
+  if (u_modo == 0)      a = step(d, 0.0);                          // dientes
+  else if (u_modo == 1) a = 1.0 - smoothstep(-0.01, 0.01, d);      // ancho fijo
+  else if (u_modo == 2) a = clamp(0.5 - d / px, 0.0, 1.0);         // escala conocida
+  else                  a = clamp(0.5 - d / fwidth(d), 0.0, 1.0);  // derivadas
+  fragColor = vec4(mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.8, 0.4), a), 1.0);
+}
+</script>
+</div>
+
+<ul>
+  <li><strong>Modo 0</strong>, <code>step</code>: dientes de sierra en la caja inclinada y en las curvas.</li>
+  <li><strong>Modo 1</strong>, un <code>smoothstep</code> con un ancho fijo de 0.02 unidades. Con el zoom a 1 y 260 píxeles de alto son unos 2.6 píxeles: se ve algo blando. Con zoom 4, la transición mide 10 píxeles y todo sale borroso; con zoom 0.25, menos de un píxel y vuelven los dientes. Es el error más común: el ancho está en unidades de la escena, no en píxeles.</li>
+  <li><strong>Modo 2</strong>, la cobertura con <code>px</code> calculado: un píxel exacto con cualquier zoom, porque <code>px</code> tiene en cuenta el zoom.</li>
+  <li><strong>Modo 3</strong>, la cobertura con <code>fwidth(d)</code>: el mismo resultado sin haber escrito la escala en ningún sitio. La GPU la ha medido.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m6a-borde-fijo" data-titulo="El borde es borroso en una pantalla y dentado en otra">
+  <p><strong>Síntoma:</strong> las formas se ven nítidas en tu monitor, pero borrosas a pantalla completa o en un monitor con más resolución; o al revés, dentadas en un móvil. El grosor del borde suave cambia al redimensionar.</p>
+  <p><strong>Causa:</strong> el ancho de la transición está escrito en unidades de la escena (<code>smoothstep(0.0, 0.01, d)</code>), que equivalen a un número de píxeles distinto en cada tamaño de lienzo y en cada <code>devicePixelRatio</code>.</p>
+  <p><strong>Solución:</strong> mide el ancho en píxeles: <code>clamp(0.5 - d / px, 0.0, 1.0)</code> con <code>px = 2.0 / u_resolution.y</code> (dividido por las escalas que apliques al espacio), o con <code>px = fwidth(d)</code>. Así el borde mide un píxel físico en cualquier pantalla.</p>
+</div>
+
+<h3>Cómo calcula la GPU una derivada</h3>
+<p>En <a href="02-pensar-en-paralelo.html">6.2</a> viste que la GPU ejecuta los fragmentos en quads de 2 × 2 y que <code>dFdx(v)</code> es la diferencia del valor de <code>v</code> entre los dos píxeles de una misma fila del quad. <code>fwidth(v)</code> es, por definición, <code>abs(dFdx(v)) + abs(dFdy(v))</code>. Tres consecuencias que distinguen a quien usa <code>fwidth</code> de quien lo entiende:</p>
+<ul>
+  <li><strong>Es una aproximación gruesa.</strong> En nuestra GPU, las dos columnas de cada pareja reciben la misma derivada (lo mediste en 6.2). Para una SDF, que varía de forma casi lineal, da igual; para algo que cambia bruscamente entre dos píxeles, no.</li>
+  <li><strong>No es la longitud del gradiente</strong>, sino la suma de los valores absolutos (norma L1). Medimos <code>fwidth(d)</code> en el borde de un círculo: 1.03 píxeles en el borde horizontal, <strong>1.40</strong> a 45°. Con <code>fwidth</code>, los bordes diagonales salen un 40 % más suaves que los horizontales. Si quieres un borde idéntico en todas direcciones, usa la longitud: <code>length(vec2(dFdx(d), dFdy(d)))</code>, que medimos entre 0.99 y 1.00 en las cuatro direcciones.</li>
+  <li><strong>Necesita a los cuatro píxeles del quad.</strong> Si un triángulo cubre solo un píxel del quad, la GPU ejecuta el shader también en los otros tres (<em>helper invocations</em>, <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>) para tener con qué restar, y tira sus resultados. Y si dentro del quad unos píxeles entran en un <code>if</code> y otros no, los que no entran no calculan lo que hay dentro, y la derivada de un valor calculado ahí dentro no está definida.</li>
+</ul>
+
+<div class="callout senior" data-titulo="Derivadas en control de flujo no uniforme">
+  <p>La especificación de GLSL dice que las derivadas (y, por la misma razón, el mipmap que elige <code>texture()</code>) son indefinidas dentro de un control de flujo <strong>no uniforme</strong>: un <code>if</code>, un bucle o un <code>return</code> cuya condición puede ser distinta entre los píxeles de un mismo quad. Lo comprobamos en Chrome sobre un M1. En los casos sencillos sale bien, presumiblemente porque el compilador saca el cálculo fuera del <code>if</code> (es barato y no tiene efectos secundarios) y los cuatro carriles lo tienen. Pero con un valor que se calcula dentro de la rama con un bucle de longitud variable, el carril inactivo aportó un 0 a la resta: la derivada esperada era 5.5 y salió <strong>10.5</strong>. Con una lectura de textura dentro de la rama, salió basura: $3.6 \times 10^{18}$ en una columna y $-4.8 \times 10^{32}$ en otra. El programa de abajo lo mide en tu GPU. La regla: calcula las derivadas (y haz las lecturas de textura con mipmaps) <strong>antes</strong> de entrar en ramas que dependan del píxel, y guarda el resultado en una variable. Las ramas que dependen de un uniform no tienen problema: son uniformes, todos los píxeles van por el mismo lado.</p>
+</div>
+
+<div class="js-playground" data-titulo="Una derivada dentro de un if divergente" data-altura="100" data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:14px 16px;font:14px monospace;color:#8791a5">Los valores salen en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+gl.getExtension('EXT_color_buffer_float');
+const vs = `#version 300 es
+void main() { gl_Position = vec4(vec2(gl_VertexID & 1, gl_VertexID >> 1) * 4.0 - 1.0, 0.0, 1.0); }`;
+const fs = `#version 300 es
+precision highp float;
+out vec4 o;
+void main() {
+  float x = gl_FragCoord.x;                 // 0.5, 1.5, 2.5...
+  float fuera = dFdx(x * x);                // flujo uniforme: correcta
+  float dentro = -1.0;
+  if (mod(x - 0.5, 2.0) > 0.5) {            // solo las columnas impares
+    float q = 0.0;
+    for (int i = 0; i < int(x); i++) q += x;   // q = x * int(x), con un bucle
+    dentro = dFdx(q);                       // ¿quién calculó q en la columna par?
+  }
+  o = vec4(fuera, dentro, 0.0, 1.0);
+}`;
+const prog = GLKit.crearPrograma(gl, vs, fs);
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, 8, 2);   // 2 filas: quads completos
+gl.bindFramebuffer(gl.FRAMEBUFFER, gl.createFramebuffer());
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+gl.viewport(0, 0, 8, 2);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const px = new Float32Array(8 * 4);
+gl.readPixels(0, 0, 8, 1, gl.RGBA, gl.FLOAT, px);        // la fila de abajo
+const q = (x) => x * Math.floor(x);
+console.log('columna  dFdx(x²) fuera   dFdx(q) dentro   esperado');
+for (const c of [1, 3, 5, 7]) {
+  const x = c + 0.5, esperado = q(x) - q(x - 1);
+  console.log(String(c).padEnd(9) + String(px[c * 4]).padEnd(17) + String(px[c * 4 + 1]).padEnd(17) + esperado);
+}
+</script>
+</div>
+
+<div class="callout bestiario" data-id="m6a-derivadas-rama" data-titulo="Píxeles sueltos con el borde mal suavizado, o una línea rara en el límite de un if">
+  <p><strong>Síntoma:</strong> el antialiasing hecho con <code>fwidth</code> falla en algunos píxeles aislados, o aparece una fila de píxeles raros justo donde cambia la condición de un <code>if</code> (el límite de una caja envolvente, el borde de una zona). Con una textura con mipmaps, los píxeles de ese límite salen borrosos o nítidos de más. Puede verse en una GPU y no en otra.</p>
+  <p><strong>Causa:</strong> la derivada (o la lectura de textura) se hace dentro de una rama que no todos los píxeles del quad de 2 × 2 toman. Los píxeles que no entran no calculan el valor, y la resta que da la derivada mezcla un valor real con uno inexistente.</p>
+  <p><strong>Solución:</strong> calcula <code>fwidth</code> (y las lecturas <code>texture()</code> con mipmaps) antes del <code>if</code>, en flujo uniforme, y usa el resultado dentro. Si no puedes, usa el tamaño del píxel calculado (<code>px</code>), o <code>textureLod</code>/<code>textureGrad</code> con el nivel o las derivadas calculadas fuera.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué devuelve exactamente <code>fwidth(d)</code>?</p>
+  <ul>
+    <li>La distancia en píxeles desde el píxel hasta el borde de la forma<div class="explicacion">Eso sería <code>d / px</code>. <code>fwidth</code> no sabe nada de bordes: mide cuánto cambia <code>d</code> entre píxeles vecinos.</div></li>
+    <li data-correcta><code>abs(dFdx(d)) + abs(dFdy(d))</code>: cuánto cambia <code>d</code> de un píxel al vecino, sumando horizontal y vertical<div class="explicacion">Correcto. Para una SDF exacta es aproximadamente el tamaño de un píxel en las unidades de <code>d</code> (entre 1 y 1.41 píxeles según la dirección del borde, por ser una suma y no una longitud).</div></li>
+    <li>El ancho del borde de la forma, en unidades de la escena<div class="explicacion">La forma no tiene «ancho de borde» propio: el borde es donde <code>d = 0</code>. El ancho de la transición lo decides tú usando <code>fwidth</code> como regla para medir un píxel.</div></li>
+  </ul>
+</div>
+
+<h2>Contornos, brillos y sombras</h2>
+<p>Con una SDF, un efecto es una función de <code>d</code>. Los tres clásicos, en el mismo editor, compuestos como capas (del fondo hacia delante, como en 6.2):</p>
+<ul>
+  <li><strong>Sombra:</strong> la misma SDF, evaluada en un punto desplazado (<code>escena(p - desplazamiento)</code>, es decir, la forma movida en el sentido en que viaja la luz: si la luz viene de arriba a la izquierda, la sombra cae abajo a la derecha, 6.2) y con una transición muy ancha: un borde suave de varias décimas es una sombra difusa.</li>
+  <li><strong>Brillo</strong> (<em>glow</em>): una función que cae con la distancia, fuera de la forma: <code>exp(-k * max(d, 0.0))</code>. Cuanto mayor es <code>k</code>, más ceñido el halo. El otro clásico, el de los carteles de neón, es <code>0.01 / abs(d)</code>, que crece sin límite junto al borde (protégelo de la división por cero con un <code>max</code>).</li>
+  <li><strong>Contorno:</strong> <code>abs(d) - grosor</code> es la SDF de una banda alrededor del borde, y se pinta con la misma cobertura que cualquier forma.</li>
+</ul>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.3.1 — Un botón con sombra, brillo y contorno</h3>
+<p>Un botón de interfaz: una caja redondeada con sombra, un brillo que se enciende cuando el ratón está encima, relleno y un contorno claro. Todo sale de una sola función, <code>escena</code>, evaluada tres veces.</p>
+<div class="glsl-playground" data-titulo="Un botón hecho con una SDF" data-altura="260" data-apilado data-uniforms='{"u_grosor":{"tipo":"float","min":0.0,"max":0.05,"valor":0.012,"etiqueta":"contorno"},"u_k":{"tipo":"float","min":2,"max":40,"valor":10,"etiqueta":"k del brillo"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_time, u_grosor, u_k;
+out vec4 fragColor;
+
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+float escena(vec2 p) { return sdCaja(p, vec2(0.7, 0.25) - 0.2) - 0.2; }
+float cubre(float d, float px) { return clamp(0.5 - d / px, 0.0, 1.0); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float d = escena(p);
+  float encima = step(escena(m), 0.0);          // ¿el ratón está dentro?
+  vec3 col = vec3(0.24, 0.25, 0.31);            // fondo claro: así se ve la sombra
+  // 1) sombra: la forma desplazada, con un borde muy ancho
+  float ds = escena(p - vec2(0.04, -0.07));
+  col = mix(col, vec3(0.0), 0.55 * (1.0 - smoothstep(-0.05, 0.18, ds)));
+  // 2) brillo: cae con la distancia, más intenso con el ratón encima
+  float brillo = exp(-u_k * max(d, 0.0)) * mix(0.25, 0.9, encima);
+  col += vec3(0.45, 0.35, 1.0) * brillo * (0.85 + 0.15 * sin(u_time * 4.0));
+  // 3) relleno
+  col = mix(col, vec3(0.33, 0.28, 0.78), cubre(d, px));
+  // 4) contorno: una banda de u_grosor a cada lado del borde
+  col = mix(col, vec3(0.85, 0.82, 1.0), cubre(abs(d) - u_grosor, px));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+<ol>
+  <li><strong>La función <code>escena</code></strong> es la caja redondeada: semitamaño (0.7, 0.25) y radio 0.2, con el truco de partir de una caja más pequeña. <code>cubre</code> es la cobertura de un píxel; la usaremos para todo lo que tenga borde nítido.</li>
+  <li><strong>La sombra</strong> evalúa la misma forma en <code>p - (0.04, −0.07)</code>: la forma desplazada hacia la derecha y hacia abajo, como si la luz viniera de arriba a la izquierda. La transición de −0.05 a 0.18 unidades (decenas de píxeles) es lo que la hace difusa, y oscurecer un 55 % la hace sutil. Va la primera porque está detrás de todo.</li>
+  <li><strong>El brillo</strong> usa <code>max(d, 0.0)</code> para que dentro valga 1 (allí lo tapará el relleno) y fuera caiga exponencialmente. Mueve el deslizador de <code>k</code>: con 2, un halo enorme; con 40, apenas un filo. <code>encima</code> es una comprobación de interfaz de verdad: la SDF en la posición del ratón es negativa si el ratón está sobre el botón. Pasa el ratón por encima.</li>
+  <li><strong>El relleno</strong> es la cobertura de <code>d</code>, y <strong>el contorno</strong>, la de <code>abs(d) - u_grosor</code>: una banda de <code>2 * u_grosor</code> centrada en el borde. Con el deslizador a 0 la banda casi desaparece (su SDF, <code>abs(d)</code>, nunca es negativa: solo queda un hilo de un píxel, con una opacidad máxima de 0.5, justo en el borde).</li>
+</ol>
+</section>
+
+<div class="callout hack" data-titulo="Contornos de contornos">
+  <p>Como <code>abs(d) - w</code> es otra SDF, se puede volver a aplicar: <code>abs(abs(d) - 0.1) - 0.02</code> son dos contornos finos a 0.1 unidades a cada lado del borde, y repetido con <code>abs(mod(d, 0.1) - 0.05)</code> sale un número ilimitado de contornos concéntricos, como las curvas de nivel de un mapa, que siguen la forma sea cual sea. Es el mismo principio que la visualización de Quilez: todos los efectos «de borde» son funciones de una sola variable aplicadas a la distancia.</p>
+</div>
+
+<h2>Combinar formas</h2>
+<p>Si <code>a</code> y <code>b</code> son las SDF de dos formas, las operaciones booleanas son una línea cada una. La unión es el mínimo, porque la distancia a «la forma A o la forma B» es la distancia a la más cercana. La intersección es el máximo, porque para estar dentro de las dos hay que estar dentro de la más exigente. Y la resta A − B es la intersección de A con el exterior de B, y el exterior de B se obtiene cambiando el signo de su SDF:</p>
+<table>
+  <thead><tr><th>Operación</th><th>SDF</th><th>¿Sigue siendo una distancia exacta?</th></tr></thead>
+  <tbody>
+    <tr><td>Unión A ∪ B</td><td><code>min(a, b)</code></td><td>Fuera, sí. Dentro de la zona común, no: da la distancia al borde de una de las dos, que puede estar tapado por la otra.</td></tr>
+    <tr><td>Intersección A ∩ B</td><td><code>max(a, b)</code></td><td>No en general: es una <em>cota</em>, nunca mayor que la distancia real.</td></tr>
+    <tr><td>Resta A − B</td><td><code>max(a, -b)</code></td><td>Una cota, como la intersección.</td></tr>
+    <tr><td>Complemento</td><td><code>-a</code></td><td>Sí: el interior pasa a ser exterior.</td></tr>
+    <tr><td>O exclusivo</td><td><code>max(min(a, b), -max(a, b))</code></td><td>Una cota.</td></tr>
+  </tbody>
+</table>
+<p>Pruébalas. El círculo está fijo y la caja sigue al ratón; los contornos finos son las dos formas originales. Mira las curvas de nivel dentro de la unión, junto a la zona donde se solapan: se «rompen», porque allí la distancia ya no es la real.</p>
+
+<div class="glsl-playground" data-titulo="Unión, intersección, resta y xor" data-altura="280" data-apilado data-uniforms='{"u_op":{"tipo":"int","min":0,"max":4,"valor":0,"etiqueta":"operación"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform int u_op;      // 0 unión · 1 intersección · 2 A-B · 3 B-A · 4 xor
+out vec4 fragColor;
+
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+vec3 campo(float d) {
+  vec3 c = d > 0.0 ? vec3(0.9, 0.6, 0.3) : vec3(0.65, 0.85, 1.0);
+  c *= 1.0 - exp(-6.0 * abs(d));
+  c *= 0.8 + 0.2 * cos(150.0 * d);
+  return mix(c, vec3(1.0), 1.0 - smoothstep(0.0, 0.01, abs(d)));
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  float a = length(p - vec2(-0.25, 0.0)) - 0.45;       // A: círculo fijo
+  float b = sdCaja(p - m - vec2(0.3, 0.0), vec2(0.35, 0.3));   // B: caja
+  float d;
+  if (u_op == 0)      d = min(a, b);
+  else if (u_op == 1) d = max(a, b);
+  else if (u_op == 2) d = max(a, -b);
+  else if (u_op == 3) d = max(b, -a);
+  else                d = max(min(a, b), -max(a, b));
+  vec3 color = campo(d);
+  float px = 2.0 / u_resolution.y;
+  color = mix(color, vec3(0.1), 0.6 * clamp(1.0 - abs(a) / px, 0.0, 1.0));   // A
+  color = mix(color, vec3(0.1), 0.6 * clamp(1.0 - abs(b) / px, 0.0, 1.0));   // B
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tienes <code>a</code>, la SDF de un círculo, y <code>b</code>, la de una caja más grande. Quieres la caja con un agujero circular. ¿Qué escribes?</p>
+  <ul>
+    <li><code>min(a, b)</code><div class="explicacion">Esa es la unión: la caja y el círculo juntos. Como el círculo está dentro de la caja, sale la caja sin agujero.</div></li>
+    <li><code>max(a, -b)</code><div class="explicacion">Eso es A − B: el círculo menos la caja. Como el círculo está entero dentro de la caja, no queda nada.</div></li>
+    <li data-correcta><code>max(b, -a)</code><div class="explicacion">Correcto: dentro de la caja (<code>b &lt; 0</code>) y fuera del círculo (<code>-a &lt; 0</code>, es decir, <code>a &gt; 0</code>). El máximo es negativo solo donde se cumplen las dos cosas.</div></li>
+    <li><code>a * b</code><div class="explicacion">Multiplicar distancias no significa nada geométrico: el signo del producto es negativo donde exactamente una de las dos es negativa, pero su valor no es una distancia y el borde saldría con un grosor incorrecto.</div></li>
+  </ul>
+</div>
+
+<h3>Unión suave: <code>smin</code></h3>
+<p>El mínimo produce una arista viva donde se juntan las dos formas: en la gráfica de <code>min(a, b)</code> hay un pico. La <strong>unión suave</strong> sustituye ese pico por una curva, y las formas se funden como gotas. Esta es la versión polinómica de Iñigo Quilez:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+float smin(float a, float b, float k) {
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
+}
+</script>
+<p>Léela así. <code>h</code> mide lo cerca que están las dos distancias, en fracciones de <code>k</code>: vale 1 donde <code>a = b</code> (el pico de la unión) y 0 en cuanto se diferencian en <code>k</code> o más. Fuera de esa franja, <code>smin</code> es exactamente <code>min</code>. Dentro, al mínimo se le resta una parábola, <code>h² k / 4</code>, que como mucho vale <code>k / 4</code>, justo en el pico. Así que <code>k</code> es el <strong>ancho de la zona de fusión, en unidades de distancia</strong>: con <code>k = 0.1</code>, las formas se hinchan la una hacia la otra allí donde sus distancias difieren en menos de 0.1, y el hinchado máximo es 0.025. Dos formas separadas por un hueco <code>g</code> llegan a unirse con un puente cuando <code>g &lt; k/2</code>: en el punto medio del hueco, <code>a = b = g/2</code>, <code>h = 1</code> y la distancia suavizada vale <code>g/2 − k/4</code>, negativa si el hueco es menor que <code>k/2</code>. En la gráfica, <code>a</code> y <code>b</code> son las distancias a dos puntos (dos «uves») y el deslizador es <code>k</code>:</p>
+
+<div class="graficador" data-x="-1.5,1.5" data-y="-0.4,1.0" data-titulo="min contra smin" data-uniforms='{"k":{"min":0.01,"max":1.0,"valor":0.4}}'>
+<script type="text/x-exprs">
+min(abs(x + 0.5) - 0.3, abs(x - 0.5) - 0.3)
+smin(abs(x + 0.5) - 0.3, abs(x - 0.5) - 0.3, k)
+</script>
+<script type="text/x-glsl">
+float smin(float a, float b, float k) {
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
+}
+</script>
+</div>
+
+<p>La curva <code>f1</code> es la unión: un pico en <code>x = 0</code>, donde las dos distancias valen 0.2. La <code>f2</code> es la unión suave: coincide con <code>f1</code> lejos del pico y lo redondea cerca, bajando <code>k / 4</code> justo en el centro (0.1 con <code>k = 0.4</code>). Por eso las formas se hinchan donde se juntan: la curva de nivel 0 se desplaza hacia fuera.</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.3.2 — Gotas que se funden</h3>
+<p>Tres círculos: dos fijos y uno que sigue al ratón. Con <code>smin</code> se funden, y además mezclamos sus colores en la zona de fusión con un factor que sale de la misma cuenta.</p>
+<div class="glsl-playground" data-titulo="Unión suave con colores" data-altura="260" data-apilado data-uniforms='{"u_k":{"tipo":"float","min":0.0,"max":0.6,"valor":0.25,"etiqueta":"k"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_time, u_k;
+out vec4 fragColor;
+
+// smin que además devuelve cuánto pesa b en la mezcla (0: todo a, 1: todo b)
+vec2 sminMezcla(float a, float b, float k) {
+  k = max(k, 1e-5);                          // k = 0 daría 0/0 (ver el bicho)
+  float h = max(k - abs(a - b), 0.0) / k;
+  float s = h * h * k * 0.25;
+  float m = 0.5 * h * h;                     // 0.5 cuando a = b
+  return a < b ? vec2(a - s, m) : vec2(b - s, 1.0 - m);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 c1 = vec2(-0.55, 0.1 * sin(u_time)), c2 = vec2(0.5, -0.1);
+  vec2 r = sminMezcla(length(p - c1) - 0.3, length(p - c2) - 0.35, u_k);
+  vec3 col = mix(vec3(1.0, 0.45, 0.45), vec3(0.4, 0.7, 1.0), r.y);
+  vec2 r2 = sminMezcla(r.x, length(p - m) - 0.2, u_k);
+  col = mix(col, vec3(1.0, 0.85, 0.35), r2.y);
+  float a = clamp(0.5 - r2.x / px, 0.0, 1.0);
+  fragColor = vec4(mix(vec3(0.09, 0.10, 0.13), col, a), 1.0);
+}
+</script>
+</div>
+<ol>
+  <li><strong><code>sminMezcla</code></strong> devuelve dos números en un <code>vec2</code>: la distancia suavizada y el peso de <code>b</code>. Donde <code>a</code> domina, el peso es <code>m</code>, que va de 0 (lejos) a 0.5 (en el punto medio); donde domina <code>b</code>, es <code>1 - m</code>. Así la mezcla de colores es continua a lo largo de la fusión.</li>
+  <li><strong>La primera línea</strong> protege de <code>k = 0</code>. Baja el deslizador a 0: las formas se tocan con arista viva pero siguen ahí. Sin esa línea desaparecerían; es el bicho de más abajo.</li>
+  <li><strong>Se encadena</strong>: el resultado de fundir los dos primeros círculos se funde con el del ratón, arrastrando su color. Acerca el círculo amarillo a los otros y aléjalo despacio: verás el «cuello» que se estira y se rompe.</li>
+</ol>
+</section>
+
+<div class="callout bestiario" data-id="m6a-smin-k-cero" data-titulo="La unión suave desaparece (o sale negra) cuando k llega a 0">
+  <p><strong>Síntoma:</strong> una animación que reduce el suavizado hasta 0, o un deslizador de <code>k</code> en su mínimo, hace que las formas fundidas desaparezcan de golpe, salgan negras o llenas de agujeros, o (según cómo se pinte la cobertura) que todo el lienzo se llene del color de la forma.</p>
+  <p><strong>Causa:</strong> <code>h = max(k - abs(a - b), 0.0) / k</code> con <code>k = 0</code> es 0 / 0. Lo medimos: da NaN, y el NaN contagia a toda la distancia (<a href="../03-matematicas/07-precision.html">3.7</a>), que ya no es menor que nada. Lo que se ve depende de cómo consuma la cobertura ese NaN: con <code>clamp(0.5 - d / px, 0.0, 1.0)</code> sale 0 (la forma desaparece); con <code>1.0 - smoothstep(…, d)</code> salió 1 (el lienzo entero se pinta), en nuestra GPU.</p>
+  <p><strong>Solución:</strong> <code>k = max(k, 1e-5);</code> al principio de <code>smin</code>. Con un <code>k</code> diminuto, <code>smin</code> es indistinguible de <code>min</code> y no hay división por cero. Es la regla general de 6.1: no dependas de lo indefinido, elimínalo.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En <code>smin(a, b, k)</code>, ¿qué controla <code>k</code>?</p>
+  <ul>
+    <li>La proporción de cada forma en el resultado: con <code>k = 0.5</code>, mitad y mitad<div class="explicacion">No hay proporciones: fuera de la zona de fusión, el resultado es exactamente <code>min(a, b)</code>. La proporción que ves en los colores del ejemplo es otro número que calculamos aparte.</div></li>
+    <li data-correcta>El ancho de la zona donde las formas se funden, en unidades de distancia; el hinchado máximo es <code>k / 4</code><div class="explicacion">Correcto: solo donde <code>|a − b| &lt; k</code> se resta la parábola, y su valor máximo, en <code>a = b</code>, es <code>k / 4</code>.</div></li>
+    <li>El número de iteraciones del suavizado<div class="explicacion"><code>smin</code> es una fórmula cerrada, sin bucles. Su coste no depende de <code>k</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Transformar el dominio</h2>
+<p>Todo lo de 6.2 sobre transformar el espacio vale para las SDF, con una pregunta extra: ¿sigue siendo una distancia? Llamamos <em>operaciones de dominio</em> a las que transforman <code>p</code> antes de evaluar la SDF.</p>
+<ul>
+  <li><strong>Trasladar</strong> (<code>sdf(p - c)</code>) y <strong>girar</strong> (<code>sdf(rot(-a) * p)</code>) no cambian las distancias: son movimientos rígidos. La SDF sigue siendo exacta.</li>
+  <li><strong>Reflejar</strong> con <code>abs</code>: <code>sdf(vec2(abs(p.x), p.y))</code> dibuja la mitad derecha de la forma y su reflejo. Es la simetría que usaste dentro de <code>sdCaja</code>. La distancia sigue siendo correcta si la forma no cruza el eje de simetría.</li>
+  <li><strong>Repetir</strong> con <code>mod</code> o <code>fract</code>: infinitas copias al precio de una. Con una trampa que verás en <a href="05-patrones.html">6.5</a>: una forma que se sale de su celda aparece cortada.</li>
+  <li><strong>Escalar</strong> es la única que rompe algo, y merece su sección.</li>
+</ul>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.3.3 — Una flor con dos simetrías y un giro</h3>
+<div class="glsl-playground" data-titulo="Simetría con abs" data-altura="250" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 q = rot(-u_time * 0.5) * p;        // 1) todo gira
+  q = abs(q);                             // 2) espejo doble: 1 cuadrante → 4
+  float petalo = sdSegmento(q, vec2(0.12), vec2(0.5)) - 0.11;   // 3) un pétalo
+  float centro = length(p) - 0.12;
+  float d = min(petalo, centro);
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.55, 0.6), clamp(0.5 - d / px, 0.0, 1.0));
+  col = mix(col, vec3(1.0, 0.85, 0.35), clamp(0.5 - centro / px, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+<ol>
+  <li><strong>El giro va primero</strong>: rotamos las coordenadas antes del espejo, así que lo que gira es la flor entera. Si lo pusieras después del <code>abs</code>, el pétalo giraría dentro de su cuadrante y sus reflejos girarían en sentido contrario: la figura dejaría de girar como un todo (pruébalo).</li>
+  <li><strong><code>abs(q)</code></strong> pliega los cuatro cuadrantes sobre el primero. A partir de aquí, el código solo «sabe» dibujar en el primer cuadrante.</li>
+  <li><strong>Un solo pétalo</strong>, una cápsula a lo largo de la diagonal, se convierte en cuatro. Añadir pétalos así tiene coste cero: la SDF se evalúa una sola vez por píxel. (Para cinco o siete pétalos, el espejo no basta: hace falta la repetición polar de <a href="05-patrones.html">6.5</a>.)</li>
+</ol>
+</section>
+
+<h3>Escalar rompe la distancia</h3>
+<p>Para hacer una forma <code>s</code> veces más grande divides las coordenadas: <code>sdf(p / s)</code> (6.2). Pero el número que devuelve está medido en el espacio pequeño, el de <code>p / s</code>. Un punto a 0.1 del borde en ese espacio está a <code>0.1 · s</code> en la escena. Por tanto, la SDF de la forma escalada es:</p>
+$$d_{\text{escalada}}(p) = s \cdot \operatorname{sdf}\!\left(\frac{p}{s}\right)$$
+<p>Si olvidas multiplicar por <code>s</code>, la forma se dibuja en su sitio (el signo no cambia: el borde sigue donde <code>d = 0</code>), pero todo lo que depende del <em>valor</em> de la distancia se estropea: el antialiasing mide <code>s</code> píxeles de ancho (borroso si <code>s</code> &gt; 1, dentado si <code>s</code> &lt; 1), los contornos cambian de grosor, los brillos cambian de tamaño y el raymarching se pasa de largo. Compruébalo con el campo: con la corrección desactivada, las curvas de nivel se separan o se juntan con la escala, y el círculo del ratón deja de tocar el borde.</p>
+
+<div class="glsl-playground" data-titulo="Escalar sin corregir" data-altura="270" data-apilado data-uniforms='{"u_escala":{"tipo":"float","min":0.4,"max":3.0,"valor":2.0,"etiqueta":"escala"},"u_corregir":{"tipo":"bool","valor":false,"etiqueta":"multiplicar por la escala"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_escala;
+uniform bool u_corregir;
+out vec4 fragColor;
+
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+float forma(vec2 q) { return sdCaja(q, vec2(0.25, 0.12)) - 0.05; }
+float escena(vec2 p) {
+  float d = forma(p / u_escala);          // escalar la forma: dividir el espacio
+  return u_corregir ? d * u_escala : d;   // ...y devolver la distancia a la escena
+}
+vec3 campo(float d) {
+  vec3 c = d > 0.0 ? vec3(0.9, 0.6, 0.3) : vec3(0.65, 0.85, 1.0);
+  c *= 1.0 - exp(-6.0 * abs(d));
+  c *= 0.8 + 0.2 * cos(150.0 * d);
+  return mix(c, vec3(1.0), 1.0 - smoothstep(0.0, 0.01, abs(d)));
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y + vec2(0.9, 0.55);
+  vec3 color = campo(escena(p));
+  float dm = abs(escena(m));
+  color = mix(color, vec3(1.0, 1.0, 0.2), 1.0 - smoothstep(0.003, 0.008, abs(length(p - m) - dm)));
+  color = mix(color, vec3(1.0, 1.0, 0.2), 1.0 - smoothstep(0.012, 0.018, length(p - m)));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>(El círculo del ratón está desplazado hacia arriba a la derecha para que se vea junto a la forma antes de mover el ratón.) Con escala 2 y sin corregir, el círculo amarillo se queda a medio camino del borde: en su posición inicial, la SDF dice 0.20 donde la distancia real es 0.41. Activa la casilla y lo toca. Para una escala distinta en cada eje (<code>p / vec2(sx, sy)</code>) no existe una corrección exacta: la forma se deforma y su SDF ya no es una distancia. Lo que se hace es multiplicar por la escala menor, <code>min(sx, sy)</code>, que da una cota (nunca más que la distancia real): suficiente para el antialiasing y para el raymarching, pero con contornos de grosor desigual.</p>
+
+<div class="callout bestiario" data-id="m6a-escala-sdf" data-titulo="Al escalar una forma, el borde se emborrona o se vuelve dentado, y los contornos cambian de grosor">
+  <p><strong>Síntoma:</strong> una forma que se ve perfecta a tamaño normal sale con el borde borroso al agrandarla (o dentado al encogerla); su contorno y su brillo crecen o menguan con ella; en raymarching, los objetos escalados tienen agujeros o se atraviesan.</p>
+  <p><strong>Causa:</strong> la forma se escala dividiendo las coordenadas, <code>sdf(p / s)</code>, pero el resultado no se multiplica por <code>s</code>: la distancia sigue en las unidades del espacio pequeño, y cualquier cosa que la compare con un tamaño de la escena (un píxel, un grosor) se equivoca en un factor <code>s</code>.</p>
+  <p><strong>Solución:</strong> <code>sdf(p / s) * s</code>. Con escalas distintas por eje, <code>sdf(p / escala) * min(escala.x, escala.y)</code> como cota. Y si usas <code>fwidth(d)</code> para el antialiasing, el borde saldrá bien incluso sin corregir (<code>fwidth</code> mide las unidades que tenga <code>d</code>), pero los contornos y los brillos seguirán mal: corrige siempre.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Dibujas una forma el triple de grande con <code>float d = forma(p / 3.0);</code> y la pintas con <code>clamp(0.5 - d / px, 0.0, 1.0)</code>, con <code>px = 2.0 / u_resolution.y</code>. ¿Qué pasa?</p>
+  <ul>
+    <li>Nada: el borde está donde <code>d = 0</code>, y eso no cambia<div class="explicacion">El borde está en su sitio, sí, pero el ancho de la transición depende del valor de <code>d</code> cerca del borde, no solo de su signo.</div></li>
+    <li data-correcta>El borde sale borroso, de unos 3 píxeles: <code>d</code> está en unidades del espacio pequeño, un tercio de las de la escena<div class="explicacion">Correcto. Un píxel fuera del borde, <code>d</code> vale <code>px / 3</code>, así que la cobertura tarda tres píxeles en caer a 0. La corrección es <code>d = forma(p / 3.0) * 3.0</code>.</div></li>
+    <li>El borde sale dentado, más estrecho que un píxel<div class="explicacion">Eso pasaría al encoger la forma (dividir por algo menor que 1) sin corregir. Al agrandarla, la distancia se queda corta y la transición se ensancha.</div></li>
+  </ul>
+</div>
+
+<h2>SDF exacta o cota: por qué importa</h2>
+<p>Hemos usado dos palabras con cuidado. Una SDF es <strong>exacta</strong> si su valor es la distancia euclídea real al borde; entonces su gradiente mide 1 en todas partes (la distancia crece una unidad por unidad recorrida) y sus curvas de nivel están igualmente espaciadas. Una <strong>cota</strong> (<em>bound</em>) es una función con el mismo signo y el mismo borde cuyo valor absoluto nunca supera la distancia real, aunque pueda quedarse corto. Muchas cosas útiles producen cotas: la intersección, la resta, la unión suave, la escala no uniforme, deformar el espacio.</p>
+<p>¿Importa? Depende de para qué uses el número:</p>
+<ul>
+  <li>Para <strong>el borde</strong> y el antialiasing con <code>fwidth</code>, casi nunca: <code>fwidth</code> mide cuánto cambia el valor, sea o no una distancia exacta, y el borde está donde está.</li>
+  <li>Para <strong>el antialiasing con un <code>px</code> fijo</strong>, los <strong>contornos</strong> (<code>abs(d) - w</code>) y los <strong>brillos</strong>, sí: una cota que se queda corta dibuja contornos más gruesos y halos más grandes allí donde se queda corta.</li>
+  <li>Para <strong>el raymarching</strong> de 6.9, es crucial en un sentido concreto: una cota es segura (el rayo avanza menos de lo que podría, y tarda más), pero una función que <em>sobrestima</em> la distancia hace que el rayo atraviese los objetos. Por eso importa tanto multiplicar por la escala.</li>
+</ul>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.3.1 — Una píldora y un anillo</h3>
+  <p>Completa las dos SDF: una píldora (cápsula) que vaya de (−0.9, −0.3) a (−0.2, 0.3) con un radio de 0.15, y un anillo centrado en (0.6, 0.0) de radio 0.4 y grosor total 0.1. El código ya las pinta con un borde de un píxel.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.3.1" data-altura="230" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float pildora = 1e9;     // TODO
+  float anillo = 1e9;      // TODO
+  vec3 color = vec3(0.09, 0.10, 0.13);
+  color = mix(color, vec3(0.95, 0.45, 0.4), clamp(0.5 - pildora / px, 0.0, 1.0));
+  color = mix(color, vec3(0.4, 0.75, 1.0), clamp(0.5 - anillo / px, 0.0, 1.0));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  // cápsula = segmento inflado con el radio
+  float pildora = sdSegmento(p, vec2(-0.9, -0.3), vec2(-0.2, 0.3)) - 0.15;
+  // anillo = |círculo| inflado con la mitad del grosor total
+  float anillo = abs(length(p - vec2(0.6, 0.0)) - 0.4) - 0.05;
+  vec3 color = vec3(0.09, 0.10, 0.13);
+  color = mix(color, vec3(0.95, 0.45, 0.4), clamp(0.5 - pildora / px, 0.0, 1.0));
+  color = mix(color, vec3(0.4, 0.75, 1.0), clamp(0.5 - anillo / px, 0.0, 1.0));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Una cápsula es un segmento inflado: su SDF menos el radio.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Un anillo es <code>abs</code> de la SDF del círculo menos la mitad del grosor total (la banda se extiende a los dos lados del borde).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Las dos formas son «inflar algo»: el segmento no tiene interior (su SDF vale 0 sobre él), y restarle 0.15 lo convierte en el conjunto de puntos a menos de 0.15 del segmento, que es una cápsula con extremos semicirculares. El círculo sí tiene interior; <code>abs</code> lo pliega (dentro pasa a ser positivo) y el resultado es la distancia a la circunferencia, que inflada 0.05 da una banda de 0.1 de grosor centrada en el radio 0.4.</p>
+    <p>El valor inicial <code>1e9</code> es una SDF «muy lejana»: la cobertura es 0 en todas partes. Es el valor habitual para inicializar una unión que se irá construyendo con <code>min</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.3.2 — Un candado</h3>
+  <p>Construye un candado con operaciones booleanas: un <strong>cuerpo</strong> (caja redondeada centrada en (0, −0.2), semitamaño (0.4, 0.3), radio de esquina 0.08), un <strong>arco</strong> (la parte de arriba de un anillo centrado en (0, 0.1), de radio 0.28 y grosor total 0.12, cortado por la recta <em>y</em> = 0: así sus extremos se hunden un poco en el cuerpo) y un <strong>ojo de cerradura</strong> hueco (un círculo de radio 0.07 en (0, −0.15) unido a una caja de semitamaño (0.03, 0.09) en (0, −0.26)), restado del cuerpo. Píntalo dorado, con un contorno claro de 0.012 a cada lado del borde.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.3.2" data-altura="270" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+float cubre(float d, float px) { return clamp(0.5 - d / px, 0.0, 1.0); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float cuerpo = 1e9;      // TODO
+  float arco = 1e9;        // TODO: la parte del anillo por encima de y = 0
+  float ojo = 1e9;         // TODO
+  float d = 1e9;           // TODO: (cuerpo - ojo) unido al arco
+  vec3 col = vec3(0.09, 0.10, 0.13);
+  col = mix(col, vec3(0.93, 0.72, 0.28), cubre(d, px));
+  col = mix(col, vec3(1.0, 0.95, 0.8), cubre(abs(d) - 0.012, px));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+float cubre(float d, float px) { return clamp(0.5 - d / px, 0.0, 1.0); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  // caja redondeada: una caja más pequeña, inflada con el radio
+  float cuerpo = sdCaja(p - vec2(0.0, -0.2), vec2(0.4, 0.3) - 0.08) - 0.08;
+  // anillo, intersecado con el semiplano y > 0 (su SDF: -y). Se corta en
+  // y = 0, no en 0.1, para que sus extremos entren en el cuerpo
+  float anillo = abs(length(p - vec2(0.0, 0.1)) - 0.28) - 0.06;
+  float arco = max(anillo, -p.y);
+  // ojo: unión de un círculo y una caja
+  float ojo = min(length(p - vec2(0.0, -0.15)) - 0.07,
+                  sdCaja(p - vec2(0.0, -0.26), vec2(0.03, 0.09)));
+  float d = min(max(cuerpo, -ojo), arco);     // (cuerpo − ojo) ∪ arco
+  vec3 col = vec3(0.09, 0.10, 0.13);
+  col = mix(col, vec3(0.93, 0.72, 0.28), cubre(d, px));
+  col = mix(col, vec3(1.0, 0.95, 0.8), cubre(abs(d) - 0.012, px));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Para quedarte con la parte de arriba del anillo, interseca (<code>max</code>) con la SDF del semiplano «por encima de y = 0», que es <code>-p.y</code>: negativa arriba, positiva abajo.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Restar es <code>max(a, -b)</code>, y unir es <code>min(a, b)</code>. El orden importa: primero se resta el ojo del cuerpo, después se une el arco.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada pieza es una SDF de la lección con una operación: la caja redondeada es la caja más pequeña inflada; el arco es un anillo intersecado con un semiplano, cuya SDF es la distancia con signo a la recta <code>y = 0</code> (<code>-p.y</code>, exacta, porque la distancia a una recta horizontal es la diferencia de alturas); el ojo es la unión de un círculo y una caja estrecha.</p>
+    <p>La composición es <code>min(max(cuerpo, -ojo), arco)</code>: si unieras el arco antes de restar el ojo, el resultado sería el mismo aquí (el ojo no toca el arco), pero en general el orden de las operaciones booleanas importa igual que en la aritmética. El contorno usa <code>abs(d) - 0.012</code> sobre la SDF final, así que rodea también el borde interior del ojo y del arco, sin trabajo extra: es la ventaja de tener una única distancia para toda la figura.</p>
+    <p>Un detalle fino: el cuerpo acaba arriba en <code>y = 0.1</code> (−0.2 + 0.3), pero el arco se corta más abajo, en <code>y = 0</code>, de modo que sus extremos entran 0.1 en el cuerpo. Si lo cortaras justo en <code>y = 0.1</code>, arco y cuerpo valdrían casi 0 a lo largo de esa línea y <code>abs(d) - 0.012</code> dibujaría una raya clara a través de los pies del arco (lo medimos: tres filas de píxeles con el color del contorno). Es la limitación de la unión con <code>min</code>: dentro, la SDF ya no es la distancia real al borde del conjunto (tabla de «Combinar formas»), y un contorno hecho con ella lo delata. Metiendo los extremos en el cuerpo, esa línea queda dentro de una zona donde <code>d</code> es claramente negativa y el contorno solo rodea la silueta.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.3.3 — El segmento, desde cero, y una línea quebrada</h3>
+  <p>Borra mentalmente la lección: escribe tú <code>sdSegmento(p, a, b)</code> a partir de la proyección de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>. Después, úsala para dibujar una línea quebrada que pase por los cinco puntos del array <code>P</code> (el tercero sube y baja con el tiempo), con un grosor de 0.03 y uniones redondeadas, y los cinco puntos como círculos de radio 0.05 de otro color.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.3.3" data-altura="260" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  return 1e9;              // TODO: la distancia de p al segmento ab
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 P[5] = vec2[5](vec2(-1.2, -0.4), vec2(-0.6, 0.4), vec2(0.0, 0.3 * sin(u_time)),
+                      vec2(0.6, 0.45), vec2(1.2, -0.35));
+  float linea = 1e9;       // TODO: la unión de los cuatro segmentos, con grosor
+  float puntos = 1e9;      // TODO: la unión de los cinco círculos
+  vec3 col = vec3(0.09, 0.10, 0.13);
+  col = mix(col, vec3(0.4, 0.8, 1.0), clamp(0.5 - linea / px, 0.0, 1.0));
+  col = mix(col, vec3(1.0, 0.8, 0.3), clamp(0.5 - puntos / px, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  // proyección de pa sobre ba, en fracciones del segmento, recortada a [0, 1]
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);      // distancia al punto a + ba·h
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 P[5] = vec2[5](vec2(-1.2, -0.4), vec2(-0.6, 0.4), vec2(0.0, 0.3 * sin(u_time)),
+                      vec2(0.6, 0.45), vec2(1.2, -0.35));
+  float linea = 1e9, puntos = 1e9;
+  for (int i = 0; i < 4; i++) linea = min(linea, sdSegmento(p, P[i], P[i + 1]));
+  for (int i = 0; i < 5; i++) puntos = min(puntos, length(p - P[i]));
+  linea -= 0.03;                   // inflar la unión: grosor y uniones redondas
+  puntos -= 0.05;
+  vec3 col = vec3(0.09, 0.10, 0.13);
+  col = mix(col, vec3(0.4, 0.8, 1.0), clamp(0.5 - linea / px, 0.0, 1.0));
+  col = mix(col, vec3(1.0, 0.8, 0.3), clamp(0.5 - puntos / px, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El punto de la recta <code>a + t·(b − a)</code> más cercano a <code>p</code> tiene <code>t = dot(p − a, b − a) / dot(b − a, b − a)</code>. Para el segmento, recorta <code>t</code> a [0, 1].</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Une los cuatro segmentos con un bucle y <code>min</code> sobre la distancia sin grosor, y resta el grosor al final: así las uniones salen redondas solas.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La proyección escalar de <code>pa</code> sobre <code>ba</code> es <code>dot(pa, ba) / |ba|</code>; dividida otra vez por <code>|ba|</code> queda en fracciones del segmento: <code>dot(pa, ba) / dot(ba, ba)</code> (sin raíces cuadradas). Si está entre 0 y 1, el punto más cercano está dentro del segmento; si no, el <code>clamp</code> lo lleva al extremo más próximo, y la distancia se convierte en la distancia a ese extremo. Por eso los extremos de una cápsula son semicirculares.</p>
+    <p>Las uniones: la unión (<code>min</code>) de las distancias de los cuatro segmentos es la distancia a la línea quebrada entera. En cada vértice, los dos segmentos que llegan comparten extremo, y alrededor de ese punto la distancia es la distancia al vértice: un círculo. Al restar el grosor después de la unión, esos círculos se convierten en uniones redondeadas. Si restaras el grosor a cada segmento antes de unir, el resultado sería el mismo (<code>min(a − r, b − r) = min(a, b) − r</code>, y con <code>max</code> y <code>smin</code> pasa igual); la diferencia aparecería con operaciones que no conmutan con el inflado, como la resta: <code>max(a, -b) - r</code> encoge el hueco de <code>b</code>, mientras que inflar los dos antes de restar lo agranda.</p>
+    <p>Fíjate en que los bucles tienen un número de vueltas constante (4 y 5): el compilador puede desenrollarlos, y el índice <code>P[i]</code> es entonces constante en cada copia, sin el coste del indexado dinámico de 6.1.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.3.4 — Arregla el antialiasing</h3>
+  <p>Dos círculos fundidos con <code>smin</code> que se escalan con un deslizador. El shader tiene tres errores de la lección. Síntomas: el borde se ve borroso con escalas grandes y dentado con escalas pequeñas; su grosor cambia con el tamaño del lienzo (prueba a pantalla completa), y al bajar <code>k</code> a 0 la figura se estropea (mira qué ves antes y después de arreglar los dos primeros errores). Arréglalo para que, con cualquier escala, cualquier <code>k</code> y cualquier tamaño de lienzo, el borde mida un píxel y la figura no desaparezca nunca. (En el cuello, donde se funden las dos formas, el borde seguirá algo más ancho: la solución explica por qué.)</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.3.4" data-altura="250" data-apilado data-uniforms='{"u_escala":{"tipo":"float","min":0.3,"max":3.0,"valor":2.0,"etiqueta":"escala"},"u_k":{"tipo":"float","min":0.0,"max":0.3,"valor":0.15,"etiqueta":"k"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_escala, u_k;
+out vec4 fragColor;
+
+float smin(float a, float b, float k) {
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 q = p / u_escala;
+  float d = smin(length(q - vec2(-0.22, 0.0)) - 0.2,
+                 length(q - vec2(0.22, 0.0)) - 0.2, u_k);
+  float a = 1.0 - smoothstep(0.0, 0.01, d);
+  fragColor = vec4(mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.8, 0.4), a), 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_escala, u_k;
+out vec4 fragColor;
+
+float smin(float a, float b, float k) {
+  k = max(k, 1e-5);                                 // 3) nada de 0 / 0
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;                  // un píxel en unidades de p
+  vec2 q = p / u_escala;
+  float d = smin(length(q - vec2(-0.22, 0.0)) - 0.2,
+                 length(q - vec2(0.22, 0.0)) - 0.2, u_k);
+  d *= u_escala;                                    // 2) distancia en la escena
+  float a = clamp(0.5 - d / px, 0.0, 1.0);          // 1) un píxel, centrado
+  fragColor = vec4(mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.8, 0.4), a), 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Uno de los errores está en la línea de la cobertura: ¿en qué unidades está el 0.01? ¿Está centrada la transición en el borde?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Los otros dos: ¿en qué espacio está medida <code>d</code> después de dividir <code>p</code> por la escala? ¿Qué pasa en <code>smin</code> cuando <code>k</code> vale 0?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <ol>
+      <li><strong>El ancho fijo.</strong> <code>smoothstep(0.0, 0.01, d)</code> mide la transición en unidades de <code>p</code>: un número de píxeles distinto con cada altura de lienzo (el bicho del borde fijo). Además va de 0 a 0.01, así que está desplazada hacia fuera: la forma sale media transición más gorda. La cobertura centrada de un píxel es <code>clamp(0.5 - d / px, 0.0, 1.0)</code> con <code>px = 2.0 / u_resolution.y</code>.</li>
+      <li><strong>La escala.</strong> <code>d</code> está en unidades de <code>q = p / u_escala</code>. Hay que multiplicarla por <code>u_escala</code> para compararla con <code>px</code>. Sin eso, con escala 2 la transición mediría dos píxeles; con 0.3, un tercio de píxel. (Alternativa válida: dividir <code>px</code> por la escala en lugar de multiplicar <code>d</code>; lo que importa es que las dos estén en las mismas unidades.)</li>
+      <li><strong>La división por cero.</strong> Con <code>k = 0</code>, <code>smin</code> calcula 0 / 0 = NaN, y lo que pasa después depende de cómo consuma el NaN la cobertura. Con el <code>smoothstep</code> del código de partida, en nuestra GPU el NaN hace que <strong>todo el lienzo</strong> se pinte del color de la figura (lo medimos: la cobertura sale 1 en todas partes). Con la cobertura correcta, <code>clamp(0.5 - d / px, 0.0, 1.0)</code>, el NaN se convierte en 0 y la figura <strong>desaparece</strong>. Dos síntomas opuestos para el mismo error, y ninguno está garantizado en otra GPU. <code>max(k, 1e-5)</code> lo evita, y con un <code>k</code> tan pequeño el resultado es un <code>min</code> normal.</li>
+    </ol>
+    <p>Queda un matiz, y es la sección «SDF exacta o cota» en acción: en el cuello, <code>smin</code> no es una distancia exacta. Justo en el borde del cuello, con <code>k = 0.15</code>, su gradiente mide solo 0.38 (la mitad de la suma de los gradientes de las dos distancias, que allí apuntan casi en sentidos opuestos), así que la transición de <code>clamp(0.5 - d / px, 0.0, 1.0)</code> ocupa unos 2.7 píxeles en lugar de uno (en la captura de la solución, a escala 2, la vimos de 2 a 3 píxeles). Si quieres un píxel también ahí, cambia <code>px</code> por <code>fwidth(d)</code>, que mide cuánto cambia <code>d</code> de verdad, sea o no una distancia.</p>
+    <p>Fíjate en que los tres errores son invisibles en el caso por defecto de mucha gente (escala 1, <code>k</code> mayor que 0, su monitor): por eso conviene probar siempre los extremos de cada parámetro.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Una SDF da la distancia al borde con signo: negativa dentro, 0 en el borde, positiva fuera. Círculo: <code>length(p) - r</code>. Caja: <code>length(max(q, 0.0)) + min(max(q.x, q.y), 0.0)</code> con <code>q = abs(p) - b</code> (simetría, distancias a los lados, un caso por región).</li>
+    <li><code>d - r</code> infla y redondea; <code>abs(d) - w</code> hace un contorno de cualquier forma; el segmento es una proyección recortada.</li>
+    <li>Cobertura de un píxel: <code>clamp(0.5 - d / px, 0.0, 1.0)</code>, con <code>px</code> calculado (<code>2.0 / u_resolution.y</code>, entre las escalas) o medido (<code>fwidth(d)</code>). Nunca un ancho fijo en unidades de la escena.</li>
+    <li><code>fwidth = |dFdx| + |dFdy|</code>, calculado por quads de 2 × 2 (norma L1: bordes diagonales un 40 % más suaves; para isotropía, <code>length(vec2(dFdx(d), dFdy(d)))</code>). Indefinido en ramas no uniformes: calcula las derivadas antes del <code>if</code>.</li>
+    <li>Efectos: sombra = la SDF desplazada con transición ancha; brillo = <code>exp(-k * max(d, 0.0))</code>; contorno = <code>abs(d) - w</code>.</li>
+    <li>Unión <code>min</code>, intersección <code>max</code>, resta <code>max(a, -b)</code>. <code>smin</code> funde en una franja de ancho <code>k</code> y hunde como mucho <code>k/4</code>; protégela de <code>k = 0</code>.</li>
+    <li>Trasladar, girar y reflejar conservan la distancia; escalar exige <code>sdf(p / s) * s</code>. Con escalas por eje, solo una cota con <code>min</code>.</li>
+    <li>Exacta (distancia real, gradiente 1) o cota (nunca mayor): a <code>fwidth</code> le da igual; a los contornos, los brillos y el raymarching, no.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://iquilezles.org/articles/distfunctions2d/">Iñigo Quilez — 2D distance functions</a>: el catálogo de SDF 2D exactas, cada una con su shader de ejemplo.</li>
+  <li><a href="https://iquilezles.org/articles/smin/">Iñigo Quilez — Smooth minimum</a>: todas las variantes de <code>smin</code> (polinómica, exponencial, cúbica…) con sus propiedades.</li>
+  <li><a href="https://iquilezles.org/articles/distance/">Iñigo Quilez — Distance estimation</a>: cómo obtener una distancia aproximada de cualquier función con su gradiente.</li>
+  <li><a href="https://www.khronos.org/opengl/wiki/Sampler_(GLSL)#Non-uniform_flow_control">OpenGL Wiki — Non-uniform flow control</a>: la regla de las derivadas y las lecturas de textura dentro de ramas.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/a-demos.js"></script>
+</body>
+</html>

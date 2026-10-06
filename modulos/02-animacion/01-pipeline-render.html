@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.1 · Cómo pinta el navegador un frame — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m2.css">
+</head>
+<body data-leccion="02-animacion/pipeline-render">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 2 · Animación con CSS y JavaScript</p>
+  <h1>Cómo pinta el navegador un frame</h1>
+  <p class="resumen">Antes de animar nada hay que saber qué hace el navegador cada 16,7 milisegundos: qué etapas recorre, cuáles puedes saltarte eligiendo bien la propiedad que animas y qué errores de JavaScript lo obligan a repetir trabajo.</p>
+  <div class="meta"><span class="chip">⏱ 75 min</span><span class="chip">Requisitos: 1.2, 1.4, 1.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás recorrer el pipeline de un frame (JavaScript → estilo → layout → pintado → composición) y qué dispara cada etapa.</li>
+      <li>Calcularás el presupuesto de un frame a 60, 120 o 144 Hz y sabrás leer una gráfica de tiempos de frame.</li>
+      <li>Entenderás por qué una animación CSS de <code>transform</code> sigue fluida con el hilo principal bloqueado y una de <code>left</code> se congela.</li>
+      <li>Detectarás y arreglarás el <em>layout thrashing</em> y los layouts síncronos forzados.</li>
+      <li>Usarás <code>will-change</code> con criterio: qué es una capa, cuánta memoria cuesta y qué efectos secundarios tiene.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El problema: 16,7 milisegundos</h2>
+<p>Tu pantalla no muestra un vídeo continuo: muestra imágenes fijas a un ritmo constante. Un monitor de 60 Hz enseña una imagen nueva cada $1000/60 \approx 16{,}7$ ms; uno de 120 Hz, cada $8{,}3$ ms. Cada una de esas imágenes es un <strong>frame</strong>. Animar consiste en preparar, antes de cada refresco, un frame ligeramente distinto del anterior.</p>
+<p>Si el navegador llega a tiempo, el movimiento se ve continuo. Si no llega, la pantalla <em>no espera</em>: vuelve a mostrar el frame anterior y el nuevo aparece un refresco más tarde. El objeto se queda quieto un instante y luego salta el doble de distancia. Eso es un <strong>frame perdido</strong> (<em>dropped frame</em>), y el ojo lo detecta con una facilidad sorprendente: lo llamamos «tirón» o <em>jank</em>.</p>
+
+<table class="m2-medidas">
+  <thead><tr><th>Frecuencia de refresco</th><th class="num">Periodo (presupuesto total)</th><th>Dónde la encuentras</th></tr></thead>
+  <tbody>
+    <tr><td>60 Hz</td><td class="num">16,67 ms</td><td>La mayoría de monitores y portátiles</td></tr>
+    <tr><td>90 Hz</td><td class="num">11,11 ms</td><td>Algunos móviles y visores de realidad virtual</td></tr>
+    <tr><td>120 Hz</td><td class="num">8,33 ms</td><td>Móviles recientes, MacBook Pro (ProMotion), iPad Pro</td></tr>
+    <tr><td>144 Hz</td><td class="num">6,94 ms</td><td>Monitores «gaming»</td></tr>
+  </tbody>
+</table>
+
+<p>Ese periodo es el presupuesto <em>de todo el frame</em>, no el de tu JavaScript: dentro caben tu código, el cálculo de estilos, la geometría, el pintado y la composición. El modelo RAIL de Google recomienda que tu parte de una animación no pase de unos 10 ms a 60 Hz, precisamente para dejar sitio al resto. A 120 Hz el margen se reduce a la mitad.</p>
+
+<h3>Vsync: el reloj que marca el ritmo</h3>
+<p>La pantalla lee la imagen de una zona de memoria (el <em>framebuffer</em>) línea a línea, de arriba abajo. Si el navegador cambiara la imagen a mitad de lectura, verías la mitad superior de un frame y la inferior del siguiente, con un corte horizontal: <em>tearing</em>. Para evitarlo, el cambio de imagen solo se hace en el instante entre dos lecturas, llamado <strong>vsync</strong> (sincronización vertical). El navegador se organiza alrededor de esa señal: cada vsync le dice «empieza a preparar el siguiente frame».</p>
+
+<svg class="diagrama" viewBox="0 0 760 230" width="760" role="img" aria-label="Frames y vsync: un frame que no cabe en su periodo se retrasa y el anterior se repite">
+  <defs>
+    <marker id="m21-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <text x="10" y="22" style="font-weight:700">vsync</text>
+  <g class="tenue" stroke-dasharray="4 4">
+    <line x1="120" y1="30" x2="120" y2="215"/><line x1="240" y1="30" x2="240" y2="215"/><line x1="360" y1="30" x2="360" y2="215"/>
+    <line x1="480" y1="30" x2="480" y2="215"/><line x1="600" y1="30" x2="600" y2="215"/><line x1="720" y1="30" x2="720" y2="215"/>
+  </g>
+  <text x="120" y="22" text-anchor="middle" class="texto-tenue">0</text>
+  <text x="240" y="22" text-anchor="middle" class="texto-tenue">16,7</text>
+  <text x="360" y="22" text-anchor="middle" class="texto-tenue">33,3</text>
+  <text x="480" y="22" text-anchor="middle" class="texto-tenue">50</text>
+  <text x="600" y="22" text-anchor="middle" class="texto-tenue">66,7 ms</text>
+
+  <text x="10" y="70">Navegador</text>
+  <rect class="caja" x="124" y="52" width="80" height="28" rx="5"/><text x="164" y="71" text-anchor="middle">A</text>
+  <rect x="244" y="52" width="170" height="28" rx="5" fill="none" stroke="var(--err)" stroke-width="2"/><text x="329" y="71" text-anchor="middle">B (no cabe)</text>
+  <rect class="caja" x="484" y="52" width="70" height="28" rx="5"/><text x="519" y="71" text-anchor="middle">C</text>
+
+  <text x="10" y="140">Pantalla</text>
+  <rect class="caja" x="240" y="122" width="120" height="30"/><text x="300" y="142" text-anchor="middle">A</text>
+  <rect x="360" y="122" width="120" height="30" fill="none" stroke="var(--err)" stroke-width="2" stroke-dasharray="5 3"/><text x="420" y="142" text-anchor="middle">A otra vez</text>
+  <rect class="caja" x="480" y="122" width="120" height="30"/><text x="540" y="142" text-anchor="middle">B</text>
+  <rect class="caja" x="600" y="122" width="120" height="30"/><text x="660" y="142" text-anchor="middle">C</text>
+  <path d="M204 82 L238 120" stroke="currentColor" stroke-width="1.5" fill="none" marker-end="url(#m21-fl)"/>
+  <path d="M414 82 L478 120" stroke="currentColor" stroke-width="1.5" fill="none" marker-end="url(#m21-fl)"/>
+  <text x="360" y="190" text-anchor="middle" class="texto-tenue">B terminó después del vsync de 33,3 ms: la pantalla repite A (frame perdido) y B llega un periodo tarde.</text>
+</svg>
+
+<div class="callout porque">
+  <p>¿Por qué un solo frame perdido se nota tanto? Porque el movimiento deja de ser uniforme: el objeto avanza 5 px, 5 px, 0 px, 10 px, 5 px… Nuestro sistema visual es muy sensible a los cambios de velocidad, mucho más que a la velocidad en sí. Una animación estable a 30 fps suele verse mejor que una que alterna entre 60 y 30.</p>
+</div>
+
+<h2>El pipeline de un frame</h2>
+<p>Para producir cada frame, el navegador recorre una cadena de etapas. Cada una usa el resultado de la anterior, así que si una etapa se invalida, todas las que vienen detrás también tienen que volver a hacerse.</p>
+
+<svg class="diagrama" viewBox="0 0 760 275" width="760" role="img" aria-label="Pipeline de renderizado: JavaScript, estilo, layout, pintado y composición, con las tres rutas según la propiedad que cambia">
+  <defs>
+    <marker id="m21-fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <text x="305" y="20" text-anchor="middle" class="texto-tenue">hilo principal (el mismo que ejecuta tu JavaScript)</text>
+  <path d="M20 28 L590 28" class="tenue" stroke-width="1.5"/>
+  <text x="680" y="20" text-anchor="middle" class="texto-tenue">compositor + GPU</text>
+  <path d="M620 28 L740 28" class="tenue" stroke-width="1.5"/>
+  <rect class="caja" x="20" y="40" width="120" height="50" rx="8"/><text x="80" y="62" text-anchor="middle" style="font-weight:700">JavaScript</text><text x="80" y="80" text-anchor="middle" class="texto-tenue" style="font-size:11px">rAF, eventos</text>
+  <rect class="caja" x="170" y="40" width="120" height="50" rx="8"/><text x="230" y="62" text-anchor="middle" style="font-weight:700">Estilo</text><text x="230" y="80" text-anchor="middle" class="texto-tenue" style="font-size:11px">valores calculados</text>
+  <rect class="caja" x="320" y="40" width="120" height="50" rx="8"/><text x="380" y="62" text-anchor="middle" style="font-weight:700">Layout</text><text x="380" y="80" text-anchor="middle" class="texto-tenue" style="font-size:11px">geometría</text>
+  <rect class="caja" x="470" y="40" width="120" height="50" rx="8"/><text x="530" y="62" text-anchor="middle" style="font-weight:700">Pintado</text><text x="530" y="80" text-anchor="middle" class="texto-tenue" style="font-size:11px">listas de dibujo</text>
+  <rect class="caja" x="620" y="40" width="120" height="50" rx="8"/><text x="680" y="62" text-anchor="middle" style="font-weight:700">Composición</text><text x="680" y="80" text-anchor="middle" class="texto-tenue" style="font-size:11px">capas → pantalla</text>
+  <g stroke="currentColor" stroke-width="1.5" fill="none">
+    <path d="M140 65 L166 65" marker-end="url(#m21-fl2)"/><path d="M290 65 L316 65" marker-end="url(#m21-fl2)"/>
+    <path d="M440 65 L466 65" marker-end="url(#m21-fl2)"/><path d="M590 65 L616 65" marker-end="url(#m21-fl2)"/>
+  </g>
+  <!-- ruta 1: geometría -->
+  <text x="20" y="128" style="font-size:12px">1 · geometría: width, height, left, top, margin, padding, font-size…</text>
+  <path d="M80 142 L680 142" stroke="var(--err)" stroke-width="3"/>
+  <g fill="var(--err)"><circle cx="80" cy="142" r="6"/><circle cx="230" cy="142" r="6"/><circle cx="380" cy="142" r="6"/><circle cx="530" cy="142" r="6"/><circle cx="680" cy="142" r="6"/></g>
+  <!-- ruta 2: solo pintado -->
+  <text x="20" y="178" style="font-size:12px">2 · solo aspecto: color, box-shadow, border-radius, outline…</text>
+  <path d="M80 192 L330 192 M430 192 L680 192" stroke="var(--warn)" stroke-width="3"/>
+  <path d="M330 192 Q380 212 430 192" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 3" fill="none"/>
+  <g fill="var(--warn)"><circle cx="80" cy="192" r="6"/><circle cx="230" cy="192" r="6"/><circle cx="530" cy="192" r="6"/><circle cx="680" cy="192" r="6"/></g>
+  <circle cx="380" cy="192" r="6" fill="none" stroke="var(--warn)" stroke-width="2"/>
+  <!-- ruta 3: solo composición -->
+  <text x="20" y="228" style="font-size:12px">3 · solo composición: transform, opacity (y algunas más, ver tabla)</text>
+  <path d="M630 242 L680 242" stroke="var(--ok)" stroke-width="3"/>
+  <path d="M80 242 Q380 272 630 242" stroke="var(--ok)" stroke-width="2" stroke-dasharray="4 3" fill="none"/>
+  <g fill="none" stroke="var(--ok)" stroke-width="2"><circle cx="230" cy="242" r="6"/><circle cx="380" cy="242" r="6"/><circle cx="530" cy="242" r="6"/></g>
+  <circle cx="680" cy="242" r="6" fill="var(--ok)"/>
+  <circle cx="80" cy="242" r="6" fill="none" stroke="var(--ok)" stroke-width="2"/>
+</svg>
+
+<p>Vamos etapa por etapa. Recuerda de la lección <a href="../01-web/05-event-loop.html">1.5</a> que todo esto ocurre en la fase de «actualizar el renderizado» del event loop, después de las tareas y las microtareas.</p>
+<ol>
+  <li><strong>JavaScript.</strong> Se ejecutan los callbacks de <code>requestAnimationFrame</code> (lección <a href="03-raf.html">2.3</a>) y, antes, los manejadores de eventos que hayan llegado. Aquí cambias el DOM y los estilos, pero el navegador todavía no hace nada con esos cambios: solo apunta que algo está «sucio».</li>
+  <li><strong>Estilo</strong> (<em>recalculate style</em>). Para cada elemento afectado, el navegador averigua qué reglas CSS le aplican (resolviendo selectores, cascada y herencia) y calcula el <em>valor calculado</em> de cada propiedad: <code>2em</code> pasa a <code>32px</code>, <code>inherit</code> se resuelve, etcétera.</li>
+  <li><strong>Layout</strong> (también llamado <em>reflow</em>). Con los estilos ya calculados, calcula la geometría: dónde está cada caja y cuánto mide. Es la etapa más cara porque todo depende de todo: si un párrafo crece, empuja al de abajo, que empuja al siguiente, y el contenedor que los envuelve cambia de altura.</li>
+  <li><strong>Pintado</strong> (<em>paint</em>). A pesar del nombre, aquí todavía no se generan píxeles: se graba una lista de órdenes de dibujo (<em>display list</em>): «rectángulo de este color aquí, este texto con esta fuente allí». Convertir esas órdenes en píxeles (<em>raster</em>) se hace después, en otros hilos y normalmente en la GPU.</li>
+  <li><strong>Composición</strong>. La página se divide en <strong>capas</strong> (enseguida veremos qué son). Cada capa se rasteriza por separado a una textura de la GPU, y el compositor las superpone, aplicando a cada una su <code>transform</code> y su <code>opacity</code>, para formar la imagen final.</li>
+</ol>
+<p>La clave de todo el rendimiento de animación está en el diagrama: <strong>la propiedad que cambias decide en qué etapa empieza el trabajo</strong>. Si cambias el ancho, el navegador tiene que recalcular la geometría, repintar y recomponer (ruta 1). Si cambias el color, la geometría no cambia, así que se salta el layout (ruta 2). Si cambias <code>transform</code> u <code>opacity</code> de un elemento que está en su propia capa, basta con recomponer: mover o desvanecer una textura que ya existe (ruta 3).</p>
+
+<div class="callout senior" data-titulo="los nombres reales de las etapas">
+  <p>El modelo de cinco etapas es una simplificación útil. Si grabas una traza en DevTools → <em>Performance</em> (lección <a href="../01-web/07-herramientas.html">1.7</a>), verás los nombres que usa Chrome: <em>Recalculate Style</em> (en las trazas internas, <code>UpdateLayoutTree</code>), <em>Layout</em>, <em>Pre-Paint</em> (calcula las propiedades de transformación, recorte y efecto de cada elemento), <em>Paint</em>, <em>Layerize</em> (decide las capas), <em>Commit</em> (copia el resultado al hilo del compositor) y, ya fuera del hilo principal, <em>Raster</em> y <em>Draw</em>. Son exactamente los eventos que contamos en las mediciones de la tabla de más abajo.</p>
+</div>
+
+<h2>Qué dispara cada propiedad</h2>
+<div class="callout nota">
+  <p>En esta lección aparecen <code>transition</code> y <code>@keyframes</code> antes de que los expliquemos: su sintaxis completa es la lección <a href="02-css-transiciones.html">2.2</a>. Para entender el pipeline te basta con saber que las dos declaran en CSS una animación (qué propiedad, de qué valor a qué valor y en cuánto tiempo) y que el navegador la ejecuta por su cuenta, sin que tu JavaScript calcule cada frame.</p>
+</div>
+<p>No lo afirmamos de memoria: lo medimos. Animamos una caja con cada propiedad durante un segundo (con <code>@keyframes</code>, a 60 fps) y grabamos una traza de Chrome contando cuántas veces se ejecutó cada etapa en el hilo principal. Estos son los resultados, en Chrome 154 sobre un Mac con GPU Apple M1 (en un segundo a 60 Hz hay unos 60 frames; la tabla dice en cuántos de ellos se ejecutó cada etapa):</p>
+
+<table class="m2-medidas">
+  <thead><tr><th>Propiedad animada</th><th class="num">Frames con estilo</th><th class="num">con layout</th><th class="num">con pintado</th><th>¿Hilo principal libre?</th></tr></thead>
+  <tbody>
+    <tr><td><code>transform</code>, <code>translate</code>, <code>rotate</code>, <code>scale</code></td><td class="c">0</td><td class="c">0</td><td class="c">0</td><td class="m2-no">sí: solo compositor</td></tr>
+    <tr><td><code>opacity</code></td><td class="c">0</td><td class="c">0</td><td class="c">0</td><td class="m2-no">sí</td></tr>
+    <tr><td><code>filter: brightness()</code>, <code>grayscale()</code></td><td class="c">0</td><td class="c">0</td><td class="c">0</td><td class="m2-no">sí</td></tr>
+    <tr><td><code>background-color</code>, <code>clip-path</code></td><td class="c">0</td><td class="c">0</td><td class="c">0</td><td class="m2-no">sí (Chrome reciente)</td></tr>
+    <tr><td><code>filter: blur()</code></td><td class="c">61</td><td class="c">0</td><td class="c">0</td><td class="m2-mas">no: estilo y commit cada frame</td></tr>
+    <tr><td><code>color</code>, <code>box-shadow</code>, <code>border-radius</code></td><td class="c">60</td><td class="c">0</td><td class="c">60</td><td class="m2-si">no: repinta cada frame</td></tr>
+    <tr><td><code>left</code>, <code>top</code>, <code>width</code>, <code>margin-left</code></td><td class="c">61</td><td class="c">61</td><td class="c">61</td><td class="m2-si">no: layout y pintado cada frame</td></tr>
+  </tbody>
+</table>
+
+<p>Tres lecturas de esta tabla:</p>
+<ul>
+  <li><code>transform</code> y <code>opacity</code> son la apuesta segura en todos los navegadores: el hilo principal no hace <em>nada</em> durante la animación.</li>
+  <li>La lista de propiedades «de compositor» crece con los años. En nuestro Chrome, <code>background-color</code> y <code>clip-path</code> ya se animan en el compositor, pero no lo des por hecho en otros navegadores ni en versiones antiguas. Y fíjate en la trampa de <code>filter</code>: <code>brightness()</code> sale gratis y <code>blur()</code> no, porque el desenfoque cambia el área que ocupa el elemento y eso hay que recalcularlo en el hilo principal.</li>
+  <li><code>left</code>, <code>top</code> y <code>width</code> pagan el pipeline completo en <em>cada</em> frame. Con una caja no pasa nada; con un layout complejo detrás, cada frame puede costar varios milisegundos.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.1.1 — Un menú lateral que entra: <code>left</code> contra <code>transform</code></h3>
+  <p>Queremos un menú de 300 px de ancho que entra desde la izquierda al pulsar un botón. Hay dos formas habituales de escribirlo:</p>
+  <script type="text/plain" class="codigo" data-lang="css" data-titulo="Versión A: anima left">
+    .menu        { position: fixed; top: 0; bottom: 0; width: 300px; left: -300px; transition: left .3s ease-out; }
+    .menu.abierto { left: 0; }
+  </script>
+  <script type="text/plain" class="codigo" data-lang="css" data-titulo="Versión B: anima transform">
+    .menu        { position: fixed; top: 0; bottom: 0; width: 300px; left: 0;
+                   transform: translateX(-100%); transition: transform .3s ease-out; }
+    .menu.abierto { transform: translateX(0); }
+  </script>
+  <p><strong>Paso 1: ¿qué cambia en cada frame?</strong> En A, el valor calculado de <code>left</code>. <code>left</code> es una propiedad de geometría, así que durante los 0,3 s de transición (unos 18 frames a 60 Hz) el navegador recalcula el estilo, hace layout y repinta el menú en cada frame: ruta 1.</p>
+  <p><strong>Paso 2: ¿y en B?</strong> Cambia <code>transform</code>. Una transformación no afecta al layout (lo viste en <a href="../01-web/02-css.html">1.2</a>: el elemento sigue ocupando su hueco original; solo se dibuja desplazado). Como la transición es declarativa, el navegador puede entregársela entera al compositor al empezar: ruta 3, y cero trabajo en el hilo principal durante la animación.</p>
+  <p><strong>Paso 3: el detalle de <code>translateX(-100%)</code>.</strong> En <code>transform</code>, los porcentajes se refieren al tamaño <em>del propio elemento</em>, no al del contenedor. Por eso <code>-100%</code> esconde exactamente el menú, mida lo que mida. En <code>left</code>, un porcentaje se refiere al ancho del bloque contenedor: son dos sistemas de referencia distintos.</p>
+  <p><strong>Paso 4: el efecto que el usuario sí nota.</strong> Si justo al abrir el menú la página está ocupada (cargando datos, montando componentes), la versión A se congela a medio camino y la B sigue deslizándose. Lo vas a comprobar tú mismo en la siguiente sección.</p>
+  <p><strong>Conclusión:</strong> anima <code>transform</code> y <code>opacity</code> siempre que puedas expresar el efecto con ellas. Mover, escalar, rotar, aparecer y desaparecer cubren la inmensa mayoría de las animaciones de interfaz.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Quieres que un botón «respire» (crezca y encoja un 5 % en bucle). ¿Qué animas?</p>
+  <ul>
+    <li><code>width</code> y <code>height</code><div class="explicacion">Funciona, pero provoca layout y pintado en cada frame, y además empuja a los elementos vecinos, que también tendrán que recolocarse.</div></li>
+    <li><code>padding</code><div class="explicacion">El padding forma parte de la caja: cambia su tamaño y dispara layout, igual que <code>width</code>. Además, como shorthand, se anima como cuatro propiedades distintas.</div></li>
+    <li data-correcta><code>transform: scale(1.05)</code><div class="explicacion">Correcto. La escala no altera el layout (los vecinos no se mueven) y se anima en el compositor sin tocar el hilo principal.</div></li>
+  </ul>
+</div>
+
+<h2>Capas y el hilo del compositor</h2>
+<p>Una <strong>capa</strong> (<em>composited layer</em>) es un trozo de la página que el navegador rasteriza por separado, en su propia textura de la GPU. Normalmente toda la página vive en unas pocas capas. Pero cuando un elemento tiene una animación de <code>transform</code> u <code>opacity</code>, un <code>will-change</code>, un vídeo o un canvas WebGL, el navegador lo «promociona» a una capa propia.</p>
+<p>La ventaja es enorme: si el elemento solo se mueve o cambia de opacidad, su textura no cambia. El compositor, que vive en <strong>otro hilo</strong> distinto del principal, puede redibujar la pantalla colocando esa textura en otra posición, frame tras frame, sin pedirle nada al hilo principal. Y si el hilo principal está ocupado ejecutando tu JavaScript, al compositor le da igual.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.1.2 — Bloquear el hilo principal y mirar qué sobrevive</h3>
+  <p>En la lección <a href="../01-web/05-event-loop.html">1.5</a> viste que una animación CSS de <code>transform</code> sobrevive a un bloqueo del hilo principal y una de JavaScript no. Aquí añadimos una tercera caja para entender por qué. Tres cajas se mueven de lado a lado. La primera con <code>@keyframes</code> de <code>transform</code>, la segunda con <code>@keyframes</code> de <code>left</code> y la tercera con <code>transform</code> escrito desde JavaScript en cada frame. El botón ocupa el hilo principal durante 2 segundos con un bucle que no hace nada útil. Pulsa el botón y mira qué cajas se congelan.</p>
+
+<div class="js-playground" data-titulo="Compositor contra hilo principal" data-altura="300" data-fondo="oscuro" data-pestaña="js">
+<script type="text/x-html">
+<div class="pista"><div class="caja" id="css-transform">transform (CSS)</div></div>
+<div class="pista"><div class="caja" id="css-left">left (CSS)</div></div>
+<div class="pista"><div class="caja" id="js-transform">transform (JS + rAF)</div></div>
+<button id="bloquear">Bloquear el hilo principal 2 s</button>
+<span id="estado"></span>
+</script>
+<script type="text/x-css">
+body { padding: 12px; font: 13px system-ui, sans-serif; }
+.pista { position: relative; height: 44px; margin-bottom: 8px; border-bottom: 1px dashed #3a4256; }
+.caja {
+  position: absolute; top: 4px; left: 0;
+  width: 170px; height: 34px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  color: #0e1014; font-weight: 600;
+}
+#css-transform { background: #8b7bff; animation: conTransform 2s ease-in-out infinite alternate; }
+#css-left      { background: #ff6bb5; animation: conLeft      2s ease-in-out infinite alternate; }
+#js-transform  { background: #3fd0e8; }
+@keyframes conTransform { to { transform: translateX(calc(100vw - 200px)); } }
+@keyframes conLeft      { to { left: calc(100vw - 200px); } }
+button { margin-top: 6px; padding: 8px 14px; font: inherit; cursor: pointer; }
+#estado { margin-left: 10px; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const cajaJS = document.getElementById('js-transform');
+const estado = document.getElementById('estado');
+
+// Caja 3: la movemos nosotros, escribiendo style.transform en cada frame
+function bucle(ahora) {
+  const t = ahora / 1000;                                   // segundos
+  const recorrido = innerWidth - 200;                       // px
+  const fase = 0.5 - 0.5 * Math.cos(t * Math.PI / 2);       // 0 → 1 → 0 cada 4 s
+  cajaJS.style.transform = `translateX(${fase * recorrido}px)`;
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+
+document.getElementById('bloquear').addEventListener('click', () => {
+  estado.textContent = 'Bloqueando…';      // ¿llegarás a ver este texto?
+  const inicio = performance.now();
+  while (performance.now() - inicio < 2000) {
+    // no soltamos el hilo principal durante 2 s
+  }
+  estado.textContent = 'Bloqueo terminado (' + Math.round(performance.now() - inicio) + ' ms)';
+});
+</script>
+</div>
+
+  <p><strong>Lo que ocurre:</strong> durante los dos segundos, la caja morada (<code>transform</code> por CSS) sigue moviéndose con total fluidez. La rosa (<code>left</code>) se queda congelada y, al terminar el bloqueo, salta de golpe a donde «debería» estar. La azul (<code>transform</code> desde JavaScript) también se congela. Comprobamos este comportamiento grabando los frames que produce Chrome durante un bloqueo: la caja de <code>transform</code> avanza unos 25 px cada 5 frames mientras la de <code>left</code> no se mueve ni un píxel.</p>
+  <div class="anotado" data-lang="js">
+<script type="text/plain">
+function bucle(ahora) {
+  const t = ahora / 1000;
+  const recorrido = innerWidth - 200;
+  const fase = 0.5 - 0.5 * Math.cos(t * Math.PI / 2);
+  cajaJS.style.transform = `translateX(${fase * recorrido}px)`;
+  requestAnimationFrame(bucle);
+}
+requestAnimationFrame(bucle);
+
+document.getElementById('bloquear').addEventListener('click', () => {
+  estado.textContent = 'Bloqueando…';
+  const inicio = performance.now();
+  while (performance.now() - inicio < 2000) {
+  }
+  estado.textContent = 'Bloqueo terminado (' + Math.round(performance.now() - inicio) + ' ms)';
+});
+</script>
+<ol>
+  <li data-l="1">El navegador llama a <code>bucle</code> una vez por frame y le pasa <code>ahora</code>: el instante de inicio del frame, en milisegundos. Lo estudiaremos a fondo en <a href="03-raf.html">2.3</a>.</li>
+  <li data-l="2-3">Pasamos a segundos y calculamos cuánto puede recorrer la caja: el ancho de la ventana (dentro del playground, el del <code>iframe</code>) menos el ancho de la caja y un margen.</li>
+  <li data-l="4">Un coseno convertido en una ida y vuelta suave entre 0 y 1: vale 0 en t = 0, 1 en t = 2 s y otra vez 0 en t = 4 s. Es un <em>easing</em> sinusoidal; lo generalizaremos en <a href="04-interpolacion-easing.html">2.4</a>.</li>
+  <li data-l="5">Aquí está el problema: esta línea es JavaScript y solo se ejecuta si el hilo principal está libre. Aunque la propiedad sea <code>transform</code>, el valor de cada frame lo calcula tu código.</li>
+  <li data-l="6">rAF es de un solo disparo: hay que volver a pedirlo en cada frame.</li>
+  <li data-l="10">Al pulsar el botón, el navegador ejecuta este manejador <em>de principio a fin</em> sin interrumpirlo: es una tarea del event loop.</li>
+  <li data-l="11">Cambiamos el texto del DOM <em>antes</em> del bucle… y nunca lo verás. El DOM sí cambia, pero pintarlo requiere que el hilo principal llegue a la fase de renderizado, y no llegará hasta que termine este manejador. Cuando por fin pinta, el texto ya es «Bloqueo terminado».</li>
+  <li data-l="12-14">Una espera activa: el bucle consulta el reloj sin parar durante 2000 ms. Mientras tanto no se procesan eventos, ni temporizadores, ni callbacks de rAF, ni se recalculan estilos. Es exactamente lo que le pasa a tu página cuando un script tarda.</li>
+  <li data-l="15">Este segundo cambio de texto sí es el que llega a pintarse, y ya con el bloqueo terminado. El manejador acaba, el event loop pasa por fin a «actualizar el renderizado» y la caja de <code>left</code> salta a su sitio.</li>
+</ol>
+</div>
+  <p><strong>Por qué sobrevive la caja morada:</strong> cuando empieza una animación CSS de <code>transform</code>, el navegador envía al compositor la animación completa: los fotogramas clave, la duración y la función de tiempo. A partir de ahí es el compositor quien calcula el valor de cada frame, en su propio hilo. La rosa necesita layout y pintado en cada frame, que solo puede hacer el hilo principal. La azul necesita que se ejecute tu JavaScript, que también vive en el hilo principal.</p>
+  <p>Prueba ahora a editar el CSS: cambia <code>left</code> por <code>margin-left</code>, por <code>width</code> o anima <code>background-color</code> y <code>opacity</code>, y vuelve a bloquear. Deberías reproducir la tabla anterior.</p>
+</section>
+
+<div class="callout bestiario" data-id="m2-animacion-congelada" data-titulo="Una animación CSS también se congela cuando la página está ocupada">
+  <p><strong>Síntoma:</strong> esperabas que una animación hecha con CSS (o con <code>element.animate()</code>) siguiera fluida mientras la página carga o procesa algo, porque «las animaciones CSS van en otro hilo», y sin embargo se queda quieta y luego salta de golpe; otras animaciones CSS de la misma página sí siguen.</p>
+  <p><strong>Causa:</strong> ser declarativa no basta: la animación solo puede ejecutarse en el hilo del compositor si la propiedad es de compositor (<code>transform</code>, <code>opacity</code> y, en Chrome reciente, algunas más como <code>background-color</code> o <code>clip-path</code>). Una animación de <code>left</code>, <code>width</code>, <code>box-shadow</code> o <code>color</code> necesita estilo, layout o pintado en cada frame, que solo hace el hilo principal. Y si la escribes tú con <code>requestAnimationFrame</code>, se congela aunque sea de <code>transform</code>. El caso general de las tareas largas es el comportamiento raro <a href="../01-web/05-event-loop.html#m1-tarea-larga">«La página se congela y la animación se para»</a> de la lección 1.5.</p>
+  <p><strong>Solución:</strong> expresa la animación con <code>transform</code>/<code>opacity</code> y declárala en CSS o con <code>element.animate()</code> (lección <a href="../02-animacion/07-waapi-flip.html">2.7</a>); comprueba en qué hilo corre bloqueando el hilo principal a propósito, como en el ejemplo 2.1.2 de <a href="../02-animacion/01-pipeline-render.html#capas-y-el-hilo-del-compositor">2.1</a>; y trocea el trabajo pesado del hilo principal.</p>
+</div>
+
+<div class="callout senior" data-titulo="qué más crea capas (y la promoción por solapamiento)">
+  <p>Además de las animaciones y de <code>will-change</code>, crean capa los <code>&lt;video&gt;</code>, los <code>&lt;canvas&gt;</code> con WebGL o acelerados, los elementos con scroll propio y algunos elementos <code>position: fixed</code>. Y hay una causa que casi nadie conoce: <strong>el solapamiento</strong>. Si un elemento se pinta <em>encima</em> de una capa, tiene que ir en otra capa por encima de ella; si se quedara en la capa de la página, se dibujaría debajo y el orden de pintado sería incorrecto. Lo comprobamos con el panel de capas del protocolo de DevTools: 40 cuadrados con <code>z-index</code> por encima de un elemento con <code>will-change: transform</code> generaron 9 capas extra con la razón «Overlap» (Chrome agrupa en una misma capa, <em>squashing</em>, los que puede). Si los alejábamos para que no se solaparan, esas capas desaparecían. En DevTools puedes ver las capas y su motivo en <em>More tools → Layers</em>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Bloqueas el hilo principal durante 2 segundos. ¿Cuál de estas animaciones sigue moviéndose?</p>
+  <ul>
+    <li data-correcta>Una <code>@keyframes</code> que anima <code>transform: rotate()</code>.<div class="explicacion">Sí: el compositor recibe la animación completa al empezar y calcula cada frame en su propio hilo.</div></li>
+    <li>Una que escribe <code>el.style.transform</code> en cada callback de <code>requestAnimationFrame</code>.<div class="explicacion">Se congela: aunque la propiedad sea de compositor, el valor de cada frame lo calcula tu JavaScript, que no puede ejecutarse con el hilo bloqueado.</div></li>
+    <li>Una transición CSS de <code>top</code> sobre un elemento con <code>will-change: transform</code>.<div class="explicacion">No. <code>will-change: transform</code> promociona el elemento a una capa, pero lo que se anima es <code>top</code>, que exige layout en cada frame. La capa no ayuda si la propiedad no es de compositor.</div></li>
+  </ul>
+</div>
+
+<h2>El presupuesto de frame, en vivo</h2>
+<p>Ahora vamos a gastar el presupuesto a propósito. Esta demo ejecuta un callback de <code>requestAnimationFrame</code> por frame y, dentro, ocupa el hilo principal los milisegundos que elijas. La bola se mueve según el tiempo real, así que cuando se pierden frames no va más lenta: <strong>salta</strong>. La estela de puntos muestra sus últimas posiciones (huecos grandes = frames perdidos) y abajo tienes la duración de cada frame.</p>
+
+<div class="demo" id="demo-presupuesto">
+  <div class="demo-lienzo" style="height:300px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">midiendo…</div>
+</div>
+
+<p>Sube el trabajo poco a poco y observa tres cosas:</p>
+<ul>
+  <li>Hasta unos 15 ms (en una pantalla de 60 Hz) no pasa nada visible: el trabajo cabe en el periodo.</li>
+  <li>Las barras nunca miden «20 ms» o «25 ms»: miden 16,7, 33,3 o 50. El tiempo entre frames está cuantizado al periodo de la pantalla, porque los frames solo se muestran en un vsync.</li>
+  <li>Con la casilla de picos, un único frame de 60 ms cada 40 frames basta para que la animación, fluida el resto del tiempo, pegue un tirón muy visible.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.1.3 — Leer una gráfica de tiempos de frame</h3>
+  <p>Medimos en Chrome (pantalla de 60 Hz) los intervalos entre callbacks de rAF cuando cada callback ocupa el hilo principal durante distintos tiempos. Estas son las secuencias reales que obtuvimos:</p>
+  <table class="m2-medidas">
+    <thead><tr><th class="num">Trabajo por frame</th><th>Intervalos medidos (ms)</th><th class="num">Media</th></tr></thead>
+    <tbody>
+      <tr><td class="num">10 ms</td><td class="mono">16,7 16,6 16,7 16,7 16,6 16,6 16,7…</td><td class="num">16,67</td></tr>
+      <tr><td class="num">17 ms</td><td class="mono">16,7 16,7 16,6 16,7 16,7 16,6 16,8… (y algún 33,3)</td><td class="num">17,16</td></tr>
+      <tr><td class="num">20 ms</td><td class="mono">16,7 16,7 16,6 16,7 <b>33,3</b> 16,6 16,7 16,7 16,7 <b>33,3</b>…</td><td class="num">19,61</td></tr>
+      <tr><td class="num">25 ms</td><td class="mono"><b>33,4</b> 16,6 <b>33,4</b> 16,6 <b>33,4</b> 16,7…</td><td class="num">25,00</td></tr>
+      <tr><td class="num">40 ms</td><td class="mono">33,3 33,4 <b>49,9</b> 33,3 <b>50,1</b> 33,3…</td><td class="num">39,70</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Paso 1: la media coincide con el trabajo.</strong> Con 20 ms de trabajo, la media es ~20 ms: el navegador produce unos 50 frames por segundo. No «se rinde» a 30 fps: empieza cada frame en cuanto puede.</p>
+  <p><strong>Paso 2: pero los intervalos son irregulares.</strong> Como cada frame solo puede mostrarse en un vsync, 50 frames por segundo en una pantalla de 60 Hz obligan a repartir: cuatro frames a 16,7 ms y uno a 33,3 ms, una y otra vez. Ese frame largo cada 5 es un tirón periódico: la bola avanza cuatro pasos iguales y uno doble.</p>
+  <p><strong>Paso 3: el caso de 25 ms es el peor para la vista.</strong> 40 fps en una pantalla de 60 Hz alternan 16,7 y 33,3 ms. La media es estable, pero el movimiento es «cojo»: un paso corto, uno largo. Por eso, si no puedes llegar a 60, es mejor limitarte de forma estable a 30 que oscilar.</p>
+  <p><strong>Paso 4: los números «bonitos» (16,6, 16,7, 16,8) no son ruido tuyo.</strong> El tiempo que te da rAF está redondeado a 0,1 ms y el periodo real es 16,666… ms. Nunca compares <code>dt === 16.67</code>: compara con tolerancia (por ejemplo, «más de 1,5 periodos» significa «se perdió al menos un frame»).</p>
+  <p><strong>Conclusión:</strong> no mires solo la media de fps. Una media de 55 fps puede esconder tirones periódicos muy visibles. Lo que importa es la <em>regularidad</em>: la distribución de los tiempos de frame y, sobre todo, los frames largos.</p>
+</section>
+
+<div class="callout bestiario" data-id="m2-tirones-periodicos" data-titulo="La animación va fluida pero pega un tirón cada cierto tiempo">
+  <p><strong>Síntoma:</strong> una animación casi perfecta tiene un salto cada uno o dos segundos, o cada vez que ocurre algo concreto (llega un dato, salta un temporizador, haces scroll).</p>
+  <p><strong>Causa:</strong> un frame largo aislado. Suele ser una tarea que cae dentro del frame: un <code>setInterval</code> que procesa datos, un manejador de eventos pesado, una recolección de basura (GC) provocada por crear muchos objetos por frame, o un layout forzado. También aparece cuando el trabajo medio ronda el presupuesto y unos frames caben y otros no.</p>
+  <p><strong>Solución:</strong> graba una traza en DevTools → <em>Performance</em> y busca los frames marcados en rojo; mira qué tarea los ocupa. Trocea el trabajo largo, deja de crear objetos por frame (reutilízalos: lo haremos en el proyecto <a href="../02-animacion/08-proyecto-particulas.html">2.8</a>) y evita los layouts forzados (siguiente sección).</p>
+</div>
+
+<h2>Layout thrashing: leer y escribir intercalado</h2>
+<p>Hasta ahora el navegador hacía el trabajo una vez por frame, al final. Pero hay una forma de obligarlo a hacer layout <em>en mitad de tu JavaScript</em>: pedirle una medida geométrica cuando tiene cambios pendientes.</p>
+<p>Cuando escribes <code>el.style.width = '200px'</code>, el navegador no recalcula nada: marca el layout como «sucio» y sigue. Si justo después lees <code>el.offsetWidth</code>, no puede devolverte un valor viejo, así que ejecuta en ese instante el estilo y el layout pendientes para darte la respuesta correcta. Eso es un <strong>layout síncrono forzado</strong> (<em>forced synchronous layout</em> o <em>forced reflow</em>). Uno solo no es grave. El desastre llega cuando lo metes en un bucle que alterna lectura y escritura: cada lectura fuerza un layout completo, que la escritura siguiente vuelve a invalidar. Eso es el <strong>layout thrashing</strong>.</p>
+
+<div class="js-playground" data-titulo="Layout thrashing: intercalado contra agrupado" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="botones"><button id="mal">Intercalado</button> <button id="bien">Agrupado</button></div>
+<div id="barras"></div>
+</script>
+<script type="text/x-css">
+body { padding: 10px; font: 13px system-ui, sans-serif; }
+.botones { margin-bottom: 8px; }
+button { padding: 6px 12px; font: inherit; cursor: pointer; }
+#barras div { height: 2px; margin-bottom: 1px; background: #8b7bff; width: 100px; }
+</script>
+<script type="text/x-js">
+const N = 500;
+const cont = document.getElementById('barras');
+for (let i = 0; i < N; i++) cont.appendChild(document.createElement('div'));
+const barras = [...cont.children];
+
+function intercalado() {
+  for (const b of barras) {
+    const ancho = b.offsetWidth;                  // LEER: fuerza layout (hay cambios pendientes)
+    b.style.width = (ancho % 250 + 20) + 'px';    // ESCRIBIR: vuelve a ensuciar el layout
+  }
+}
+
+function agrupado() {
+  const anchos = barras.map((b) => b.offsetWidth);             // todas las lecturas: 1 layout
+  barras.forEach((b, i) => {
+    b.style.width = (anchos[i] % 250 + 20) + 'px';             // todas las escrituras: 0 layouts
+  });
+}
+
+function medir(nombre, fn) {
+  const t0 = performance.now();
+  fn();
+  document.body.offsetWidth;   // incluimos el layout final pendiente, para comparar con justicia
+  console.log(nombre.padEnd(12) + (performance.now() - t0).toFixed(1) + ' ms');
+}
+
+document.getElementById('mal').onclick = () => medir('Intercalado', intercalado);
+document.getElementById('bien').onclick = () => medir('Agrupado', agrupado);
+medir('Intercalado', intercalado);
+medir('Agrupado', agrupado);
+</script>
+</div>
+
+<p>Las dos funciones hacen exactamente lo mismo con las 500 barras. En nuestra máquina, la versión intercalada tardó unos 50 ms (tres frames enteros perdidos) y la agrupada, menos de 1 ms: entre 50 y 80 veces menos según la ejecución. La diferencia crece con el número de elementos y con la complejidad de la página, porque cada layout forzado recorre todo lo que esté sucio.</p>
+
+<p>¿Qué lecturas fuerzan layout? Lo comprobamos midiendo el mismo bucle con distintas lecturas (300 elementos, escribiendo <code>style.width</code> en cada vuelta):</p>
+<table class="m2-medidas">
+  <thead><tr><th>Lectura dentro del bucle</th><th class="num">Tiempo</th><th>¿Fuerza layout?</th></tr></thead>
+  <tbody>
+    <tr><td><code>offsetWidth</code>, <code>offsetTop</code>, <code>clientWidth</code>, <code>scrollTop</code></td><td class="num">≈ 17 ms</td><td class="m2-si">sí</td></tr>
+    <tr><td><code>getBoundingClientRect()</code></td><td class="num">≈ 17 ms</td><td class="m2-si">sí</td></tr>
+    <tr><td><code>getComputedStyle(el).width</code></td><td class="num">≈ 17 ms</td><td class="m2-si">sí</td></tr>
+    <tr><td><code>el.innerText</code>, <code>window.scrollY</code></td><td class="num">≈ 17 ms</td><td class="m2-si">sí</td></tr>
+    <tr><td><code>getComputedStyle(el).color</code></td><td class="num">0,5 ms</td><td class="m2-mas">solo estilo (barato aquí)</td></tr>
+    <tr><td><code>el.style.width</code>, <code>el.className</code></td><td class="num">≈ 0 ms</td><td class="m2-no">no: leen el atributo, no la geometría</td></tr>
+  </tbody>
+</table>
+<p>La regla mental: <strong>cualquier cosa que devuelva una medida en píxeles de la página renderizada</strong> necesita un layout al día. <code>el.style.width</code> no, porque solo lee lo que tú escribiste en el atributo <code>style</code>, no lo que mide el elemento. Paul Irish mantiene una lista exhaustiva de las lecturas que fuerzan layout (enlace al final).</p>
+
+<div class="callout senior" data-titulo="Chrome te avisa (si sabes dónde mirar)">
+  <p>Chrome detecta los layouts forzados largos y los anuncia en la consola como <em>violaciones</em>, pero solo si activas el nivel <em>Verbose</em> en el desplegable de niveles de la consola de DevTools. En nuestra prueba del bucle intercalado apareció <code>[Violation] Forced reflow while executing JavaScript took 866ms</code>, y un callback de rAF lento produjo <code>[Violation] 'requestAnimationFrame' handler took 80ms</code>. En el panel <em>Performance</em>, los layouts forzados salen en morado con un triángulo rojo y el aviso «Forced reflow is a likely performance bottleneck».</p>
+</div>
+
+<div class="callout senior" data-titulo="getComputedStyle no fuerza nada… hasta que lees">
+  <p><code>getComputedStyle(el)</code> devuelve un objeto <em>vivo</em>; llamarlo no calcula nada. El cálculo ocurre cuando lees una propiedad concreta: <code>getComputedStyle(el).opacity</code> fuerza el estilo; <code>.width</code> fuerza además el layout. Lo verificamos: una llamada «suelta» a <code>getComputedStyle(el)</code> sin leer nada no bastaba para que una transición CSS arrancara en un elemento recién creado, y leyendo <code>.opacity</code> sí. Volveremos a este truco en <a href="02-css-transiciones.html">2.2</a>.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.1.4 — Colocar tooltips sin thrashing</h3>
+  <p>Una función coloca un tooltip encima de cada icono. La primera versión, la que casi todo el mundo escribe:</p>
+  <script type="text/plain" class="codigo" data-lang="js" data-lineas>
+    function colocarTooltips(iconos) {
+      for (const icono of iconos) {
+        const r = icono.getBoundingClientRect();          // lectura
+        const tip = icono.querySelector('.tip');
+        tip.style.left = (r.left + r.width / 2) + 'px';   // escritura
+        tip.style.top = (r.top - tip.offsetHeight) + 'px'; // ¡otra lectura tras escribir!
+      }
+    }
+  </script>
+  <p><strong>Paso 1: localizar las lecturas.</strong> Hay dos: <code>getBoundingClientRect()</code> en la línea 3 y <code>tip.offsetHeight</code> en la 6. Las dos devuelven geometría.</p>
+  <p><strong>Paso 2: ver qué las precede.</strong> En la primera vuelta del bucle no hay nada sucio. Pero en la línea 5 escribimos <code>left</code>, así que la lectura de la línea 6 fuerza un layout. Y en la vuelta siguiente, la línea 3 lee después de la escritura de la línea 6 de la vuelta anterior: otro layout. Con 100 iconos, unos 200 layouts.</p>
+  <p><strong>Paso 3: separar en fases.</strong> Primero todas las lecturas, guardadas en un array; después todas las escrituras:</p>
+  <script type="text/plain" class="codigo" data-lang="js" data-lineas>
+    function colocarTooltips(iconos) {
+      // Fase 1: leer todo (un único layout, el primero)
+      const medidas = iconos.map((icono) => {
+        const tip = icono.querySelector('.tip');
+        return { tip, r: icono.getBoundingClientRect(), alto: tip.offsetHeight };
+      });
+      // Fase 2: escribir todo (ningún layout hasta el próximo frame)
+      for (const { tip, r, alto } of medidas) {
+        tip.style.left = (r.left + r.width / 2) + 'px';
+        tip.style.top = (r.top - alto) + 'px';
+      }
+    }
+  </script>
+  <p><strong>Paso 4: cuando las lecturas y escrituras vienen de sitios distintos.</strong> En una aplicación real, un componente lee y otro escribe, y no puedes reordenar el código a mano. La técnica general es aplazar las escrituras al siguiente callback de <code>requestAnimationFrame</code>: todos los componentes leen durante el frame actual y encolan sus escrituras, que se aplican juntas al principio del siguiente. Es lo que hacía la librería <em>fastdom</em>.</p>
+  <p><strong>Paso 5: ¿hace falta JavaScript?</strong> Muchas veces el mejor layout thrashing es el que no existe. Un tooltip posicionado con CSS (<code>position: absolute</code> dentro del icono, <code>bottom: 100%</code>, <code>left: 50%</code> y <code>translate: -50% 0</code>) no necesita medir nada.</p>
+</section>
+
+<div class="callout nota">
+  <p>Este es el comportamiento raro <a href="../01-web/05-event-loop.html#m1-layout-forzado">«Un bucle que toca el DOM es lentísimo sin motivo aparente»</a> de la lección 1.5, ahora a fondo: el coste no crece en proporción al número de elementos, sino más deprisa, porque cada layout forzado recorre una página que además crece (lo verás en el ejercicio 2.1.2: 36 ms con 300 tarjetas y 399 ms con 1000). Si tu código está repartido en módulos que leen y escriben por su cuenta, aplaza las escrituras a un callback de <code>requestAnimationFrame</code>, y pregúntate siempre si CSS (grid, flex, <code>position</code>) puede resolverlo sin medir.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Cuántos layouts provoca este bucle sobre 100 elementos?<br><code>for (const el of lista) { el.style.width = '50%'; total += el.offsetWidth; }</code></p>
+  <ul>
+    <li>Uno, al final del frame.<div class="explicacion">Sería así si no leyeras nada. Pero lees <code>offsetWidth</code> justo después de escribir, y el navegador no puede darte un valor desactualizado.</div></li>
+    <li data-correcta>Unos 100: uno por vuelta.<div class="explicacion">Cada <code>offsetWidth</code> llega con el layout sucio por la escritura de la línea anterior, así que fuerza un layout síncrono. Solución: escribe todos los anchos en un bucle y lee todos en otro (1 layout).</div></li>
+    <li>Ninguno: <code>offsetWidth</code> lee un valor guardado.<div class="explicacion"><code>offsetWidth</code> es geometría calculada por el layout; no es un atributo guardado como <code>el.style.width</code>.</div></li>
+  </ul>
+</div>
+
+<h2><code>will-change</code> y la explosión de capas</h2>
+<p>Promocionar un elemento a capa cuesta: hay que crear la textura y rasterizar su contenido en ella. Si eso ocurre en el primer frame de la animación, ese frame puede salir largo. <code>will-change</code> le dice al navegador «esta propiedad va a cambiar pronto: prepárate»:</p>
+<script type="text/plain" class="codigo" data-lang="css">
+  .tarjeta { will-change: transform; }   /* crea la capa por adelantado */
+</script>
+<p>Con esta línea el navegador crea la capa de inmediato y la mantiene. Antes de que existiera <code>will-change</code> se conseguía lo mismo con el viejo truco <code>transform: translateZ(0)</code>, que forzaba una capa «3D». Hoy <code>will-change</code> es la forma explícita y correcta de pedirlo.</p>
+
+<h3>La factura: memoria de GPU</h3>
+<p>Cada capa es una textura, y una textura de $w \times h$ píxeles en formato RGBA ocupa $4$ bytes por píxel. En una pantalla con <code>devicePixelRatio</code> 2 (lecciones <a href="../01-web/02-css.html">1.2</a> y <a href="06-canvas2d.html">2.6</a>), cada píxel CSS son 2 × 2 píxeles físicos:</p>
+$$\text{bytes} \approx (w \cdot \text{dpr}) \times (h \cdot \text{dpr}) \times 4$$
+<p>Una tarjeta de 400 × 300 px CSS a DPR 2 ocupa $800 \times 600 \times 4 = 1\,920\,000$ bytes, casi 2 MB. Con <code>will-change</code> en 300 tarjetas de una lista, estarías pidiendo del orden de medio giga de memoria de GPU. Chrome rasteriza por teselas y no pinta lo que está muy lejos de la pantalla, así que el gasto real suele ser menor, pero el orden de magnitud es ese. Medimos el número de capas de una página con 300 elementos de 200 × 150 px: sin <code>will-change</code>, 4 capas; con <code>will-change: transform</code> en todos, más de 150 capas, cada una con la razón «WillChangeTransform». En un móvil, eso puede significar tirones al hacer scroll o incluso que la pestaña se cierre por falta de memoria.</p>
+
+<div class="callout hack">
+  <p>Pon <code>will-change</code> <strong>justo antes</strong> de animar y quítalo al terminar. Un patrón típico: añadirlo cuando el puntero entra en el elemento (la animación empezará con el clic, unos cientos de milisegundos después) y retirarlo en <code>transitionend</code>:</p>
+  <script type="text/plain" class="codigo" data-lang="js">
+    tarjeta.addEventListener('pointerenter', () => { tarjeta.style.willChange = 'transform'; });
+    tarjeta.addEventListener('transitionend', (e) => {
+      if (e.target === tarjeta && e.propertyName === 'transform') tarjeta.style.willChange = 'auto';
+    });
+  </script>
+  <p>Las comprobaciones de <code>e.target</code> y <code>e.propertyName</code> no son decoración: <code>transitionend</code> burbujea desde los hijos y se dispara una vez por propiedad. Lo verás en <a href="02-css-transiciones.html">2.2</a>.</p>
+</div>
+
+<div class="callout cuidado">
+  <p><code>will-change</code> no es gratis ni siquiera en el layout: <code>will-change: transform</code> (o <code>opacity</code>, <code>filter</code>…) crea un contexto de apilamiento nuevo, igual que si la propiedad ya tuviera un valor, y <code>will-change: transform</code> convierte además al elemento en el bloque contenedor de sus descendientes <code>position: fixed</code>. Lo comprobamos: un hijo con <code>position: fixed; top: 0</code> dentro de un div con <code>will-change: transform</code> y 50 px de margen aparecía a 50 px del borde, no a 0. Es el mismo comportamiento raro que viste con <code>transform</code> en la lección 1.2 (<a href="../01-web/02-css.html#m1-fixed-transform">«Mi elemento fixed se mueve con el scroll»</a>), con el agravante de que aquí no hay ninguna transformación visible que te dé una pista.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Para «optimizar», un compañero añade <code>* { will-change: transform; }</code> a toda la hoja de estilos. ¿Qué consigue?</p>
+  <ul>
+    <li data-correcta>Cientos de capas, mucha más memoria de GPU y efectos secundarios de layout.<div class="explicacion">Exacto: cada elemento se convierte en una textura (memoria), cada uno crea un contexto de apilamiento y se convierte en bloque contenedor de sus hijos <code>fixed</code>. Suele empeorar el rendimiento en lugar de mejorarlo.</div></li>
+    <li>Que todas las animaciones vayan por el compositor.<div class="explicacion">Solo ayuda a las animaciones de <code>transform</code>. Las de <code>left</code> o <code>width</code> seguirán haciendo layout en cada frame, estén o no en una capa.</div></li>
+    <li>Nada: el navegador ignora <code>will-change</code> en <code>*</code>.<div class="explicacion">No lo ignora; lo aplica a cada elemento. Precisamente por eso es una mala idea.</div></li>
+  </ul>
+</div>
+
+<h2><code>content-visibility</code>, en una línea</h2>
+<p>Una última herramienta para páginas largas: <code>content-visibility: auto</code> le permite al navegador saltarse el estilo, el layout y el pintado del contenido de un elemento mientras esté lejos de la pantalla. Para que la barra de scroll no baile, se acompaña de un tamaño estimado:</p>
+<script type="text/plain" class="codigo" data-lang="css">
+  .seccion-larga { content-visibility: auto; contain-intrinsic-size: auto 800px; }
+</script>
+<p>No acelera las animaciones en sí, pero reduce el coste de cada layout de la página, y eso incluye los layouts forzados. Tenlo en la caja de herramientas; no lo necesitaremos más en el curso.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 2.1.1 — Que la pelota sobreviva al bloqueo</h3>
+  <p>La pelota rosa se mueve animando <code>left</code>, así que se congela al pulsar el botón. Cambia <strong>solo el CSS</strong> para que la animación use <code>transform</code> y siga moviéndose durante el bloqueo, con el mismo recorrido (de borde a borde).</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.1.1" data-altura="300" data-fondo="oscuro" data-pestaña="css">
+<script type="text/x-html">
+<div class="pelota"></div>
+<button id="b">Bloquear 1,5 s</button>
+</script>
+<script type="text/x-css">
+body { font: 13px system-ui, sans-serif; }
+.pelota {
+  position: absolute; top: 20px; left: 20px;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: #ff6bb5;
+  animation: ir 1.2s ease-in-out infinite alternate;
+}
+@keyframes ir {
+  from { left: 20px; }
+  to   { left: calc(100% - 60px); }
+}
+button { position: absolute; top: 90px; left: 20px; padding: 6px 12px; font: inherit; }
+</script>
+<script type="text/x-css" data-solucion>
+body { font: 13px system-ui, sans-serif; }
+.pelota {
+  position: absolute; top: 20px; left: 20px;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: #ff6bb5;
+  animation: ir 1.2s ease-in-out infinite alternate;
+}
+@keyframes ir {
+  from { transform: translateX(0); }
+  /* 100vw = ancho del iframe; restamos los 20px de left, los 40px de la
+     pelota y otros 20px de margen a la derecha */
+  to   { transform: translateX(calc(100vw - 80px)); }
+}
+button { position: absolute; top: 90px; left: 20px; padding: 6px 12px; font: inherit; }
+</script>
+<script type="text/x-js">
+document.getElementById('b').onclick = () => {
+  const t0 = performance.now();
+  while (performance.now() - t0 < 1500) {}
+};
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Deja <code>left: 20px</code> fijo en <code>.pelota</code> y anima un desplazamiento con <code>transform: translateX(…)</code> en los fotogramas clave.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Cuidado con los porcentajes: en <code>translateX</code>, <code>100%</code> es el ancho de la <em>pelota</em>, no el del contenedor. Necesitas otra unidad para «el ancho de la ventana».</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los fotogramas clave pasan a animar <code>transform</code>: de <code>translateX(0)</code> a <code>translateX(calc(100vw - 80px))</code>. La pelota sigue teniendo <code>left: 20px</code>, así que <code>translateX(0)</code> es su posición de partida; al final debe quedar a 20 px del borde derecho: $100\text{vw} - 20 - 40 - 20 = 100\text{vw} - 80\text{px}$.</p>
+    <p>¿Por qué <code>vw</code>? Porque en <code>transform</code> los porcentajes se refieren a la caja del propio elemento: <code>translateX(100%)</code> movería la pelota solo 40 px. Dentro del playground, <code>100vw</code> es el ancho del <code>iframe</code>. Ahora la animación la ejecuta el compositor: el bucle de 1,5 s bloquea el hilo principal, pero no a la pelota.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.1.2 — Igualar alturas sin thrashing</h3>
+  <p>La función <code>igualarAlturas</code> hace que todas las tarjetas midan lo que la más alta. Funciona, pero tarda mucho. Reordena su código (sin cambiar lo que hace) para que provoque <strong>un solo layout forzado</strong>, y compara los tiempos que imprime la consola.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.1.2" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<button id="otra">Medir otra vez</button>
+<div id="rejilla"></div>
+</script>
+<script type="text/x-css">
+body { padding: 8px; font: 11px system-ui, sans-serif; }
+#rejilla { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.tarjeta { width: 70px; padding: 4px; background: #1f2430; color: #b4bccb; border-radius: 4px; }
+</script>
+<script type="text/x-js">
+// 300 tarjetas con textos de longitud variada
+const rejilla = document.getElementById('rejilla');
+for (let i = 0; i < 300; i++) {
+  const t = document.createElement('div');
+  t.className = 'tarjeta';
+  t.textContent = 'tarjeta '.repeat(1 + (i * 7919) % 6);
+  t.style.height = '20px';      // venían con una altura fija de antes
+  rejilla.appendChild(t);
+}
+const tarjetas = [...rejilla.children];
+
+function igualarAlturas(lista) {
+  let max = 0;
+  for (const t of lista) {
+    t.style.height = 'auto';                  // escribir
+    max = Math.max(max, t.offsetHeight);      // leer
+  }
+  for (const t of lista) t.style.height = max + 'px';
+}
+
+function medir() {
+  const t0 = performance.now();
+  igualarAlturas(tarjetas);
+  document.body.offsetWidth;
+  console.log('igualarAlturas: ' + (performance.now() - t0).toFixed(1) + ' ms');
+}
+document.getElementById('otra').onclick = medir;
+medir();
+</script>
+<script type="text/x-js" data-solucion>
+const rejilla = document.getElementById('rejilla');
+for (let i = 0; i < 300; i++) {
+  const t = document.createElement('div');
+  t.className = 'tarjeta';
+  t.textContent = 'tarjeta '.repeat(1 + (i * 7919) % 6);
+  t.style.height = '20px';      // venían con una altura fija de antes
+  rejilla.appendChild(t);
+}
+const tarjetas = [...rejilla.children];
+
+function igualarAlturas(lista) {
+  // 1) todas las escrituras: quitamos la altura fija para medir la natural
+  for (const t of lista) t.style.height = 'auto';
+  // 2) todas las lecturas: el primer offsetHeight fuerza UN layout; los demás ya están al día
+  let max = 0;
+  for (const t of lista) max = Math.max(max, t.offsetHeight);
+  // 3) todas las escrituras finales
+  for (const t of lista) t.style.height = max + 'px';
+}
+
+function medir() {
+  const t0 = performance.now();
+  igualarAlturas(tarjetas);
+  document.body.offsetWidth;
+  console.log('igualarAlturas: ' + (performance.now() - t0).toFixed(1) + ' ms');
+}
+document.getElementById('otra').onclick = medir;
+medir();
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué pasa en la segunda vuelta del primer bucle? Escribes <code>height</code> de la tarjeta 2 después de haber leído <code>offsetHeight</code> de la 1… y luego lees la 2.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Necesitas tres bucles: escribir <code>auto</code> en todas, leer todas y escribir el máximo en todas.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>En el original, cada vuelta escribe <code>height = 'auto'</code> (ensucia el layout) y a continuación lee <code>offsetHeight</code> (lo fuerza): 300 layouts. Separando en tres fases, la primera lectura fuerza un único layout con todas las alturas en <code>auto</code>; las 299 lecturas siguientes encuentran el layout al día y son casi gratis. El último bucle solo escribe, y el layout que provoca lo hace el navegador una vez, al final del frame (o nuestra medida con <code>document.body.offsetWidth</code>).</p>
+    <p>Nosotros medimos, fuera del playground, 36 ms contra 2,6 ms con 300 tarjetas, y 399 ms contra 8 ms con 1000: el coste del thrashing crece mucho más deprisa que el número de elementos, porque cada layout forzado recorre una página cada vez más grande. Y la pregunta de senior: ¿hace falta JavaScript? Con <code>display: grid; grid-auto-rows: 1fr</code> en el contenedor, todas las filas miden lo que la más alta, sin medir nada.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.1.3 — Cuentas de presupuesto y de memoria</h3>
+  <p>Trabajas en una web que se verá en un monitor de 144 Hz y en un portátil con <code>devicePixelRatio</code> 2. Calcula:</p>
+  <ol>
+    <li>El presupuesto total de un frame a 144 Hz.</li>
+    <li>La memoria aproximada de la capa de un <em>hero</em> de 1440 × 900 px CSS con <code>will-change: transform</code> en el portátil.</li>
+    <li>La memoria si además pones <code>will-change</code> a 24 tarjetas de 360 × 240 px CSS.</li>
+    <li>Si tu JavaScript tarda 5 ms por frame, ¿cabe a 144 Hz? ¿Qué más tiene que caber?</li>
+  </ol>
+  <details class="pista"><summary>Pista</summary><p>Presupuesto = 1000 ms / Hz. Memoria de una capa ≈ (ancho × dpr) × (alto × dpr) × 4 bytes. 1 MiB = 1 048 576 bytes.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <ol>
+      <li>$1000 / 144 \approx 6{,}94$ ms para todo el frame.</li>
+      <li>$(1440 \cdot 2) \times (900 \cdot 2) \times 4 = 2880 \times 1800 \times 4 = 20\,736\,000$ bytes ≈ 19,8 MiB. Una sola capa.</li>
+      <li>Cada tarjeta: $720 \times 480 \times 4 = 1\,382\,400$ bytes. Por 24: $33\,177\,600$ bytes ≈ 31,6 MiB. Sumadas al hero, más de 50 MiB solo en texturas «por si acaso». Chrome no rasteriza lo que está muy lejos de la pantalla, así que el consumo real puede ser menor, pero es una buena cota de lo que estás pidiendo.</li>
+      <li>5 ms caben en 6,94 ms, pero muy justos: en el resto (menos de 2 ms) tienen que caber el estilo, el layout, el pintado y el commit de ese frame. Cualquier layout inesperado o una recolección de basura lo harán pasar. Si la animación puede ser de <code>transform</code>/<code>opacity</code> declarativa, sácala del hilo principal y el problema desaparece.</li>
+    </ol>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 2.1.4 — Un detector de frames perdidos</h3>
+  <p>Escribe un bucle de <code>requestAnimationFrame</code> que mida la duración de cada frame y, cada 60 frames, imprima en la consola: el periodo estimado de la pantalla (la <strong>mediana</strong> de los últimos 120 intervalos), cuántos de esos intervalos superan 1,5 periodos y la duración del frame más largo. El código de partida ya incluye una «carga» que cada 45 frames provoca un pico de 40 ms: tu detector debe cazarlos.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.1.4" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<p style="padding:10px;margin:0">Mira la consola ↓</p>
+</script>
+<script type="text/x-js">
+const deltas = [];      // últimos 120 intervalos, en ms
+let anterior = null;    // timestamp del frame anterior
+let frames = 0;
+
+function medir(ahora) {
+  // 1. Calcula el intervalo desde el frame anterior (salta el primero)
+  // 2. Guarda como mucho los últimos 120 intervalos
+  // 3. Cada 60 frames, imprime periodo (mediana), frames largos y el máximo
+  requestAnimationFrame(medir);
+}
+requestAnimationFrame(medir);
+
+// --- carga artificial: no la toques ---
+let n = 0;
+function carga() {
+  if (++n % 45 === 0) { const t = performance.now(); while (performance.now() - t < 40) {} }
+  requestAnimationFrame(carga);
+}
+requestAnimationFrame(carga);
+</script>
+<script type="text/x-js" data-solucion>
+const deltas = [];      // últimos 120 intervalos, en ms
+let anterior = null;    // timestamp del frame anterior
+let frames = 0;
+
+function mediana(a) {
+  const b = [...a].sort((x, y) => x - y);
+  const m = b.length >> 1;
+  return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2;
+}
+
+function medir(ahora) {
+  if (anterior !== null) {
+    deltas.push(ahora - anterior);
+    if (deltas.length > 120) deltas.shift();
+  }
+  anterior = ahora;
+  if (++frames % 60 === 0 && deltas.length >= 20) {
+    const periodo = mediana(deltas);
+    const largos = deltas.filter((d) => d > 1.5 * periodo).length;
+    const max = Math.max(...deltas);
+    console.log(`periodo ≈ ${periodo.toFixed(1)} ms (${(1000 / periodo).toFixed(0)} Hz) · ` +
+                `frames largos: ${largos}/${deltas.length} · peor: ${max.toFixed(1)} ms`);
+  }
+  requestAnimationFrame(medir);
+}
+requestAnimationFrame(medir);
+
+// --- carga artificial: no la toques ---
+let n = 0;
+function carga() {
+  if (++n % 45 === 0) { const t = performance.now(); while (performance.now() - t < 40) {} }
+  requestAnimationFrame(carga);
+}
+requestAnimationFrame(carga);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El intervalo es <code>ahora - anterior</code>. Actualiza <code>anterior</code> al final de cada frame. Para quedarte con los últimos 120: <code>push</code> y, si sobran, <code>shift</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Por qué la mediana y no la media? Porque unos pocos frames de 50 ms subirían la media, mientras que la mediana sigue diciendo «16,7» si la mayoría de frames son normales.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La mediana estima el periodo de la pantalla con robustez: los picos son pocos y no la mueven. En una pantalla de 60 Hz verás <code>periodo ≈ 16.7 ms</code>; en una de 120 Hz, <code>8.3 ms</code>: tu detector se adapta solo. Cada pico de 40 ms de la carga produce un intervalo de al menos dos periodos (33,3 ms a 60 Hz; puede llegar a tres, 50 ms, según dónde caiga respecto al vsync), que supera de largo 1,5 periodos. En nuestra prueba, la consola mostró «frames largos: 2/119 · peor: 33.4 ms»: con un pico cada 45 frames, en una ventana de 120 intervalos caen 2 o 3.</p>
+    <p>Fíjate en que <code>carga</code> y <code>medir</code> son dos callbacks de rAF del <em>mismo</em> frame: cuando <code>carga</code> se bloquea 40 ms, el frame entero se retrasa, y el siguiente <code>ahora</code> que recibe <code>medir</code> salta dos o tres periodos. Es la misma medida que hace la demo de presupuesto de esta lección.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Cada frame tiene un presupuesto fijo: 16,7 ms a 60 Hz, 8,3 ms a 120 Hz. Si no llegas, la pantalla repite el frame anterior (frame perdido) y el movimiento pega un tirón.</li>
+    <li>Pipeline: JavaScript → estilo → layout → pintado → composición. La propiedad que animas decide dónde empieza el trabajo: geometría (todo), aspecto (sin layout) o solo composición.</li>
+    <li><code>transform</code> y <code>opacity</code> animadas con CSS o WAAPI corren en el hilo del compositor: siguen fluidas aunque el hilo principal esté bloqueado. Animadas desde JavaScript con rAF, no.</li>
+    <li>Los intervalos entre frames son múltiplos del periodo de la pantalla. Importa la regularidad, no solo la media de fps.</li>
+    <li>Leer geometría (<code>offsetWidth</code>, <code>getBoundingClientRect()</code>…) tras escribir estilos fuerza un layout síncrono; hacerlo en bucle es layout thrashing. Agrupa lecturas y escrituras.</li>
+    <li><code>will-change</code> crea capas por adelantado; cada capa es una textura (ancho × alto × dpr² × 4 bytes). Úsalo justo antes de animar y quítalo después; ojo con los hijos <code>position: fixed</code> (se vuelven relativos al elemento).</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://web.dev/articles/rendering-performance">Rendering performance</a> (web.dev): el pipeline explicado por el equipo de Chrome.</li>
+  <li><a href="https://developer.chrome.com/docs/chromium/renderingng-architecture">RenderingNG architecture</a>: los hilos, procesos y etapas reales del renderizado de Chrome.</li>
+  <li><a href="https://gist.github.com/paulirish/5d52fb081b3570c81e3a">What forces layout / reflow</a> (Paul Irish): la lista completa de lecturas que fuerzan layout.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/CSS/will-change">will-change</a> en MDN.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m2.js"></script>
+<script>
+Curso.alListo(() => {
+  /* ---------- Demo: presupuesto de frame ---------- */
+  const raiz = document.getElementById("demo-presupuesto");
+  const info = raiz.querySelector(".demo-info");
+  const ctrls = raiz.querySelector(".demo-controles");
+  const CAP = 150;
+  let trabajo = 0, picos = false, periodo = 1000 / 60;
+  const deltas = [], estela = [];
+  const lz = Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+    animar: true,
+    dibujar(ctx, e) {
+      // 1) gastar presupuesto a propósito (dentro del callback de rAF)
+      const pico = picos && e.frame % 40 === 0 ? 60 : 0;
+      if (trabajo + pico > 0) M2.ocupar(trabajo + pico);
+      // 2) registrar el intervalo real entre frames
+      const d = e.dt * 1000;
+      if (d > 0) { deltas.push(d); if (deltas.length > CAP) deltas.shift(); }
+      if (trabajo === 0 && !picos && deltas.length > 30) {
+        // mediana para descartar picos y media de los cercanos para quitar el redondeo a 0,1 ms
+        const ult = deltas.slice(-60), med = M2.mediana(ult);
+        const cerca = ult.filter((v) => Math.abs(v - med) < 0.25 * med);
+        periodo = cerca.reduce((a, b) => a + b, 0) / cerca.length;
+      }
+      // 3) dibujar: la bola se mueve según el tiempo, así que los frames perdidos se ven como saltos
+      const c = e.colores, w = e.w, h = e.h;
+      ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, w, h);
+      const carrilY = 58, r = 12;
+      const u = (e.t * 0.35) % 2, tri = u < 1 ? u : 2 - u;   // onda triangular: velocidad constante
+      const x = 24 + tri * (w - 48);
+      estela.push(x); if (estela.length > 28) estela.shift();
+      ctx.fillStyle = c.tenue;
+      for (let i = 0; i < estela.length - 1; i++) { ctx.globalAlpha = 0.15 + 0.7 * i / estela.length; ctx.beginPath(); ctx.arc(estela[i], carrilY + 30, 3, 0, Math.PI * 2); ctx.fill(); }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = c.acento; ctx.beginPath(); ctx.arc(x, carrilY, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = c.tenue; ctx.font = "12px " + c.mono; ctx.textAlign = "left"; ctx.textBaseline = "top";
+      ctx.fillText("estela: posiciones de los últimos frames (huecos = frames perdidos)", 12, carrilY + 42);
+      M2.graficaFrames(ctx, { x: 12, y: 130, w: w - 24, h: h - 142 }, deltas, { max: 70, periodo, capacidad: CAP, colores: c });
+      // 4) cifras
+      if (e.frame % 10 === 0 && deltas.length > 10) {
+        const ult = deltas.slice(-120);
+        const media = ult.reduce((a, b) => a + b, 0) / ult.length;
+        const largos = ult.filter((v) => v > 1.5 * periodo).length;
+        info.textContent = "pantalla ≈ " + (1000 / periodo).toFixed(0) + " Hz (periodo " + periodo.toFixed(1) + " ms) · " +
+          "media últimos " + ult.length + " frames: " + media.toFixed(1) + " ms → " + (1000 / media).toFixed(0) + " fps · " +
+          "frames largos (> 1,5 periodos): " + largos + " · peor: " + Math.max(...ult).toFixed(1) + " ms";
+      }
+    },
+  });
+  Curso.control(ctrls, { etiqueta: "trabajo por frame", min: 0, max: 40, paso: 1, valor: 0, formato: (v) => v + " ms", alCambiar: (v) => { trabajo = v; } });
+  Curso.casilla(ctrls, { etiqueta: "pico de 60 ms cada 40 frames", valor: false, alCambiar: (v) => { picos = v; } });
+  Curso.boton(ctrls, "Borrar gráfica", () => { deltas.length = 0; });
+});
+</script>
+</body>
+</html>

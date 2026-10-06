@@ -1,0 +1,13 @@
+{
+  "name": "curso-shaders-herramientas",
+  "private": true,
+  "type": "module",
+  "description": "Herramientas de mantenimiento del curso: índice de búsqueda/bestiario y verificación en Chrome headless",
+  "scripts": {
+    "indexar": "node indexar.mjs",
+    "verificar": "node verificar.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.12.0"
+  }
+}

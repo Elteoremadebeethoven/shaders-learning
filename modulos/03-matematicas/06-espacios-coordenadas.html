@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3.6 · De modelo a pantalla: espacios de coordenadas — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m3.css">
+</head>
+<body data-leccion="03-matematicas/espacios-coordenadas">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 3 · Matemáticas para gráficos</p>
+  <h1>De modelo a pantalla: espacios de coordenadas</h1>
+  <p class="resumen">El vértice (1, 1, 1) de un cubo acaba convertido en el píxel (769, 468) y en una profundidad de 0.986 (es el resultado del ejemplo 3.6.1). Entre medias hay una cadena de espacios y matrices: modelo, vista, proyección, la misteriosa división por w y el viewport. Aquí la recorres paso a paso, la derivas y la tocas en una cámara 3D hecha a mano en Canvas 2D.</p>
+  <div class="meta"><span class="chip">⏱ 120 min</span><span class="chip">Requisitos: 3.1–3.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Conocerás los espacios de objeto, mundo, vista, clip, NDC y ventana, y qué transformación lleva de cada uno al siguiente.</li>
+      <li>Construirás la matriz de vista como inversa de la cámara y derivarás <code>lookAt</code>.</li>
+      <li>Derivarás las proyecciones ortográfica y en perspectiva, y entenderás por qué la GPU divide por w (y qué pasa con lo que está detrás de la cámara).</li>
+      <li>Aplicarás la transformación de viewport y distinguirás el cubo NDC de GL ([−1, 1] también en z) del de WebGPU y Direct3D ([0, 1]).</li>
+      <li>Entenderás por qué la precisión del z-buffer se concentra cerca del plano near y cómo evitar el z-fighting.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El viaje de un vértice</h2>
+<p>En la lección <a href="05-matrices.html">3.5</a> colocaste objetos con matrices en un plano. En 3D hay un problema más: la pantalla es plana. Hay que decidir <strong>desde dónde miramos</strong> (una cámara), <strong>cómo se aplana</strong> el 3D en 2D (una proyección) y <strong>en qué píxeles</strong> cae el resultado. Cada paso es un cambio de sistema de coordenadas, casi todos con una matriz 4×4:</p>
+
+<svg class="diagrama" viewBox="0 0 760 170" width="760" role="img" aria-label="Espacios: objeto, mundo, vista, clip, NDC y ventana, unidos por las matrices de modelo, vista y proyección, la división por w y el viewport">
+  <defs>
+    <marker id="m36-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <g style="font-size:12.5px">
+    <rect class="caja" x="4" y="40" width="96" height="58" rx="8"/><text x="52" y="65" text-anchor="middle" style="font-weight:700">objeto</text><text x="52" y="84" text-anchor="middle" class="texto-tenue">(local)</text>
+    <rect class="caja" x="134" y="40" width="96" height="58" rx="8"/><text x="182" y="65" text-anchor="middle" style="font-weight:700">mundo</text><text x="182" y="84" text-anchor="middle" class="texto-tenue">la escena</text>
+    <rect class="caja" x="264" y="40" width="96" height="58" rx="8"/><text x="312" y="65" text-anchor="middle" style="font-weight:700">vista</text><text x="312" y="84" text-anchor="middle" class="texto-tenue">(cámara, ojo)</text>
+    <rect class="caja" x="394" y="40" width="96" height="58" rx="8"/><text x="442" y="65" text-anchor="middle" style="font-weight:700">clip</text><text x="442" y="84" text-anchor="middle" class="texto-tenue">(x, y, z, w)</text>
+    <rect class="caja" x="524" y="40" width="96" height="58" rx="8"/><text x="572" y="65" text-anchor="middle" style="font-weight:700">NDC</text><text x="572" y="84" text-anchor="middle" class="texto-tenue">cubo [−1, 1]³</text>
+    <rect class="caja" x="654" y="40" width="102" height="58" rx="8"/><text x="705" y="65" text-anchor="middle" style="font-weight:700">ventana</text><text x="705" y="84" text-anchor="middle" class="texto-tenue">píxeles + z</text>
+  </g>
+  <g stroke="currentColor" stroke-width="2">
+    <path d="M100 69 L130 69" marker-end="url(#m36-fl)"/><path d="M230 69 L260 69" marker-end="url(#m36-fl)"/>
+    <path d="M360 69 L390 69" marker-end="url(#m36-fl)"/><path d="M490 69 L520 69" marker-end="url(#m36-fl)"/>
+    <path d="M620 69 L650 69" marker-end="url(#m36-fl)"/>
+  </g>
+  <g style="font-size:12px" class="texto-tenue">
+    <text x="117" y="30" text-anchor="middle">M</text><text x="117" y="124" text-anchor="middle">modelo</text>
+    <text x="247" y="30" text-anchor="middle">V</text><text x="247" y="124" text-anchor="middle">vista</text>
+    <text x="377" y="30" text-anchor="middle">P</text><text x="377" y="124" text-anchor="middle">proyección</text>
+    <text x="507" y="30" text-anchor="middle">÷ w</text><text x="507" y="124" text-anchor="middle">división</text>
+    <text x="637" y="30" text-anchor="middle">viewport</text><text x="637" y="124" text-anchor="middle">escala</text>
+  </g>
+  <path d="M52 146 L442 146" class="acento" stroke-width="2"/>
+  <text x="247" y="163" text-anchor="middle" style="fill:var(--accent);font-size:12.5px">vertex shader: gl_Position = P · V · M · posición</text>
+  <path d="M500 146 L705 146" class="acento2" stroke-width="2"/>
+  <text x="603" y="163" text-anchor="middle" style="fill:var(--accent-2);font-size:12.5px">hardware fijo (después del vertex shader)</text>
+</svg>
+
+<p>La división del trabajo es importante. <strong>Tu vertex shader</strong> (lecciones <a href="../04-gpu/02-pipeline-grafico.html">4.2</a> y <a href="../05-webgl/06-3d-cubo.html">5.6</a>) calcula <code>gl_Position</code>: la posición en <strong>espacio clip</strong>, casi siempre multiplicando las tres matrices. A partir de ahí, la GPU hace el resto con hardware fijo: recorta, divide por w y aplica el viewport. En esta lección haremos las dos partes a mano, en JavaScript, para que no quede ni un número misterioso.</p>
+
+<div class="callout nota">
+  <p>Usamos <code>mat4</code> de <code>glkit.js</code>, la librería del curso: matrices 4×4 en <code>Float32Array</code> <strong>column-major</strong> (el elemento de la fila r, columna c vive en <code>m[c * 4 + r]</code>), con vectores columna, igual que GL. <code>mat4.multiplicar(a, b)</code> es a·b, <code>mat4.porVector(m, v)</code> es m·v y <code>mat4.texto(m)</code> imprime la matriz como en papel. En la página y en los editores con <code>data-incluir="glkit"</code> está disponible como global.</p>
+</div>
+
+<h2>Objeto, mundo y la matriz de modelo</h2>
+<p>Cada modelo se diseña en su propio <strong>espacio de objeto</strong> (o local): el cubo de −1 a 1 en cada eje, con su centro en el origen. La <strong>matriz de modelo</strong> $M = T\,R\,S$ de <a href="05-matrices.html">3.5</a> lo coloca en el <strong>espacio de mundo</strong>, el sistema común a toda la escena, donde conviven el suelo, los personajes, las luces y la cámara. Si tienes cien árboles, hay un solo modelo de árbol y cien matrices de modelo.</p>
+<p>La convención de OpenGL (y de este curso) es un mundo de <strong>mano derecha</strong> con la y hacia arriba: x a la derecha, y arriba, z hacia el observador (<a href="02-producto-punto-cruz.html">3.2</a>).</p>
+
+<h2>La vista: mover el mundo en lugar de la cámara</h2>
+<p>La cámara es un objeto más de la escena: está en una posición (el <strong>ojo</strong>) y tiene una orientación. Como cualquier objeto, podría describirse con una matriz $C = T(\text{ojo})\,R$ que la coloca en el mundo. Pero lo que necesitamos es lo contrario: las coordenadas de cada punto <strong>vistas desde la cámara</strong>, en un sistema donde la cámara está en el origen y mira en una dirección fija. Por convenio, en GL la cámara mira hacia <strong>−z</strong>, con la y hacia arriba y la x a la derecha. Ese es el <strong>espacio de vista</strong> (o de ojo, o de cámara), y la matriz que lleva del mundo a él es la inversa de la colocación de la cámara:</p>
+$$V = C^{-1} = \big(T(\text{ojo})\,R\big)^{-1} = R^{-1}\,T(-\text{ojo}) = R^T\,T(-\text{ojo})$$
+<p>Es la idea del bicho de «en el shader todo se mueve al revés» de <a href="05-matrices.html">3.5</a>, pero a lo grande: acercar la cámara a un objeto es exactamente lo mismo que acercar el objeto a la cámara. No existe una cámara en la GPU: <strong>la matriz de vista mueve el mundo entero en sentido contrario</strong>.</p>
+
+<h3>Construir la matriz lookAt</h3>
+<p>Casi siempre la cámara se describe como «estoy en <code>ojo</code>, miro a <code>objetivo</code>, y hacia arriba es aproximadamente <code>arriba</code>». De ahí salen sus tres ejes con dos productos cruz:</p>
+<ol>
+  <li><strong>z</strong>: la cámara mira hacia −z, así que su eje z apunta del objetivo al ojo: $\hat z = \operatorname{normalize}(\text{ojo} - \text{objetivo})$.</li>
+  <li><strong>x</strong> (derecha): perpendicular a la vertical aproximada y a z: $\hat x = \operatorname{normalize}(\text{arriba}\times\hat z)$. El orden del producto cruz decide que salga hacia la derecha (regla de la mano derecha).</li>
+  <li><strong>y</strong> (arriba de verdad): perpendicular a los otros dos: $\hat y = \hat z\times\hat x$. Ya es unitario, porque $\hat z$ y $\hat x$ son unitarios y perpendiculares. <code>arriba</code> solo servía para elegir el giro de la cámara alrededor de su eje de visión: no tiene por qué ser perpendicular a la mirada.</li>
+</ol>
+<p>Con los tres ejes, $R$ tiene como columnas $\hat x, \hat y, \hat z$, así que $R^T$ los tiene como <strong>filas</strong>. Y $R^T\,T(-\text{ojo})$ aplicado a un punto $P$ da, componente a componente, $\hat x\cdot(P - \text{ojo})$, $\hat y\cdot(P - \text{ojo})$, $\hat z\cdot(P - \text{ojo})$: las proyecciones del vector ojo→P sobre los ejes de la cámara (<a href="02-producto-punto-cruz.html">3.2</a>). En forma de matriz:</p>
+$$V = \begin{bmatrix} x_x & x_y & x_z & -\hat x\cdot\text{ojo} \\ y_x & y_y & y_z & -\hat y\cdot\text{ojo} \\ z_x & z_y & z_z & -\hat z\cdot\text{ojo} \\ 0 & 0 & 0 & 1\end{bmatrix}$$
+<p>Es exactamente lo que construye <code>mat4.mirarA(ojo, objetivo, arriba)</code> de <code>glkit.js</code> (léela: son seis líneas).</p>
+
+<div class="callout bestiario" data-id="m3-lookat-degenerado" data-titulo="La cámara que mira recto hacia abajo no ve nada">
+  <p><strong>Síntoma:</strong> la escena se ve bien desde cualquier ángulo, pero cuando la cámara mira exactamente hacia abajo (o hacia arriba), todo desaparece, se colapsa en una línea o empieza a girar de forma errática.</p>
+  <p><strong>Causa:</strong> si la dirección de mirada es paralela a <code>arriba</code> (mirar a (0, −1, 0) con <code>arriba = (0, 1, 0)</code>), su producto cruz es el vector nulo y normalizarlo da NaN, o en <code>glkit.js</code>, que se protege de la división por cero, el vector (0, 0, 0). Con <code>ojo = (0, 5, 0)</code> y <code>objetivo</code> en el origen, <code>mat4.mirarA</code> devuelve una matriz con las dos primeras filas llenas de ceros: toda la escena se proyecta sobre un punto. Cerca de esa posición, el eje x cambia bruscamente al mover un poco la cámara, y la imagen gira.</p>
+  <p><strong>Solución:</strong> evita que la mirada sea paralela a <code>arriba</code>: limita el ángulo de elevación de una cámara orbital a ±89°, o elige otro <code>arriba</code> cuando <code>|dot(arriba, ẑ)|</code> se acerque a 1 (es el ejercicio 3.6.4). Las cámaras que necesitan mirar en cualquier dirección (simuladores de vuelo) guardan su orientación con cuaterniones en lugar de reconstruirla con <code>lookAt</code>.</p>
+</div>
+
+<h2>La proyección: aplanar el 3D</h2>
+<h3>Ortográfica</h3>
+<p>La proyección más simple descarta la profundidad al aplanar: los rayos de visión son paralelos, y un objeto lejano se ve del mismo tamaño que uno cercano. La cámara ve una <strong>caja</strong>: de <code>izq</code> a <code>der</code> en x, de <code>abajo</code> a <code>arriba</code> en y, y de <code>cerca</code> a <code>lejos</code> en profundidad (en z de −cerca a −lejos, porque la cámara mira hacia −z). La matriz ortográfica lleva esa caja al cubo $[-1, 1]^3$ con un remapeo por eje (<a href="04-funciones-forma.html">3.4</a>):</p>
+$$x_{ndc} = \frac{2\,(x - \text{izq})}{\text{der} - \text{izq}} - 1, \qquad z_{ndc} = \frac{-2\,z - (\text{lejos} + \text{cerca})}{\text{lejos} - \text{cerca}}$$
+<p>(la z lleva un signo menos para que el plano <code>cerca</code>, en $z = -\text{cerca}$, vaya a −1, y el <code>lejos</code> a +1). Se usa en interfaces, juegos 2D, planos técnicos, mapas de sombras y vistas isométricas. En <code>glkit.js</code>: <code>mat4.ortografica(izq, der, abajo, arriba, cerca, lejos)</code>.</p>
+
+<h3>En perspectiva: triángulos semejantes</h3>
+<p>En una cámara real, lo lejano se ve más pequeño. Imagina una pantalla a distancia $n$ delante del ojo. Un punto a distancia $d = -z$ (positiva delante de la cámara) y altura $y$ se proyecta donde la recta que lo une con el ojo corta la pantalla. Los dos triángulos (ojo, pie de la pantalla, punto proyectado) y (ojo, pie del punto, punto) son semejantes:</p>
+
+<svg class="diagrama" viewBox="0 0 620 210" width="620" role="img" aria-label="Triángulos semejantes: el punto a distancia d y altura y se proyecta en la pantalla a distancia n con altura n·y/d">
+  <line x1="40" y1="170" x2="600" y2="170" stroke="currentColor" style="opacity:.5"/>
+  <circle cx="60" cy="170" r="5" fill="currentColor"/><text x="46" y="192" class="texto-tenue">ojo</text>
+  <line x1="220" y1="30" x2="220" y2="180" class="acento2" stroke-width="3"/>
+  <text x="226" y="44" style="fill:var(--accent-2)">pantalla (a distancia n)</text>
+  <line x1="520" y1="170" x2="520" y2="60" stroke="currentColor" stroke-width="2.5"/>
+  <circle cx="520" cy="60" r="6" class="acento-relleno"/><text x="530" y="58">punto (y, z = −d)</text>
+  <line x1="60" y1="170" x2="520" y2="60" class="acento" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <circle cx="220" cy="131.7" r="5" class="acento-relleno"/>
+  <text x="232" y="128" style="fill:var(--accent)">y′ = n·y / d</text>
+  <text x="140" y="190" text-anchor="middle" class="texto-tenue">n</text>
+  <text x="290" y="202" text-anchor="middle" class="texto-tenue">d</text>
+  <line x1="60" y1="196" x2="520" y2="196" stroke="currentColor" style="opacity:.4"/>
+  <text x="532" y="118">y</text>
+</svg>
+
+$$\frac{y'}{n} = \frac{y}{d} \quad\Longrightarrow\quad y' = \frac{n\,y}{d} = \frac{n\,y}{-z}$$
+<p>Esa es toda la perspectiva: <strong>dividir por la distancia</strong>. Ahora hay que llevar $y'$ al intervalo $[-1, 1]$. La pantalla ve una altura total de $2t$, con $t = n\tan(\text{fov}/2)$ (<a href="03-trigonometria.html">3.3</a>); dividiendo por $t$, la $n$ se cancela:</p>
+$$y_{ndc} = \frac{y'}{t} = \frac{1}{\tan(\text{fov}/2)}\cdot\frac{y}{-z}, \qquad x_{ndc} = \frac{1}{\text{aspecto}\cdot\tan(\text{fov}/2)}\cdot\frac{x}{-z}$$
+<p>En x se divide además por el <strong>aspecto</strong> (ancho/alto de la imagen): el fov es vertical y la imagen es más ancha que alta, así que en horizontal cabe más mundo. Llamemos $f = 1/\tan(\text{fov}/2)$, el mismo factor de la demo de la tangente de 3.3.</p>
+
+<h3>El problema: una matriz no puede dividir</h3>
+<p>Una matriz solo hace combinaciones lineales: sumas de coordenadas multiplicadas por constantes. Dividir por $-z$, que cambia de un punto a otro, no es lineal. El truco, otra vez, está en la coordenada homogénea: la matriz calcula el numerador en x, y, z y pone <strong>el denominador en w</strong>. Después, la GPU divide todas las componentes por w. A la salida de la matriz, antes de dividir, tenemos las <strong>coordenadas clip</strong>; tras dividir, las <strong>NDC</strong>.</p>
+$$\begin{bmatrix} x_c \\ y_c \\ z_c \\ w_c \end{bmatrix} = \begin{bmatrix} f/\text{aspecto} & 0 & 0 & 0 \\ 0 & f & 0 & 0 \\ 0 & 0 & A & B \\ 0 & 0 & -1 & 0\end{bmatrix}\begin{bmatrix} x \\ y \\ z \\ 1 \end{bmatrix}, \qquad w_c = -z, \qquad (x, y, z)_{ndc} = \frac{(x_c, y_c, z_c)}{w_c}$$
+<p>La cuarta fila, $(0, 0, -1, 0)$, copia $-z$ en w. Queda la z. También queremos guardarla, para saber qué está delante de qué, y queremos que el plano cercano ($z = -n$) vaya a $z_{ndc} = -1$ y el lejano ($z = -\ell$) a $+1$. Como la z también se dividirá por $-z$, la tercera fila da $z_{ndc} = (A z + B)/(-z)$. Imponiendo los dos extremos:</p>
+$$\frac{-A n + B}{n} = -1, \qquad \frac{-A \ell + B}{\ell} = 1 \quad\Longrightarrow\quad A = -\frac{\ell + n}{\ell - n}, \qquad B = -\frac{2\ell n}{\ell - n}$$
+<p>(de la primera, $B = A n - n$; sustituyendo en la segunda, $-A\ell + An - n = \ell$, así que $A(n - \ell) = \ell + n$). Es exactamente la matriz de <code>mat4.perspectiva(fovY, aspecto, cerca, lejos)</code> de <code>glkit.js</code> y de <code>gluPerspective</code>, la función clásica de OpenGL. Y aquí aparece algo importante: $z_{ndc} = -A - B/z$ <strong>depende de 1/z</strong>, no de z. La profundidad que guarda la GPU no es lineal; volveremos a ello, porque tiene consecuencias.</p>
+
+<div class="callout senior" data-titulo="La división por w también corrige las texturas">
+  <p>La GPU guarda $1/w$ de cada vértice (<code>gl_FragCoord.w</code> es precisamente $1/w_c$) por otro motivo: en perspectiva, interpolar linealmente en pantalla los valores de los vértices (colores, coordenadas de textura) da resultados incorrectos, porque la mitad de un segmento en pantalla no es la mitad del segmento en 3D. La interpolación correcta, la <strong>corrección de perspectiva</strong>, interpola $\text{valor}/w$ y $1/w$ linealmente y divide. Las coordenadas baricéntricas del ejercicio 3.2.4 eran lineales en pantalla; la GPU las corrige así. Sin esa corrección, las texturas de un suelo se retuercen, como en los juegos de la PlayStation original, que no la hacía.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Por qué la matriz de proyección pone $-z$ en la coordenada w, en lugar de dividir directamente?</p>
+  <ul>
+    <li>Porque dividir es más lento que multiplicar en la GPU<div class="explicacion">No es una cuestión de velocidad: una matriz <em>no puede</em> dividir por una coordenada del propio punto, porque solo calcula sumas de productos por constantes. Dividir por $-z$ no es una operación lineal.</div></li>
+    <li data-correcta>Porque la división por la distancia no es lineal: la matriz prepara el denominador en w y la GPU divide después (división de perspectiva)<div class="explicacion">Correcto. Además, dejar la división para después permite recortar la geometría en espacio clip antes de dividir, que es justo lo que hace falta para los puntos que están detrás de la cámara (w ≤ 0).</div></li>
+    <li>Porque w tiene que valer siempre 1 para que la matriz funcione<div class="explicacion">Tras la proyección, w vale $-z$, la distancia, y cambia de un punto a otro. w = 1 es lo que tienen los puntos antes de la proyección (y después de dividir).</div></li>
+  </ul>
+</div>
+
+<h2>La cámara 3D, hecha a mano</h2>
+<p>Todo lo anterior en una demo: un cubo, una cámara que orbita a su alrededor y el pipeline completo en JavaScript con <code>mat4</code>. A la izquierda, la imagen de la cámara; a la derecha, la escena vista desde arriba, con el <strong>frustum</strong> (la pirámide truncada de lo que ve la cámara: sus planos near y far y los bordes del campo de visión). Arrastra sobre la imagen para orbitar y cambia fov, near, far y distancia. Abajo, el viaje numérico del vértice (1, 1, 1).</p>
+
+<div class="demo" id="demo-camara">
+  <div class="demo-lienzo" style="height:380px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Prueba esto:</p>
+<ul>
+  <li><strong>fov</strong>: al abrirlo, el cubo se ve más pequeño y con más deformación en los bordes (más perspectiva); al cerrarlo, como un teleobjetivo, las líneas se vuelven casi paralelas. Aleja la cámara y cierra el fov a la vez: el cubo mantiene su tamaño, pero su perspectiva se aplana (el famoso efecto <em>dolly zoom</em> de <em>Vértigo</em>).</li>
+  <li><strong>near y far</strong>: lo que queda fuera de la pirámide truncada se recorta. Sube el near hasta que corte el cubo: verás el interior, porque las aristas se cortan justo en el plano cercano.</li>
+  <li><strong>Olvidar el aspecto</strong>: el cubo sale estirado en horizontal, porque la proyección cree que la imagen es cuadrada.</li>
+  <li><strong>Sin recorte</strong>: acerca la cámara hasta meterla dentro del cubo (distancia por debajo de 1) con la casilla activada. Los vértices que quedan detrás de la cámara aparecen reflejados, con líneas que cruzan toda la imagen.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m3-aspecto" data-titulo="Todo sale estirado (o se estira al redimensionar)">
+  <p><strong>Síntoma:</strong> los círculos salen ovalados y los cubos alargados; o todo se ve bien hasta que cambias el tamaño de la ventana, y a partir de ahí la imagen se estira o se aplasta.</p>
+  <p><strong>Causa:</strong> la matriz de proyección usa un aspecto que no coincide con el de la imagen: se olvidó (aspecto 1 en una imagen de 16:9), se calculó con el tamaño CSS en vez del del <em>drawing buffer</em>, o no se recalculó al redimensionar el canvas. En 2D es el mismo error que usar uv sin corregir en lugar de coordenadas centradas (<a href="01-vectores.html">3.1</a>).</p>
+  <p><strong>Solución:</strong> <code>aspecto = canvas.width / canvas.height</code> (el tamaño real del buffer), y vuelve a construir la matriz de proyección (y a llamar a <code>gl.viewport</code>) cada vez que cambie el tamaño del canvas (<a href="../05-webgl/01-contexto.html">5.1</a>).</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.6.1 — Un vértice, paso a paso</h3>
+  <p>Seguimos al vértice $(1, 1, 1)$ de un cubo girado 30° y desplazado, visto por una cámara en $(0, 2, 6)$ que mira al origen, con fov de 60°, aspecto 16:9, near 0.1 y far 100, en una imagen de 1280×720.</p>
+  <div class="js-playground" data-titulo="El viaje de un vértice" data-altura="40" data-fondo="oscuro" data-apilado data-incluir="glkit">
+<script type="text/x-js">
+const M = mat4.multiplicar(mat4.traslacion(0, 0, -1), mat4.rotacionY(Math.PI / 6));   // modelo: T·R
+const V = mat4.mirarA([0, 2, 6], [0, 0, 0], [0, 1, 0]);                             // vista
+const P = mat4.perspectiva(Math.PI / 3, 1280 / 720, 0.1, 100);                      // proyección
+const f3 = (v) => '(' + v.map((x) => x.toFixed(3)).join(', ') + ')';
+
+const objeto = [1, 1, 1, 1];                  // w = 1: es un punto
+const mundo = mat4.porVector(M, objeto);
+const vista = mat4.porVector(V, mundo);
+const clip = mat4.porVector(P, vista);
+const ndc = [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]];   // la división por w
+const ventana = [(ndc[0] + 1) / 2 * 1280, (ndc[1] + 1) / 2 * 720, (ndc[2] + 1) / 2];
+
+console.log('objeto  ', f3(objeto));
+console.log('mundo   ', f3(mundo));
+console.log('vista   ', f3(vista), '← z negativa: delante de la cámara, a', (-vista[2]).toFixed(3));
+console.log('clip    ', f3(clip), '← w = −z de vista');
+console.log('NDC     ', f3(ndc), '← dentro de [−1, 1]³: se ve');
+console.log('ventana ', f3(ventana), '← píxel (y hacia arriba) y profundidad en [0, 1]');
+console.log('La proyección, como en papel:\n' + mat4.texto(P));
+console.log('Todo junto, P·V·M · v =', f3(mat4.porVector(mat4.producto(P, V, M), objeto)));
+</script>
+  </div>
+  <ol>
+    <li><strong>Mundo</strong>: la rotación de 30° en y y la traslación de −1 en z mueven el vértice a $(1.366, 1, -0.634)$.</li>
+    <li><strong>Vista</strong>: la matriz de <code>mirarA</code> expresa el punto en los ejes de la cámara. Su z es −6.61: está 6.61 unidades delante de la cámara (que mira hacia −z).</li>
+    <li><strong>Clip</strong>: la proyección escala x e y por $f/\text{aspecto}$ y $f$, y deja en w la distancia, 6.61. Una comprobación que hace la GPU aquí: el punto es visible si $-w \le x, y, z \le w$.</li>
+    <li><strong>NDC</strong>: al dividir por w, la x y la y quedan en $[-1, 1]$ y la z en 0.97. Fíjate en ese 0.97: un punto a 6.6 unidades, con un far de 100, ya está en el 98.6&nbsp;% del rango de profundidad. Es la no linealidad de la z.</li>
+    <li><strong>Ventana</strong>: el viewport lleva $[-1, 1]$ a los píxeles. El resultado es el <code>gl_FragCoord</code> que recibirá el fragment shader en ese punto: y hacia arriba, como en <a href="01-vectores.html">3.1</a>.</li>
+    <li><strong>Todo junto</strong>: $P\cdot V\cdot M$ se multiplica una vez y da el mismo resultado. Es lo que se envía a la GPU como uniform (o las tres por separado, si el shader necesita posiciones de mundo para iluminar).</li>
+  </ol>
+</section>
+
+<h2>Espacio clip, w y lo que queda detrás de la cámara</h2>
+<p>Recortar significa descartar lo que no cabe en la pirámide de visión. Se hace <strong>en espacio clip, antes de dividir</strong>, con seis desigualdades muy baratas: un punto está dentro si $-w \le x \le w$, $-w \le y \le w$ y $-w \le z \le w$. Un triángulo que cruza un plano se corta, y se generan triángulos nuevos con los vértices interpolados en el borde.</p>
+<p>¿Por qué no dividir primero y recortar después en el cubo NDC? Por los puntos de <strong>detrás de la cámara</strong>. Para ellos $z > 0$, así que $w = -z &lt; 0$: al dividir por un número negativo, x e y cambian de signo. Un punto que está detrás de la cámara, arriba a la derecha, aparecería en NDC abajo a la izquierda, reflejado a través del centro. En el ejemplo de antes, el punto de vista $(1, 0.5, 2)$, detrás de la cámara, daría $w = -2$ y unas NDC de $(-0.49, -0.43)$, perfectamente «visibles». Y un triángulo con un vértice delante y otro detrás tendría un vértice con w ≈ 0, que al dividir sale disparado hacia el infinito. Recortando contra el plano near en espacio clip, el vértice de detrás desaparece antes de que se divida nada.</p>
+
+<div class="callout bestiario" data-id="m3-detras-camara" data-titulo="Geometría reflejada o triángulos gigantes que cruzan la pantalla">
+  <p><strong>Síntoma:</strong> en un proyector 3D hecho a mano (en Canvas 2D, o proyectando puntos en JavaScript para colocar etiquetas HTML sobre objetos 3D), aparecen copias invertidas de objetos que están detrás de la cámara, o líneas enormes que atraviesan la imagen cuando la cámara se acerca a un objeto.</p>
+  <p><strong>Causa:</strong> se ha dividido por w sin comprobar su signo ni recortar. Con w &lt; 0 (detrás de la cámara), la división invierte x e y; con w cerca de 0, los valores se disparan. La GPU nunca comete este error porque recorta en espacio clip antes de dividir, pero tu código sí puede.</p>
+  <p><strong>Solución:</strong> antes de dividir, recorta cada segmento o triángulo contra el plano near ($z_c \ge -w_c$ en GL) interpolando en espacio clip; para puntos sueltos (etiquetas), basta con no dibujar los que tengan $w \le 0$. En la demo de la cámara, activa «sin recorte» y mete la cámara dentro del cubo.</p>
+</div>
+
+<p>Así se recorta un segmento contra los planos near y far en espacio clip (es la función que usa la demo de la cámara):</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function recortar(a, b) {
+  for (const plano of [(v) => v[2] + v[3], (v) => v[3] - v[2]]) {
+    const da = plano(a), db = plano(b);
+    if (da < 0 && db < 0) return null;
+    if (da < 0 || db < 0) {
+      const t = da / (da - db);
+      const p = a.map((x, i) => x + (b[i] - x) * t);
+      if (da < 0) a = p; else b = p;
+    }
+  }
+  return [a, b];
+}
+</script>
+<ol>
+  <li data-l="1">Los dos extremos llegan en espacio clip, como arrays <code>[x, y, z, w]</code>: todavía sin dividir.</li>
+  <li data-l="2">Cada plano es una función con signo, positiva dentro: near es <code>z + w ≥ 0</code> (equivale a z_ndc ≥ −1 cuando w &gt; 0) y far es <code>w − z ≥ 0</code>. Son lineales en las coordenadas clip, como las funciones de arista de <a href="02-producto-punto-cruz.html">3.2</a>.</li>
+  <li data-l="4">Los dos extremos fuera del mismo plano: el segmento entero sobra.</li>
+  <li data-l="5-8">Uno dentro y otro fuera: el plano se cruza donde la función vale 0. Como es lineal, a lo largo del segmento vale <code>da + t·(db − da)</code>, que se anula en <code>t = da / (da − db)</code>. Sustituimos el extremo de fuera por ese punto de corte, interpolado en las cuatro coordenadas.</li>
+  <li data-l="7">La clave: interpolar <strong>en espacio clip</strong> es correcto porque ahí todo sigue siendo lineal. Después de dividir por w ya no lo sería (y el extremo de detrás de la cámara ya estaría reflejado).</li>
+  <li data-l="11">El segmento recortado, listo para dividir por w sin peligro: los dos extremos tienen w &gt; 0. La GPU hace lo mismo con triángulos (un polígono contra seis planos, que puede generar varios triángulos nuevos).</li>
+</ol>
+</div>
+
+<h2>NDC: el cubo de GL (y el de los demás)</h2>
+<p>Tras la división, todo lo visible está en el cubo $[-1, 1]^3$: las <strong>coordenadas normalizadas de dispositivo</strong>. En x e y, −1 es el borde izquierdo o inferior y +1 el derecho o superior. En z, en OpenGL y WebGL, <strong>también de −1 a 1</strong>: −1 en el plano near, +1 en el far. El NDC de GL es de <strong>mano izquierda</strong>: la z crece hacia dentro de la pantalla (el signo menos de la cuarta fila de la proyección ha dado la vuelta al eje), como anunciamos en <a href="02-producto-punto-cruz.html">3.2</a>.</p>
+
+<div class="callout senior" data-titulo="El cubo NDC no es igual en todas las APIs">
+  <p>Direct3D, Metal, Vulkan y <strong>WebGPU</strong> usan $z_{ndc} \in [0, 1]$ en lugar de $[-1, 1]$ (x e y siguen en $[-1, 1]$). Una matriz de proyección de GL usada tal cual en WebGPU recorta todo lo que cae en $z_{ndc} &lt; 0$ (lo que está entre el near y, aproximadamente, el doble del near) y desaprovecha la mitad de los valores de profundidad; las librerías tienen versiones de <code>perspective</code> para cada convención. Vulkan, además, tiene la y de NDC hacia abajo. Cuando portes código entre APIs (o leas un tutorial de otra), mira siempre qué convención de NDC asume (lo retomamos en <a href="../07-integracion/07-siguientes-pasos.html">7.7</a>). Y en WebGL2 existe desde hace poco la extensión <code>EXT_clip_control</code> (disponible en el Chrome de nuestras pruebas) que permite elegir el rango $[0, 1]$, la base del truco de la profundidad invertida que verás más abajo.</p>
+</div>
+
+<h2>El viewport: de NDC a píxeles</h2>
+<p>El último paso es un remapeo por eje, que configuras con <code>gl.viewport(x0, y0, ancho, alto)</code> (<a href="../05-webgl/01-contexto.html">5.1</a>):</p>
+$$x_{ventana} = x_0 + \frac{x_{ndc} + 1}{2}\,\text{ancho}, \qquad y_{ventana} = y_0 + \frac{y_{ndc} + 1}{2}\,\text{alto}, \qquad z_{ventana} = \frac{z_{ndc} + 1}{2}$$
+<p>El resultado es, precisamente, el <code>gl_FragCoord</code> de <a href="01-vectores.html">3.1</a>: píxeles físicos, origen abajo a la izquierda, y hacia arriba. Y $z_{ventana}$, entre 0 y 1 (el rango por defecto de <code>gl.depthRange</code>), es lo que se compara y se guarda en el <strong>búfer de profundidad</strong> (z-buffer): <code>gl_FragCoord.z</code>. Normalmente el viewport cubre todo el canvas (<code>gl.viewport(0, 0, canvas.width, canvas.height)</code>), pero puedes usar varios para dibujar varias vistas en el mismo lienzo (pantalla partida, un minimapa).</p>
+
+<div class="callout nota" id="m3-viewport-desfasado">
+  <p><strong>El viewport no sigue al canvas.</strong> Cuando el contexto se crea, el viewport se ajusta al tamaño inicial del canvas; si luego cambias <code>canvas.width</code> y <code>canvas.height</code>, conserva los valores antiguos y el remapeo de NDC a píxeles apunta al rectángulo viejo, anclado abajo a la izquierda (el origen de la ventana GL): la escena queda en una esquina, o estirada. Tras redimensionar, llama a <code>gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight)</code> y recalcula la proyección con el nuevo aspecto (<code>GLKit.ajustarTamaño</code> devuelve <code>true</code> justo para avisarte). Es el comportamiento raro <a href="../05-webgl/01-contexto.html#m5-viewport-olvidado">«Tras redimensionar, el dibujo ocupa una esquina o sale estirado»</a> de 5.1, donde lo provocarás; la proyección, en <a href="../05-webgl/06-3d-cubo.html">5.6</a>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un punto tiene NDC $(0.5, -0.5, 0.2)$ con <code>gl.viewport(0, 0, 800, 600)</code>. ¿Qué <code>gl_FragCoord</code> (aproximado) le corresponde?</p>
+  <ul>
+    <li>$(600, 150, 0.2)$<div class="explicacion">x e y están bien, pero la z también se remapea: $(0.2 + 1)/2 = 0.6$. El z-buffer guarda valores de 0 a 1.</div></li>
+    <li data-correcta>$(600, 150, 0.6)$<div class="explicacion">$x = (0.5 + 1)/2 \cdot 800 = 600$; $y = (-0.5 + 1)/2\cdot600 = 150$ (desde abajo: está en el cuarto inferior); $z = (0.2 + 1)/2 = 0.6$.</div></li>
+    <li>$(600, 450, 0.6)$<div class="explicacion">450 sería contar desde arriba, como en pantalla. <code>gl_FragCoord</code> tiene el origen abajo a la izquierda, y $y_{ndc} = -0.5$ está por debajo del centro.</div></li>
+  </ul>
+</div>
+
+<h2>La profundidad no es lineal</h2>
+<p>Juntando la proyección y el viewport, un punto a distancia $d$ de la cámara acaba con esta profundidad en el z-buffer:</p>
+$$z_{ventana}(d) = \frac{\ell}{\ell - n}\left(1 - \frac{n}{d}\right)$$
+<p>Es una hipérbola: sube muy deprisa cerca de $n$ y se aplana enseguida. ¿Dónde está la mitad del rango, $z_{ventana} = 0.5$? Despejando, en $d = 2\ell n/(\ell + n) \approx 2n$. Con near = 0.1 y far = 1000, <strong>la mitad de todos los valores posibles del z-buffer se gasta entre 0.1 y 0.2 unidades de distancia</strong>. Mueve los parámetros:</p>
+
+<div class="graficador" data-x="0,40" data-y="-0.05,1.1" data-titulo="Profundidad guardada en función de la distancia" data-uniforms='{"n":{"min":0.05,"max":5,"valor":0.5,"etiqueta":"near"},"l":{"min":5,"max":200,"valor":40,"etiqueta":"far"}}'>
+<script type="text/x-exprs">
+(l / (l - n)) * (1.0 - n / x) * step(n, x) * step(x, l)
+(x - n) / (l - n) * step(n, x) * step(x, l)
+</script>
+</div>
+<p>La curva violeta es la profundidad real; la azul, cómo sería una profundidad lineal. ¿Por qué importa? Porque el z-buffer tiene resolución limitada: típicamente <strong>24 bits en coma fija</strong>, es decir, $2^{24} \approx 16.7$ millones de valores posibles entre 0 y 1. Si la curva es plana, dos distancias bastante distintas acaban con el mismo valor guardado. Derivando la fórmula, la menor diferencia de distancia que se puede distinguir es aproximadamente:</p>
+$$\Delta d \approx 2^{-24}\cdot\frac{(\ell - n)\,d^2}{\ell\, n}$$
+<table class="m3-num">
+  <thead><tr><th>Distancia d</th><th>near 0.1, far 1000</th><th>near 1, far 1000</th><th>near 0.01, far 1000</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>0.0000006</td><td>0.00000006</td><td>0.000006</td></tr>
+    <tr><td>10</td><td>0.00006</td><td>0.000006</td><td>0.0006</td></tr>
+    <tr><td>100</td><td>0.006</td><td>0.0006</td><td>0.06</td></tr>
+    <tr><td>500</td><td>0.15</td><td>0.015</td><td>1.5</td></tr>
+  </tbody>
+</table>
+<p>Con near = 0.01 (tentador, para que la cámara pueda acercarse mucho a las cosas), a 500 m de distancia no se distinguen superficies separadas menos de metro y medio. La resolución empeora con el cuadrado de la distancia (Δd crece como $d^2$) y es <strong>inversamente proporcional al near</strong>: el far casi no influye, mientras sea mucho mayor que el near. Cuando dos superficies casi coplanarias quedan más juntas que esa resolución, la prueba de profundidad las confunde y aparece el <strong>z-fighting</strong>.</p>
+
+<div class="glsl-playground" data-titulo="Simulación de z-fighting con un z-buffer de N bits" data-altura="320" data-apilado
+     data-uniforms='{"u_cerca":{"tipo":"float","min":0.005,"max":1,"valor":0.05,"etiqueta":"near"},"u_bits":{"tipo":"float","min":8,"max":24,"valor":14,"paso":1,"etiqueta":"bits del z-buffer"},"u_hueco":{"tipo":"float","min":0.001,"max":0.05,"valor":0.005,"etiqueta":"separación"},"u_verZ":{"tipo":"bool","valor":false,"etiqueta":"ver el z-buffer"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_cerca;      // plano near
+uniform float u_bits;       // resolución del z-buffer simulado
+uniform float u_hueco;      // separación entre los dos suelos
+uniform bool u_verZ;
+out vec4 fragColor;
+
+const float LEJOS = 500.0;
+
+// Profundidad que guardaría el z-buffer para un punto a distancia d (en [0,1])
+float profundidadVentana(float d) { return LEJOS / (LEJOS - u_cerca) * (1.0 - u_cerca / d); }
+// El z-buffer de N bits guarda enteros: redondeamos a su resolución
+float cuantizar(float z) { float niveles = exp2(u_bits) - 1.0; return floor(z * niveles + 0.5); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  // Rayo de la cámara (en su espacio: mira hacia -z) con fov vertical de 60°
+  vec3 dirVista = normalize(vec3(p * tan(radians(30.0)), -1.0));
+  float cb = cos(radians(-6.0)), sb = sin(radians(-6.0));               // cámara inclinada 6° hacia abajo
+  vec3 d = vec3(dirVista.x, cb * dirVista.y - sb * dirVista.z, sb * dirVista.y + cb * dirVista.z);
+  vec3 ojo = vec3(0.0, 1.0, 0.0);
+
+  vec3 color = vec3(0.35, 0.5, 0.75) * (0.6 + 0.4 * p.y);                 // cielo
+  if (d.y < 0.0) {
+    // Suelo A en y = 0 (gris) y suelo B en y = hueco (rojo), dibujado DESPUÉS con prueba LESS
+    float tA = -ojo.y / d.y, tB = (u_hueco - ojo.y) / d.y;
+    float zA = profundidadVentana(tA * -dirVista.z);   // distancia a lo largo del eje de la cámara
+    float zB = profundidadVentana(tB * -dirVista.z);
+    bool ganaB = cuantizar(zB) < cuantizar(zA);        // B está delante... si el z-buffer lo distingue
+    vec3 pA = ojo + tA * d;
+    float cuadros = mod(floor(pA.x) + floor(pA.z), 2.0);
+    vec3 colA = vec3(0.35 + 0.25 * cuadros), colB = vec3(0.85, 0.25, 0.3);
+    color = ganaB ? colB : colA;
+    if (u_verZ) color = vec3(cuantizar(zA) / (exp2(u_bits) - 1.0));   // la profundidad guardada
+    color = mix(color, vec3(0.5, 0.6, 0.75), smoothstep(60.0, LEJOS, tA)); // bruma lejana
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>La simulación calcula, para cada píxel, la profundidad de dos suelos paralelos: uno gris en $y = 0$ y uno rojo un poco por encima. El rojo está siempre delante, así que debería verse solo rojo. Pero la profundidad se redondea a los niveles de un z-buffer de N bits y, donde los dos suelos caen en el mismo nivel, gana el que se dibujó primero (el gris), porque la prueba <code>LESS</code> exige ser estrictamente menor. Baja el near: la zona de bandas se acerca a la cámara. Sube los bits: se aleja. Activa «ver el z-buffer»: casi todo el suelo es casi blanco, porque la mayor parte de los valores se gastó muy cerca de la cámara. En una GPU real, además, la profundidad se interpola por píxel con redondeos que cambian al moverse la cámara, y las bandas <strong>parpadean</strong>: por eso se llama <em>fighting</em>, pelea.</p>
+
+<div class="callout hack" data-titulo="Cómo se lucha contra el z-fighting">
+  <p>En orden de eficacia: <strong>aleja el near</strong> todo lo que puedas (pasar de 0.01 a 0.1 multiplica la precisión por 10; el far importa mucho menos). <strong>No modeles superficies coplanarias</strong>: separa las calcomanías o usa <code>gl.polygonOffset</code>, que desplaza la profundidad de un polígono una pequeña cantidad al rasterizar (la prueba de profundidad se trata en <a href="../05-webgl/06-3d-cubo.html">5.6</a>). Y el truco de los motores modernos, la <strong>profundidad invertida</strong> (<em>reversed-Z</em>): guardar 1 en el near y 0 en el far en un z-buffer de coma flotante (<code>DEPTH_COMPONENT32F</code>). Los floats tienen muchísima precisión cerca de 0 (<a href="07-precision.html">3.7</a>), justo donde la hipérbola la pierde, y los dos efectos se compensan casi a la perfección. En WebGL2 requiere <code>EXT_clip_control</code> para que la z de NDC vaya de 0 a 1; en WebGPU es directo.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu escena va de 0.001 a 10 000 unidades y aparece z-fighting a lo lejos. ¿Qué cambio ayuda más?</p>
+  <ul>
+    <li>Reducir el far de 10 000 a 5 000<div class="explicacion">Ayuda muy poco: con el far mucho mayor que el near, la resolución depende casi solo de $d^2/n$. Reducir el far a la mitad apenas cambia nada.</div></li>
+    <li data-correcta>Subir el near de 0.001 a 0.1<div class="explicacion">La resolución es inversamente proporcional al near: multiplicarlo por 100 mejora la precisión en profundidad unas 100 veces en toda la escena. Es el cambio más barato y eficaz.</div></li>
+    <li>Usar un fov más pequeño<div class="explicacion">El fov no aparece en la fórmula de la profundidad: cambia cuánto se ve en x e y, pero no cómo se reparten los valores del z-buffer.</div></li>
+  </ul>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.6.2 — Del píxel al rayo: la proyección al revés</h3>
+  <p>Para saber qué objeto hay bajo el ratón en 3D (<em>picking</em>) hay que recorrer el pipeline hacia atrás: del píxel a un <strong>rayo</strong> en el mundo. Un píxel no corresponde a un punto sino a toda una recta de puntos (todos los que se proyectan en él), así que calculamos dos: el que está en el plano near y el que está en el far.</p>
+  <div class="js-playground" data-titulo="Desproyectar el ratón" data-altura="40" data-fondo="oscuro" data-apilado data-incluir="glkit">
+<script type="text/x-js">
+const ancho = 1280, alto = 720;
+const V = mat4.mirarA([0, 2, 6], [0, 0, 0], [0, 1, 0]);
+const P = mat4.perspectiva(Math.PI / 3, ancho / alto, 0.1, 100);
+const PVinv = mat4.invertir(mat4.multiplicar(P, V));      // del espacio clip al mundo
+const f3 = (v) => '(' + v.map((x) => x.toFixed(3)).join(', ') + ')';
+
+// El ratón, en píxeles de pantalla (y hacia ABAJO, como clientY)
+const raton = { x: 640, y: 300 };
+// 1) Pantalla → NDC (invertimos la y: pantalla hacia abajo, NDC hacia arriba)
+const nx = raton.x / ancho * 2 - 1, ny = 1 - raton.y / alto * 2;
+// 2) Dos puntos del rayo en NDC: en el plano near (z = −1) y en el far (z = +1), con w = 1
+function alMundo(zNdc) {
+  const p = mat4.porVector(PVinv, [nx, ny, zNdc, 1]);
+  return [p[0] / p[3], p[1] / p[3], p[2] / p[3]];          // 3) deshacer la división por w
+}
+const cerca = alMundo(-1), lejos = alMundo(1);
+const dir = [lejos[0] - cerca[0], lejos[1] - cerca[1], lejos[2] - cerca[2]];
+const L = Math.hypot(...dir);
+console.log('NDC del ratón:', nx.toFixed(3), ny.toFixed(3));
+console.log('punto en el plano near:', f3(cerca));
+console.log('punto en el plano far: ', f3(lejos));
+console.log('dirección del rayo:    ', f3(dir.map((c) => c / L)));
+// Comprobación: el punto near, proyectado otra vez, cae en el mismo píxel
+const c = mat4.porVector(mat4.multiplicar(P, V), [...cerca, 1]);
+console.log('reproyectado → píxel', ((c[0] / c[3] + 1) / 2 * ancho).toFixed(1), ((1 - c[1] / c[3]) / 2 * alto).toFixed(1));
+// ¿Dónde toca el rayo el suelo (y = 0)?  cerca + t·dir con y = 0
+const t = -cerca[1] / dir[1];
+console.log('el rayo toca el suelo en', f3([cerca[0] + t * dir[0], 0, cerca[2] + t * dir[2]]));
+</script>
+  </div>
+  <ol>
+    <li><strong>Pantalla → NDC</strong>: el remapeo inverso del viewport, invirtiendo la y porque el ratón mide hacia abajo (el bestiario del ratón de <a href="01-vectores.html">3.1</a>, otra vez).</li>
+    <li><strong>Dos profundidades</strong>: el píxel es una recta; elegimos sus puntos en $z_{ndc} = -1$ (near) y $+1$ (far).</li>
+    <li><strong>NDC → mundo</strong>: multiplicamos por $(PV)^{-1}$ y <strong>dividimos por w</strong>. Es imprescindible: la inversa de la proyección no devuelve w = 1, porque deshacer la perspectiva también es una división. Olvidarla es el error más común al desproyectar.</li>
+    <li><strong>El rayo</strong> va del punto near al far. Con él puedes intersectar planos (aquí, el suelo) o las cajas de los objetos para saber cuál está bajo el ratón. Las librerías llaman a esto <code>unproject</code> y <code>Raycaster</code>.</li>
+  </ol>
+</section>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 3.6.1 — El viewport y su inversa</h3>
+  <p>Implementa <code>ndcAVentana(ndc, vp)</code> y <code>ventanaANDC(v, vp)</code> para un viewport <code>vp = {x, y, ancho, alto}</code> como el de <code>gl.viewport</code> (que puede no empezar en 0: piensa en una pantalla partida). Las profundidades van de −1 a 1 en NDC y de 0 a 1 en ventana.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.6.1" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+function ndcAVentana(n, vp) {
+  // TODO: {x, y, z} en NDC → {x, y, z} en ventana (píxeles con y hacia arriba, z en [0, 1])
+  return { x: 0, y: 0, z: 0 };
+}
+function ventanaANDC(v, vp) {
+  // TODO: la operación inversa
+  return { x: 0, y: 0, z: 0 };
+}
+
+// --- pruebas ---
+const cerca = (a, b) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9 && Math.abs(a.z - b.z) < 1e-9;
+function comprobar(nombre, r, e) { console.log((cerca(r, e) ? '✓ ' : '✗ ') + nombre + ' → ' + JSON.stringify(r) + (cerca(r, e) ? '' : '  esperaba ' + JSON.stringify(e))); }
+const todo = { x: 0, y: 0, ancho: 800, alto: 600 };
+const derecha = { x: 400, y: 0, ancho: 400, alto: 600 };   // mitad derecha de una pantalla partida
+comprobar('centro', ndcAVentana({ x: 0, y: 0, z: 0 }, todo), { x: 400, y: 300, z: 0.5 });
+comprobar('esquina (1, 1, -1)', ndcAVentana({ x: 1, y: 1, z: -1 }, todo), { x: 800, y: 600, z: 0 });
+comprobar('mitad derecha, centro', ndcAVentana({ x: 0, y: 0, z: 1 }, derecha), { x: 600, y: 300, z: 1 });
+comprobar('inversa', ventanaANDC({ x: 500, y: 150, z: 0.25 }, derecha), { x: -0.5, y: -0.5, z: -0.5 });
+comprobar('ida y vuelta', ventanaANDC(ndcAVentana({ x: 0.3, y: -0.7, z: 0.9 }, derecha), derecha), { x: 0.3, y: -0.7, z: 0.9 });
+</script>
+<script type="text/x-js" data-solucion>
+function ndcAVentana(n, vp) {
+  return {
+    x: vp.x + (n.x + 1) / 2 * vp.ancho,   // [-1, 1] → [x0, x0 + ancho]
+    y: vp.y + (n.y + 1) / 2 * vp.alto,    // igual, con la y hacia arriba (como gl_FragCoord)
+    z: (n.z + 1) / 2,                     // [-1, 1] → [0, 1] (depthRange por defecto)
+  };
+}
+function ventanaANDC(v, vp) {
+  return {
+    x: (v.x - vp.x) / vp.ancho * 2 - 1,   // deshacer: quitar el origen, normalizar, remapear
+    y: (v.y - vp.y) / vp.alto * 2 - 1,
+    z: v.z * 2 - 1,
+  };
+}
+
+const cerca = (a, b) => Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9 && Math.abs(a.z - b.z) < 1e-9;
+function comprobar(nombre, r, e) { console.log((cerca(r, e) ? '✓ ' : '✗ ') + nombre + ' → ' + JSON.stringify(r) + (cerca(r, e) ? '' : '  esperaba ' + JSON.stringify(e))); }
+const todo = { x: 0, y: 0, ancho: 800, alto: 600 };
+const derecha = { x: 400, y: 0, ancho: 400, alto: 600 };
+comprobar('centro', ndcAVentana({ x: 0, y: 0, z: 0 }, todo), { x: 400, y: 300, z: 0.5 });
+comprobar('esquina (1, 1, -1)', ndcAVentana({ x: 1, y: 1, z: -1 }, todo), { x: 800, y: 600, z: 0 });
+comprobar('mitad derecha, centro', ndcAVentana({ x: 0, y: 0, z: 1 }, derecha), { x: 600, y: 300, z: 1 });
+comprobar('inversa', ventanaANDC({ x: 500, y: 150, z: 0.25 }, derecha), { x: -0.5, y: -0.5, z: -0.5 });
+comprobar('ida y vuelta', ventanaANDC(ndcAVentana({ x: 0.3, y: -0.7, z: 0.9 }, derecha), derecha), { x: 0.3, y: -0.7, z: 0.9 });
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Es un remapeo por eje de $[-1, 1]$ a $[x_0, x_0 + \text{ancho}]$: primero a $[0, 1]$ con <code>(n + 1) / 2</code>, luego escalar y sumar el origen. La inversa deshace los pasos en orden contrario.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La ida son tres remapeos independientes: <code>(n + 1) / 2</code> lleva $[-1, 1]$ a $[0, 1]$; multiplicar por el tamaño y sumar el origen del viewport lo coloca en su rectángulo. La profundidad solo hace el primer paso, porque el rango de profundidad por defecto es $[0, 1]$ (<code>gl.depthRange(0, 1)</code>). La vuelta invierte cada operación en orden contrario.</p>
+    <p>Fíjate en la prueba de la pantalla partida: el centro NDC del viewport derecho cae en el píxel 600, no en el 400. Cada viewport tiene su propio NDC; por eso, con varias vistas, cada una necesita su proyección con su propio aspecto (aquí 400/600, no 800/600). Y la y sale hacia arriba: si vas a comparar con coordenadas del ratón, falta la inversión del ejemplo 3.6.2.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.6.2 — La perspectiva sin matriz</h3>
+  <p>Implementa <code>proyectar(p, fov, aspecto, n, l)</code>, que recibe un punto en espacio de vista y devuelve sus NDC <strong>usando directamente las fórmulas derivadas</strong> (triángulos semejantes para x e y, y la z con A y B), sin construir ninguna matriz. Las pruebas comparan con <code>mat4.perspectiva</code> más la división por w.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.6.2" data-altura="40" data-fondo="oscuro" data-apilado data-incluir="glkit">
+<script type="text/x-js">
+function proyectar(p, fov, aspecto, n, l) {
+  // TODO: NDC a partir de las fórmulas (p está en espacio de vista: delante de la cámara, z < 0)
+  return [0, 0, 0];
+}
+
+// --- pruebas contra la matriz de glkit ---
+const fov = Math.PI / 3, aspecto = 1.5, n = 0.5, l = 50;
+const P = mat4.perspectiva(fov, aspecto, n, l);
+function conMatriz(p) { const c = mat4.porVector(P, [...p, 1]); return [c[0] / c[3], c[1] / c[3], c[2] / c[3]]; }
+for (const p of [[1, 2, -5], [-3, 0.5, -0.5], [10, -4, -50], [0.2, 0.3, -12]]) {
+  const a = proyectar(p, fov, aspecto, n, l), b = conMatriz(p);
+  const ok = a.every((v, i) => Math.abs(v - b[i]) < 1e-5);
+  console.log((ok ? '✓ ' : '✗ ') + JSON.stringify(p) + ' → tuyo ' + a.map((v) => v.toFixed(4)).join(', ') + ' | matriz ' + b.map((v) => v.toFixed(4)).join(', '));
+}
+</script>
+<script type="text/x-js" data-solucion>
+function proyectar(p, fov, aspecto, n, l) {
+  const [x, y, z] = p;
+  const f = 1 / Math.tan(fov / 2);          // escala por la mitad de la altura visible
+  const d = -z;                             // distancia delante de la cámara
+  const A = -(l + n) / (l - n), B = -2 * l * n / (l - n);
+  return [
+    (f / aspecto) * x / d,                  // triángulos semejantes, normalizados
+    f * y / d,
+    (A * z + B) / d,                        // la tercera fila, también dividida por w = -z
+  ];
+}
+
+const fov = Math.PI / 3, aspecto = 1.5, n = 0.5, l = 50;
+const P = mat4.perspectiva(fov, aspecto, n, l);
+function conMatriz(p) { const c = mat4.porVector(P, [...p, 1]); return [c[0] / c[3], c[1] / c[3], c[2] / c[3]]; }
+for (const p of [[1, 2, -5], [-3, 0.5, -0.5], [10, -4, -50], [0.2, 0.3, -12]]) {
+  const a = proyectar(p, fov, aspecto, n, l), b = conMatriz(p);
+  const ok = a.every((v, i) => Math.abs(v - b[i]) < 1e-5);
+  console.log((ok ? '✓ ' : '✗ ') + JSON.stringify(p) + ' → tuyo ' + a.map((v) => v.toFixed(4)).join(', ') + ' | matriz ' + b.map((v) => v.toFixed(4)).join(', '));
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>$x_{ndc} = \dfrac{f}{\text{aspecto}}\cdot\dfrac{x}{-z}$, $y_{ndc} = f\cdot\dfrac{y}{-z}$, con $f = 1/\tan(\text{fov}/2)$.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para la z: $z_{ndc} = \dfrac{A z + B}{-z}$ con $A = -\dfrac{\ell + n}{\ell - n}$ y $B = -\dfrac{2\ell n}{\ell - n}$. Comprueba con los puntos de prueba: el segundo está en el plano near y el tercero en el far.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Son las fórmulas de la lección, sin más: las dos primeras son la proyección por triángulos semejantes, normalizada por la mitad de la altura visible (y del ancho, con el aspecto). La tercera es la fila de la z dividida por $w = -z$. Los puntos de prueba lo confirman: $(-3, 0.5, -0.5)$ está en el plano near y da $z_{ndc} = -1$; $(10, -4, -50)$ está en el far y da $+1$.</p>
+    <p>¿Por qué, entonces, usar una matriz? Porque la matriz se puede <strong>combinar</strong> con las de modelo y vista en un solo producto (y la GPU tiene hardware para multiplicar por ella), y porque dejar la división para después permite recortar en espacio clip. Pero las dos versiones calculan exactamente lo mismo: la matriz de proyección no es más que estas tres fórmulas escritas de forma que quepan en una multiplicación.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.6.3 — Presupuesto de profundidad</h3>
+  <p>Escribe <code>resolucion(d, n, l, bits)</code>, la menor diferencia de distancia que distingue el z-buffer a la distancia <code>d</code>, y úsala para responder: con un z-buffer de 24 bits y far = 1000, ¿qué near mínimo necesitas para distinguir superficies separadas 1 cm a 200 m? ¿Y con 16 bits (algunos móviles antiguos)?</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.6.3" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+function resolucion(d, n, l, bits) {
+  // TODO: el menor Δd distinguible a la distancia d
+  return 0;
+}
+function nearMinimo(d, l, bits, precision) {
+  // TODO: el menor near con resolucion(d, near, l, bits) <= precision
+  return 0;
+}
+
+console.log('resolución a 200 m con near 0.1, 24 bits:', resolucion(200, 0.1, 1000, 24).toFixed(4), 'm');
+console.log('near mínimo para 1 cm a 200 m, 24 bits:', nearMinimo(200, 1000, 24, 0.01).toFixed(3), 'm');
+console.log('near mínimo para 1 cm a 200 m, 16 bits:', nearMinimo(200, 1000, 16, 0.01).toFixed(3), 'm');
+</script>
+<script type="text/x-js" data-solucion>
+function resolucion(d, n, l, bits) {
+  const paso = 1 / (Math.pow(2, bits) - 1);         // un escalón del z-buffer (coma fija)
+  const pendiente = l * n / ((l - n) * d * d);      // d z_ventana / d d, derivando la fórmula
+  return paso / pendiente;                          // Δd ≈ Δz / (dz/dd)
+}
+function nearMinimo(d, l, bits, precision) {
+  // Δd = paso · (l − n) d² / (l n) ≤ precision  ⇔  1/n − 1/l ≤ precision / (paso · d²)
+  const paso = 1 / (Math.pow(2, bits) - 1);
+  return 1 / (precision / (paso * d * d) + 1 / l);
+}
+
+console.log('resolución a 200 m con near 0.1, 24 bits:', resolucion(200, 0.1, 1000, 24).toFixed(4), 'm');
+console.log('near mínimo para 1 cm a 200 m, 24 bits:', nearMinimo(200, 1000, 24, 0.01).toFixed(3), 'm');
+console.log('near mínimo para 1 cm a 200 m, 16 bits:', nearMinimo(200, 1000, 16, 0.01).toFixed(3), 'm');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Un escalón del z-buffer mide $1/(2^{bits} - 1)$. La pendiente de $z_{ventana}(d) = \frac{\ell}{\ell - n}(1 - \frac{n}{d})$ es $\frac{\ell\,n}{(\ell - n)\,d^2}$. La resolución en distancia es el escalón dividido por la pendiente.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para despejar el near, reescribe $\frac{\ell - n}{\ell n} = \frac1n - \frac1\ell$.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Un escalón del z-buffer ($\Delta z$) corresponde a un intervalo de distancias $\Delta d \approx \Delta z / z'(d)$, la aproximación lineal de siempre. Con near 0.1, a 200 m la resolución es de unos 2.4 cm: dos superficies a menos de esa distancia pueden pelearse. Despejando, $\frac1n \le \frac{\text{precisión}}{\Delta z\, d^2} + \frac1\ell$: con 24 bits basta un near de unos <strong>0.24 m</strong>. Con 16 bits hacen falta unos <strong>58 m</strong>, es decir, es imposible en la práctica: con z-buffers de 16 bits, las escenas grandes se diseñaban con el far mucho más cerca y niebla para esconderlo.</p>
+    <p>La lección es que el near no es un detalle: es el parámetro que decide la calidad de toda la profundidad. Muchos motores lo ajustan dinámicamente (más lejos cuando la cámara está en campo abierto, más cerca en interiores) o dividen la escena en dos pasadas con rangos de profundidad distintos.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 3.6.4 — Tu propio lookAt, a prueba de cenitales</h3>
+  <p>Implementa <code>lookAt(ojo, objetivo, arriba)</code> (column-major, como <code>mat4.mirarA</code>) y hazlo <strong>robusto</strong>: si la mirada es casi paralela a <code>arriba</code>, elige otro vector de referencia en lugar de devolver ceros o NaN. Las pruebas comparan con <code>mat4.mirarA</code> en casos normales y comprueban que en el caso cenital la matriz sigue siendo una rotación válida (determinante 1).</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.6.4" data-altura="40" data-fondo="oscuro" data-apilado data-incluir="glkit">
+<script type="text/x-js">
+function lookAt(ojo, objetivo, arriba) {
+  // TODO: ejes de la cámara con productos cruz, y la matriz de vista column-major
+  return mat4.identidad();
+}
+
+// --- pruebas ---
+const det3 = (m) => m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
+const igual = (a, b) => a.every((v, i) => Math.abs(v - b[i]) < 1e-5);
+for (const [ojo, obj] of [[[0, 2, 6], [0, 0, 0]], [[3, 1, -4], [1, 0, 0]], [[-5, 5, 5], [0, 1, 0]]]) {
+  console.log((igual(lookAt(ojo, obj, [0, 1, 0]), mat4.mirarA(ojo, obj, [0, 1, 0])) ? '✓' : '✗') + ' igual que mat4.mirarA con ojo ' + JSON.stringify(ojo));
+}
+const cenital = lookAt([0, 5, 0], [0, 0, 0], [0, 1, 0]);
+const ok = cenital.every(Number.isFinite) && Math.abs(det3(cenital) - 1) < 1e-5;
+console.log((ok ? '✓' : '✗') + ' cámara cenital: determinante ' + det3(cenital).toFixed(4) + ' (glkit da ' + det3(mat4.mirarA([0, 5, 0], [0, 0, 0], [0, 1, 0])).toFixed(4) + ')');
+const v = mat4.porVector(cenital, [1, 0, 0, 1]);
+console.log('  el punto (1, 0, 0) visto desde arriba:', v.map((x) => x.toFixed(3)).join(', '), '← z = −5: está a 5 delante');
+</script>
+<script type="text/x-js" data-solucion>
+const resta = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const cruz = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const punto = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const normalizar = (a) => { const l = Math.hypot(...a); return [a[0] / l, a[1] / l, a[2] / l]; };
+
+function lookAt(ojo, objetivo, arriba) {
+  const z = normalizar(resta(ojo, objetivo));        // la cámara mira hacia −z
+  let ref = normalizar(arriba);
+  if (Math.abs(punto(ref, z)) > 0.999) {             // casi paralelos: el cruz sería ~0
+    ref = Math.abs(z[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];  // cualquier eje que no sea paralelo
+  }
+  const x = normalizar(cruz(ref, z));                 // derecha
+  const y = cruz(z, x);                               // arriba de verdad (ya unitario)
+  return new Float32Array([                           // column-major: filas x, y, z de R^T
+    x[0], y[0], z[0], 0,
+    x[1], y[1], z[1], 0,
+    x[2], y[2], z[2], 0,
+    -punto(x, ojo), -punto(y, ojo), -punto(z, ojo), 1,
+  ]);
+}
+
+const det3 = (m) => m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
+const igual = (a, b) => a.every((v, i) => Math.abs(v - b[i]) < 1e-5);
+for (const [ojo, obj] of [[[0, 2, 6], [0, 0, 0]], [[3, 1, -4], [1, 0, 0]], [[-5, 5, 5], [0, 1, 0]]]) {
+  console.log((igual(lookAt(ojo, obj, [0, 1, 0]), mat4.mirarA(ojo, obj, [0, 1, 0])) ? '✓' : '✗') + ' igual que mat4.mirarA con ojo ' + JSON.stringify(ojo));
+}
+const cenital = lookAt([0, 5, 0], [0, 0, 0], [0, 1, 0]);
+const ok = cenital.every(Number.isFinite) && Math.abs(det3(cenital) - 1) < 1e-5;
+console.log((ok ? '✓' : '✗') + ' cámara cenital: determinante ' + det3(cenital).toFixed(4) + ' (glkit da ' + det3(mat4.mirarA([0, 5, 0], [0, 0, 0], [0, 1, 0])).toFixed(4) + ')');
+const v = mat4.porVector(cenital, [1, 0, 0, 1]);
+console.log('  el punto (1, 0, 0) visto desde arriba:', v.map((x) => x.toFixed(3)).join(', '), '← z = −5: está a 5 delante');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Sigue los tres pasos de la lección: $\hat z = \operatorname{normalize}(\text{ojo} - \text{objetivo})$, $\hat x = \operatorname{normalize}(\text{arriba}\times\hat z)$, $\hat y = \hat z\times\hat x$. En column-major, la primera columna del array es $(x_x, y_x, z_x, 0)$: las filas de $R^T$ se reparten entre las columnas.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si <code>|dot(arriba, ẑ)|</code> está muy cerca de 1, sustituye <code>arriba</code> por otro eje del mundo que no sea paralelo a $\hat z$ (por ejemplo, $(0, 0, 1)$, salvo que $\hat z$ también esté cerca de él).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La matriz es $R^T\,T(-\text{ojo})$: las filas de la parte 3×3 son los ejes de la cámara, y la última columna son los productos punto con el ojo cambiados de signo (la traslación $T(-\text{ojo})$ ya multiplicada por $R^T$). En el array column-major, eso significa que cada «línea» del array contiene la misma componente de los tres ejes: $(x_x, y_x, z_x)$, $(x_y, y_y, z_y)$… Es la trampa de <a href="05-matrices.html">3.5</a> otra vez.</p>
+    <p>La robustez: cuando la mirada es paralela a <code>arriba</code>, el producto cruz se anula y no hay forma de decidir hacia dónde está la «derecha». Cualquier otra referencia sirve, siempre que no sea también paralela; comprobamos el caso con un umbral (0.999, unos 2.6°) y elegimos $z$ o $x$ del mundo. El resultado es una rotación válida (determinante 1): desde arriba, la cámara ve el suelo con una orientación arbitraria pero consistente. El precio es un salto de orientación al cruzar el umbral; las cámaras orbitales suelen evitarlo del todo limitando la elevación a ±89°.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>El pipeline: <strong>objeto</strong> →(M)→ <strong>mundo</strong> →(V)→ <strong>vista</strong> →(P)→ <strong>clip</strong> →(÷w)→ <strong>NDC</strong> →(viewport)→ <strong>ventana</strong>. El vertex shader calcula <code>gl_Position = P·V·M·pos</code> (clip); el resto es hardware fijo.</li>
+    <li><strong>Vista</strong> = inversa de la colocación de la cámara: mueve el mundo al revés. <code>lookAt</code>: ẑ = normalize(ojo − objetivo), x̂ = normalize(arriba × ẑ), ŷ = ẑ × x̂; falla si la mirada es paralela a <code>arriba</code>.</li>
+    <li><strong>Perspectiva</strong> = dividir por la distancia (triángulos semejantes). Una matriz no puede dividir: pone −z en w y la GPU divide (<strong>división de perspectiva</strong>). f = 1/tan(fov/2), y en x además el aspecto.</li>
+    <li>La <strong>z</strong> se mapea para que near → −1 y far → +1, y resulta proporcional a <strong>1/z</strong>: no lineal.</li>
+    <li>El <strong>recorte</strong> se hace en espacio clip (−w ≤ x, y, z ≤ w) antes de dividir: lo que está detrás de la cámara tiene w &lt; 0 y saldría reflejado.</li>
+    <li><strong>NDC</strong> de GL: cubo [−1, 1]³, z incluida, de mano izquierda. WebGPU, D3D, Metal y Vulkan usan z ∈ [0, 1].</li>
+    <li><strong>Viewport</strong>: remapeo de NDC a píxeles (y hacia arriba) y de z a [0, 1]; el resultado es <code>gl_FragCoord</code>. Hay que actualizarlo (y el aspecto) al redimensionar.</li>
+    <li>La precisión del <strong>z-buffer</strong> se concentra cerca del near (la mitad de los valores entre n y 2n). Resolución ≈ 2⁻²⁴·d²/n: para evitar el <strong>z-fighting</strong>, aleja el near, no hagas coplanarios, usa polygon offset o reversed-Z.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://www.songho.ca/opengl/gl_projectionmatrix.html">Song Ho Ahn — OpenGL Projection Matrix</a>: la derivación completa de las matrices de proyección, con dibujos.</li>
+  <li><a href="https://learnopengl.com/Getting-started/Coordinate-Systems">LearnOpenGL — Coordinate Systems</a> y <a href="https://learnopengl.com/Advanced-OpenGL/Depth-testing">Depth testing</a>, con el z-fighting explicado.</li>
+  <li><a href="https://developer.nvidia.com/content/depth-precision-visualized">Nathan Reed — Depth Precision Visualized</a>: por qué la profundidad invertida con floats funciona tan bien.</li>
+  <li><a href="https://www.scratchapixel.com/lessons/3d-basic-rendering/perspective-and-orthographic-projection-matrix/opengl-perspective-projection-matrix.html">Scratchapixel — The OpenGL Perspective Projection Matrix</a>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m3.js"></script>
+<script src="recursos/demos-06.js"></script>
+</body>
+</html>

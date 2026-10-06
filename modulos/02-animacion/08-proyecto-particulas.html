@@ -1,0 +1,1171 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.8 · Proyecto: partículas interactivas — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m2.css">
+</head>
+<body data-leccion="02-animacion/proyecto-particulas">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 2 · Animación con CSS y JavaScript</p>
+  <h1>Proyecto: partículas interactivas</h1>
+  <p class="resumen">Construimos, etapa a etapa, un sistema de partículas en Canvas 2D que usa todo el módulo: el bucle y el paso fijo, la física, el canvas nítido, la mezcla aditiva y la medición del rendimiento. Y lo llevamos hasta el límite para ver dónde se ahoga la CPU, que es exactamente donde empieza la GPU.</p>
+  <div class="meta"><span class="chip">⏱ 120 min</span><span class="chip">Requisitos: 1.6, 2.3, 2.5, 2.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Guardarás miles de partículas en arrays tipados (<em>struct of arrays</em>) con un <em>pool</em> que no crea ni destruye objetos en cada frame.</li>
+      <li>Implementarás un emisor independiente de los FPS, fuerzas (gravedad, rozamiento, atracción y repulsión del ratón), vida y desvanecimiento.</li>
+      <li>Integrarás con paso fijo, dibujarás con mezcla aditiva a la resolución correcta y medirás cuánto cuesta cada parte.</li>
+      <li>Sabrás, con números medidos, a partir de cuántas partículas no llega la CPU y por qué eso motiva la GPU.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El plan</h2>
+<p>Un sistema de partículas es un conjunto grande de puntos, cada uno con su posición, su velocidad y su tiempo de vida, que nacen en un emisor, se mueven según unas fuerzas y mueren. Con ellos se hacen fuego, humo, chispas, nieve, explosiones, estelas y fondos interactivos. Lo construiremos en cinco etapas; las etapas 1, 2, 3 y 5 tienen su propio playground, completo y ejecutable, y la 4 es un cambio en la función de dibujo que verás funcionando dentro de la 5:</p>
+<ol>
+  <li><strong>La versión ingenua</strong>: un objeto por partícula. Funciona, y nos sirve para ver sus problemas.</li>
+  <li><strong>Un pool con arrays tipados</strong>: los mismos datos, sin crear basura.</li>
+  <li><strong>Fuerzas</strong>: gravedad, rozamiento y el ratón.</li>
+  <li><strong>Vida y luz</strong>: desvanecimiento, tamaño y mezcla aditiva.</li>
+  <li><strong>Paso fijo y medición</strong>: el bucle definitivo, con emisión por segundo y un medidor.</li>
+</ol>
+<p>Al final tienes el resultado completo en una demo con controles, un banco de pruebas medido y cuatro ampliaciones como ejercicios.</p>
+
+<h2>Etapa 1: la versión ingenua</h2>
+<p>La forma más natural de escribirlo en JavaScript: cada partícula es un objeto <code>{ x, y, vx, vy, edad, vida }</code>, las guardamos en un array, y en cada frame creamos las nuevas, movemos todas y filtramos las muertas.</p>
+<div class="js-playground" data-titulo="Etapa 1 · objetos y filter" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+function ajustarLienzo() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [canvas.clientWidth, canvas.clientHeight];
+}
+
+let particulas = [];
+let creadas = 0;
+
+function emitir(n, x, y) {
+  for (let i = 0; i < n; i++) {
+    const angulo = Math.random() * Math.PI * 2, rapidez = 40 + Math.random() * 160;
+    particulas.push({ x, y, vx: Math.cos(angulo) * rapidez, vy: Math.sin(angulo) * rapidez - 120,
+                      edad: 0, vida: 1 + Math.random() * 1.5 });
+    creadas++;
+  }
+}
+
+function actualizar(dt) {
+  for (const p of particulas) {
+    p.vy += 300 * dt;                                     // gravedad (px/s²)
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.edad += dt;
+  }
+  particulas = particulas.filter((p) => p.edad < p.vida); // ¡un array nuevo en cada frame!
+}
+
+function dibujar(w, h) {
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#8b7bff';
+  for (const p of particulas) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+let anterior = null, reloj = 0, msTotal = 0, frames = 0;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  const [w, h] = ajustarLienzo();
+  const t0 = performance.now();
+  emitir(40, w / 2, h * 0.65);                            // 40 por FRAME (¡ojo!)
+  actualizar(dt);
+  dibujar(w, h);
+  msTotal += performance.now() - t0; frames++; reloj += dt;
+  if (reloj >= 2) {
+    console.log(`vivas: ${particulas.length} · objetos creados en 2 s: ${creadas} · JS: ${(msTotal / frames).toFixed(2)} ms/frame`);
+    reloj = 0; msTotal = 0; frames = 0; creadas = 0;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+<p>Funciona y se ve bien. Pero tiene tres problemas que no se ven a simple vista:</p>
+<ul>
+  <li><strong>Basura.</strong> Cada segundo se crean unos 2400 objetos nuevos (40 × 60 frames) y otros tantos se abandonan, y además <code>filter</code> crea un array nuevo en cada frame. Todo eso lo tiene que recoger el recolector de basura (<em>garbage collector</em>, GC) del motor de JavaScript, que de vez en cuando se toma unos milisegundos, a veces justo en mitad de un frame: el tirón periódico del bestiario de <a href="01-pipeline-render.html">2.1</a>.</li>
+  <li><strong>Emisión por frame.</strong> «40 por frame» son 2400 por segundo a 60 Hz y 4800 a 120 Hz: el doble de partículas en una pantalla rápida. Es el bug de <a href="03-raf.html">2.3</a>, ahora con la cantidad en lugar de la velocidad.</li>
+  <li><strong>Paso variable.</strong> La física se integra con el <code>dt</code> de cada frame, así que la trayectoria exacta depende de la pantalla (y con fuerzas rígidas, podría ser inestable: <a href="05-fisica-muelles.html">2.5</a>).</li>
+</ul>
+
+<div class="callout bestiario" data-id="m2-emision-por-frame" data-titulo="Salen el doble de partículas en una pantalla de 120 Hz">
+  <p><strong>Síntoma:</strong> un efecto de partículas se ve denso en unos equipos y ralo en otros, o el rendimiento se hunde precisamente en los dispositivos con pantalla rápida (que acaban simulando el doble de partículas).</p>
+  <p><strong>Causa:</strong> la emisión se expresa por frame (<code>emitir(40)</code> en cada callback de rAF) y los frames por segundo dependen de la pantalla: 60, 120, 144 Hz…</p>
+  <p><strong>Solución:</strong> expresa la emisión en partículas por segundo y acumula la parte fraccionaria: <code>pendiente += tasa * dt; const n = Math.floor(pendiente); pendiente -= n; emitir(n);</code>. Así, con 2400/s, a 60 Hz salen 40 por frame y a 144 Hz, 16 o 17 alternados, siempre 2400 por segundo.</p>
+</div>
+
+<div class="callout bestiario" data-id="m2-splice-en-bucle" data-titulo="Al borrar elementos de un array dentro de un bucle, algunos se saltan">
+  <p><strong>Síntoma:</strong> al eliminar las partículas muertas recorriendo el array con un <code>for</code> y <code>splice(i, 1)</code>, algunas partículas muertas sobreviven un frame más (o para siempre, si el patrón se repite), o una de cada dos no se actualiza.</p>
+  <p><strong>Causa:</strong> <code>splice(i, 1)</code> desplaza todos los elementos siguientes una posición hacia atrás; el siguiente queda en el índice <code>i</code>, y el bucle pasa a <code>i + 1</code> sin mirarlo. Lo comprobamos: en <code>[1, 2, 3, 4, 5, 6]</code> con 2 y 3 muertas, borrar hacia delante dejó <code>1 3 4 5 6</code>, con la 3 muerta dentro. Además, cada <code>splice</code> mueve todo el resto del array: con miles de partículas, es muy lento.</p>
+  <p><strong>Solución:</strong> recorre el array hacia atrás (de <code>length − 1</code> a 0) si usas <code>splice</code>; o <code>filter</code> (crea un array nuevo); o, en un pool, intercambia la muerta con la última viva y no avances el índice (etapa 2 de <a href="../02-animacion/08-proyecto-particulas.html#etapa-2-un-pool-con-arrays-tipados">2.8</a>).</p>
+</div>
+
+<h2 id="etapa-2-un-pool-con-arrays-tipados">Etapa 2: un pool con arrays tipados</h2>
+<p>Cambiamos la forma de guardar los datos. En vez de un array de objetos (<em>array of structs</em>, AoS: cada objeto guarda todos sus campos juntos), usamos un array por campo (<em>struct of arrays</em>, SoA): todas las <code>x</code> juntas en un <code>Float32Array</code>, todas las <code>y</code> en otro, etc. (los TypedArrays de la lección <a href="../01-web/06-binario.html">1.6</a>). Y los reservamos una sola vez, con una capacidad máxima: es un <strong>pool</strong>.</p>
+<svg class="diagrama" viewBox="0 0 760 202" width="760" role="img" aria-label="Array de objetos frente a un array por campo">
+  <text x="10" y="20" style="font-weight:700">AoS: un objeto por partícula</text>
+  <g font-size="12">
+    <rect class="caja" x="10" y="32" width="170" height="30" rx="5"/><text x="95" y="52" text-anchor="middle">{x, y, vx, vy, edad, vida}</text>
+    <rect class="caja" x="190" y="32" width="170" height="30" rx="5"/><text x="275" y="52" text-anchor="middle">{x, y, vx, vy, edad, vida}</text>
+    <rect class="caja" x="370" y="32" width="170" height="30" rx="5"/><text x="455" y="52" text-anchor="middle">{x, y, vx, vy, edad, vida}</text>
+    <text x="560" y="52" class="texto-tenue">… repartidos por la memoria</text>
+  </g>
+  <text x="10" y="95" style="font-weight:700">SoA: un Float32Array por campo (capacidad fija)</text>
+  <g font-size="12">
+    <text x="10" y="120" class="texto-tenue">x</text><rect class="caja" x="50" y="106" width="420" height="20" rx="3"/><text x="60" y="121">x₀ x₁ x₂ x₃ x₄ …</text>
+    <text x="10" y="146" class="texto-tenue">y</text><rect class="caja" x="50" y="132" width="420" height="20" rx="3"/><text x="60" y="147">y₀ y₁ y₂ y₃ y₄ …</text>
+    <text x="10" y="172" class="texto-tenue">vx …</text><rect class="caja" x="50" y="158" width="420" height="20" rx="3"/><text x="60" y="173">vx₀ vx₁ vx₂ …</text>
+    <path d="M50 190 L230 190" stroke="var(--ok)" stroke-width="3"/><text x="240" y="195" class="texto-tenue">vivas: índices 0 … vivas − 1</text>
+    <text x="490" y="140" class="texto-tenue">4 bytes por número, contiguos:</text><text x="490" y="158" class="texto-tenue">listos para subir a la GPU (5.3)</text>
+  </g>
+</svg>
+<p>Las partículas vivas ocupan siempre los índices de <code>0</code> a <code>vivas − 1</code>. Nacer es escribir en el índice <code>vivas</code> e incrementar el contador. Morir es copiar la última partícula viva en el hueco y decrementar: una operación de coste fijo, sin mover el resto (el orden cambia, pero en un sistema de partículas el orden da igual).</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const MAX = 20000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX);
+const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+let vivas = 0;
+
+function emitir(n, x, y) {
+  for (let k = 0; k < n && vivas < MAX; k++) {
+    const i = vivas++;
+    const angulo = Math.random() * Math.PI * 2, rapidez = 40 + Math.random() * 160;
+    px[i] = x; py[i] = y;
+    vx[i] = Math.cos(angulo) * rapidez; vy[i] = Math.sin(angulo) * rapidez - 120;
+    edad[i] = 0; vida[i] = 1 + Math.random() * 1.5;
+  }
+}
+
+function matar(i) {
+  const u = --vivas;
+  px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u];
+}
+
+function actualizar(dt) {
+  for (let i = 0; i < vivas; ) {
+    edad[i] += dt;
+    if (edad[i] >= vida[i]) { matar(i); continue; }
+    vy[i] += 300 * dt;
+    px[i] += vx[i] * dt;
+    py[i] += vy[i] * dt;
+    i++;
+  }
+}
+</script>
+<ol>
+  <li data-l="1-4">La capacidad máxima y un array por campo. Se reservan una vez: 20 000 × 6 campos × 4 bytes = 480 KB, y no se vuelve a pedir memoria nunca. <code>Float32Array</code> guarda números de 32 bits (unos 7 dígitos de precisión, lección <a href="../03-matematicas/07-precision.html">3.7</a>): de sobra para píxeles, y es el formato que entiende la GPU.</li>
+  <li data-l="5">Cuántas están vivas. Las vivas son siempre las primeras <code>vivas</code> posiciones.</li>
+  <li data-l="8">Si el pool está lleno, las nuevas simplemente no nacen: un límite duro que protege el rendimiento.</li>
+  <li data-l="9">Nacer: la nueva ocupa la primera posición libre (<code>vivas</code>) y el contador crece. El <code>i = vivas++</code> usa el valor <em>antes</em> de incrementar.</li>
+  <li data-l="10-13">Inicializar todos los campos: el hueco puede contener datos de una partícula muerta anterior, así que no hay que dar nada por supuesto.</li>
+  <li data-l="17-19">Morir: la última viva (<code>u</code>) se copia en el hueco <code>i</code> y el contador baja. Coste fijo, sin desplazar nada, al revés que <code>splice</code>.</li>
+  <li data-l="23">Un <code>for</code> sin incremento en la cabecera: <code>i</code> solo avanza cuando la partícula sobrevive.</li>
+  <li data-l="25">Si muere, en el índice <code>i</code> hay ahora otra partícula (la que era la última), todavía sin procesar en este frame. Por eso <code>continue</code> <strong>sin</strong> <code>i++</code>: la siguiente vuelta la procesa. Es la versión en pool del bestiario anterior.</li>
+  <li data-l="26-28">La física de siempre (ya sin crear nada): un bucle sobre números contiguos que el motor de JavaScript compila a código máquina muy eficiente.</li>
+</ol>
+</div>
+
+<div class="js-playground" data-titulo="Etapa 2 · pool con Float32Array" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+function ajustarLienzo() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [canvas.clientWidth, canvas.clientHeight];
+}
+
+const MAX = 20000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX);
+const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+let vivas = 0;
+
+function emitir(n, x, y) {
+  for (let k = 0; k < n && vivas < MAX; k++) {
+    const i = vivas++;
+    const angulo = Math.random() * Math.PI * 2, rapidez = 40 + Math.random() * 160;
+    px[i] = x; py[i] = y;
+    vx[i] = Math.cos(angulo) * rapidez; vy[i] = Math.sin(angulo) * rapidez - 120;
+    edad[i] = 0; vida[i] = 1 + Math.random() * 1.5;
+  }
+}
+function matar(i) {
+  const u = --vivas;
+  px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u];
+}
+function actualizar(dt) {
+  for (let i = 0; i < vivas; ) {
+    edad[i] += dt;
+    if (edad[i] >= vida[i]) { matar(i); continue; }
+    vy[i] += 300 * dt;
+    px[i] += vx[i] * dt;
+    py[i] += vy[i] * dt;
+    i++;
+  }
+}
+function dibujar(w, h) {
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#3fd0e8';
+  for (let i = 0; i < vivas; i++) {
+    ctx.beginPath();
+    ctx.arc(px[i], py[i], 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+let anterior = null, reloj = 0, msTotal = 0, frames = 0;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  const [w, h] = ajustarLienzo();
+  const t0 = performance.now();
+  emitir(40, w / 2, h * 0.65);
+  actualizar(dt);
+  dibujar(w, h);
+  msTotal += performance.now() - t0; frames++; reloj += dt;
+  if (reloj >= 2) {
+    console.log(`vivas: ${vivas} / ${MAX} · objetos creados: 0 · JS: ${(msTotal / frames).toFixed(2)} ms/frame`);
+    reloj = 0; msTotal = 0; frames = 0;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.8.1 — ¿Cuánto gana de verdad el pool?</h3>
+  <p>Conviene medir antes de creerse las recetas. Simulamos la misma física (una fuerza de atracción, rozamiento, envoltura en los bordes) con 100 000 y 400 000 partículas, guardadas como array de objetos y como <code>Float32Array</code>, en Chrome 154 sobre un M1. Tiempo de simulación por frame:</p>
+  <table class="m2-medidas">
+    <thead><tr><th class="num">Partículas</th><th class="num">Array de objetos</th><th class="num">Float32Array (SoA)</th></tr></thead>
+    <tbody>
+      <tr><td class="num">100 000</td><td class="num">1,84 ms</td><td class="num">0,74 ms</td></tr>
+      <tr><td class="num">400 000</td><td class="num">2,56 ms</td><td class="num">2,92 ms</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Paso 1: la simulación es barata en los dos casos.</strong> Incluso 400 000 partículas se simulan en menos de 3 ms. El motor de JavaScript optimiza muy bien los objetos con la misma forma, así que el SoA no gana siempre en velocidad bruta (con 400 000, las medidas quedaron parejas, dentro del ruido de una prueba así).</p>
+  <p><strong>Paso 2: lo que el SoA sí garantiza.</strong> Cero asignaciones por frame, y por tanto cero trabajo para el recolector de basura: el coste es predecible, sin pausas. La memoria es contigua y del tamaño exacto (6 números × 4 bytes por partícula). Y, sobre todo, los datos ya están en el formato que la GPU necesita: un <code>Float32Array</code> se sube tal cual a un buffer de vértices con <code>gl.bufferData</code> (<a href="../05-webgl/03-buffers-atributos.html">5.3</a>). La etapa 2 es, sin saberlo, la mitad del camino hacia las partículas en GPU de <a href="../07-integracion/05-particulas-gpu.html">7.5</a>.</p>
+  <p><strong>Paso 3: dónde está el coste de verdad.</strong> En la misma prueba, dibujar las 100 000 partículas con un <code>fillRect</code> cada una costó 17,8 ms: veinte veces más que simularlas. Lo veremos en el banco de pruebas del final.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">En la función <code>actualizar</code> del pool, cuando una partícula muere se llama a <code>matar(i)</code> y se hace <code>continue</code> sin <code>i++</code>. ¿Por qué?</p>
+  <ul>
+    <li data-correcta>Porque en <code>i</code> hay ahora otra partícula (la que era la última), que aún no se ha procesado en este frame.<div class="explicacion">Correcto. Si avanzáramos, esa partícula se saltaría un frame de física (y si también estuviera muerta, sobreviviría un frame más). La siguiente vuelta del bucle la procesa en su nueva posición.</div></li>
+    <li>Para no procesar dos veces la partícula muerta.<div class="explicacion">La muerta ya no está en <code>i</code>: <code>matar</code> ha copiado encima la última viva.</div></li>
+    <li>Para que el bucle termine antes.<div class="explicacion">El bucle termina cuando <code>i</code> alcanza <code>vivas</code>; como <code>vivas</code> baja al matar, se procesan exactamente las que quedan, ni una más.</div></li>
+  </ul>
+</div>
+
+<h2>Etapa 3: fuerzas y el ratón</h2>
+<p>Tres fuerzas, sumadas en la aceleración de cada partícula (<a href="05-fisica-muelles.html">2.5</a>):</p>
+<ul>
+  <li><strong>Gravedad</strong>: una aceleración constante hacia abajo, $a_y = g$.</li>
+  <li><strong>Rozamiento</strong>: frena en proporción a la velocidad. En lugar de restar <code>k·v·dt</code> (que con <code>dt</code> grande puede invertir la velocidad), multiplicamos la velocidad por <code>Math.exp(-k * dt)</code>: el decaimiento exponencial exacto que conociste con el suavizado de <a href="04-interpolacion-easing.html">2.4</a>, independiente de los FPS.</li>
+  <li><strong>El ratón</strong>: una atracción (o repulsión) que disminuye con el cuadrado de la distancia, como la gravedad de un planeta: $\vec a = F\,\frac{\vec d}{|\vec d|^3}$, donde $\vec d$ es el vector de la partícula al ratón (y $\vec d / |\vec d|$ su dirección, lección <a href="../03-matematicas/01-vectores.html">3.1</a>).</li>
+</ul>
+<p>La fórmula del ratón tiene una trampa: cuando una partícula pasa justo por encima del ratón, $|\vec d| \to 0$ y la aceleración se dispara al infinito. La partícula sale despedida a una velocidad absurda (o se convierte en <code>NaN</code>). La solución estándar se llama <em>softening</em> (suavizado): sumar una constante pequeña al cuadrado de la distancia, $|\vec d|^2 + \varepsilon^2$, de forma que la fuerza tiene un máximo finito.</p>
+
+<div class="callout bestiario" data-id="m2-fuerza-infinita" data-titulo="Las partículas salen disparadas al pasar cerca del atractor">
+  <p><strong>Síntoma:</strong> en una simulación con atracción hacia un punto (el ratón, un planeta), la mayoría de partículas orbitan bien, pero de vez en cuando una sale despedida a una velocidad enorme, o desaparece porque su posición se vuelve <code>NaN</code>.</p>
+  <p><strong>Causa:</strong> la fuerza es proporcional a $1/d^2$. Cuando la partícula pasa muy cerca del centro, $d$ es casi 0 y la aceleración de ese paso es gigantesca; con un paso de tiempo finito, la partícula no «ve» cómo la fuerza cambia de sentido al cruzar el centro y sale con toda esa velocidad. Con $d = 0$ exacto, la división da <code>Infinity</code> o <code>NaN</code>.</p>
+  <p><strong>Solución:</strong> <em>softening</em>: usa $d^2 + \varepsilon^2$ en lugar de $d^2$ (con $\varepsilon$ del orden del tamaño del atractor, por ejemplo 20 px). La fuerza queda acotada y se anula suavemente en el centro. Opcionalmente, limita también la velocidad máxima.</p>
+</div>
+
+<div class="js-playground" data-titulo="Etapa 3 · gravedad, rozamiento y ratón" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="ayuda">mueve el ratón · clic: atraer / repeler</div>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+#ayuda { position: absolute; left: 10px; top: 8px; font: 12px system-ui; color: #8791a5; pointer-events: none; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+function ajustarLienzo() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [canvas.clientWidth, canvas.clientHeight];
+}
+
+const MAX = 20000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX);
+const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+let vivas = 0;
+
+const GRAVEDAD = 120;        // px/s²
+const ROZAMIENTO = 0.8;      // 1/s: la velocidad se multiplica por e^(-0.8·dt)
+const FUERZA = 2.5e6;        // intensidad del ratón
+const EPS2 = 30 * 30;        // softening: ε = 30 px
+const raton = { x: 0, y: 0, activo: false, modo: 1, ultimo: -1e9 };   // modo: 1 atrae, -1 repele
+
+canvas.addEventListener('pointermove', (e) => { raton.x = e.offsetX; raton.y = e.offsetY; raton.activo = true; raton.ultimo = performance.now(); });
+canvas.addEventListener('pointerleave', () => { raton.activo = false; });
+canvas.addEventListener('click', () => { raton.modo = -raton.modo; });
+
+function emitir(n, x, y) {
+  for (let k = 0; k < n && vivas < MAX; k++) {
+    const i = vivas++;
+    const angulo = -Math.PI / 2 + (Math.random() - 0.5) * 0.8, rapidez = 150 + Math.random() * 150;
+    px[i] = x + (Math.random() - 0.5) * 10; py[i] = y;
+    vx[i] = Math.cos(angulo) * rapidez; vy[i] = Math.sin(angulo) * rapidez;
+    edad[i] = 0; vida[i] = 2.5 + Math.random() * 2;
+  }
+}
+function matar(i) {
+  const u = --vivas;
+  px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u];
+}
+
+function actualizar(dt, ax0, ay0) {
+  const roz = Math.exp(-ROZAMIENTO * dt);     // una vez por frame, no por partícula
+  for (let i = 0; i < vivas; ) {
+    edad[i] += dt;
+    if (edad[i] >= vida[i]) { matar(i); continue; }
+    const dx = ax0 - px[i], dy = ay0 - py[i];
+    const d2 = dx * dx + dy * dy + EPS2;                 // distancia² suavizada
+    const f = raton.modo * FUERZA / (d2 * Math.sqrt(d2)); // F / |d|³
+    vx[i] = (vx[i] + dx * f * dt) * roz;
+    vy[i] = (vy[i] + (dy * f + GRAVEDAD) * dt) * roz;
+    px[i] += vx[i] * dt;
+    py[i] += vy[i] * dt;
+    i++;
+  }
+}
+
+function dibujar(w, h) {
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#ffcb6b';
+  for (let i = 0; i < vivas; i++) ctx.fillRect(px[i] - 1.5, py[i] - 1.5, 3, 3);
+}
+
+let anterior = null;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.05);
+  anterior = t;
+  const [w, h] = ajustarLienzo();
+  // si el ratón no se ha movido en 3 s, el atractor da vueltas solo
+  let ax0 = raton.x, ay0 = raton.y;
+  if (!raton.activo || performance.now() - raton.ultimo > 3000) {
+    ax0 = w / 2 + Math.cos(t / 900) * w * 0.25; ay0 = h * 0.45 + Math.sin(t / 700) * h * 0.2;
+  }
+  emitir(Math.round(900 * dt), w / 2, h - 10);           // 900 por SEGUNDO (casi: ver etapa 5)
+  actualizar(dt, ax0, ay0);
+  dibujar(w, h);
+  ctx.strokeStyle = raton.modo > 0 ? '#3ecf8e' : '#ff6b7a';
+  ctx.beginPath(); ctx.arc(ax0, ay0, 10, 0, Math.PI * 2); ctx.stroke();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+<p>Los detalles que importan: el factor de rozamiento se calcula una sola vez por frame (es igual para todas); la fuerza del ratón se escribe como <code>F / |d|³</code> multiplicada por las componentes <code>dx</code>, <code>dy</code>, que es lo mismo que «$F/|d|^2$ en la dirección $\vec d / |\vec d|$» sin normalizar el vector aparte; y el <code>EPS2</code> hace que, justo encima del ratón, la aceleración sea grande pero finita. Borra el <code>+ EPS2</code> y pasa el ratón despacio por el chorro: verás partículas salir disparadas. Fíjate también en el emisor: <code>Math.round(900 * dt)</code> ya depende del tiempo, pero redondear en cada frame pierde o gana fracciones: lo arreglamos en la etapa 5.</p>
+
+<h2>Etapa 4: vida, luz y mezcla aditiva</h2>
+<p>Una partícula que desaparece de golpe al morir se nota. Hacemos que se desvanezca y encoja con la edad, y cambiamos el modo de composición a <code>'lighter'</code> (<a href="06-canvas2d.html">2.6</a>): donde se amontonan partículas, los colores se <em>suman</em> y el conjunto brilla como luz. Con un color de base oscuro y semitransparente, las zonas densas llegan al blanco.</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function dibujar(w, h) {
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#0e1014';
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = 'rgb(120, 90, 255)';
+  for (let i = 0; i < vivas; i++) {
+    const k = 1 - edad[i] / vida[i];
+    const lado = 1 + 3 * k;
+    ctx.globalAlpha = 0.25 + 0.55 * k;
+    ctx.fillRect(px[i] - lado / 2, py[i] - lado / 2, lado, lado);
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+</script>
+<ol>
+  <li data-l="2-5">El fondo se pinta en modo normal y opaco. Si lo pintáramos con <code>'lighter'</code>, sumaría el fondo al frame anterior y todo se volvería blanco en unos frames.</li>
+  <li data-l="6">A partir de aquí, cada partícula suma su color al que ya hay.</li>
+  <li data-l="7">Un solo <code>fillStyle</code> para todas: cambiar de estilo en cada partícula cuesta (<a href="06-canvas2d.html">2.6</a>).</li>
+  <li data-l="9">La «vida que le queda», de 1 (recién nacida) a 0 (a punto de morir).</li>
+  <li data-l="10-11">Tamaño y opacidad según <code>k</code>: las jóvenes, grandes y brillantes; las viejas, pequeñas y tenues. <code>globalAlpha</code> sí cambia en cada partícula; es un cambio de estado barato comparado con un <code>fillStyle</code> nuevo.</li>
+  <li data-l="12">Un cuadrado centrado en la partícula. Para partículas de pocos píxeles, un cuadrado es indistinguible de un círculo y más barato.</li>
+  <li data-l="14-15">Devolvemos el estado a sus valores normales: el contexto conserva el estado entre frames y entre funciones (<a href="06-canvas2d.html">2.6</a>).</li>
+</ol>
+</div>
+
+<h2>Etapa 5: paso fijo, emisión por segundo y medición</h2>
+<p>El bucle definitivo junta todo lo del módulo: canvas nítido (<a href="06-canvas2d.html">2.6</a>), paso fijo con acumulador y tope de pasos (<a href="03-raf.html">2.3</a>), emisión en partículas por segundo con acumulador de fracciones, y un medidor que separa el tiempo de simular del de dibujar. El deslizador cambia la tasa de emisión: súbelo para buscar el límite de tu máquina.</p>
+
+<div class="js-playground" data-titulo="Etapa 5 · el sistema completo con medidor" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<label id="control">emisión <input id="tasa" type="range" min="500" max="40000" step="500" value="3000"> <span id="vtasa"></span>/s</label>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+#hud { position: absolute; left: 10px; top: 8px; font: 12px ui-monospace, monospace; color: #e4e7ee; pointer-events: none; white-space: pre; }
+#control { position: absolute; left: 10px; top: 62px; font: 12px system-ui; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+function ajustarLienzo() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [canvas.clientWidth, canvas.clientHeight];
+}
+
+// ---------- datos: pool SoA ----------
+const MAX = 150000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX);
+const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+let vivas = 0;
+
+// ---------- parámetros ----------
+const GRAVEDAD = 120, ROZAMIENTO = 0.8, FUERZA = 2.5e6, EPS2 = 30 * 30;
+const PASO = 1 / 60, MAX_PASOS = 4;
+let tasa = 3000;                         // partículas por segundo
+const raton = { x: 0, y: 0, activo: false, modo: 1, ultimo: -1e9 };
+canvas.addEventListener('pointermove', (e) => { raton.x = e.offsetX; raton.y = e.offsetY; raton.activo = true; raton.ultimo = performance.now(); });
+canvas.addEventListener('pointerleave', () => { raton.activo = false; });
+canvas.addEventListener('click', () => { raton.modo = -raton.modo; });
+const inTasa = document.getElementById('tasa'), vTasa = document.getElementById('vtasa');
+inTasa.oninput = () => { tasa = +inTasa.value; vTasa.textContent = tasa; };
+inTasa.oninput();
+
+function emitir(n, x, y) {
+  for (let k = 0; k < n && vivas < MAX; k++) {
+    const i = vivas++;
+    const angulo = -Math.PI / 2 + (Math.random() - 0.5) * 0.8, rapidez = 150 + Math.random() * 150;
+    px[i] = x + (Math.random() - 0.5) * 10; py[i] = y;
+    vx[i] = Math.cos(angulo) * rapidez; vy[i] = Math.sin(angulo) * rapidez;
+    edad[i] = 0; vida[i] = 2.5 + Math.random() * 2;
+  }
+}
+function matar(i) {
+  const u = --vivas;
+  px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u];
+}
+
+let pendientes = 0;                      // fracción de partícula por emitir
+function simular(dt, ax0, ay0, w, h) {
+  pendientes += tasa * dt;               // emisión por SEGUNDO, con acumulador
+  const n = Math.floor(pendientes);
+  pendientes -= n;
+  emitir(n, w / 2, h - 10);
+  const roz = Math.exp(-ROZAMIENTO * dt);
+  for (let i = 0; i < vivas; ) {
+    edad[i] += dt;
+    if (edad[i] >= vida[i]) { matar(i); continue; }
+    const dx = ax0 - px[i], dy = ay0 - py[i];
+    const d2 = dx * dx + dy * dy + EPS2;
+    const f = raton.modo * FUERZA / (d2 * Math.sqrt(d2));
+    vx[i] = (vx[i] + dx * f * dt) * roz;
+    vy[i] = (vy[i] + (dy * f + GRAVEDAD) * dt) * roz;
+    px[i] += vx[i] * dt;
+    py[i] += vy[i] * dt;
+    i++;
+  }
+}
+
+function dibujar(w, h) {
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = 'rgb(120, 90, 255)';
+  for (let i = 0; i < vivas; i++) {
+    const k = 1 - edad[i] / vida[i], lado = 1 + 3 * k;
+    ctx.globalAlpha = 0.25 + 0.55 * k;
+    ctx.fillRect(px[i] - lado / 2, py[i] - lado / 2, lado, lado);
+  }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+}
+
+// ---------- bucle con paso fijo y medición ----------
+const hud = document.getElementById('hud');
+let anterior = null, acumulador = 0, msSim = 0, msDib = 0, dtMedio = 1 / 60, cuenta = 0;
+function frame(t) {
+  const dtReal = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.25);
+  anterior = t;
+  if (dtReal > 0) dtMedio += 0.05 * (dtReal - dtMedio);
+  const [w, h] = ajustarLienzo();
+  let ax0 = raton.x, ay0 = raton.y;
+  if (!raton.activo || performance.now() - raton.ultimo > 3000) {
+    ax0 = w / 2 + Math.cos(t / 900) * w * 0.25; ay0 = h * 0.45 + Math.sin(t / 700) * h * 0.2;
+  }
+  const t0 = performance.now();
+  acumulador += dtReal;
+  let pasos = 0;
+  while (acumulador >= PASO && pasos < MAX_PASOS) { simular(PASO, ax0, ay0, w, h); acumulador -= PASO; pasos++; }
+  if (pasos === MAX_PASOS) acumulador = 0;
+  const t1 = performance.now();
+  dibujar(w, h);
+  const t2 = performance.now();
+  msSim += 0.1 * ((t1 - t0) - msSim); msDib += 0.1 * ((t2 - t1) - msDib);
+  if (++cuenta % 10 === 0) {
+    hud.textContent = `partículas: ${vivas}\nsimular: ${msSim.toFixed(2)} ms · dibujar: ${msDib.toFixed(2)} ms\n${(1 / dtMedio).toFixed(0)} fps`;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+
+<p>Tres cosas a observar mientras subes la emisión:</p>
+<ul>
+  <li><strong>El número de partículas se estabiliza</strong> en torno a tasa × vida media: con 3000/s y una vida media de 3,5 s, unas 10 500. Es la ley de Little, la misma que rige las colas de un supermercado.</li>
+  <li><strong>El tiempo de dibujo crece mucho más deprisa que el de simulación.</strong> Es la misma conclusión que la tabla del ejemplo 2.8.1.</li>
+  <li><strong>Cuando no llegas, el paso fijo te protege</strong>: con <code>MAX_PASOS</code>, si un frame no da para simular todo, se descarta el tiempo pendiente y la simulación va a cámara lenta en lugar de hundirse en la espiral de la muerte.</li>
+</ul>
+
+<div class="callout senior" data-titulo="por qué el medidor usa medias exponenciales">
+  <p>El HUD muestra medias móviles exponenciales de los tiempos (α = 0,1) y de <code>dt</code> (α = 0,05), por lo que viste en <a href="03-raf.html">2.3</a>: los valores instantáneos saltan tanto que no se pueden leer, y promediar FPS en lugar de tiempos da resultados sesgados. Actualizarlo solo cada 10 frames evita otro problema: escribir en el DOM en cada frame obliga a recalcular estilos y a repintar el texto, trabajo que se sumaría precisamente a lo que intentas medir. Y recuerda qué mides con <code>performance.now()</code> alrededor de <code>dibujar</code>: en un canvas acelerado, el coste de <em>registrar</em> las órdenes; la GPU las pinta después, en paralelo (<a href="06-canvas2d.html">2.6</a>).</p>
+</div>
+
+<div class="callout senior" data-titulo="Math.random y los errores que no se repiten">
+  <p>Con <code>Math.random()</code>, cada ejecución es distinta, y un fallo que aparece «a veces» (una partícula que se escapa, un <code>NaN</code> ocasional) es casi imposible de reproducir. Los sistemas de partículas serios usan un generador pseudoaleatorio <strong>con semilla</strong>: una función que, a partir de un número inicial, produce siempre la misma secuencia. Combinado con el paso fijo (<a href="03-raf.html">2.3</a>), la simulación entera se vuelve reproducible: misma semilla, mismos datos de entrada, mismo resultado, frame a frame. La librería de texturas del curso (<code>assets/js/texturas.js</code>) usa uno de los más sencillos, <em>mulberry32</em>, para que sus texturas «aleatorias» salgan idénticas en todos los equipos. Lo verás de nuevo con el ruido de los shaders en <a href="../06-glsl/06-ruido.html">6.6</a>.</p>
+</div>
+
+<h2>El resultado: juega con él</h2>
+<p>Todo junto, con controles. Mueve el ratón por el lienzo (clic para alternar atraer/repeler) y compara los dos modos de dibujo: con <code>fillRect</code> (cuadrados con mezcla aditiva) y escribiendo los píxeles directamente en un <code>ImageData</code> con la suma de colores hecha a mano.</p>
+<div class="demo" id="demo-particulas">
+  <div class="demo-lienzo" style="height:420px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">…</div>
+</div>
+
+<h2>¿Cuántas partículas aguanta la CPU?</h2>
+<p>Medimos el sistema (atracción, rozamiento, envoltura en los bordes, mezcla aditiva) en Chrome 154 sobre un portátil con Apple M1, en un canvas de 1000 × 700 píxeles del búfer. Tiempo medio por frame:</p>
+<table class="m2-medidas">
+  <thead><tr><th class="num">Partículas</th><th class="num">simular</th><th class="num">dibujar con <code>fillRect</code></th><th class="num">frame</th><th class="num">dibujar con píxeles</th><th class="num">frame</th></tr></thead>
+  <tbody>
+    <tr><td class="num">10 000</td><td class="num">0,2 ms</td><td class="num">1,7 ms</td><td class="num">16,7 ms</td><td class="num">1,1 ms</td><td class="num">16,7 ms</td></tr>
+    <tr><td class="num">50 000</td><td class="num">0,4 ms</td><td class="num">4,0 ms</td><td class="num">16,7 ms</td><td class="num">0,9 ms</td><td class="num">16,7 ms</td></tr>
+    <tr><td class="num">100 000</td><td class="num">0,7 ms</td><td class="num">17,8 ms</td><td class="num">20,5 ms</td><td class="num">1,9 ms</td><td class="num">16,7 ms</td></tr>
+    <tr><td class="num">200 000</td><td class="num">1,4 ms</td><td class="num">38,4 ms</td><td class="num">40,2 ms</td><td class="num">2,2 ms</td><td class="num">16,7 ms</td></tr>
+    <tr><td class="num">400 000</td><td class="num">2,9 ms</td><td class="num">92,7 ms</td><td class="num">99,1 ms</td><td class="num">2,1 ms</td><td class="num">16,7 ms</td></tr>
+  </tbody>
+</table>
+<p>Y con un búfer de 3840 × 2160 (lo que ocupa una pantalla 1920 × 1080 con DPR 2), dibujando píxeles: 100 000 partículas en 8,2 ms de dibujo, 400 000 en 14,6 ms (frame de 17,5 ms, ya justo por debajo de 60 fps) y 1 000 000 en 17,2 ms más 7,2 de simulación (unos 41 fps).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.8.2 — Leer el banco de pruebas</h3>
+  <p><strong>Paso 1: con <code>fillRect</code>, el límite está entre 50 000 y 100 000.</strong> A 100 000, dibujar cuesta 17,8 ms y el frame sube a 20,5 ms: ya no llega a 60 fps. El coste es casi proporcional al número de llamadas (unos 0,18 µs por <code>fillRect</code> con mezcla aditiva y alfa por partícula): el cuello de botella es <strong>JavaScript llamando a la API de Canvas 2D</strong>, una vez por partícula, no la física ni los píxeles.</p>
+  <p><strong>Paso 2: con píxeles, el coste cambia de naturaleza.</strong> Escribir directamente en un <code>Uint32Array</code> sobre el <code>ImageData</code> (una suma y una saturación por partícula) apenas cuesta: 400 000 partículas en 2 ms. Pero ahora pagas por <em>píxeles</em>: rellenar el fondo y subir el <code>ImageData</code> entero con <code>putImageData</code> cuesta lo mismo haya 10 partículas o un millón, y crece con la resolución (a 4K, unos 8 ms solo por eso). Y el aspecto es más pobre: puntos de un píxel, sin antialiasing, sin tamaños ni formas, salvo que los programes a mano (y cada píxel de más multiplica el coste).</p>
+  <p><strong>Paso 3: las cifras son de un portátil rápido.</strong> En un móvil o un equipo modesto, los límites bajan mucho: usa el medidor de la etapa 5 para encontrar los de tu máquina. Y todo esto ocurre en el hilo principal, compitiendo con el resto de tu página.</p>
+  <p><strong>Paso 4: la conclusión que da sentido al curso.</strong> Lo que hacemos con cada partícula (sumar fuerzas, mover, dibujar un punto con mezcla aditiva) es exactamente el mismo cálculo, independiente, repetido cientos de miles de veces. Es el tipo de trabajo para el que existe la GPU: en la lección <a href="../05-webgl/09-instancing.html">5.9</a> dibujarás miles de objetos con una sola llamada (<em>instancing</em>) y en <a href="../07-integracion/05-particulas-gpu.html">7.5</a> harás también la simulación en la GPU, con un millón de partículas a 60 fps. Los <code>Float32Array</code> de la etapa 2 viajarán tal cual a la GPU.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Con 100 000 partículas y <code>fillRect</code>, el frame dura 20,5 ms. Según las medidas, ¿qué optimización tendría más efecto?</p>
+  <ul>
+    <li>Optimizar la física (por ejemplo, evitar la raíz cuadrada de la fuerza).<div class="explicacion">Simular cuesta 0,7 ms de los 20,5: aunque la física fuera gratis, seguirías sin llegar a 60 fps.</div></li>
+    <li>Cambiar los <code>Float32Array</code> por arrays normales.<div class="explicacion">No mejoraría el dibujo, que es el cuello de botella, y a cambio perderías la memoria contigua y la compatibilidad con la GPU.</div></li>
+    <li data-correcta>Reducir el número de llamadas de dibujo: escribir píxeles directamente o, mejor, pasar el dibujo a la GPU.<div class="explicacion">Correcto: dibujar cuesta 17,8 ms, casi todo por las 100 000 llamadas a <code>fillRect</code>. Con píxeles directos bajó a 1,9 ms; con WebGL e instancing, una sola llamada dibuja todas.</div></li>
+  </ul>
+</div>
+
+<h2>Ejercicios: amplía el sistema</h2>
+<p>Los cuatro ejercicios parten del código de la etapa 5, reducido a lo esencial.</p>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 2.8.1 — Color según la velocidad</h3>
+  <p>Colorea cada partícula según su rapidez: lentas en violeta (tono 260), rápidas en amarillo (tono 50), pasando por los tonos intermedios. Para no cambiar <code>fillStyle</code> en cada partícula, agrúpalas en 8 «cubos» de color y dibuja cada cubo con un único <code>fillStyle</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.8.1" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+const MAX = 20000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+let vivas = 0, pendientes = 0;
+function emitir(n) {
+  for (let k = 0; k < n && vivas < MAX; k++) {
+    const i = vivas++, a = Math.random() * Math.PI * 2, r = Math.random() * 260;
+    px[i] = W / 2; py[i] = H / 2; vx[i] = Math.cos(a) * r; vy[i] = Math.sin(a) * r; edad[i] = 0; vida[i] = 1.5 + Math.random();
+  }
+}
+function matar(i) { const u = --vivas; px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u]; }
+function simular(dt) {
+  pendientes += 4000 * dt; const n = Math.floor(pendientes); pendientes -= n; emitir(n);
+  const roz = Math.exp(-0.6 * dt);
+  for (let i = 0; i < vivas; ) {
+    edad[i] += dt; if (edad[i] >= vida[i]) { matar(i); continue; }
+    vx[i] *= roz; vy[i] = (vy[i] + 40 * dt) * roz; px[i] += vx[i] * dt; py[i] += vy[i] * dt; i++;
+  }
+}
+function dibujar() {
+  ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = 'hsla(260, 90%, 60%, 0.6)';            // ← todas del mismo color: cámbialo
+  for (let i = 0; i < vivas; i++) ctx.fillRect(px[i] - 1, py[i] - 1, 2.5, 2.5);
+  ctx.globalCompositeOperation = 'source-over';
+}
+let anterior = null;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.05); anterior = t;
+  simular(dt); dibujar(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+const MAX = 20000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+let vivas = 0, pendientes = 0;
+function emitir(n) {
+  for (let k = 0; k < n && vivas < MAX; k++) {
+    const i = vivas++, a = Math.random() * Math.PI * 2, r = Math.random() * 260;
+    px[i] = W / 2; py[i] = H / 2; vx[i] = Math.cos(a) * r; vy[i] = Math.sin(a) * r; edad[i] = 0; vida[i] = 1.5 + Math.random();
+  }
+}
+function matar(i) { const u = --vivas; px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u]; }
+function simular(dt) {
+  pendientes += 4000 * dt; const n = Math.floor(pendientes); pendientes -= n; emitir(n);
+  const roz = Math.exp(-0.6 * dt);
+  for (let i = 0; i < vivas; ) {
+    edad[i] += dt; if (edad[i] >= vida[i]) { matar(i); continue; }
+    vx[i] *= roz; vy[i] = (vy[i] + 40 * dt) * roz; px[i] += vx[i] * dt; py[i] += vy[i] * dt; i++;
+  }
+}
+const CUBOS = 8;
+const colores = Array.from({ length: CUBOS }, (_, c) => `hsla(${260 - 210 * c / (CUBOS - 1)}, 90%, 60%, 0.6)`);
+const cubo = new Uint8Array(MAX);                         // a qué cubo va cada partícula (se reutiliza)
+function dibujar() {
+  ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < vivas; i++) {
+    const rapidez = Math.hypot(vx[i], vy[i]);
+    const u = Math.min(1, rapidez / 220);                 // remap [0, 220] px/s → [0, 1] con clamp
+    cubo[i] = Math.min(CUBOS - 1, (u * CUBOS) | 0);
+  }
+  for (let c = 0; c < CUBOS; c++) {                       // un fillStyle por cubo, no por partícula
+    ctx.fillStyle = colores[c];
+    for (let i = 0; i < vivas; i++) if (cubo[i] === c) ctx.fillRect(px[i] - 1, py[i] - 1, 2.5, 2.5);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+let anterior = null;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.05); anterior = t;
+  simular(dt); dibujar(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La rapidez es <code>Math.hypot(vx[i], vy[i])</code>. Llévala a [0, 1] con un <code>remap</code> y <code>clamp</code> (<a href="04-interpolacion-easing.html">2.4</a>) y de ahí a un número de cubo entre 0 y 7.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Precalcula las 8 cadenas de color una sola vez. Guarda el cubo de cada partícula en un <code>Uint8Array</code> del pool y dibuja en 8 pasadas, una por color.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La rapidez se traslada a [0, 1] con <code>Math.min(1, rapidez / 220)</code> (un <code>remapClamp</code> de [0, 220] a [0, 1]) y de ahí a un cubo entero. Las 8 cadenas de color se construyen una vez: construir una cadena <code>hsla(…)</code> por partícula y frame sería crear basura y obligar al navegador a interpretar el color cada vez. Dibujar en 8 pasadas recorre el array 8 veces, pero cada pasada es un bucle trivial, y a cambio solo hay 8 cambios de <code>fillStyle</code> por frame en vez de miles. El <code>Uint8Array</code> para los cubos es otra columna del SoA, reservada una vez. Con la mezcla aditiva, las zonas densas del centro, donde las partículas lentas se amontonan, brillan en violeta, y los chorros rápidos en amarillo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.8.2 — Explosiones al hacer clic</h3>
+  <p>Añade un segundo tipo de emisión: al hacer clic, una explosión de 800 partículas en ese punto, con velocidades radiales (ángulo uniforme y rapidez entre 50 y 450 px/s) y una vida más corta (0,6 a 1,4 s). El número de partículas de cada explosión no debe depender de la frecuencia de la pantalla. Si no haces clic, el código lanza una explosión automática cada 1,5 s.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.8.2" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+const MAX = 30000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+let vivas = 0;
+function matar(i) { const u = --vivas; px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u]; }
+
+function explotar(x, y) {
+  // ← emite 800 partículas radiales en (x, y)
+}
+
+let ultimoClic = -1e9;
+canvas.addEventListener('pointerdown', (e) => { explotar(e.offsetX, e.offsetY); ultimoClic = performance.now(); });
+
+function simular(dt) {
+  const roz = Math.exp(-1.2 * dt);
+  for (let i = 0; i < vivas; ) {
+    edad[i] += dt; if (edad[i] >= vida[i]) { matar(i); continue; }
+    vx[i] *= roz; vy[i] = (vy[i] + 200 * dt) * roz; px[i] += vx[i] * dt; py[i] += vy[i] * dt; i++;
+  }
+}
+function dibujar() {
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = 'rgb(255, 160, 60)';
+  for (let i = 0; i < vivas; i++) { ctx.globalAlpha = 1 - edad[i] / vida[i]; ctx.fillRect(px[i] - 1.5, py[i] - 1.5, 3, 3); }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+}
+let anterior = null, reloj = 0;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.05); anterior = t;
+  reloj += dt;
+  if (reloj > 1.5 && performance.now() - ultimoClic > 4000) { reloj = 0; explotar(W * (0.2 + 0.6 * Math.random()), H * (0.25 + 0.4 * Math.random())); }
+  simular(dt); dibujar(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+const MAX = 30000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+let vivas = 0;
+function matar(i) { const u = --vivas; px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u]; }
+
+function explotar(x, y, n = 800) {
+  for (let k = 0; k < n && vivas < MAX; k++) {
+    const i = vivas++;
+    const angulo = Math.random() * Math.PI * 2;      // dirección uniforme
+    const rapidez = 50 + Math.random() * 400;        // entre 50 y 450 px/s
+    px[i] = x; py[i] = y;
+    vx[i] = Math.cos(angulo) * rapidez;
+    vy[i] = Math.sin(angulo) * rapidez;
+    edad[i] = 0;
+    vida[i] = 0.6 + Math.random() * 0.8;             // entre 0,6 y 1,4 s
+  }
+}
+
+let ultimoClic = -1e9;
+canvas.addEventListener('pointerdown', (e) => { explotar(e.offsetX, e.offsetY); ultimoClic = performance.now(); });
+
+function simular(dt) {
+  const roz = Math.exp(-1.2 * dt);
+  for (let i = 0; i < vivas; ) {
+    edad[i] += dt; if (edad[i] >= vida[i]) { matar(i); continue; }
+    vx[i] *= roz; vy[i] = (vy[i] + 200 * dt) * roz; px[i] += vx[i] * dt; py[i] += vy[i] * dt; i++;
+  }
+}
+function dibujar() {
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = 'rgb(255, 160, 60)';
+  for (let i = 0; i < vivas; i++) { ctx.globalAlpha = 1 - edad[i] / vida[i]; ctx.fillRect(px[i] - 1.5, py[i] - 1.5, 3, 3); }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+}
+let anterior = null, reloj = 0;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.05); anterior = t;
+  reloj += dt;
+  if (reloj > 1.5 && performance.now() - ultimoClic > 4000) { reloj = 0; explotar(W * (0.2 + 0.6 * Math.random()), H * (0.25 + 0.4 * Math.random())); }
+  simular(dt); dibujar(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>Es un <code>emitir</code> con 800 iteraciones que usa el punto del clic como origen y reparte las velocidades en todas las direcciones: <code>cos(ángulo) · rapidez</code> y <code>sin(ángulo) · rapidez</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Una explosión es una emisión puntual en el tiempo: se ejecuta en el manejador del clic, no en el bucle, así que el número de partículas no depende de los FPS. El ángulo uniforme en $[0, 2\pi)$ reparte las direcciones por igual, y la rapidez aleatoria da el aspecto de «esfera que se deshace» en lugar de un anillo perfecto. Un detalle fino: con la rapidez uniforme en [50, 450], la explosión se ve más densa en el centro; si quieres un disco relleno de forma uniforme, la rapidez debería repartirse como la raíz cuadrada de un número aleatorio, que es lo mismo que elegir puntos al azar en un círculo. El <code>vivas &lt; MAX</code> del bucle protege el pool si haces muchos clics seguidos.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.8.3 — Rebotes en las paredes</h3>
+  <p>Haz que las partículas reboten en los cuatro bordes del lienzo en lugar de salir: al tocar un borde, la componente de la velocidad perpendicular se invierte y conserva solo el 70 % (restitución 0,7), y la posición se corrige para que no quede fuera. En el suelo, además, un rozamiento extra reduce la velocidad horizontal.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.8.3" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+const MAX = 3000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+let vivas = 0;
+for (; vivas < MAX; vivas++) {
+  px[vivas] = Math.random() * W; py[vivas] = Math.random() * H * 0.5;
+  vx[vivas] = (Math.random() - 0.5) * 400; vy[vivas] = (Math.random() - 0.5) * 400;
+}
+const RESTITUCION = 0.7, R = 2;
+
+function simular(dt) {
+  for (let i = 0; i < vivas; i++) {
+    vy[i] += 400 * dt;
+    px[i] += vx[i] * dt;
+    py[i] += vy[i] * dt;
+    // ← rebotes en x = R, x = W - R, y = R, y = H - R
+  }
+}
+function dibujar() {
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#3fd0e8';
+  for (let i = 0; i < vivas; i++) ctx.fillRect(px[i] - R, py[i] - R, 2 * R, 2 * R);
+}
+let anterior = null;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.05); anterior = t;
+  simular(dt); dibujar(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+setInterval(() => { for (let i = 0; i < vivas; i += 3) vy[i] -= 500 + Math.random() * 300; }, 3000);   // sacudida periódica
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+const MAX = 3000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+let vivas = 0;
+for (; vivas < MAX; vivas++) {
+  px[vivas] = Math.random() * W; py[vivas] = Math.random() * H * 0.5;
+  vx[vivas] = (Math.random() - 0.5) * 400; vy[vivas] = (Math.random() - 0.5) * 400;
+}
+const RESTITUCION = 0.7, R = 2, ROZ_SUELO = 3;   // 1/s
+
+function simular(dt) {
+  const rozSuelo = Math.exp(-ROZ_SUELO * dt);
+  for (let i = 0; i < vivas; i++) {
+    vy[i] += 400 * dt;
+    px[i] += vx[i] * dt;
+    py[i] += vy[i] * dt;
+    if (px[i] < R) { px[i] = R; vx[i] = Math.abs(vx[i]) * RESTITUCION; }            // pared izquierda
+    else if (px[i] > W - R) { px[i] = W - R; vx[i] = -Math.abs(vx[i]) * RESTITUCION; } // pared derecha
+    if (py[i] < R) { py[i] = R; vy[i] = Math.abs(vy[i]) * RESTITUCION; }            // techo
+    else if (py[i] > H - R) {                                                        // suelo
+      py[i] = H - R;
+      vy[i] = -Math.abs(vy[i]) * RESTITUCION;
+      vx[i] *= rozSuelo;                                                             // rozamiento al tocar el suelo
+    }
+  }
+}
+function dibujar() {
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#3fd0e8';
+  for (let i = 0; i < vivas; i++) ctx.fillRect(px[i] - R, py[i] - R, 2 * R, 2 * R);
+}
+let anterior = null;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.05); anterior = t;
+  simular(dt); dibujar(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+setInterval(() => { for (let i = 0; i < vivas; i += 3) vy[i] -= 500 + Math.random() * 300; }, 3000);   // sacudida periódica
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Para cada borde: si la partícula lo ha cruzado, colócala justo en el borde y cambia el signo de la componente de la velocidad perpendicular, multiplicada por 0,7.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Usa <code>Math.abs</code> para fijar el signo de la velocidad tras el rebote (hacia dentro), en vez de solo cambiarlo con <code>-v</code>. Piensa qué pasa si en el frame siguiente la partícula sigue fuera.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada rebote hace dos cosas: corregir la posición (si no, la partícula queda fuera del lienzo y se dibuja cortada) y reflejar la velocidad perpendicular con pérdida. El detalle de senior es <code>Math.abs</code>: si solo hicieras <code>vy = -vy * 0.7</code> y la partícula siguiera fuera en el frame siguiente (por ejemplo, porque la gravedad la empuja más de lo que rebota), volverías a invertir la velocidad, que ahora apuntaba hacia dentro, y la partícula quedaría atrapada vibrando en la pared. Fijando el signo hacia dentro con <code>Math.abs</code>, eso no puede pasar. Con restitución 0,7 cada rebote conserva el 49 % de la energía cinética ($0{,}7^2$): tras unos pocos botes las partículas se quedan en el suelo, donde el rozamiento exponencial las frena del todo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 2.8.4 — Texto hecho de partículas</h3>
+  <p>El efecto clásico: cientos o miles de partículas forman un texto, se dispersan al acercar el ratón y vuelven a su sitio con un muelle. El código ya tiene los muelles (<a href="05-fisica-muelles.html">2.5</a>) y la repulsión del ratón. Te toca escribir <code>muestrearTexto(texto)</code>: dibuja el texto en un canvas auxiliar, léelo con <code>getImageData</code> y devuelve la lista de puntos (cada 4 píxeles) donde hay tinta. Cada partícula tendrá uno de esos puntos como destino.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.8.4" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+
+function muestrearTexto(texto, paso = 4) {
+  const puntos = [];
+  // ← 1. canvas auxiliar de W×H con willReadFrequently
+  // ← 2. fillText centrado, grande y en blanco
+  // ← 3. getImageData y recorrer cada 'paso' píxeles: si alfa > 128, guardar {x, y}
+  return puntos;
+}
+
+const destinos = muestrearTexto('Hola');
+const N = destinos.length;
+console.log('partículas:', N);
+const px = new Float32Array(N), py = new Float32Array(N), vx = new Float32Array(N), vy = new Float32Array(N);
+const tx = new Float32Array(N), ty = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+  tx[i] = destinos[i].x; ty[i] = destinos[i].y;
+  px[i] = Math.random() * W; py[i] = Math.random() * H;     // empiezan desordenadas
+}
+const K = 40, C = 7;                                        // muelle hacia el destino (ζ ≈ 0,55)
+const raton = { x: -1e4, y: -1e4 };
+canvas.addEventListener('pointermove', (e) => { raton.x = e.offsetX; raton.y = e.offsetY; });
+canvas.addEventListener('pointerleave', () => { raton.x = raton.y = -1e4; });
+
+function simular(dt) {
+  for (let i = 0; i < N; i++) {
+    let ax = -K * (px[i] - tx[i]) - C * vx[i];
+    let ay = -K * (py[i] - ty[i]) - C * vy[i];
+    const dx = px[i] - raton.x, dy = py[i] - raton.y, d2 = dx * dx + dy * dy;
+    if (d2 < 80 * 80) { const f = 60000 / (d2 + 100); ax += dx * f / Math.sqrt(d2 + 1); ay += dy * f / Math.sqrt(d2 + 1); }
+    vx[i] += ax * dt; vy[i] += ay * dt; px[i] += vx[i] * dt; py[i] += vy[i] * dt;
+  }
+}
+function dibujar() {
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#8b7bff';
+  for (let i = 0; i < N; i++) ctx.fillRect(px[i] - 1.2, py[i] - 1.2, 2.4, 2.4);
+}
+let anterior = null;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 1 / 30); anterior = t;
+  simular(dt); dibujar(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const W = canvas.width, H = canvas.height;
+
+function muestrearTexto(texto, paso = 4) {
+  const aux = document.createElement('canvas');             // canvas fuera de pantalla (no se añade al DOM)
+  aux.width = W; aux.height = H;
+  const a = aux.getContext('2d', { willReadFrequently: true });
+  a.fillStyle = '#fff';
+  a.font = `bold ${Math.floor(H * 0.55)}px system-ui, sans-serif`;
+  a.textAlign = 'center'; a.textBaseline = 'middle';
+  a.fillText(texto, W / 2, H / 2, W * 0.9);                  // maxWidth: que quepa
+  const d = a.getImageData(0, 0, W, H).data;
+  const puntos = [];
+  for (let y = 0; y < H; y += paso) {
+    for (let x = 0; x < W; x += paso) {
+      if (d[(y * W + x) * 4 + 3] > 128) puntos.push({ x, y });   // alfa: ¿hay tinta?
+    }
+  }
+  return puntos;
+}
+
+const destinos = muestrearTexto('Hola');
+const N = destinos.length;
+console.log('partículas:', N);
+const px = new Float32Array(N), py = new Float32Array(N), vx = new Float32Array(N), vy = new Float32Array(N);
+const tx = new Float32Array(N), ty = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+  tx[i] = destinos[i].x; ty[i] = destinos[i].y;
+  px[i] = Math.random() * W; py[i] = Math.random() * H;     // empiezan desordenadas
+}
+const K = 40, C = 7;                                        // muelle hacia el destino (ζ ≈ 0,55)
+const raton = { x: -1e4, y: -1e4 };
+canvas.addEventListener('pointermove', (e) => { raton.x = e.offsetX; raton.y = e.offsetY; });
+canvas.addEventListener('pointerleave', () => { raton.x = raton.y = -1e4; });
+
+function simular(dt) {
+  for (let i = 0; i < N; i++) {
+    let ax = -K * (px[i] - tx[i]) - C * vx[i];
+    let ay = -K * (py[i] - ty[i]) - C * vy[i];
+    const dx = px[i] - raton.x, dy = py[i] - raton.y, d2 = dx * dx + dy * dy;
+    if (d2 < 80 * 80) { const f = 60000 / (d2 + 100); ax += dx * f / Math.sqrt(d2 + 1); ay += dy * f / Math.sqrt(d2 + 1); }
+    vx[i] += ax * dt; vy[i] += ay * dt; px[i] += vx[i] * dt; py[i] += vy[i] * dt;
+  }
+}
+function dibujar() {
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#8b7bff';
+  for (let i = 0; i < N; i++) ctx.fillRect(px[i] - 1.2, py[i] - 1.2, 2.4, 2.4);
+}
+let anterior = null;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 1 / 30); anterior = t;
+  simular(dt); dibujar(); requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Un canvas creado con <code>document.createElement('canvas')</code> funciona aunque no esté en la página. Dibuja en él con <code>textAlign = 'center'</code> y <code>textBaseline = 'middle'</code> en el centro, con una fuente del tamaño de media altura.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El alfa del píxel (x, y) está en <code>data[(y * W + x) * 4 + 3]</code> (<a href="06-canvas2d.html">2.6</a>). Recorre con dos bucles que avancen de <code>paso</code> en <code>paso</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El canvas auxiliar es una hoja de trabajo invisible: dibujamos el texto con las herramientas de Canvas 2D (que se encargan de la fuente, el antialiasing y el centrado) y luego leemos sus píxeles para saber dónde hay tinta. El canal alfa basta, porque fuera de las letras el canvas es transparente. Muestrear cada 4 píxeles da del orden de un millar de puntos para un lienzo de este tamaño (en nuestra prueba, 1268); con <code>paso = 2</code> tendrías cuatro veces más partículas (y cuatro veces más coste). El cuarto argumento de <code>fillText</code> (<code>maxWidth</code>) comprime el texto si no cabe, útil en lienzos estrechos.</p>
+    <p>El resto es física de la lección 2.5: cada partícula es un muelle con destino fijo ($k = 40$, $c = 7$: $\zeta = 7/(2\sqrt{40}) \approx 0{,}55$, con un rebote suave al llegar) y el ratón añade una repulsión limitada a un radio de 80 px. Las partículas empiezan desordenadas y el texto «se monta» solo al arrancar. Una idea para seguir: cambia el texto cada pocos segundos reasignando los destinos (y, si hay más o menos puntos que partículas, reutiliza o esconde las sobrantes).</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un sistema de partículas: emisor, estado por partícula (posición, velocidad, edad, vida), fuerzas y muerte.</li>
+    <li>Pool con <em>struct of arrays</em> en <code>Float32Array</code>: capacidad fija, las vivas en <code>0 … vivas − 1</code>, nacer escribiendo en <code>vivas++</code> y morir intercambiando con la última (sin avanzar el índice). Cero basura y datos listos para la GPU.</li>
+    <li>Emisión en partículas por segundo con acumulador de fracciones; rozamiento con <code>exp(−k·dt)</code>; fuerzas de $1/d^2$ con <em>softening</em> ($d^2 + \varepsilon^2$).</li>
+    <li>Paso fijo con tope de pasos, canvas nítido, mezcla aditiva con <code>'lighter'</code> y estado del contexto restaurado.</li>
+    <li>Mide simular y dibujar por separado: con Canvas 2D, el cuello de botella son las llamadas de dibujo (en un M1, el límite a 60 fps rondó 50 000–100 000 partículas con <code>fillRect</code>). Por encima, la respuesta es la GPU: <a href="../05-webgl/09-instancing.html">5.9</a> y <a href="../07-integracion/05-particulas-gpu.html">7.5</a>.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://natureofcode.com/particles/">The Nature of Code, capítulo «Particle Systems»</a> (Daniel Shiffman): sistemas de partículas explicados desde cero.</li>
+  <li><a href="https://gameprogrammingpatterns.com/object-pool.html">Object Pool</a> y <a href="https://gameprogrammingpatterns.com/data-locality.html">Data Locality</a> (Robert Nystrom, <em>Game Programming Patterns</em>): los dos patrones de la etapa 2, con todo detalle.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m2.js"></script>
+<script>
+Curso.alListo(() => {
+  /* ---------- Demo final: sistema de partículas con controles ---------- */
+  const raiz = document.getElementById("demo-particulas");
+  const info = raiz.querySelector(".demo-info");
+  const ctrls = raiz.querySelector(".demo-controles");
+  const MAX = 300000;
+  const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+  const edad = new Float32Array(MAX), vida = new Float32Array(MAX);
+  let vivas = 0, pendientes = 0, acumulador = 0;
+  const p = { tasa: 4000, gravedad: 120, fuerza: 1, modo: 1, dibujo: "rects" };
+  const PASO = 1 / 60, MAX_PASOS = 4, EPS2 = 30 * 30, ROZ = 0.8;
+  const raton = { x: 0, y: 0, dentro: false, ultimo: -1e9 };
+  let img = null, u32 = null, msSim = 0, msDib = 0, dtMedio = 1 / 60;
+
+  function emitir(n, x, y) {
+    for (let k = 0; k < n && vivas < MAX; k++) {
+      const i = vivas++;
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 0.9, r = 150 + Math.random() * 170;
+      px[i] = x + (Math.random() - 0.5) * 12; py[i] = y;
+      vx[i] = Math.cos(a) * r; vy[i] = Math.sin(a) * r;
+      edad[i] = 0; vida[i] = 2 + Math.random() * 2.5;
+    }
+  }
+  function matar(i) { const u = --vivas; px[i] = px[u]; py[i] = py[u]; vx[i] = vx[u]; vy[i] = vy[u]; edad[i] = edad[u]; vida[i] = vida[u]; }
+  function simular(dt, ax0, ay0, w, h) {
+    pendientes += p.tasa * dt; const n = Math.floor(pendientes); pendientes -= n; emitir(n, w / 2, h - 8);
+    const roz = Math.exp(-ROZ * dt), F = 2.5e6 * p.fuerza * p.modo, g = p.gravedad;
+    for (let i = 0; i < vivas; ) {
+      edad[i] += dt; if (edad[i] >= vida[i]) { matar(i); continue; }
+      const dx = ax0 - px[i], dy = ay0 - py[i], d2 = dx * dx + dy * dy + EPS2, f = F / (d2 * Math.sqrt(d2));
+      vx[i] = (vx[i] + dx * f * dt) * roz; vy[i] = (vy[i] + (dy * f + g) * dt) * roz;
+      px[i] += vx[i] * dt; py[i] += vy[i] * dt;
+      if (px[i] < -50 || px[i] > w + 50 || py[i] > h + 50 || py[i] < -400) { matar(i); continue; }
+      i++;
+    }
+  }
+  const lz = Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+    animar: true,
+    dprMax: 2,
+    alMover(e) { raton.x = e.raton.x; raton.y = e.raton.y; raton.dentro = true; raton.ultimo = performance.now(); },
+    alPulsar() { p.modo = -p.modo; selModo.select.value = String(p.modo); },
+    dibujar(ctx, e) {
+      const w = e.w, h = e.h;
+      if (e.dt > 0) dtMedio += 0.05 * (e.dt - dtMedio);
+      let ax0 = raton.x, ay0 = raton.y;
+      if (!e.raton.dentro || performance.now() - raton.ultimo > 3000) { ax0 = w / 2 + Math.cos(e.t * 1.1) * w * 0.28; ay0 = h * 0.42 + Math.sin(e.t * 1.43) * h * 0.22; }
+      const t0 = performance.now();
+      acumulador += e.dt; let pasos = 0;
+      while (acumulador >= PASO && pasos < MAX_PASOS) { simular(PASO, ax0, ay0, w, h); acumulador -= PASO; pasos++; }
+      if (pasos === MAX_PASOS) acumulador = 0;
+      const t1 = performance.now();
+      if (p.dibujo === "rects") {
+        ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
+        ctx.fillStyle = "#0e1014"; ctx.fillRect(0, 0, w, h);
+        ctx.globalCompositeOperation = "lighter"; ctx.fillStyle = "rgb(120, 90, 255)";
+        for (let i = 0; i < vivas; i++) { const k = 1 - edad[i] / vida[i], l = 1 + 3 * k; ctx.globalAlpha = 0.25 + 0.55 * k; ctx.fillRect(px[i] - l / 2, py[i] - l / 2, l, l); }
+        ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
+      } else {
+        const W = lz.canvas.width, H = lz.canvas.height, dpr = e.dpr;
+        if (!img || img.width !== W || img.height !== H) { img = new ImageData(W, H); u32 = new Uint32Array(img.data.buffer); }
+        u32.fill(0xff14100e);                                   // fondo (14, 16, 20) en ABGR
+        for (let i = 0; i < vivas; i++) {
+          const x = (px[i] * dpr) | 0, y = (py[i] * dpr) | 0;
+          if (x < 0 || y < 0 || x >= W || y >= H) continue;
+          const k = u32[y * W + x], s = 0.35 + 0.65 * (1 - edad[i] / vida[i]);
+          let r = (k & 255) + 50 * s, g = ((k >> 8) & 255) + 38 * s, b = ((k >> 16) & 255) + 105 * s;
+          if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+          u32[y * W + x] = 0xff000000 | (b << 16) | (g << 8) | r;
+        }
+        ctx.putImageData(img, 0, 0);
+      }
+      const t2 = performance.now();
+      ctx.strokeStyle = p.modo > 0 ? e.colores.ok : e.colores.error; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(ax0, ay0, 10, 0, Math.PI * 2); ctx.stroke();
+      msSim += 0.1 * ((t1 - t0) - msSim); msDib += 0.1 * ((t2 - t1) - msDib);
+      if (e.frame % 10 === 0) info.textContent = "partículas: " + vivas + " · simular " + msSim.toFixed(2) + " ms · dibujar " + msDib.toFixed(2) + " ms · " + (1 / dtMedio).toFixed(0) + " fps · búfer " + lz.canvas.width + "×" + lz.canvas.height + (vivas >= MAX ? " · ¡pool lleno!" : "");
+    },
+  });
+  Curso.control(ctrls, { etiqueta: "emisión / s", min: 0, max: 60000, paso: 500, valor: p.tasa, formato: (v) => v.toFixed(0), alCambiar: (v) => { p.tasa = v; } });
+  Curso.control(ctrls, { etiqueta: "gravedad", min: -300, max: 600, paso: 10, valor: p.gravedad, formato: (v) => v.toFixed(0) + " px/s²", alCambiar: (v) => { p.gravedad = v; } });
+  Curso.control(ctrls, { etiqueta: "fuerza del ratón", min: 0, max: 3, paso: 0.1, valor: p.fuerza, alCambiar: (v) => { p.fuerza = v; } });
+  const selModo = Curso.selector(ctrls, { etiqueta: "ratón", valor: "1", opciones: [["1", "atrae"], ["-1", "repele"]], alCambiar: (v) => { p.modo = +v; } });
+  Curso.selector(ctrls, { etiqueta: "dibujo", valor: "rects", opciones: [["rects", "fillRect + 'lighter'"], ["pixeles", "píxeles en ImageData"]], alCambiar: (v) => { p.dibujo = v; } });
+  Curso.boton(ctrls, "Vaciar", () => { vivas = 0; });
+});
+</script>
+</body>
+</html>

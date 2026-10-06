@@ -1,0 +1,861 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.2 · Pensar como un fragment shader — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/a-estilos.css">
+</head>
+<body data-leccion="06-glsl/pensar-en-paralelo">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>Pensar como un fragment shader</h1>
+  <p class="resumen">Un fragment shader no dibuja: responde una pregunta, «¿de qué color es este píxel?», millones de veces a la vez y sin poder mirar a sus vecinos. Esta lección instala ese modelo mental: de dónde sale la coordenada de cada píxel, cómo convertirla en algo útil sin deformar nada, cómo depurar sin <code>printf</code>, cómo construir imágenes con máscaras y el truco central de todo el módulo: transformar el espacio en lugar de la forma.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: 6.1, 3.1, 3.4, 3.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Pensarás un fragment shader como una función pura de (posición del píxel, uniforms) a color, y sabrás qué puede y qué no puede saber un píxel.</li>
+      <li>Dominarás <code>gl_FragCoord</code>: centros en .5, origen abajo a la izquierda, medido desde la ventana y no desde el viewport.</li>
+      <li>Normalizarás coordenadas sin deformar (el aspecto), usarás el ratón en el mismo espacio y depurarás pintando valores.</li>
+      <li>Construirás escenas con máscaras de 0 a 1 y moverás, girarás y escalarás formas transformando las coordenadas con la operación inversa.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Un programa que no dibuja nada</h2>
+<p>En Canvas 2D (<a href="../02-animacion/06-canvas2d.html">2.6</a>) das órdenes: «dibuja un círculo aquí, rellénalo de rojo». El navegador decide qué píxeles tocar. En un fragment shader la relación se invierte: la GPU ya ha decidido qué píxeles hay que pintar (los que cubre el triángulo, <a href="../04-gpu/02-pipeline-grafico.html">4.2</a>), y tu código se ejecuta <strong>una vez por cada uno</strong> con una sola pregunta: ¿de qué color es este píxel? Si quieres un círculo, cada píxel tiene que averiguar por su cuenta si está dentro o fuera. Nadie dibuja el círculo: el círculo aparece porque todos los píxeles que están dentro responden «rojo».</p>
+<p>Formalmente, un fragment shader es una función:</p>
+$$\text{color} = f(\text{posición del píxel},\ \text{uniforms},\ \text{texturas},\ \text{varyings})$$
+<p>Y esa función tiene cuatro propiedades que condicionan todo lo que escribirás en este módulo:</p>
+<ul>
+  <li><strong>Es pura.</strong> Las mismas entradas dan la misma salida. No hay variables que sobrevivan de un píxel a otro ni de un frame al siguiente. Si algo tiene que cambiar con el tiempo, cambia porque cambia una entrada: <code>u_time</code>.</li>
+  <li><strong>No ve a sus vecinos.</strong> Un píxel no puede leer lo que ha calculado el de al lado, ni escribir en otro píxel que no sea el suyo. (Hay una excepción limitada, las derivadas, al final de la lección.)</li>
+  <li><strong>No tiene memoria.</strong> Para que un píxel «recuerde» el frame anterior (una estela, una simulación) hay que guardar el frame en una textura y leerla en el siguiente: el <em>ping-pong</em> de <a href="../05-webgl/08-framebuffers.html">5.8</a>.</li>
+  <li><strong>Todos a la vez, sin orden.</strong> Los píxeles se procesan en paralelo, en grupos (<a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>), en el orden que decida la GPU. Tu código no puede depender de que un píxel se calcule antes que otro.</li>
+</ul>
+
+<svg class="diagrama" viewBox="0 0 760 230" width="760" role="img" aria-label="Las entradas de un fragment shader y su única salida">
+  <defs>
+    <marker id="fl62a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="10" y="14" width="300" height="178" rx="12"/>
+  <text x="160" y="40" text-anchor="middle" style="font-weight:700">Entradas de ESTE píxel</text>
+  <text x="28" y="72">gl_FragCoord.xy</text><text x="160" y="72" class="texto-tenue">dónde está</text>
+  <text x="28" y="100">v_uv, varyings</text><text x="160" y="100" class="texto-tenue">interpolados</text>
+  <text x="28" y="128">u_time, u_mouse…</text><text x="160" y="128" class="texto-tenue">iguales para todos</text>
+  <text x="28" y="156">texturas</text><text x="160" y="156" class="texto-tenue">tablas de solo lectura</text>
+  <text x="28" y="182" class="texto-tenue">(nada del vecino, nada del frame anterior)</text>
+  <rect class="caja acento" x="372" y="64" width="170" height="100" rx="12"/>
+  <text x="457" y="104" text-anchor="middle" style="font-weight:700">tu main()</text>
+  <text x="457" y="128" text-anchor="middle" class="texto-tenue">una función pura</text>
+  <rect class="caja" x="596" y="84" width="160" height="60" rx="12"/>
+  <text x="676" y="112" text-anchor="middle" style="font-weight:700">fragColor</text>
+  <text x="676" y="132" text-anchor="middle" class="texto-tenue">un color, solo el suyo</text>
+  <path d="M312 114 L368 114" stroke="currentColor" stroke-width="2" marker-end="url(#fl62a)"/>
+  <path d="M544 114 L592 114" stroke="currentColor" stroke-width="2" marker-end="url(#fl62a)"/>
+  <text x="380" y="216" text-anchor="middle" class="texto-tenue">× 1 millón de píxeles, en paralelo, en cualquier orden</text>
+</svg>
+
+<div class="callout porque">
+  <p>¿Por qué un modelo tan restrictivo? Porque es exactamente lo que permite a la GPU ser rápida. Si ningún píxel depende de otro, la GPU puede repartirlos entre miles de carriles sin sincronizar nada, reordenarlos para aprovechar la memoria y descartar los que no se ven. Cada restricción de la lista es una libertad para el hardware. El precio lo pagas tú: hay que aprender a pensar al revés, y de eso va esta lección.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Quieres un efecto de estela: cada píxel por el que pasa el ratón se ilumina y se va apagando poco a poco durante un segundo. ¿Qué necesitas?</p>
+  <ul>
+    <li>Una variable global en el shader que guarde el brillo de cada píxel entre frames<div class="explicacion">Las variables del shader no sobreviven: cada ejecución empieza de cero (y en WebGL, a cero literalmente). No hay memoria entre frames dentro del shader.</div></li>
+    <li data-correcta>Dibujar el resultado en una textura y leerla en el frame siguiente (render-to-texture, ping-pong)<div class="explicacion">Correcto. La memoria de un fragment shader son las texturas: en cada frame lees la del anterior, la oscureces un poco, añades el brillo del ratón y escribes en otra textura. Es la técnica de 5.8.</div></li>
+    <li>Pedir al píxel vecino su brillo con una función de GLSL<div class="explicacion">No existe tal función: un píxel no puede leer lo que calcula otro en la misma pasada. Solo puede leer texturas que se escribieron antes.</div></li>
+  </ul>
+</div>
+
+<h2><code>gl_FragCoord</code>: dónde estoy</h2>
+<p>La única pista que tiene un píxel sobre sí mismo es <code>gl_FragCoord</code>, un <code>vec4</code> que el rasterizador rellena para cada fragmento (<a href="01-lenguaje.html">6.1</a>). Su parte <code>.xy</code> es la posición del píxel, con cuatro detalles que conviene saber de memoria:</p>
+<ul>
+  <li><strong>Está en píxeles físicos</strong> del búfer de dibujo, no en píxeles CSS: en una pantalla con <code>devicePixelRatio</code> 2, un píxel CSS son 2 × 2 fragmentos (<a href="../05-webgl/01-contexto.html">5.1</a>). Por eso los editores del curso te dan <code>u_resolution</code> en píxeles físicos.</li>
+  <li><strong>Marca el centro del píxel</strong>: el primero es (0.5, 0.5), el siguiente (1.5, 0.5)… nunca un entero.</li>
+  <li><strong>El origen está abajo a la izquierda</strong> y la y crece hacia arriba, al revés que en CSS y Canvas 2D (<a href="../03-matematicas/01-vectores.html">3.1</a>).</li>
+  <li><strong>Se mide desde la esquina de la ventana (el framebuffer), no desde el viewport.</strong> Si dibujas con <code>gl.viewport(100, 50, 200, 200)</code>, el primer píxel de ese viewport recibe <code>gl_FragCoord.xy = (100.5, 50.5)</code>, no (0.5, 0.5). Lo medimos en Chrome, y es la causa de un bicho que verás ahora mismo.</li>
+</ul>
+<p>(Las otras dos componentes: <code>.z</code> es la profundidad del fragmento entre 0 y 1 y <code>.w</code> es $1/w$ del vértice interpolado; en un dibujo 2D a pantalla completa valen 0.5 y 1, y las necesitarás en 3D.) Explora la rejilla: es un framebuffer diminuto, con un punto en el centro de cada píxel. Pasa el ratón por las celdas, cambia el tamaño y activa el viewport.</p>
+
+<div class="demo" id="demo-rejilla">
+  <div class="demo-lienzo" style="height:330px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Fíjate en tres cosas. La cruz rosa marca el centro de la ventana: con el lienzo de 12 × 8 cae en una <em>esquina</em> entre cuatro píxeles, y con el de 9 × 7 cae en el centro de un píxel; el píxel central exacto solo existe con anchos y altos impares. Con el viewport activado, los píxeles de dentro siguen contando desde la esquina de la ventana, mientras que <code>v_uv</code> (que llega interpolado desde los vértices del triángulo) sí va de 0 a 1 dentro del viewport. Y los valores de <code>gl_FragCoord.xy</code> son siempre un entero más 0.5: números que un float representa <strong>exactamente</strong>.</p>
+
+<div class="callout hack" data-titulo="Comparar con == funciona… con gl_FragCoord">
+  <p>En 3.7 aprendiste a no comparar floats con <code>==</code>. Pero <code>gl_FragCoord.xy</code> es especial: sus valores son exactos (10.5 es $1010.1_2$, sin decimales infinitos), así que <code>gl_FragCoord.x == 10.5</code> selecciona exactamente la columna de píxeles número 10, y <code>gl_FragCoord.x == 10.0</code> no selecciona <strong>ninguna</strong>, porque ningún centro cae en un entero. Es la forma más limpia de pintar una columna o una fila concreta de píxeles, por ejemplo para depurar. En cuanto divides (<code>gl_FragCoord.xy / u_resolution</code>), la exactitud se pierde y vuelven las tolerancias.</p>
+</div>
+
+<div class="glsl-playground" data-titulo="Columnas exactas" data-altura="150" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec3 color = vec3(0.10, 0.11, 0.14);
+  // la columna 10 (su centro es 10.5): una línea de 1 píxel exacto
+  if (gl_FragCoord.x == 10.5) color = vec3(1.0, 0.35, 0.4);
+  // ningún centro de píxel vale 20.0: esta línea no pinta nada
+  if (gl_FragCoord.x == 20.0) color = vec3(0.3, 1.0, 0.5);
+  // la fila de abajo del todo: y = 0.5
+  if (gl_FragCoord.y == 0.5) color = vec3(0.4, 0.6, 1.0);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Acerca la vista o usa la barra del editor: la columna roja mide un píxel físico y está a 10 píxeles del borde izquierdo; la verde no existe; la azul es la fila inferior del lienzo, la de <code>y = 0.5</code>, porque el origen está abajo.</p>
+
+<div class="callout bestiario" data-id="m6a-fragcoord-viewport" data-titulo="Con varios viewports, el efecto sale desplazado, cortado o no aparece">
+  <p><strong>Síntoma:</strong> un shader que funciona a pantalla completa falla al dibujarlo en una parte del canvas (pantalla dividida, una miniatura, un <code>gl.viewport</code> con desplazamiento): la forma sale descentrada, cortada por el borde del viewport, o directamente fuera de él. En el viewport que empieza en (0, 0) todo va bien.</p>
+  <p><strong>Causa:</strong> <code>gl_FragCoord</code> se mide desde la esquina del framebuffer, no del viewport. Las fórmulas del tipo <code>(2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y</code> suponen que el primer píxel es (0.5, 0.5), y en un viewport desplazado el primero es (x₀ + 0.5, y₀ + 0.5).</p>
+  <p><strong>Solución:</strong> resta el origen del viewport (pásalo como uniform: <code>gl_FragCoord.xy - u_origen</code>) o usa un varying como <code>v_uv</code>, que se interpola desde los vértices y es relativo a la geometría que dibujas. Compruébalo en el programa de abajo: dos viewports con el mismo shader; en el derecho el círculo desaparece hasta que activas la casilla.</p>
+</div>
+
+<div class="js-playground" data-titulo="Dos viewports, un shader" data-altura="250" data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<label><input type="checkbox" id="arreglo"> restar el origen del viewport (u_origen)</label>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: calc(100% - 30px); display: block; }
+label { display: block; padding: 5px 12px; font: 13px sans-serif; color: #c9d1e0; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = canvas.clientWidth * devicePixelRatio;
+canvas.height = canvas.clientHeight * devicePixelRatio;
+const gl = canvas.getContext('webgl2');
+
+const vs = `#version 300 es
+in vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+const fs = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;   // tamaño del VIEWPORT
+uniform vec2 u_origen;       // su esquina inferior izquierda, en píxeles
+out vec4 fragColor;
+void main() {
+  vec2 f = gl_FragCoord.xy - u_origen;             // píxel relativo al viewport
+  vec2 p = (2.0 * f - u_resolution) / u_resolution.y;
+  float disco = 1.0 - smoothstep(0.49, 0.5, length(p));
+  vec3 fondo = vec3(0.10, 0.11, 0.14) + 0.07 * step(0.0, p.x * p.y);
+  fragColor = vec4(mix(fondo, vec3(0.55, 0.48, 1.0), disco), 1.0);
+}`;
+const prog = GLKit.crearPrograma(gl, vs, fs, { atributos: { a_pos: 0 } });
+const U = GLKit.uniforms(gl, prog);
+const vao = GLKit.trianguloPantalla(gl);
+const casilla = document.getElementById('arreglo');
+
+function dibujar() {
+  const W = canvas.width, H = canvas.height, mitad = Math.floor(W / 2);
+  gl.useProgram(prog);
+  gl.bindVertexArray(vao);
+  for (const x0 of [0, mitad]) {                   // viewport izquierdo y derecho
+    gl.viewport(x0, 0, mitad, H);
+    GLKit.ponerUniform(gl, U.u_resolution, [mitad, H]);
+    GLKit.ponerUniform(gl, U.u_origen, casilla.checked ? [x0, 0] : [0, 0]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  console.log('u_origen del viewport derecho: ' + (casilla.checked ? '(' + mitad + ', 0)' : '(0, 0)') +
+              ' · su primera columna tiene gl_FragCoord.x = ' + (mitad + 0.5));
+}
+casilla.addEventListener('change', dibujar);
+dibujar();
+</script>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Dibujas con <code>gl.viewport(100, 50, 200, 200)</code>. ¿Qué <code>gl_FragCoord.xy</code> recibe el píxel de la esquina inferior izquierda de ese viewport?</p>
+  <ul>
+    <li>(0.5, 0.5)<div class="explicacion">Sería así si <code>gl_FragCoord</code> fuera relativo al viewport, pero se mide desde la esquina del framebuffer.</div></li>
+    <li data-correcta>(100.5, 50.5)<div class="explicacion">Correcto: coordenadas de ventana, en el centro del píxel. El viewport cambia qué parte de la ventana se usa, no desde dónde se cuenta.</div></li>
+    <li>(100, 50)<div class="explicacion">Casi: esa es la esquina del píxel, pero <code>gl_FragCoord</code> da su centro, medio píxel más allá en cada eje.</div></li>
+    <li>(0, 0)<div class="explicacion">Ningún fragmento tiene coordenadas enteras: siempre centros en .5. Y además, no se cuenta desde el viewport.</div></li>
+  </ul>
+</div>
+
+<h2>De píxeles a coordenadas útiles</h2>
+<p>Trabajar en píxeles tiene un problema: el mismo dibujo cambia de tamaño según el lienzo (y según la pantalla, por el <code>devicePixelRatio</code>). Casi siempre empezamos normalizando. Hay cuatro maneras habituales, y cada una tiene su uso:</p>
+<table>
+  <thead><tr><th>Fórmula</th><th>Rango (lienzo 800 × 400)</th><th>Aspecto</th><th>Uso</th></tr></thead>
+  <tbody>
+    <tr><td><code>uv = gl_FragCoord.xy / u_resolution</code></td><td>x: 0…1, y: 0…1</td><td><strong>deforma</strong>: cada eje se divide por su tamaño</td><td>Leer texturas a pantalla completa, degradados que deben llenar el lienzo.</td></tr>
+    <tr><td><code>p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y</code></td><td>x: −2…2, y: −1…1</td><td>correcto</td><td>La estándar para formas: centrada, y siempre −1…1 en vertical.</td></tr>
+    <tr><td><code>(2.0 * gl_FragCoord.xy - u_resolution) / min(u_resolution.x, u_resolution.y)</code></td><td>x: −2…2, y: −1…1 (el eje corto va siempre de −1 a 1)</td><td>correcto</td><td>Garantiza que el círculo de radio 1 cabe entero, sea el lienzo apaisado o vertical.</td></tr>
+    <tr><td><code>(2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.x</code></td><td>x: −1…1, y: −0.5…0.5</td><td>correcto</td><td>Cuando lo que importa es el ancho (un encabezado muy apaisado).</td></tr>
+  </tbody>
+</table>
+<p>El editor tiene las cuatro. Cada una dibuja la misma escena: una rejilla con líneas cada 0.25 unidades, los ejes y el círculo de radio 1. Cambia el modo y observa qué le pasa al círculo; después ensancha el editor a pantalla completa (⛶) y vuelve a mirar: con el modo 0, el círculo cambia de forma con el lienzo.</p>
+
+<div class="glsl-playground" data-titulo="Cuatro formas de normalizar" data-altura="260" data-apilado data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":3,"valor":0,"etiqueta":"modo"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform int u_modo;      // 0: uv · 1: /alto · 2: /min · 3: /ancho
+out vec4 fragColor;
+
+void main() {
+  vec2 f = gl_FragCoord.xy, r = u_resolution;
+  vec2 p;
+  if (u_modo == 0)      p = f / r * 2.0 - 1.0;   // uv llevado a -1..1: deforma
+  else if (u_modo == 1) p = (2.0 * f - r) / r.y;
+  else if (u_modo == 2) p = (2.0 * f - r) / min(r.x, r.y);
+  else                  p = (2.0 * f - r) / r.x;
+  vec2 g = abs(fract(p * 4.0 + 0.5) - 0.5);      // rejilla cada 0.25
+  vec3 color = vec3(0.09, 0.10, 0.13);
+  color += 0.10 * step(min(g.x, g.y), 0.02);
+  color += 0.25 * step(min(abs(p.x), abs(p.y)), 0.006);   // ejes
+  color = mix(color, vec3(1.0, 0.8, 0.3), step(abs(length(p) - 1.0), 0.01));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Con el modo 0 (las <code>uv</code> estiradas a −1…1), el «círculo» es una elipse que toca los cuatro bordes y las celdas de la rejilla son rectángulos. Con el 1, el círculo es redondo y toca arriba y abajo. El 2 y el 1 coinciden en un lienzo apaisado; en uno vertical (pon el navegador estrecho) el 2 sigue tocando los bordes laterales y el 1 se sale. Con el 3, el círculo es redondo pero se sale por arriba y por abajo.</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.2.1 — De dónde sale <code>(2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y</code></h3>
+<p>Es la línea que más veces escribirás en este módulo, así que vale la pena construirla en lugar de memorizarla. Queremos coordenadas con el origen en el centro del lienzo, la y de −1 abajo a 1 arriba, y la <strong>misma unidad en los dos ejes</strong>. Tomemos un lienzo de 800 × 400 y el píxel de la esquina superior derecha, con <code>gl_FragCoord.xy</code> = (799.5, 399.5).</p>
+<ol>
+  <li><strong>Centrar:</strong> restamos la mitad de la resolución, <code>gl_FragCoord.xy - 0.5 * u_resolution</code> = (399.5, 199.5). Ahora el origen está en el centro, y los valores van de −400 a 400 en x y de −200 a 200 en y (en píxeles).</li>
+  <li><strong>Escalar con un solo número:</strong> para que la y vaya de −1 a 1 dividimos <strong>los dos ejes</strong> por la mitad de la altura, 200: (1.9975, 0.9975). La x queda entre −2 y 2 porque el lienzo es el doble de ancho que de alto. Si dividiéramos cada eje por su mitad (x entre 400, y entre 200), los dos irían de −1 a 1… y el círculo sería una elipse: esa es exactamente la deformación de las <code>uv</code>.</li>
+  <li><strong>Simplificar:</strong> $\dfrac{f - r/2}{r_y/2} = \dfrac{2f - r}{r_y}$. Multiplicando arriba y abajo por 2 se llega a la forma compacta, que se ahorra una multiplicación.</li>
+</ol>
+<p>Y dos números que saldrán de aquí constantemente. Un píxel mide <code>2.0 / u_resolution.y</code> unidades de <code>p</code> (dividimos por la mitad de la altura: 1 píxel son $1/(r_y/2)$ unidades); en el lienzo de 400 píxeles de alto, 0.005. Y el borde derecho está en $x = r_x / r_y$, el aspecto: 2 en este lienzo. Por eso <code>p.x</code> «llega hasta el aspecto».</p>
+</section>
+
+<div class="callout bestiario" data-id="m6a-circulo-estirado" data-titulo="Un círculo dibujado en el shader sale ovalado (y se estira al redimensionar)">
+  <p><strong>Síntoma:</strong> un círculo dibujado en el shader sale como una elipse, más ancha que alta en un lienzo apaisado; los cuadrados salen rectangulares; y al cambiar el tamaño de la ventana la forma se estira con ella.</p>
+  <p><strong>Causa:</strong> las coordenadas se normalizaron dividiendo cada eje por su propio tamaño: <code>gl_FragCoord.xy / u_resolution</code> o <code>v_uv</code>. Una unidad en x mide entonces <code>u_resolution.x</code> píxeles y en y, <code>u_resolution.y</code>: la «distancia» <code>length(uv - 0.5)</code> no es una distancia en la pantalla.</p>
+  <p><strong>Solución:</strong> divide los dos ejes por el mismo número: <code>(2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y</code>, o, si partes de <code>uv</code>, corrige la x: <code>p.x *= u_resolution.x / u_resolution.y</code>. Si el shader está bien y el círculo sigue ovalado, el problema está fuera: el canvas se muestra con un tamaño CSS de otra proporción que su búfer (el bicho <a href="../01-web/01-html.html#m1-circulo-ovalado">«Dibujo un círculo y sale un óvalo borroso»</a> de 1.1). Y en 3D, con una matriz de proyección, el mismo síntoma tiene otra causa: el aspecto de la proyección (<a href="../03-matematicas/06-espacios-coordenadas.html#m3-aspecto">«Todo sale estirado (o se estira al redimensionar)»</a>, 3.6).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Con <code>p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y</code> en un lienzo de 1200 × 400 píxeles, ¿entre qué valores (aproximados) va <code>p.x</code>?</p>
+  <ul>
+    <li>Entre −1 y 1<div class="explicacion">Ese es el rango de <code>p.y</code>. La x se divide por la misma cantidad (la altura), así que llega más lejos en un lienzo apaisado.</div></li>
+    <li data-correcta>Entre −3 y 3<div class="explicacion">Correcto: el borde está en el aspecto, 1200 / 400 = 3. (Exactamente, el centro del último píxel está en 2.9975.)</div></li>
+    <li>Entre 0 y 3<div class="explicacion">La fórmula resta la resolución antes de dividir: el origen está en el centro, así que el rango es simétrico.</div></li>
+    <li>Entre −1200 y 1200<div class="explicacion">Eso serían píxeles sin normalizar (y centrados). La división por la altura cambia la unidad: un píxel mide 2/400 = 0.005.</div></li>
+  </ul>
+</div>
+
+<h3><code>v_uv</code> o <code>gl_FragCoord</code></h3>
+<p>Los editores del curso te dan también un varying, <code>v_uv</code>, que el vertex shader calcula en los vértices del triángulo que cubre el lienzo y el rasterizador interpola en cada píxel. Medimos la diferencia con <code>gl_FragCoord.xy / u_resolution</code> en un lienzo de 333 × 211: como mucho $1.2 \times 10^{-7}$, un error de redondeo. A pantalla completa son lo mismo. Pero no son lo mismo en general:</p>
+<ul>
+  <li><code>gl_FragCoord</code> depende de <strong>dónde está el píxel en la ventana</strong>. Es la elección natural para efectos de pantalla completa y para cualquier cosa medida en píxeles.</li>
+  <li><code>v_uv</code> depende de <strong>la geometría que se dibuja</strong>: en un quad pequeño en medio de la pantalla va de 0 a 1 dentro del quad, se mueve con él y gira con él. Es la elección natural para «el shader de un objeto» (una tarjeta, un botón, un sprite, <a href="../07-integracion/01-arquitectura.html">el módulo 7</a>) y es inmune al bicho del viewport.</li>
+</ul>
+
+<div class="callout senior" data-titulo="Píxeles físicos, CSS y la trampa de los tamaños fijos">
+  <p>Si escribes un tamaño en píxeles (un borde de 3 píxeles, un radio de 50), en una pantalla con <code>devicePixelRatio</code> 2 se verá a la mitad de su tamaño que en una normal, porque <code>gl_FragCoord</code> cuenta píxeles físicos. Hay dos salidas: trabajar en coordenadas normalizadas (el radio 0.5 de <code>p</code> es la cuarta parte de la altura en cualquier pantalla), o pasar el <code>devicePixelRatio</code> como uniform y multiplicar los tamaños en píxeles por él. La excepción son los detalles que <em>deben</em> medir un píxel físico: el ancho del antialiasing. Ese ancho se calcula siempre a partir del tamaño real de un píxel (<code>2.0 / u_resolution.y</code> en unidades de <code>p</code>) y lo afinarás en <a href="03-formas-sdf.html">6.3</a>.</p>
+</div>
+
+<h2>El ratón, en el mismo espacio</h2>
+<p>Los editores te dan <code>u_mouse</code> en <strong>el mismo espacio que <code>gl_FragCoord</code></strong>: píxeles físicos, origen abajo a la izquierda (el JavaScript del editor ya le ha dado la vuelta a la y y la ha multiplicado por el DPR, el trabajo que hiciste a mano en <a href="../01-web/04-js-dom-eventos.html">1.4</a>). Antes de que muevas el ratón vale el centro del lienzo. Si lo declaras <code>vec4</code>, <code>.z</code> vale 1 mientras mantienes pulsado el botón. La regla de oro es una sola: <strong>aplica al ratón exactamente la misma normalización que al píxel</strong>. Solo así puedes restarlos, medir distancias entre ellos o comparar posiciones.</p>
+
+<div class="glsl-playground" data-titulo="Una linterna que sigue al ratón" data-altura="260" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec4 u_mouse;            // xy: píxeles; z: 1 con el botón pulsado
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse.xy - u_resolution) / u_resolution.y;  // ¡la misma fórmula!
+  float d = length(p - m);                   // distancia en unidades de p
+  float radio = mix(0.5, 0.9, u_mouse.z);    // pulsado: más grande
+  float luz = 1.0 - smoothstep(0.0, radio, d);
+  vec2 g = abs(fract(p * 5.0) - 0.5);        // un suelo de baldosas
+  vec3 suelo = vec3(0.62, 0.56, 0.70) - 0.3 * step(0.46, max(g.x, g.y));
+  fragColor = vec4(suelo * (0.06 + 0.94 * luz), 1.0);
+}
+</script>
+</div>
+
+<div class="callout bestiario" data-id="m6a-espacios-mezclados" data-titulo="El efecto del ratón aparece desplazado, a otra escala o en todas partes">
+  <p><strong>Síntoma:</strong> la luz no está bajo el cursor, sino desplazada hacia un lado y más lejos cuanto más te alejas del centro; o un radio que debería ser pequeño cubre todo el lienzo; o nada reacciona.</p>
+  <p><strong>Causa:</strong> se han mezclado dos espacios: el píxel en coordenadas normalizadas y el ratón en píxeles (o normalizado con otra fórmula: uno con <code>uv</code> y otro con <code>/ u_resolution.y</code>), o un radio en píxeles comparado con una distancia normalizada. Restar dos puntos de sistemas distintos no significa nada (<a href="../03-matematicas/01-vectores.html">3.1</a>).</p>
+  <p><strong>Solución:</strong> decide un espacio de trabajo y lleva todo a él con la misma fórmula: el píxel, el ratón, los radios y los grosores. Si un valor viene en píxeles (un radio de 40), conviértelo: <code>40.0 * 2.0 / u_resolution.y</code> unidades de <code>p</code>. Si el ratón va al revés en vertical, es otro bicho: la y de CSS contra la de GL (<a href="../01-web/04-js-dom-eventos.html#m1-raton-invertido">1.4</a>). Y si en tu propia página el desfase crece hacia los bordes aunque el shader trate igual el píxel y el ratón, el error está antes, en JavaScript: la conversión de píxeles CSS a píxeles del búfer (<a href="../01-web/04-js-dom-eventos.html#m1-raton-desplazado">«El dibujo aparece desplazado del ratón, más cuanto más cerca del borde»</a>, 1.4); en los editores del curso, <code>u_mouse</code> ya llega convertido.</p>
+</div>
+
+<h2>Depurar con color</h2>
+<p>En un shader no hay <code>console.log</code>, ni puntos de ruptura, ni forma de inspeccionar una variable. Lo único que sale de la GPU es un color por píxel, así que <strong>depurar es pintar los valores</strong>. Parece pobre, pero tiene una ventaja enorme sobre un <code>printf</code>: ves el valor en <em>todos</em> los píxeles a la vez, y los patrones saltan a la vista. La dificultad es que un color solo muestra valores entre 0 y 1 (lo que se sale se recorta al escribirse), así que el arte está en llevar cada valor a ese rango. En <a href="../05-webgl/10-depuracion.html">5.10</a> viste el falso color, la caza de NaN y el «printf» de los shaders (dibujar en una textura de floats y leerla con <code>readPixels</code>) desde el lado de la aplicación; aquí nos centramos en el repertorio de vistas que se escriben dentro del shader. La caja de herramientas:</p>
+<table>
+  <thead><tr><th>Técnica</th><th>Código</th><th>Qué revela</th></tr></thead>
+  <tbody>
+    <tr><td>Gris tal cual</td><td><code>vec3(v)</code></td><td>Solo sirve si <code>v</code> ya está en 0…1. Por debajo, negro; por encima, blanco.</td></tr>
+    <tr><td>Remapear</td><td><code>vec3(v * 0.5 + 0.5)</code> para −1…1; <code>v / maximo</code></td><td>Todo el rango, si lo conoces. Es el caso de las normales y las direcciones (<a href="../03-matematicas/01-vectores.html">3.1</a>).</td></tr>
+    <tr><td>Signo</td><td>rojo si <code>v &lt; 0</code>, verde si <code>v &gt; 0</code>, intensidad <code>abs(v)</code></td><td>Dónde cambia de signo: el borde de una forma, el lado de una recta.</td></tr>
+    <tr><td>Falso color</td><td>una paleta de 0 a 1</td><td>Diferencias pequeñas que en gris no se distinguen.</td></tr>
+    <tr><td>Bandas</td><td><code>vec3(fract(v))</code></td><td>Valores grandes: cada banda es una unidad. Revela dónde crece y a qué ritmo.</td></tr>
+    <tr><td>Isolíneas</td><td>una línea donde <code>v</code> es entero (o múltiplo de algo)</td><td>Las curvas de nivel, como en un mapa topográfico.</td></tr>
+    <tr><td>Fuera de rango</td><td>gris dentro de 0…1, amarillo por encima, azul por debajo</td><td>Qué zonas se salen, sin perder la información de dentro.</td></tr>
+    <tr><td>NaN e infinitos</td><td><code>isnan(v)</code> → magenta, <code>isinf(v)</code> → blanco</td><td>El origen de las manchas negras (<a href="../03-matematicas/07-precision.html">3.7</a>). Ojo: en Chrome sobre Metal, añadir <code>isnan</code> desactiva el <em>fast math</em> de todo el shader (<a href="01-lenguaje.html#lo-que-hace-el-compilador-con-tu-codigo">6.1</a>) y puede cambiar el valor que intentas mirar. En los editores del curso eso pasa siempre; en tu propia página, solo la primera vez que Chrome compila ese texto exacto: después lo saca de su caché de programas y el efecto desaparece (medido; <a href="06-ruido.html#m6b-hash-fastmath">6.6</a>).</td></tr>
+  </tbody>
+</table>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.2.2 — Leer un campo con siete vistas</h3>
+<p>El valor que vamos a inspeccionar es la <em>distancia con signo</em> a un círculo que se mueve: negativa dentro, cero en el borde, positiva fuera (la protagonista de <a href="03-formas-sdf.html">6.3</a>). Va de −0.5 a entre 2 y 3 en los extremos (según lo ancho que sea el lienzo), un rango incómodo a propósito. El deslizador elige la vista.</p>
+
+<div class="glsl-playground" data-titulo="Siete maneras de mirar un número" data-altura="280" data-apilado data-uniforms='{"u_vista":{"tipo":"int","min":0,"max":6,"valor":0,"etiqueta":"vista"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_vista;
+out vec4 fragColor;
+
+// El valor que queremos ver: distancia con signo a un círculo
+float valor(vec2 p) {
+  vec2 c = vec2(0.6 * sin(u_time * 0.7), 0.0);
+  return length(p - c) - 0.5;
+}
+// Falso color "jet": azul (0) → cian → verde → amarillo → rojo (1)
+vec3 jet(float t) {
+  vec3 c = 1.5 - abs(4.0 * t - vec3(3.0, 2.0, 1.0));
+  return clamp(c, 0.0, 1.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float v = valor(p);
+  vec3 c;
+  if (u_vista == 0) c = vec3(v);                           // tal cual
+  else if (u_vista == 1) c = vec3(v * 0.4 + 0.2);          // remapear -0.5..2
+  else if (u_vista == 2)                                   // signo
+    c = v < 0.0 ? vec3(-v * 2.0, 0.0, 0.0) : vec3(0.0, v * 0.5, 0.0);
+  else if (u_vista == 3) c = jet(clamp(v * 0.4 + 0.2, 0.0, 1.0));
+  else if (u_vista == 4) c = vec3(fract(v * 5.0));         // bandas de 0.2
+  else if (u_vista == 5) {                                 // isolíneas cada 0.1
+    float d = abs(fract(v * 10.0 + 0.5) - 0.5) / fwidth(v * 10.0);
+    c = vec3(0.15) + 0.6 * (1.0 - smoothstep(0.5, 1.5, d));
+    c = mix(c, vec3(1.0, 0.8, 0.3), 1.0 - smoothstep(0.0, 0.01, abs(v)));
+  } else {                                                  // fuera de rango
+    c = vec3(clamp(v, 0.0, 1.0));
+    if (v > 1.0) c = vec3(1.0, 0.85, 0.2);
+    if (v < 0.0) c = vec3(0.2, 0.4, 1.0);
+  }
+  fragColor = vec4(c, 1.0);
+}
+</script>
+</div>
+
+<p>Recorre las vistas y observa qué te dice cada una:</p>
+<ol start="0">
+  <li><strong>Tal cual:</strong> un disco negro con un halo gris que se vuelve blanco enseguida. Parece que dentro no pasa nada, pero es que todos los negativos se recortan a 0; y a partir de distancia 1, todo es blanco. Casi toda la información se ha perdido.</li>
+  <li><strong>Remapeada</strong> con <code>v * 0.4 + 0.2</code>, que lleva −0.5 a 0 y 2 a 1 (lo que pase de 2 se satura): ahora se ve un degradado continuo. El borde del círculo (v = 0) es el gris 0.2.</li>
+  <li><strong>Signo:</strong> rojo dentro, verde fuera, y negro exactamente en el borde. La forma aparece nítida sin haber «dibujado» nada.</li>
+  <li><strong>Falso color:</strong> el mismo remapeo con la paleta <em>jet</em>. Pequeñas diferencias que en gris pasan desapercibidas se ven como cambios de tono.</li>
+  <li><strong>Bandas:</strong> <code>fract(v * 5.0)</code> dibuja un diente de sierra cada 0.2 unidades. Los anillos concéntricos equidistantes te confirman que el valor crece igual en todas direcciones: es una distancia de verdad.</li>
+  <li><strong>Isolíneas</strong> cada 0.1, y la línea del cero en amarillo. La línea mide lo mismo en píxeles en todas partes gracias a <code>fwidth</code>, que convierte una diferencia de valor en píxeles (lo verás a fondo en <a href="03-formas-sdf.html">6.3</a>).</li>
+  <li><strong>Fuera de rango:</strong> azul lo negativo, amarillo lo que pasa de 1, gris lo demás. Ideal para comprobar que un valor que debería estar en 0…1 lo está.</li>
+</ol>
+<p>Y la herramienta que complementa a todas: la barra del editor lee el color exacto del píxel bajo el ratón. Solo tiene 8 bits por canal (verás múltiplos de 1/255: 0.502, 0.506…), así que para leer un valor con precisión, píntalo remapeado a un rango pequeño o usa el truco de 6.1: dibujar en una textura de floats y leerla con <code>readPixels</code>.</p>
+</section>
+
+<div class="callout bestiario" data-id="m6a-depurar-saturado" data-titulo="El valor que intento depurar sale todo blanco (o todo negro)">
+  <p><strong>Síntoma:</strong> pintas una variable para ver qué vale y la pantalla sale entera blanca, entera negra, o blanca con una mancha negra sin detalle.</p>
+  <p><strong>Causa:</strong> el valor está fuera de 0…1, y al escribirse en el framebuffer se recorta: todo lo que pasa de 1 es blanco y todo lo negativo es negro. Pasa con distancias en píxeles (valen cientos), ángulos (−π…π), coordenadas sin normalizar o productos punto (−1…1).</p>
+  <p><strong>Solución:</strong> averigua el orden de magnitud y remapea (<code>v / 800.0</code>, <code>v * 0.5 + 0.5</code>), usa bandas (<code>fract(v)</code>) si el rango es desconocido, o la vista «fuera de rango» para ver qué zonas se salen. Y antes de concluir «es un NaN», comprueba si es un negativo: los dos salen negros, pero tienen causas muy distintas (ejercicio 3.7.4).</p>
+</div>
+
+<h2>Pensar en máscaras</h2>
+<p>Si un píxel no puede «dibujar un círculo», ¿cómo se construye una imagen con muchos elementos? Con <strong>máscaras</strong>: para cada elemento, cada píxel calcula un número entre 0 y 1 que dice cuánto lo cubre (1 dentro, 0 fuera, valores intermedios en el borde suave). Después, las máscaras se combinan con aritmética y se usan para mezclar colores. Ya conoces el álgebra de <a href="../03-matematicas/04-funciones-forma.html">3.4</a>:</p>
+<table>
+  <thead><tr><th>Operación</th><th>Código</th><th>Significado</th></tr></thead>
+  <tbody>
+    <tr><td>Intersección</td><td><code>a * b</code> o <code>min(a, b)</code></td><td>dentro de A <strong>y</strong> de B</td></tr>
+    <tr><td>Unión</td><td><code>max(a, b)</code></td><td>dentro de A <strong>o</strong> de B</td></tr>
+    <tr><td>Complemento</td><td><code>1.0 - a</code></td><td>fuera de A</td></tr>
+    <tr><td>Diferencia</td><td><code>a * (1.0 - b)</code></td><td>dentro de A pero no de B</td></tr>
+    <tr><td>Pintar una capa</td><td><code>color = mix(color, tinta, a)</code></td><td>donde vale 1, la tinta; donde vale 0, lo que había</td></tr>
+  </tbody>
+</table>
+<p>La composición funciona como el algoritmo del pintor: se empieza por el fondo y cada <code>mix</code> pinta una capa encima de las anteriores. Esta puesta de sol tiene cuatro máscaras y tres operaciones distintas; lee los comentarios y cambia el orden de las capas para ver qué pasa.</p>
+
+<div class="glsl-playground" data-titulo="Una puesta de sol hecha de máscaras" data-altura="280" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;                        // un píxel en unidades de p
+
+  // Máscaras: números de 0 a 1 por píxel
+  float sol = 1.0 - smoothstep(0.45 - px, 0.45, length(p - vec2(0.0, 0.1)));
+  float cortes = p.y > 0.1 ? 1.0 : step(0.35, fract(p.y * 9.0));   // franjas
+  float mar = 1.0 - smoothstep(-0.2, -0.2 + px, p.y);      // por debajo del horizonte
+  float ola = step(0.6, fract(p.y * 30.0 + u_time * 0.8 + sin(p.x * 3.0)));
+  float reflejo = (1.0 - smoothstep(0.1, 0.35, abs(p.x))) * ola;
+
+  // Composición: capa a capa, del fondo hacia delante
+  vec3 color = mix(vec3(0.98, 0.50, 0.30), vec3(0.18, 0.08, 0.30), uv.y);  // cielo
+  color = mix(color, vec3(1.0, 0.85, 0.35), sol * cortes);  // sol ∩ franjas
+  color = mix(color, vec3(0.10, 0.08, 0.22), mar);           // el mar tapa lo de abajo
+  color = mix(color, vec3(1.0, 0.6, 0.4), mar * reflejo);    // reflejo, solo en el mar
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Tres cosas que conviene ver en este código. <strong>Cada máscara se calcula en todos los píxeles</strong>, esté o no el elemento cerca: el sol se evalúa también en las esquinas del cielo, donde vale 0. <strong>El orden de los <code>mix</code> es el orden de las capas</strong>: si pintas el mar antes que el sol, la parte del sol que está bajo el horizonte se vería encima del mar. Y <strong>las máscaras se combinan antes de pintar</strong>: <code>sol * cortes</code> es una intersección (el sol, pero solo donde no hay un corte) y <code>mar * reflejo</code> limita el reflejo al mar, sin necesidad de ningún <code>if</code>.</p>
+
+<div class="callout senior" data-titulo="Por qué un shader con mil formas es lento">
+  <p>La rasterización (<a href="../04-gpu/02-pipeline-grafico.html">4.2</a>) es eficiente porque cada triángulo solo toca los píxeles que cubre. Con máscaras en un fragment shader a pantalla completa, cada píxel evalúa <strong>todas</strong> las formas: cien círculos son cien distancias por píxel, en un millón de píxeles. Si una escena tiene muchos elementos, las soluciones son dibujar cada elemento con su propio quad pequeño (y su propio fragment shader, que solo se ejecuta dentro del quad), repetir el espacio para evaluar solo la forma más cercana (<a href="05-patrones.html">6.5</a>), o descartar con una comprobación barata antes de la parte cara, sabiendo que un <code>if</code> en el que los píxeles vecinos no coinciden hace que el grupo pague las dos ramas (<a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>).</p>
+</div>
+
+<h2>El primer círculo, paso a paso</h2>
+<p>Juntemos todo. Vamos a construir un círculo como lo haría un fragment shader, en seis pasos; el deslizador elige hasta dónde llega el código. Es el patrón que repetirás con cualquier forma durante el resto del módulo.</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.2.3 — Del número al círculo</h3>
+<div class="glsl-playground" data-titulo="Un círculo en seis pasos" data-altura="260" data-apilado data-uniforms='{"u_paso":{"tipo":"int","min":1,"max":6,"valor":1,"etiqueta":"paso"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_time;
+uniform int u_paso;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 m = (2.0 * u_mouse - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;              // un píxel, en unidades de p
+  vec2 centro = u_paso >= 6 ? m : vec2(0.0);
+  float radio = u_paso >= 5 ? 0.5 + 0.1 * sin(u_time * 3.0) : 0.5;
+  float d = length(p - centro);                 // 1) distancia al centro
+  float dentro = step(d, radio);                // 2) dentro (1) o fuera (0)
+  float suave = 1.0 - smoothstep(radio - px, radio, d);   // 3) borde de 1 px
+  vec3 fondo = vec3(0.09, 0.10, 0.13), tinta = vec3(0.55, 0.48, 1.0);
+  vec3 c;
+  if (u_paso == 1)      c = vec3(d);
+  else if (u_paso == 2) c = vec3(dentro);
+  else if (u_paso == 3) c = vec3(suave);
+  else                  c = mix(fondo, tinta, suave);        // 4) color
+  fragColor = vec4(c, 1.0);
+}
+</script>
+</div>
+<ol>
+  <li><strong>La distancia.</strong> Cada píxel calcula lo lejos que está del centro: <code>length(p - centro)</code>. En gris, un degradado radial: negro en el centro, blanco a distancia 1 (y recortado después). Todavía no hay círculo, hay un campo de números.</li>
+  <li><strong>Dentro o fuera.</strong> <code>step(d, radio)</code> vale 1 si <code>radio &gt;= d</code>. Ya hay círculo, pero acércate al borde: dientes de sierra. Cada píxel está entero dentro o entero fuera, aunque la circunferencia pase por su mitad. Es el <em>aliasing</em>.</li>
+  <li><strong>Un borde de un píxel.</strong> <code>1.0 - smoothstep(radio - px, radio, d)</code> hace la transición a lo largo de un píxel exacto: los píxeles del borde reciben un gris proporcional a lo cerca que están. El ojo lo interpreta como un borde liso. Fíjate en el orden de los bordes (creciente) y en el <code>1.0 -</code> para invertir: nada de <code>smoothstep</code> con los bordes al revés, que es indefinido (<a href="../03-matematicas/04-funciones-forma.html#m3-smoothstep-invertido">3.4</a>).</li>
+  <li><strong>Color.</strong> La máscara se usa en un <code>mix</code> entre fondo y tinta.</li>
+  <li><strong>Animación.</strong> El radio depende de <code>u_time</code>. El círculo «late» sin que nadie lo redibuje: cada frame, cada píxel vuelve a hacerse la misma pregunta con otro radio.</li>
+  <li><strong>Interacción.</strong> El centro es el ratón, normalizado con la misma fórmula que el píxel. Mueve el ratón sobre el lienzo.</li>
+</ol>
+</section>
+
+<h2>Transformar el espacio, no la forma</h2>
+<p>Ahora el truco que usarás en cada lección de aquí en adelante. Si tienes una forma dibujada en el origen (una función que recibe un punto y devuelve una máscara), ¿cómo la mueves a otro sitio? No puedes mover el dibujo: no existe. Lo que puedes cambiar es <strong>la pregunta</strong>. Si cada píxel, en lugar de preguntar por su posición <code>p</code>, pregunta por <code>p - c</code>, entonces el píxel que está en <code>c</code> recibe la respuesta que antes recibía el origen: la forma aparece centrada en <code>c</code>.</p>
+<p>Lo viste con matrices en <a href="../03-matematicas/05-matrices.html">3.5</a> (el bicho <a href="../03-matematicas/05-matrices.html#m3-rotacion-inversa-shader">«En el shader todo se mueve al revés»</a>): <strong>transformar las coordenadas equivale a aplicar a la forma la transformación inversa</strong>. Para mover la forma a la derecha, restas; para girarla un ángulo θ, giras las coordenadas −θ; para hacerla el doble de grande, divides las coordenadas por 2. Y con varias transformaciones, las inversas van en <strong>orden inverso</strong>: si la forma se escala, después se gira y después se traslada ($M = T\,R\,S$), la pregunta se construye deshaciendo primero la traslación, después el giro y por último la escala:</p>
+$$q = S^{-1} R^{-1} T^{-1}\,p \quad\Longleftrightarrow\quad q = \frac{R(-\theta)\,(p - c)}{s}$$
+
+<div class="glsl-playground" data-titulo="Colocar una F: el espacio al revés" data-altura="300" data-apilado data-uniforms='{"u_pos":{"tipo":"vec2","min":[-1.2,-0.8],"max":[1.2,0.8],"valor":[0.3,-0.3],"etiqueta":"posición"},"u_angulo":{"tipo":"float","min":-3.1416,"max":3.1416,"valor":0.5,"etiqueta":"ángulo"},"u_escala":{"tipo":"float","min":0.3,"max":2.0,"valor":1.0,"etiqueta":"escala"},"u_ordenMal":{"tipo":"bool","valor":false,"etiqueta":"orden cambiado"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_pos;
+uniform float u_angulo, u_escala;
+uniform bool u_ordenMal;
+out vec4 fragColor;
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+// Una caja con borde suave: centro c, semitamaño h, px = un píxel
+float caja(vec2 q, vec2 c, vec2 h, float px) {
+  vec2 d = abs(q - c) - h;
+  return 1.0 - smoothstep(0.0, px, max(d.x, d.y));
+}
+// La F en su espacio LOCAL: su esquina inferior izquierda es el origen
+float letraF(vec2 q, float px) {
+  float m = caja(q, vec2(0.06, 0.40), vec2(0.06, 0.40), px);    // palo
+  m = max(m, caja(q, vec2(0.25, 0.74), vec2(0.25, 0.06), px));  // brazo alto
+  m = max(m, caja(q, vec2(0.20, 0.42), vec2(0.18, 0.06), px));  // brazo medio
+  return m;
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 q;
+  if (!u_ordenMal) {
+    q = p - u_pos;              // 1) deshacer la traslación
+    q = rot(-u_angulo) * q;     // 2) deshacer el giro (alrededor de u_pos)
+    q = q / u_escala;           // 3) deshacer la escala
+  } else {
+    q = rot(-u_angulo) * p;     // giro alrededor del ORIGEN de la escena...
+    q = (q - u_pos) / u_escala; // ...y después la traslación
+  }
+  float f = letraF(q, px / u_escala);          // un píxel mide px/escala en q
+  vec3 color = vec3(0.09, 0.10, 0.13);
+  color += 0.25 * step(min(abs(p.x), abs(p.y)), px * 0.6);       // ejes
+  color = mix(color, vec3(1.0, 0.75, 0.3), f);
+  color = mix(color, vec3(1.0, 0.3, 0.4), step(length(p - u_pos), 0.025));
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Mueve los controles. El punto rosa es <code>u_pos</code>, donde cae la esquina de la F, y la F gira alrededor de ese punto porque es el origen de su espacio local: al restar <code>u_pos</code> primero, la rotación se aplica alrededor de él. Activa «orden cambiado» y vuelve a mover el ángulo: ahora la F <strong>orbita</strong> alrededor del centro de la escena, porque el giro se aplica antes de deshacer la traslación, es decir, alrededor del origen de la escena.</p>
+<p>Y fíjate en la última pieza: <code>px / u_escala</code>. Al dividir las coordenadas por la escala, un píxel de la pantalla mide menos unidades en el espacio de la F (con escala 2, medio <code>px</code>). Si no corrigieras el ancho del borde suave, la F grande tendría un borde borroso de dos píxeles y la pequeña, un borde dentado. Es la primera aparición de una regla que en <a href="03-formas-sdf.html">6.3</a> será crucial: <strong>escalar el espacio escala las distancias</strong>.</p>
+
+<div class="callout nota" id="m6a-orden-espacio">
+  <p><strong>Si la forma orbita en lugar de girar sobre sí misma</strong> (describe un círculo alrededor del centro del lienzo al animar el ángulo, y al cambiar la posición se mueve en una dirección que depende del ángulo), es el comportamiento raro <a href="../03-matematicas/05-matrices.html#m3-orden-transformaciones">«El objeto orbita alrededor del origen en lugar de girar sobre sí mismo»</a> de 3.5, visto desde las coordenadas: girar <code>p</code> antes de restarle la posición equivale a aplicar a la forma <code>R · T</code> en lugar de <code>T · R</code>. En un shader la receta se escribe al revés que con matrices, porque deshaces las transformaciones: primero la traslación (<code>p - pos</code>), después el giro (<code>rot(-a) * q</code>), después la escala (<code>q / s</code>). Para girar alrededor de otro punto (un pivote), traslada al pivote, gira y vuelve: <code>rot(-a) * (p - pivote) + pivote</code>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tienes una función <code>forma(q)</code> que dibuja algo centrado en el origen. Quieres que aparezca con el <strong>triple</strong> de tamaño. ¿Qué le pasas?</p>
+  <ul>
+    <li><code>forma(p * 3.0)</code><div class="explicacion">Al revés: con <code>p * 3.0</code>, el píxel que está a distancia 0.1 pregunta por el punto 0.3, así que todo lo de la forma aparece tres veces más cerca del origen: la forma se hace tres veces más pequeña.</div></li>
+    <li data-correcta><code>forma(p / 3.0)</code><div class="explicacion">Correcto. El píxel a distancia 0.3 pregunta por el punto 0.1: lo que en la forma estaba a 0.1 aparece a 0.3. Transformar el espacio aplica la inversa a la forma. (Y si la forma tiene un borde suave, su ancho en <code>q</code> debe ser <code>px / 3.0</code>.)</div></li>
+    <li><code>forma(p) * 3.0</code><div class="explicacion">Eso multiplica el resultado, no la geometría: una máscara multiplicada por 3 vale 3 dentro (y se recorta a 1 al pintar). El tamaño no cambia.</div></li>
+  </ul>
+</div>
+
+<h2>Adelanto: repetir el espacio</h2>
+<p>Si transformar las coordenadas mueve la forma, ¿qué pasa con una transformación que lleve <em>muchos</em> puntos de la pantalla al mismo punto del espacio local? Que la forma aparece muchas veces. La más útil es <code>fract</code>: <code>fract(p * N) - 0.5</code> convierte cada celda de una rejilla en una copia del intervalo −0.5…0.5, así que una sola llamada a la función de un círculo dibuja una rejilla entera de círculos (con <code>N</code> celdas por cada unidad de <code>p</code>, y <code>p.y</code> mide 2 de alto: son <code>2N</code> filas), al mismo coste que uno. Y <code>floor(p * N)</code> te da el número de celda para que cada copia sea distinta. Lo aprendiste en <a href="../03-matematicas/04-funciones-forma.html">3.4</a>; en <a href="05-patrones.html">6.5</a> lo llevaremos mucho más lejos.</p>
+
+<div class="glsl-playground" data-titulo="Un círculo, muchas copias" data-altura="230" data-apilado data-uniforms='{"u_n":{"tipo":"float","min":1,"max":12,"valor":4,"etiqueta":"celdas por unidad"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_n;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 celda = floor(p * u_n);          // qué celda
+  vec2 q = fract(p * u_n) - 0.5;        // dónde, dentro de la celda: -0.5..0.5
+  float px = 2.0 / u_resolution.y * u_n;   // un píxel, medido en celdas
+  float disco = 1.0 - smoothstep(0.35 - px, 0.35, length(q));
+  vec3 tono = 0.5 + 0.5 * cos(celda.x * 0.9 + celda.y * 1.7 + vec3(0.0, 2.0, 4.0));
+  fragColor = vec4(mix(vec3(0.09, 0.10, 0.13), tono, disco), 1.0);
+}
+</script>
+</div>
+
+<p>Fíjate en <code>px</code>: al multiplicar las coordenadas por <code>u_n</code>, un píxel ocupa <code>u_n</code> veces más en el espacio de la celda. Es la regla de la escala otra vez.</p>
+
+<h2>La única ventana a los vecinos</h2>
+<p>Al principio dijimos que un píxel no ve a sus vecinos. Hay una excepción, y la necesitarás en la próxima lección. La GPU no ejecuta los fragmentos de uno en uno, sino en bloques de 2 × 2 píxeles llamados <em>quads</em> (<a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>), y dentro de un quad puede restar el valor de una variable en un píxel del valor en el de al lado. Eso son las funciones <code>dFdx(v)</code> y <code>dFdy(v)</code>: cuánto cambia <code>v</code> de un píxel al siguiente, en horizontal y en vertical. Es la misma maquinaria que usa la GPU para elegir el nivel de mipmap de una textura (<a href="../05-webgl/05-texturas.html">5.5</a>).</p>
+<p>Lo medimos en Chrome: <code>dFdx(gl_FragCoord.x)</code> vale exactamente 1 (de una columna a la siguiente, la x aumenta un píxel) y <code>dFdy(gl_FragCoord.y)</code> también, tanto en un framebuffer propio como en el canvas (ANGLE compensa la inversión de la y de Metal). Y un detalle que revela el quad: <code>dFdx(x * x)</code>, con <code>x = gl_FragCoord.x</code>, dio 2 en las columnas 0 y 1, y 6 en las columnas 2 y 3. La derivada es <strong>la misma para las dos columnas de cada pareja</strong>: la GPU calcula una resta por pareja de píxeles ($1.5^2 - 0.5^2 = 2$, $3.5^2 - 2.5^2 = 6$) y la comparte. Es una aproximación, gruesa pero gratis, y es exactamente lo que hace falta para medir cuántas unidades ocupa un píxel. En <a href="03-formas-sdf.html">6.3</a> la convertiremos en antialiasing automático con <code>fwidth</code>, y verás cuándo deja de ser fiable.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.2.1 — Un marco y una cruz de un píxel</h3>
+  <p>Usando solo <code>gl_FragCoord</code> y <code>u_resolution</code> (nada de <code>uv</code>), pinta de blanco un marco de exactamente <strong>un píxel físico</strong> en el borde del lienzo, y de rojo una cruz de un píxel que pase por el centro. Si el ancho (o el alto) es par, hay dos columnas (o filas) centrales: usa la de la izquierda (o la de abajo). Comprueba con el ratón que las líneas miden un píxel, y amplía a pantalla completa para ver que siguen en su sitio con otro tamaño.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.2.1" data-altura="220" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 f = gl_FragCoord.xy;       // centros: 0.5, 1.5, ...
+  vec2 r = u_resolution;
+  vec3 color = vec3(0.09, 0.10, 0.13);
+  bool marco = false;             // TODO: primera y última fila y columna
+  bool cruz = false;              // TODO: la columna y la fila centrales
+  if (marco) color = vec3(1.0);
+  if (cruz) color = vec3(1.0, 0.35, 0.4);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 f = gl_FragCoord.xy;       // centros: 0.5, 1.5, ...
+  vec2 r = u_resolution;
+  vec3 color = vec3(0.09, 0.10, 0.13);
+  // primera columna: centro 0.5 (< 1); última: centro r.x - 0.5 (> r.x - 1)
+  bool marco = f.x < 1.0 || f.y < 1.0 || f.x > r.x - 1.0 || f.y > r.y - 1.0;
+  // centro del píxel central (el de la izquierda/abajo si el tamaño es par)
+  vec2 c = floor(r * 0.5 - 0.5) + 0.5;
+  bool cruz = f.x == c.x || f.y == c.y;   // comparación exacta: valores .5
+  if (marco) color = vec3(1.0);
+  if (cruz) color = vec3(1.0, 0.35, 0.4);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La primera columna tiene su centro en 0.5 y la última en <code>r.x - 0.5</code>. ¿Qué comparación con 1.0 (o con <code>r.x - 1.0</code>) selecciona exactamente esa columna?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con un ancho par (por ejemplo, 8), las columnas centrales son la 3 y la 4, con centros 3.5 y 4.5, y el centro del lienzo está en 4.0, justo entre las dos. ¿Qué fórmula da 3.5 con un ancho de 8, y 4.5 con un ancho de 9?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El marco: <code>f.x &lt; 1.0</code> es cierto solo para la primera columna (centro 0.5; la siguiente tiene 1.5), y <code>f.x &gt; r.x - 1.0</code> solo para la última (centro <code>r.x - 0.5</code>). Igual en vertical. Como el origen está abajo, <code>f.y &lt; 1.0</code> es la fila inferior.</p>
+    <p>La cruz es donde está la trampa. La tentación es <code>abs(f.x - r.x * 0.5) &lt; 0.5</code>. Con un ancho impar funciona (hay un centro exacto), pero con un ancho par <strong>ningún</strong> píxel lo cumple: las dos columnas centrales están exactamente a 0.5 del centro del lienzo, y la comparación es estricta. Con <code>&lt;=</code> saldrían las dos: una línea de dos píxeles. No existe una línea de un píxel centrada en un lienzo de ancho par; hay que elegir. <code>floor(r * 0.5 - 0.5) + 0.5</code> da el centro de la columna elegida: con 8, <code>floor(3.5) + 0.5</code> = 3.5 (la de la izquierda); con 9, <code>floor(4.0) + 0.5</code> = 4.5 (la central).</p>
+    <p>Y la comparación con <code>==</code> es legítima: tanto <code>f.x</code> como <code>c.x</code> son un entero más 0.5, valores exactos en float32 (hasta varios millones), así que no hay redondeo que la estropee. Es de los pocos sitios donde <code>==</code> con floats es la herramienta correcta.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.2.2 — El disco que lo llena todo</h3>
+  <p>Este shader debería dibujar un disco centrado cuyo radio, en <strong>píxeles físicos</strong>, controla el deslizador (con un borde suave de un píxel). En lugar de eso, todo el lienzo sale violeta. Antes de arreglarlo, <strong>depura</strong>: pinta <code>d</code> y después <code>u_radio</code> con alguna de las técnicas de la lección y explica qué ves. Después arréglalo de forma que el radio se mida de verdad en píxeles.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.2.2" data-altura="220" data-apilado data-uniforms='{"u_radio":{"tipo":"float","min":20,"max":150,"valor":80,"etiqueta":"radio (px)"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_radio;          // en píxeles físicos
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float d = length(p);                            // distancia al centro
+  float disco = 1.0 - smoothstep(u_radio - 1.0, u_radio, d);
+  vec3 color = mix(vec3(0.09, 0.10, 0.13), vec3(0.55, 0.48, 1.0), disco);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_radio;          // en píxeles físicos
+out vec4 fragColor;
+
+void main() {
+  // Todo en píxeles: la distancia del centro de este píxel al centro del lienzo
+  float d = length(gl_FragCoord.xy - 0.5 * u_resolution);
+  float disco = 1.0 - smoothstep(u_radio - 1.0, u_radio, d);   // borde: 1 píxel
+  vec3 color = mix(vec3(0.09, 0.10, 0.13), vec3(0.55, 0.48, 1.0), disco);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Prueba <code>fragColor = vec4(vec3(d), 1.0);</code> y luego con <code>vec3(fract(d))</code>. ¿Cuánto vale <code>d</code> en la esquina? ¿Y <code>u_radio</code>?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Uno de los dos está en unidades de <code>p</code> (el alto del lienzo mide 2) y el otro en píxeles. Elige un espacio y lleva a él a los dos.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Depurando, <code>vec3(d)</code> muestra un degradado que se vuelve blanco a distancia 1 (medio alto del lienzo), y <code>fract(d)</code> unos pocos anillos: <code>d</code> vale como mucho unas 3 o 4 unidades en las esquinas (depende de lo ancho que sea el lienzo). <code>u_radio</code>, en cambio, vale 80: pintado tal cual, blanco puro. Comparar un número como 3 con 80 da «dentro» en todas partes: <code>smoothstep(79.0, 80.0, d)</code> es 0 para cualquier <code>d &lt; 79</code>, y el disco vale 1 en todo el lienzo. Es el bicho de los espacios mezclados.</p>
+    <p>La solución más directa es trabajar en píxeles, porque el radio viene en píxeles: <code>gl_FragCoord.xy - 0.5 * u_resolution</code> es el vector del centro del lienzo al centro de este píxel, en píxeles, y su longitud se compara directamente con <code>u_radio</code>. El borde suave de un píxel es entonces <code>smoothstep(u_radio - 1.0, u_radio, d)</code>. La alternativa, igual de válida, es convertir el radio al espacio de <code>p</code>: <code>u_radio * 2.0 / u_resolution.y</code>, con un borde de <code>2.0 / u_resolution.y</code>.</p>
+    <p>Un matiz de la lección: al pedir el radio «en píxeles físicos», el disco se verá a la mitad de tamaño (en centímetros de pantalla) en un monitor con DPR 2. Si quisieras el radio en píxeles CSS, multiplicarías <code>u_radio</code> por el <code>devicePixelRatio</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.2.3 — La F que gira sobre su esquina</h3>
+  <p>La F de la lección está definida en su espacio local, con su esquina inferior izquierda en el origen. Colócala con esa esquina en (0.3, −0.5), <strong>girando sobre esa esquina</strong> en sentido antihorario a 1 radián por segundo y con una escala que late entre 0.8 y 1.2 (<code>1.0 + 0.2 * sin(u_time * 2.0)</code>). El borde debe seguir midiendo un píxel con cualquier escala.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.2.3" data-altura="260" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+float caja(vec2 q, vec2 c, vec2 h, float px) {
+  vec2 d = abs(q - c) - h;
+  return 1.0 - smoothstep(0.0, px, max(d.x, d.y));
+}
+float letraF(vec2 q, float px) {
+  float m = caja(q, vec2(0.06, 0.40), vec2(0.06, 0.40), px);
+  m = max(m, caja(q, vec2(0.25, 0.74), vec2(0.25, 0.06), px));
+  m = max(m, caja(q, vec2(0.20, 0.42), vec2(0.18, 0.06), px));
+  return m;
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 q = p;                        // TODO: del espacio de la escena al de la F
+  float f = letraF(q, px);           // TODO: ¿cuánto mide un píxel en q?
+  vec3 color = mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.75, 0.3), f);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+float caja(vec2 q, vec2 c, vec2 h, float px) {
+  vec2 d = abs(q - c) - h;
+  return 1.0 - smoothstep(0.0, px, max(d.x, d.y));
+}
+float letraF(vec2 q, float px) {
+  float m = caja(q, vec2(0.06, 0.40), vec2(0.06, 0.40), px);
+  m = max(m, caja(q, vec2(0.25, 0.74), vec2(0.25, 0.06), px));
+  m = max(m, caja(q, vec2(0.20, 0.42), vec2(0.18, 0.06), px));
+  return m;
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float angulo = u_time;                        // 1 rad/s, antihorario
+  float escala = 1.0 + 0.2 * sin(u_time * 2.0);
+  // La forma: escalar, girar y trasladar. La pregunta: al revés.
+  vec2 q = rot(-angulo) * (p - vec2(0.3, -0.5)) / escala;
+  float f = letraF(q, px / escala);             // un píxel mide px/escala en q
+  vec3 color = mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.75, 0.3), f);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La F ya tiene su esquina en su origen local. Si trasladas primero (restas la posición), el giro se hará alrededor de esa esquina.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Girar la forma +θ es girar las coordenadas −θ: <code>rot(-angulo)</code>. Y escalar la forma por <code>s</code> es dividir las coordenadas por <code>s</code>, lo que también divide el tamaño de un píxel.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La F en la escena es $M = T(0.3, -0.5)\,R(t)\,S(s)$: primero se escala (desde su esquina, que es su origen), después se gira alrededor de la esquina y por último se traslada. Cada píxel tiene que hacer el camino contrario, deshaciendo en orden inverso: restar la traslación, girar $-t$ y dividir por $s$. Escrito en una línea, <code>rot(-angulo) * (p - pos) / escala</code>; el giro y la escala conmutan (una escala uniforme no cambia los ángulos), así que da igual dividir antes o después de girar, pero la traslación tiene que ir la primera.</p>
+    <p>El ancho del borde: <code>letraF</code> recibe <code>px</code> en unidades de su espacio. Como <code>q</code> es <code>p</code> dividido por la escala, un píxel mide <code>px / escala</code> en <code>q</code>. Sin esa corrección, cuando la F crece (escala 1.2) el borde ocuparía 1.2 píxeles y cuando encoge, 0.8: en una F que late se nota como un borde que se emborrona y se endurece a cada latido.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.2.4 — Un reloj</h3>
+  <p>Programa un reloj analógico: una esfera (una circunferencia de radio 0.9), doce marcas, y las agujas de horas, minutos y segundos (esta, roja) girando en sentido horario a su ritmo real. La hora de partida la da el deslizador (en horas, de 0 a 12), y a partir de ahí avanza con <code>u_time</code>. Cada aguja es la misma función, <code>aguja</code>, dibujada en su propio espacio girado; las marcas, también (pista: gira <code>p</code> hasta la marca más cercana). Sin comportamientos indefinidos en el centro.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.2.4" data-altura="300" data-apilado data-uniforms='{"u_hora":{"tipo":"float","min":0,"max":12,"valor":10.15,"etiqueta":"hora inicial"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_hora;           // hora de partida (0..12)
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+// Una aguja en su espacio local: sale del origen hacia arriba (+y)
+float aguja(vec2 q, float largo, float grosor, float px) {
+  vec2 d = abs(q - vec2(0.0, largo * 0.5)) - vec2(grosor, largo * 0.5);
+  return 1.0 - smoothstep(0.0, px, max(d.x, d.y));
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float segundos = u_hora * 3600.0 + u_time;
+  vec3 color = vec3(0.09, 0.10, 0.13);
+  // TODO: esfera, 12 marcas y las tres agujas
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_hora;           // hora de partida (0..12)
+out vec4 fragColor;
+
+const float TAU = 6.2831853;
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+float aguja(vec2 q, float largo, float grosor, float px) {
+  vec2 d = abs(q - vec2(0.0, largo * 0.5)) - vec2(grosor, largo * 0.5);
+  return 1.0 - smoothstep(0.0, px, max(d.x, d.y));
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float segundos = u_hora * 3600.0 + u_time;
+  vec3 color = vec3(0.09, 0.10, 0.13);
+  float r = length(p);
+  // Esfera: una banda alrededor de r = 0.9
+  float esfera = 1.0 - smoothstep(0.0, px, abs(r - 0.9) - 0.012);
+  // Marcas: solo lejos del centro (allí atan no está definido ni hace falta)
+  float marca = 0.0;
+  if (r > 0.6) {
+    float a = atan(p.x, p.y);                  // ángulo desde las 12, horario
+    float k = floor(a / (TAU / 12.0) + 0.5);   // la marca más cercana
+    vec2 q = rot(k * TAU / 12.0) * p;          // llevarla a las 12
+    marca = aguja(q - vec2(0.0, 0.74), 0.1, 0.012, px);
+  }
+  // Agujas: un ángulo horario θ en la forma es girar las coordenadas +θ
+  float aS = TAU * fract(segundos / 60.0);
+  float aM = TAU * fract(segundos / 3600.0);
+  float aH = TAU * fract(segundos / 43200.0);
+  float mH = aguja(rot(aH) * p, 0.45, 0.028, px);
+  float mM = aguja(rot(aM) * p, 0.70, 0.018, px);
+  float mS = aguja(rot(aS) * p, 0.80, 0.006, px);
+  vec3 tinta = vec3(0.92);
+  color = mix(color, tinta, max(esfera, marca));
+  color = mix(color, tinta, max(mH, mM));
+  color = mix(color, vec3(1.0, 0.35, 0.35), mS);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Una aguja en la posición horaria θ (medida desde las 12) es la forma de <code>aguja</code> girada −θ (horario es negativo en matemáticas). Para dibujarla, gira las coordenadas al revés: <code>aguja(rot(θ) * p, …)</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Los ángulos: la aguja de segundos da una vuelta cada 60 s, la de minutos cada 3600 s y la de horas cada 43 200 s (12 horas): <code>TAU * fract(segundos / periodo)</code>.</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>Para las marcas, <code>atan(p.x, p.y)</code> (con los argumentos intercambiados) da el ángulo medido desde las 12 en sentido horario. Redondea al múltiplo de 30° más cercano, gira <code>p</code> esa cantidad para llevar la marca a las 12, y dibuja una marca fija en la parte de arriba.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Todo el reloj es una sola idea repetida: <strong>dibujar siempre la misma forma en su espacio local</strong> (una aguja que apunta a las 12) y llevar cada píxel a ese espacio. Para una aguja en la posición horaria θ, la forma está girada −θ, así que la pregunta usa la rotación inversa, +θ: <code>rot(aS) * p</code>. Con <code>rot(a) = mat2(c, s, -s, c)</code>, que gira en sentido antihorario, las agujas avanzan en sentido horario.</p>
+    <p>Las marcas son el mismo truco con un giro que depende del píxel. <code>atan(p.x, p.y)</code> mide el ángulo desde el eje +y en sentido horario (con los argumentos intercambiados respecto a lo habitual, <a href="../03-matematicas/03-trigonometria.html">3.3</a>). <code>floor(a / 30° + 0.5)</code> es el número de la marca más cercana, y girar <code>p</code> esa cantidad lleva cada sector de 30° a las 12, donde una única marca fija se dibuja doce veces. Es un adelanto de la repetición polar de <a href="05-patrones.html">6.5</a>.</p>
+    <p>El centro: <code>atan(0.0, 0.0)</code> es indefinido (6.1), y el píxel central exacto existe en lienzos de tamaño impar. Como las marcas solo existen lejos del centro, el <code>if (r &gt; 0.6)</code> evita el problema de raíz y de paso ahorra el cálculo en la mayoría de los píxeles (sin divergencia apreciable: los píxeles vecinos casi siempre toman la misma rama). Y el tiempo: <code>segundos</code> crece sin límite; tras días abiertos, el float perdería resolución (<a href="../03-matematicas/07-precision.html">3.7</a>). En una aplicación real, enviarías la hora ya envuelta desde JavaScript.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un fragment shader es una función pura de las entradas de su píxel (posición, varyings, uniforms, texturas) a un color. No ve a los vecinos, no recuerda el frame anterior (salvo con texturas) y no controla el orden.</li>
+    <li><code>gl_FragCoord.xy</code>: píxeles físicos, centros en .5 (valores exactos: <code>== 10.5</code> funciona), origen abajo a la izquierda, medido desde la ventana y no desde el viewport.</li>
+    <li>Normaliza dividiendo los dos ejes por el mismo número: <code>(2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y</code>. Un píxel mide <code>2.0 / u_resolution.y</code>. <code>uv</code> sin corregir deforma.</li>
+    <li>El ratón, los radios y los grosores, en el mismo espacio que el píxel.</li>
+    <li>Depurar es pintar valores: remapear, signo, falso color, bandas, isolíneas, fuera de rango, NaN (con cuidado).</li>
+    <li>Las imágenes se construyen con máscaras de 0 a 1: producto (intersección), <code>max</code> (unión), <code>1 - m</code> (complemento) y capas con <code>mix</code> del fondo hacia delante. Cada píxel evalúa todas las formas.</li>
+    <li>Transformar el espacio aplica a la forma la inversa: restar para mover, girar −θ, dividir para agrandar; las inversas en orden inverso (primero la traslación). Escalar el espacio escala el tamaño de un píxel.</li>
+    <li><code>fract</code> y <code>floor</code> repiten el espacio; <code>dFdx</code>/<code>dFdy</code> miran al vecino dentro del quad de 2 × 2.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://thebookofshaders.com/03/?lan=es">The Book of Shaders — Uniforms</a> y <a href="https://thebookofshaders.com/07/?lan=es">Formas</a>: el mismo modelo mental, contado con otros ejemplos.</li>
+  <li><a href="https://iquilezles.org/articles/">Iñigo Quilez — artículos</a>: prácticamente todo lo que se hace en Shadertoy empieza por estas ideas. Buen punto de entrada: sus artículos sobre funciones de distancia en 2D.</li>
+  <li><a href="https://registry.khronos.org/OpenGL-Refpages/es3.0/html/gl_FragCoord.xhtml">Página de referencia de <code>gl_FragCoord</code></a> (OpenGL ES 3.0).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/a-demos.js"></script>
+</body>
+</html>

@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4.2 · El pipeline gráfico etapa por etapa — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m4.css">
+</head>
+<body data-leccion="04-gpu/pipeline-grafico">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 4 · La GPU por dentro</p>
+  <h1>El pipeline gráfico etapa por etapa</h1>
+  <p class="resumen">Qué le pasa a un triángulo desde que llamas a <code>gl.drawArrays</code> hasta que se convierte en píxeles: cada etapa, qué recibe, qué entrega, cuáles programas tú y cuáles son hardware fijo que solo puedes configurar.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 3.2, 3.5, 3.6, 4.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Seguirás un triángulo concreto por todas las etapas: vertex fetch, vertex shader, ensamblado, recorte, división de perspectiva, viewport, culling, rasterización, interpolación, fragment shader y operaciones por fragmento.</li>
+      <li>Calcularás a mano, con números, dónde cae un vértice en la pantalla.</li>
+      <li>Sabrás qué píxeles cubre un triángulo: centros de píxel, funciones de arista y la regla de desempate que medimos en la GPU.</li>
+      <li>Entenderás por qué los varyings se interpolan con corrección de perspectiva y qué pasa si no.</li>
+      <li>Conocerás el orden de las pruebas por fragmento (scissor, stencil, profundidad, blending) y cómo early-z y la eliminación de superficies ocultas ahorran trabajo… hasta que usas <code>discard</code>.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Una cadena de montaje</h2>
+<p>En la lección anterior viste que la CPU apunta órdenes y la GPU las ejecuta después. Ahora vamos a mirar <em>qué</em> ejecuta la GPU cuando le llega un <code>drawArrays(gl.TRIANGLES, 0, 3)</code>. La respuesta es una cadena de montaje de una docena de etapas, el <strong>pipeline gráfico</strong>. Por un extremo entran bytes de un buffer; por el otro salen colores escritos en píxeles. Cada etapa recibe lo que entrega la anterior, lo transforma y lo pasa a la siguiente.</p>
+<p>Solo dos etapas son programas que escribes tú: el <strong>vertex shader</strong> y el <strong>fragment shader</strong>. Todas las demás son <strong>hardware de función fija</strong>: hacen siempre lo mismo y solo puedes configurarlas con llamadas como <code>gl.viewport</code>, <code>gl.enable(gl.CULL_FACE)</code> o <code>gl.blendFunc</code>. Entenderlas es lo que te permite predecir cada píxel, en lugar de cambiar números hasta que «quede bien».</p>
+
+<svg class="diagrama" viewBox="0 0 760 330" width="760" role="img" aria-label="Etapas del pipeline gráfico">
+  <defs><marker id="m42-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <g style="font-size:12.5px">
+    <rect class="caja" x="10" y="20" width="130" height="44" rx="8"/><text x="75" y="40" text-anchor="middle">vertex fetch</text><text x="75" y="56" text-anchor="middle" class="texto-tenue" style="font-size:11px">buffers + VAO</text>
+    <rect class="acento" x="160" y="20" width="130" height="44" rx="8"/><text x="225" y="40" text-anchor="middle" style="font-weight:700">vertex shader</text><text x="225" y="56" text-anchor="middle" class="texto-tenue" style="font-size:11px">1 vez por vértice</text>
+    <rect class="caja" x="310" y="20" width="130" height="44" rx="8"/><text x="375" y="40" text-anchor="middle">ensamblado</text><text x="375" y="56" text-anchor="middle" class="texto-tenue" style="font-size:11px">vértices → triángulos</text>
+    <rect class="caja" x="460" y="20" width="130" height="44" rx="8"/><text x="525" y="40" text-anchor="middle">recorte</text><text x="525" y="56" text-anchor="middle" class="texto-tenue" style="font-size:11px">volumen de clip</text>
+    <rect class="caja" x="610" y="20" width="140" height="44" rx="8"/><text x="680" y="40" text-anchor="middle">división por w</text><text x="680" y="56" text-anchor="middle" class="texto-tenue" style="font-size:11px">clip → NDC</text>
+    <rect class="caja" x="610" y="104" width="140" height="44" rx="8"/><text x="680" y="124" text-anchor="middle">viewport</text><text x="680" y="140" text-anchor="middle" class="texto-tenue" style="font-size:11px">NDC → píxeles</text>
+    <rect class="caja" x="460" y="104" width="130" height="44" rx="8"/><text x="525" y="124" text-anchor="middle">culling</text><text x="525" y="140" text-anchor="middle" class="texto-tenue" style="font-size:11px">¿frente o espaldas?</text>
+    <rect class="caja" x="310" y="104" width="130" height="44" rx="8"/><text x="375" y="124" text-anchor="middle">rasterización</text><text x="375" y="140" text-anchor="middle" class="texto-tenue" style="font-size:11px">¿qué píxeles cubre?</text>
+    <rect class="caja" x="160" y="104" width="130" height="44" rx="8"/><text x="225" y="124" text-anchor="middle">interpolación</text><text x="225" y="140" text-anchor="middle" class="texto-tenue" style="font-size:11px">varyings por fragmento</text>
+    <rect class="acento" x="10" y="104" width="130" height="44" rx="8"/><text x="75" y="124" text-anchor="middle" style="font-weight:700">fragment shader</text><text x="75" y="140" text-anchor="middle" class="texto-tenue" style="font-size:11px">1 vez por fragmento</text>
+    <rect class="caja" x="10" y="188" width="580" height="44" rx="8"/><text x="300" y="208" text-anchor="middle">operaciones por fragmento: scissor → stencil → profundidad → blending → máscaras</text><text x="300" y="224" text-anchor="middle" class="texto-tenue" style="font-size:11px">configurables con enable/disable, depthFunc, blendFunc, colorMask…</text>
+    <rect class="acento2" x="610" y="188" width="140" height="44" rx="8"/><text x="680" y="208" text-anchor="middle" style="font-weight:700">framebuffer</text><text x="680" y="224" text-anchor="middle" class="texto-tenue" style="font-size:11px">color + profundidad</text>
+  </g>
+  <path d="M142 42 L156 42" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M292 42 L306 42" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M442 42 L456 42" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M592 42 L606 42" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M680 66 L680 100" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M608 126 L594 126" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M458 126 L444 126" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M308 126 L294 126" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M158 126 L144 126" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M75 150 L75 184" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <path d="M592 210 L606 210" stroke="currentColor" stroke-width="1.5" marker-end="url(#m42-fl)"/>
+  <rect class="acento" x="20" y="262" width="18" height="14" rx="3"/><text x="46" y="274">programable: lo escribes tú en GLSL</text>
+  <rect class="caja" x="330" y="262" width="18" height="14" rx="3"/><text x="356" y="274">función fija: solo se configura</text>
+  <text x="20" y="300" class="texto-tenue" style="font-size:12px">Las flechas marcan el orden lógico. El hardware real solapa etapas, reordena trabajo y se salta algunas</text><text x="20" y="318" class="texto-tenue" style="font-size:12px">cuando puede, pero el resultado debe ser idéntico al de este orden.</text>
+</svg>
+
+<p>Esa última frase del diagrama es importante: la especificación de OpenGL describe el pipeline <em>como si</em> cada etapa terminara antes de empezar la siguiente, y exige que el resultado sea el mismo que si fuera así. Por dentro, una GPU moderna procesa miles de vértices y fragmentos a la vez, adelanta pruebas cuando sabe que puede y reparte la pantalla en trozos. Pero si entiendes el orden lógico, entiendes el resultado.</p>
+
+<h2>Un triángulo, etapa por etapa</h2>
+<p>Esta demo es una GPU de verdad… de juguete: es la versión en JavaScript de la GPU que escribirás en Python en <a href="03-gpu-de-juguete.html">4.3</a>, así que cada número que ves está calculado con las mismas fórmulas que usa el hardware (en 4.3 comprobarás que da los mismos píxeles que la GPU real, uno a uno). Avanza por las etapas con los botones. Gira el triángulo, acerca su vértice C a la cámara hasta que la atraviese, activa el culling, quita la corrección de perspectiva, sube la resolución. Y en las etapas finales, pasa el ratón por la rejilla.</p>
+
+<div class="demo" id="demo-pipeline">
+  <div class="m4-etapa-texto"></div>
+  <div class="demo-lienzo" style="height:400px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>El resto de la lección recorre las mismas etapas con calma. Vuelve a la demo en cada una.</p>
+
+<h2>1. Vertex fetch: leer los atributos</h2>
+<p>Antes de ejecutar tu vertex shader, la GPU tiene que conseguir sus entradas. Para cada vértice que vaya a procesar (del <code>primero</code> al <code>primero + cuenta − 1</code> en un <code>drawArrays</code>, o los que diga el buffer de índices en un <code>drawElements</code>), una unidad fija de la GPU lee de los buffers los bytes de cada atributo y los convierte al tipo que espera el shader. Las instrucciones de «dónde» y «cómo» leer están en el <strong>VAO</strong>: para cada atributo, de qué buffer, cuántos componentes, de qué tipo, cada cuántos bytes empieza el siguiente vértice (<em>stride</em>) y en qué byte empieza el primero (<em>offset</em>).</p>
+<p>Todo eso es la materia de <a href="04-vbo-vao.html">4.4</a>; aquí basta con una idea: el vertex fetch es aritmética de direcciones y conversión de tipos. Para el vértice $i$, el atributo empieza en el byte $\text{offset} + i \times \text{stride}$ del buffer. Si te equivocas en un número, la GPU no se queja: lee bytes de otro sitio y los interpreta como puedan.</p>
+<p>Con índices, además, entra en juego la <strong>caché post-transformación</strong>: si el mismo índice aparece dos veces cerca, la GPU puede reutilizar el resultado del vertex shader en lugar de volver a ejecutarlo. En <a href="04-vbo-vao.html">4.4</a> medirás con la GPU de juguete cuánto se ahorra y por qué importa el <em>orden</em> de los índices.</p>
+
+<h2>2. El vertex shader: posiciones en espacio de clip</h2>
+<p>El vertex shader se ejecuta <strong>una vez por vértice</strong> (no por triángulo: un vértice compartido por seis triángulos, gracias a los índices, se procesa idealmente una sola vez). Recibe los atributos de <em>ese</em> vértice y los uniforms, que son iguales para todos, y tiene una obligación: escribir <code>gl_Position</code>, un <code>vec4</code> en <strong>espacio de clip</strong>. Además puede escribir <strong>varyings</strong> (las variables <code>out</code>), que viajarán hasta el fragment shader.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+#version 300 es
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec3 a_color;
+uniform mat4 u_mvp;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+</script>
+<ol>
+  <li data-l="2-3">Dos atributos: la posición del vértice en el espacio del objeto y su color. Llegan del vertex fetch, uno distinto en cada invocación.</li>
+  <li data-l="4">La matriz modelo-vista-proyección, un uniform: la misma para todos los vértices de este dibujo (<a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a>).</li>
+  <li data-l="5">Un varying: el vertex shader lo escribe en cada vértice y el rasterizador lo interpolará para cada fragmento.</li>
+  <li data-l="8">La salida obligatoria. El <code>1.0</code> en la cuarta componente convierte la posición en un punto (se ve afectado por la traslación de la matriz). El resultado tiene cuatro componentes <code>(x, y, z, w)</code>: <strong>no</strong> son todavía coordenadas de pantalla.</li>
+</ol>
+</div>
+
+<p>Lo que el vertex shader <em>no</em> puede hacer también define la etapa: no ve a los demás vértices (ni siquiera a los de su triángulo), no puede crear ni destruir vértices y no sabe qué primitiva formará. Es una función pura: atributos + uniforms → posición + varyings.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.2.1 — Un vértice, de la matriz al píxel</h3>
+  <p>Un vértice sale del vertex shader con <code>gl_Position = (0.5, -0.25, 1.2, 2.0)</code>. El canvas mide 800 × 600 y el viewport es el de por defecto, <code>gl.viewport(0, 0, 800, 600)</code>. ¿En qué píxel cae y qué profundidad escribe?</p>
+  <ol>
+    <li><strong>¿Pasa el recorte?</strong> El volumen de clip es $-w \le x, y, z \le w$, con $w = 2$: $x = 0{,}5$, $y = -0{,}25$ y $z = 1{,}2$ están entre $-2$ y $2$. El vértice está dentro: no hay que recortar nada.</li>
+    <li><strong>División de perspectiva</strong>: NDC $= (x/w,\ y/w,\ z/w) = (0{,}25,\ -0{,}125,\ 0{,}6)$.</li>
+    <li><strong>Viewport</strong>: $x_v = 0 + (0{,}25 + 1)/2 \cdot 800 = 500$; $y_v = 0 + (-0{,}125 + 1)/2 \cdot 600 = 262{,}5$; $z_v = (0{,}6 + 1)/2 = 0{,}8$.</li>
+    <li><strong>Resultado</strong>: el vértice cae en $(500,\ 262{,}5)$ en coordenadas de ventana, con la y medida <em>desde abajo</em>. Es la frontera entre los píxeles de columna 499 y 500, y justo el centro vertical de la fila 262 (cuyo centro es $262{,}5$). Si ese punto fuera un fragmento, su profundidad sería $0{,}8$.</li>
+  </ol>
+  <p>Fíjate en que $w = 2$ no es una casualidad: con una matriz de perspectiva, $w$ es la distancia a la cámara a lo largo de su eje de visión. Dividir por $w$ es justo lo que hace que lo lejano se vea más pequeño (<a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a>).</p>
+</section>
+
+<h2>3. Ensamblado de primitivas</h2>
+<p>Los vértices transformados se agrupan en <strong>primitivas</strong>: puntos, líneas o triángulos, según el primer argumento de la orden de dibujo. Con <code>gl.TRIANGLES</code>, cada tres vértices consecutivos forman un triángulo independiente. Con <code>gl.TRIANGLE_STRIP</code>, cada vértice nuevo forma un triángulo con los dos anteriores; con <code>gl.TRIANGLE_FAN</code>, todos comparten el primer vértice. Arrastra los puntos y cambia el modo:</p>
+
+<div class="demo" id="demo-primitivas">
+  <div class="demo-lienzo"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Mira el modo <code>TRIANGLE_STRIP</code>: los triángulos impares no se forman como <code>(1, 2, 3)</code> sino como <code>(2, 1, 3)</code>. La GPU intercambia sus dos primeros vértices para que todos los triángulos de la tira conserven el mismo <strong>sentido de giro</strong> (<em>winding</em>). En la demo, verde es antihorario (CCW) y rojo, horario (CW): en una tira bien hecha, todos del mismo color.</p>
+<p>El giro importa porque es la única forma que tiene la GPU de saber si un triángulo te mira de frente o de espaldas: por convenio, un triángulo cuyos vértices se ven en sentido antihorario en la pantalla está <strong>de frente</strong> (<code>gl.frontFace(gl.CCW)</code>, el valor por defecto). Lo usará el culling, dentro de dos etapas.</p>
+<p>Las líneas (<code>LINES</code>, <code>LINE_STRIP</code>, <code>LINE_LOOP</code>) y los puntos (<code>POINTS</code>, con su tamaño en <code>gl_PointSize</code>, entre 1 y 511 píxeles en nuestra máquina) existen, pero tienen trampa:</p>
+
+<div class="callout nota" id="m4-linewidth">
+  <p><strong>Las líneas miden siempre un píxel.</strong> <code>gl.lineWidth(10)</code> no da ningún error y <code>gl.getParameter(gl.LINE_WIDTH)</code> devuelve 10, pero el rango admitido, <code>gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)</code>, es <code>[1, 1]</code> en casi todas las plataformas actuales de WebGL (en Chrome sobre Metal, la línea ocupa una sola fila de píxeles): el rasterizador recorta el grosor a ese rango. Las líneas gruesas se dibujan como triángulos, con los vértices desplazados a lo largo de la perpendicular al segmento de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>. Es el comportamiento raro <a href="../05-webgl/03-buffers-atributos.html#m5-linewidth">«gl.lineWidth no hace nada»</a> de 5.3, que trata a fondo puntos y líneas en WebGL.</p>
+</div>
+
+<h2>4. Recorte: el volumen de clip</h2>
+<p>Ya tenemos triángulos en espacio de clip. Lo que es visible es lo que está dentro del <strong>volumen de clip</strong> (lo derivaste en <a href="../03-matematicas/06-espacios-coordenadas.html#espacio-clip-w-y-lo-que-queda-detras-de-la-camara">3.6</a>; aquí nos interesa qué hace el hardware con él):</p>
+$$-w \le x \le w, \qquad -w \le y \le w, \qquad -w \le z \le w$$
+<p>Un triángulo completamente fuera se descarta. Uno completamente dentro pasa tal cual. Y uno que cruza la frontera se <strong>recorta</strong>: se calcula dónde corta cada arista al plano, y el triángulo se convierte en un polígono (hasta 9 vértices si cruza varios planos) que se vuelve a partir en triángulos en abanico. Los vértices nuevos reciben varyings <em>interpolados linealmente en espacio de clip</em>, que es lo correcto: antes de dividir por $w$, todo es lineal.</p>
+<p>En la demo, en la etapa «Recorte», sube «z de C» hasta el máximo: el vértice C queda detrás del plano cercano. Su $w$ se vuelve negativo, el triángulo se corta y aparecen dos vértices nuevos sobre el plano: un polígono de 4 vértices, es decir, dos triángulos. La GPU de juguete de Python hace exactamente lo mismo con un suelo que pasa por debajo de la cámara:</p>
+
+<figure class="m4-figura">
+  <img src="img/juguete-suelo-correcto.png" width="320" height="240" alt="Un suelo de damero en perspectiva que se pierde hacia el horizonte">
+  <figcaption>Generada por la GPU de juguete (<code>ejemplo_04_perspectiva.py</code>): el suelo es un solo quad que llega hasta detrás de la cámara. La esquina de atrás tiene <code>w = −1,817</code>; sin recorte, al dividir por un $w$ negativo esa esquina aparecería «reflejada» delante. Estadísticas del dibujo: <code>triangulos=2, recortados=2</code>.</figcaption>
+</figure>
+
+<div class="callout senior" data-titulo="Guard band: la GPU casi nunca recorta los lados">
+  <p>Recortar geométricamente es caro: genera vértices nuevos y rompe el ritmo del pipeline. Por eso las GPU hacen trampa con los planos laterales ($x$ e $y$): en lugar de cortar el triángulo, lo rasterizan entero y no generan fragmentos fuera del viewport. El rasterizador trabaja con un rango de coordenadas mucho más grande que la pantalla (la <em>guard band</em>), así que solo hace falta recortar de verdad cuando un triángulo se sale de ese rango enorme. El único recorte que no se puede evitar es el del <strong>plano cercano</strong>: los puntos con $w \le 0$ están detrás de la cámara y dividir por $w$ los proyectaría en posiciones absurdas. Nuestra GPU de juguete hace lo mismo: recorta contra los planos cercano y lejano ($z = \pm w$) y deja $x$ e $y$ al viewport. El resultado es idéntico; lo verás en <a href="03-gpu-de-juguete.html">4.3</a>.</p>
+</div>
+
+<div class="callout bestiario" data-id="m4-dividir-por-w" data-titulo="El triángulo desaparece o se deforma cuando un vértice pasa detrás de la cámara">
+  <p><strong>Síntoma:</strong> una malla se ve bien, pero en cuanto la cámara se acerca y algún vértice queda detrás, los triángulos que lo tocan desaparecen, se estiran por toda la pantalla o se «dan la vuelta».</p>
+  <p><strong>Causa:</strong> casi siempre, que el vertex shader hace él mismo la división de perspectiva: <code>gl_Position = vec4(p.xyz / p.w, 1.0)</code>. Así la GPU recibe un vértice con $w = 1$ que ya no sabe que estaba detrás de la cámara, y no puede recortarlo bien. En Chrome lo medimos con un triángulo con un vértice detrás: bien hecho cubre 21 952 píxeles; dividiendo en el shader, solo 720 (una astilla en el borde).</p>
+  <p><strong>Solución:</strong> entrega <code>gl_Position</code> <em>sin dividir</em>, con su $w$. La división la hace el hardware después del recorte. Lo arreglarás en el ejercicio 4.2.3.</p>
+</div>
+
+<h2>5. División de perspectiva: NDC</h2>
+<p>Después del recorte, todos los vértices cumplen $w > 0$ y la GPU divide:</p>
+$$(x_{ndc},\ y_{ndc},\ z_{ndc}) = \left(\frac{x}{w},\ \frac{y}{w},\ \frac{z}{w}\right)$$
+<p>El resultado son las <strong>coordenadas normalizadas de dispositivo</strong> (NDC): un cubo de $-1$ a $1$ en los tres ejes, igual para cualquier pantalla. Con una proyección en perspectiva, $w$ crece con la distancia, así que dividir por $w$ encoge lo lejano: es el momento exacto en que aparece la perspectiva. Con una proyección ortográfica, $w$ vale 1 siempre y la división no cambia nada.</p>
+<p>La GPU también guarda $1/w$ de cada vértice: la necesitará para interpolar los varyings correctamente. Recuérdalo para la etapa 9.</p>
+
+<h2>6. Viewport: de NDC a píxeles</h2>
+<p><code>gl.viewport(x0, y0, ancho, alto)</code> dice en qué rectángulo del framebuffer cae el cubo NDC. La transformación es lineal:</p>
+$$x_v = x_0 + \frac{x_{ndc} + 1}{2}\,\text{ancho}, \qquad y_v = y_0 + \frac{y_{ndc} + 1}{2}\,\text{alto}, \qquad z_v = \frac{z_{ndc} + 1}{2}$$
+<p>Tres detalles que separan a quien entiende de quien copia:</p>
+<ul>
+  <li><strong>La y crece hacia arriba.</strong> $y_v = 0$ es el borde <em>inferior</em> del framebuffer, al revés que en CSS y en Canvas 2D. Es la causa de las imágenes volteadas del curso.</li>
+  <li><strong>Los píxeles son cuadrados de lado 1 y su centro está en el ,5.</strong> El píxel de la esquina inferior izquierda ocupa de $(0, 0)$ a $(1, 1)$ y su centro es $(0{,}5,\ 0{,}5)$: justo lo que ves en <code>gl_FragCoord</code>.</li>
+  <li><strong>La profundidad pasa de $[-1, 1]$ a $[0, 1]$</strong> (se puede cambiar con <code>gl.depthRange</code>, casi nunca hace falta). Es el valor que se compara y se guarda en el z-buffer.</li>
+</ul>
+<p>El viewport no se actualiza solo al cambiar el tamaño del canvas: lo trata a fondo <a href="../05-webgl/01-contexto.html">5.1</a>.</p>
+
+<div class="quiz">
+  <p class="pregunta">Con <code>gl.viewport(0, 0, 400, 300)</code>, un vértice llega a NDC $(-1, 1)$. ¿Dónde cae?</p>
+  <ul>
+    <li>En $(0, 0)$, la esquina superior izquierda.<div class="explicacion">Casi: la x es 0, pero en GL la y crece hacia arriba. $y_{ndc} = 1$ es el borde de arriba, $y_v = 300$.</div></li>
+    <li data-correcta>En $(0, 300)$: la esquina superior izquierda, con la y contada desde abajo.<div class="explicacion">Exacto: $x_v = (−1 + 1)/2 · 400 = 0$ e $y_v = (1 + 1)/2 · 300 = 300$. Es la esquina de arriba a la izquierda, pero expresada con el origen abajo.</div></li>
+    <li>En $(-200, 150)$.<div class="explicacion">Eso sería aplicar solo un escalado, sin el desplazamiento del $+1$: la transformación de viewport lleva $[-1, 1]$ a $[0, \text{ancho}]$, no a $[-\text{ancho}/2, \text{ancho}/2]$.</div></li>
+  </ul>
+</div>
+
+<h2>7. Culling: ¿de frente o de espaldas?</h2>
+<p>Ya en coordenadas de ventana, la GPU calcula el área con signo del triángulo, que es la función de arista de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a> evaluada en el tercer vértice:</p>
+$$2\,\text{Área} = E_{AB}(C) = (B_x - A_x)(C_y - A_y) - (B_y - A_y)(C_x - A_x)$$
+<p>Si es positiva, los vértices $A \to B \to C$ giran en sentido antihorario en la pantalla (con la y hacia arriba) y, con el <code>gl.frontFace(gl.CCW)</code> por defecto, el triángulo está <strong>de frente</strong>. Si es negativa, está <strong>de espaldas</strong>. Si es cero, es degenerado (una línea o un punto) y no cubre ningún píxel.</p>
+<p>Con <code>gl.enable(gl.CULL_FACE)</code>, los triángulos de espaldas se descartan aquí mismo (<code>gl.cullFace(gl.BACK)</code>, el valor por defecto; también existen <code>FRONT</code> y <code>FRONT_AND_BACK</code>). En un objeto cerrado, las caras traseras nunca se ven, así que el culling ahorra casi la mitad del trabajo de rasterización sin cambiar la imagen. Por defecto está <strong>desactivado</strong> (lo comprobamos con <code>gl.getParameter(gl.CULL_FACE)</code>: <code>false</code>).</p>
+<p>Observa que la decisión se toma <em>en la pantalla</em>, después de la proyección: el mismo triángulo está de frente o de espaldas según desde dónde lo mires. En la demo, gira el triángulo más de 90° en la etapa «Culling» y verás cómo cambia de color.</p>
+
+<div class="callout bestiario" data-id="m4-escala-negativa" data-titulo="Al reflejar un objeto (escala negativa) desaparece o se ve por dentro">
+  <p><strong>Síntoma:</strong> para hacer el simétrico de un objeto aplicas una escala <code>(-1, 1, 1)</code> en la matriz de modelo, y con el culling activado el objeto desaparece o solo se ven sus caras interiores.</p>
+  <p><strong>Causa:</strong> una reflexión invierte el sentido de giro de todos los triángulos en la pantalla: los antihorarios pasan a ser horarios. El culling descarta ahora las caras que miran a la cámara y deja las de atrás.</p>
+  <p><strong>Solución:</strong> cuando el determinante de la matriz de modelo sea negativo (una sola reflexión, o un número impar), cambia el convenio mientras dibujas ese objeto: <code>gl.frontFace(gl.CW)</code>, y vuelve a <code>gl.CCW</code> después. Recuerda que es estado global: si no lo restauras, fallará el siguiente objeto (<a href="01-cpu-vs-gpu.html">4.1</a>).</p>
+</div>
+
+<h2>8. Rasterización: qué píxeles cubre un triángulo</h2>
+<p>La pregunta del rasterizador es de sí o no: ¿este píxel pertenece al triángulo? La respuesta de las GPU es precisa y algo sorprendente: <strong>un píxel pertenece al triángulo si su centro está dentro</strong>. No importa cuánta área del píxel cubra el triángulo; importa un único punto, $(x + 0{,}5,\ y + 0{,}5)$. Para saberlo, se evalúan las tres funciones de arista en ese punto (con el triángulo en sentido antihorario, dentro significa las tres positivas). Cada píxel que pasa genera un <strong>fragmento</strong>: un candidato a píxel con su posición, su profundidad y sus varyings.</p>
+<p>Para no evaluar toda la pantalla, se recorren solo los píxeles de la <strong>caja envolvente</strong> del triángulo (recortada al viewport), y el hardware real además los procesa por bloques, en paralelo. Las funciones de arista son lineales en $x$ e $y$, así que pasar de un píxel al de al lado es sumar una constante.</p>
+
+<h3>Los píxeles justo sobre una arista</h3>
+<p>¿Y si el centro cae <em>exactamente</em> sobre una arista, con una función que vale 0? Si dos triángulos comparten esa arista, los dos lo reclamarían. Pintarlo dos veces se notaría (con transparencias saldría una línea más oscura); no pintarlo dejaría un hueco. La solución es una <strong>regla de desempate</strong>: el píxel pertenece a uno solo de los dos. En la demo, arrastra los vértices (se ajustan a medios píxeles para que haya empates a menudo) y prueba las tres reglas:</p>
+
+<div class="demo" id="demo-cobertura">
+  <div class="demo-lienzo" style="height:470px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Direct3D, Metal y Vulkan usan la regla <em>top-left</em> («superior-izquierda»), que se define con la y hacia <em>abajo</em>. OpenGL no obliga a ninguna en concreto: solo exige que ningún píxel de una arista compartida se pinte dos veces ni se quede sin pintar. Así que la medimos. En Chrome (ANGLE sobre Metal) y en el driver OpenGL de Apple obtuvimos exactamente el mismo resultado: con las coordenadas de GL (y hacia arriba), <strong>un centro sobre una arista cuenta si la arista es izquierda o inferior</strong>; si es derecha o superior, no. Es la regla top-left vista con el eje y dado la vuelta, y es la que implementa la GPU de juguete. En <a href="03-gpu-de-juguete.html">4.3</a> la verás comparada píxel a píxel con la GPU real:</p>
+
+<figure class="m4-figura">
+  <img src="img/comparacion-juguete-real.png" width="394" height="411" alt="Tres filas de imágenes: GPU de juguete, GPU real y diferencias; la segunda fila muestra triángulos con aristas compartidas">
+  <figcaption>Generada por <code>python/moderngl/comparar_con_juguete.py</code>. La fila del medio son triángulos cuyas aristas pasan exactamente por centros de píxel, dibujados con blending aditivo: 454 píxeles pintados una vez, ninguno dos veces, y cero diferencias entre la GPU de juguete y la real.</figcaption>
+</figure>
+
+<div class="callout senior" data-titulo="Por qué el hardware no rasteriza en float">
+  <p>Con coordenadas en coma flotante, «exactamente sobre la arista» sería una lotería de redondeos: el mismo centro podría dar $+10^{-7}$ en un triángulo y $-10^{-7}$ en el vecino, y aparecerían huecos o dobles. Por eso el rasterizador <strong>convierte las posiciones a coma fija</strong>, enteros con unos pocos bits de subpíxel, antes de evaluar las funciones de arista. Con enteros, el producto es exacto y el cero es un cero de verdad. WebGL informa de cuántos bits usa con <code>gl.getParameter(gl.SUBPIXEL_BITS)</code>: en nuestra máquina, 4 (1/16 de píxel), que es el mínimo que exige la especificación; el hardware puede usar más. Consecuencia curiosa: un vértice movido menos de 1/16 de píxel puede no mover nada en la pantalla. La PlayStation original usaba coordenadas enteras de píxel, sin subpíxel: por eso sus vértices «tiemblan» al moverse despacio.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.2.2 — ¿Qué píxeles cubre este triángulo?</h3>
+  <p>Un triángulo tiene, en coordenadas de ventana, los vértices $A = (1, 1)$, $B = (5, 1)$ y $C = (1, 5)$. ¿Cubre el píxel $(2, 2)$? ¿Y el $(1, 3)$? ¿Y el $(2, 1)$? ¿Cuántos píxeles cubre en total?</p>
+  <ol>
+    <li><strong>Orientación</strong>: $E_{AB}(C) = (5-1)(5-1) - (1-1)(1-1) = 16 > 0$: antihorario, de frente. «Dentro» significa las tres funciones de arista positivas (o cero en una arista izquierda o inferior).</li>
+    <li><strong>Simplifica las funciones</strong> sustituyendo los vértices en la fórmula de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>: $E_{AB}(P) = 4\,(P_y - 1)$, $E_{BC}(P) = 24 - 4\,(P_x + P_y)$ y $E_{CA}(P) = 4\,(P_x - 1)$.</li>
+    <li><strong>Píxel (2, 2)</strong>, centro $(2{,}5,\ 2{,}5)$: $E_{AB} = 6$, $E_{BC} = 4$, $E_{CA} = 6$. Las tres positivas: <strong>dentro</strong>.</li>
+    <li><strong>Píxel (1, 3)</strong>, centro $(1{,}5,\ 3{,}5)$: $E_{AB} = 10$, $E_{BC} = 4$, $E_{CA} = 2$: <strong>dentro</strong>. A ojo parece que se sale por la hipotenusa, pero la hipotenusa es la recta $x + y = 6$ y este centro tiene $x + y = 5$: no llega. Haz la cuenta, no te fíes del ojo.</li>
+    <li><strong>Píxel (2, 1)</strong>, centro $(2{,}5,\ 1{,}5)$: $E_{AB} = 2$, $E_{BC} = 8$, $E_{CA} = 6$: <strong>dentro</strong>, aunque su centro esté a medio píxel del borde inferior.</li>
+    <li><strong>Total</strong>: $E_{AB} > 0$ y $E_{CA} > 0$ piden $x \ge 1$ e $y \ge 1$; $E_{BC} \ge 0$ pide $x + y \le 5$. Los píxeles con $x + y = 5$, como $(1, 4)$ o $(4, 1)$, tienen el centro <em>exactamente</em> sobre la hipotenusa: empate. La arista $B \to C$ sube hacia la izquierda ($\Delta y = +4$), así que es una arista derecha/superior y <strong>no</strong> cuenta. Quedan los de $x + y \le 4$: $(1,1), (2,1), (3,1), (1,2), (2,2), (1,3)$, <strong>6 píxeles</strong>. El área del triángulo es 8: la cobertura por centros no es el área, aunque en triángulos grandes se le parece mucho.</li>
+  </ol>
+</section>
+
+<p>El rasterizador puede tomar varias muestras por píxel en lugar de una: es el <strong>antialiasing por multimuestreo</strong> (MSAA). Cada píxel tiene 4 posiciones de muestra (en nuestra máquina, <code>gl.getParameter(gl.MAX_SAMPLES)</code> da 4) y la cobertura se evalúa en cada una, pero el fragment shader se ejecuta una sola vez por píxel. Es lo que activa el atributo <code>antialias: true</code> del contexto (<a href="../05-webgl/01-contexto.html">5.1</a>); aquí basta con saber que existe y que suaviza los bordes, no el interior.</p>
+
+<div class="quiz">
+  <p class="pregunta">Un triángulo diminuto cubre el 90 % del área de un píxel, pero no contiene su centro. Sin antialiasing, ¿genera algún fragmento en ese píxel?</p>
+  <ul>
+    <li>Sí: cubre casi todo el píxel.<div class="explicacion">La cobertura no se mide por área: solo cuenta el centro del píxel. Sin MSAA, el píxel no recibe fragmento de ese triángulo.</div></li>
+    <li data-correcta>No: la regla es que el centro del píxel esté dentro.<div class="explicacion">Correcto. Por eso los triángulos muy pequeños pueden «parpadear» o desaparecer al moverse: según caigan respecto a los centros, generan fragmentos o no. MSAA mitiga el problema evaluando varias muestras por píxel.</div></li>
+    <li>Sí, pero con la mitad de brillo.<div class="explicacion">La cobertura parcial solo se traduce en un color intermedio con antialiasing (MSAA o técnicas en el shader). El rasterizador básico decide sí o no.</div></li>
+  </ul>
+</div>
+
+<h2>9. Interpolación de varyings</h2>
+<p>Cada fragmento necesita sus varyings. Los calcula la GPU mezclando los valores de los tres vértices con pesos que dependen de la posición del centro del píxel: las <strong>coordenadas baricéntricas</strong> $\lambda_A, \lambda_B, \lambda_C$ de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>, que salen gratis de las mismas funciones de arista que decidieron la cobertura ($\lambda_A = E_{BC}(P) / E_{AB}(C)$, etc.).</p>
+<p>Pero hay una trampa. Esas $\lambda$ se miden <em>en la pantalla</em>, y la perspectiva deforma las distancias: el punto medio de un segmento en la pantalla <strong>no</strong> es el punto medio del segmento en 3D (la mitad más lejana se ve más pequeña). Si interpolas con las $\lambda$ de pantalla, las texturas se tuercen. La corrección usa el $1/w$ que guardamos en la división de perspectiva:</p>
+$$v = \frac{\lambda_A \frac{v_A}{w_A} + \lambda_B \frac{v_B}{w_B} + \lambda_C \frac{v_C}{w_C}}{\lambda_A \frac{1}{w_A} + \lambda_B \frac{1}{w_B} + \lambda_C \frac{1}{w_C}}$$
+<p>La idea (que demostraremos en <a href="05-uniforms-varyings.html">4.5</a>): $v/w$ y $1/w$ sí varían linealmente en la pantalla, así que se interpolan con las $\lambda$ de pantalla, y al final se dividen. La profundidad $z_v$, en cambio, se interpola linealmente sin corrección: $z_{ndc} = z/w$ ya es lineal en la pantalla. (Por eso el z-buffer tiene mucha más precisión cerca de la cámara que lejos: <a href="../03-matematicas/06-espacios-coordenadas.html#la-profundidad-no-es-lineal">3.6</a>.)</p>
+
+<figure class="m4-figura">
+  <div class="m4-fila">
+    <div><img src="img/juguete-pared-correcta.png" width="320" height="240" alt="Pared con damero correctamente en perspectiva"><small>Con corrección de perspectiva (lo que hace siempre la GPU real)</small></div>
+    <div><img src="img/juguete-pared-afin.png" width="320" height="240" alt="La misma pared con el damero torcido a lo largo de la diagonal"><small>Interpolación afín (sin corregir): el damero se dobla por la diagonal del quad</small></div>
+  </div>
+  <figcaption>Generadas por la GPU de juguete (<code>ejemplo_04_perspectiva.py</code>). El quad son dos triángulos; en la versión afín cada uno interpola por su cuenta y el pliegue delata la diagonal.</figcaption>
+</figure>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.2.3 — El punto medio que no está en el medio</h3>
+  <p>Un segmento en pantalla une el vértice $P$ (con $w_P = 1$, cerca) y el $Q$ (con $w_Q = 3$, tres veces más lejos). El varying $t$ vale 0 en $P$ y 1 en $Q$. En el píxel que está justo a mitad de camino <em>en la pantalla</em>, ¿cuánto vale $t$?</p>
+  <ol>
+    <li><strong>Sin corregir</strong>: las $\lambda$ de pantalla son $(0{,}5,\ 0{,}5)$ y $t = 0{,}5 \cdot 0 + 0{,}5 \cdot 1 = 0{,}5$.</li>
+    <li><strong>Con corrección</strong>: numerador $= 0{,}5 \cdot \frac{0}{1} + 0{,}5 \cdot \frac{1}{3} = 0{,}1\overline{6}$; denominador $= 0{,}5 \cdot 1 + 0{,}5 \cdot \frac{1}{3} = 0{,}\overline{6}$. $t = 0{,}1\overline{6} / 0{,}\overline{6} = 0{,}25$.</li>
+    <li><strong>Interpretación</strong>: el píxel del medio de la pantalla corresponde a solo un 25 % del recorrido en 3D. Tiene sentido: lo cercano se ve ampliado y lo lejano, comprimido. La primera mitad de la pantalla (la del lado cercano) solo abarca una cuarta parte del segmento, y la segunda mitad contiene las otras tres cuartas partes, apretadas. Visto como pesos: el vértice cercano pesa $0{,}75$ y el lejano $0{,}25$ (es una de las pruebas automáticas de <code>gpu_juguete/pruebas.py</code>).</li>
+  </ol>
+</section>
+
+<h2>10. El fragment shader</h2>
+<p>Por cada fragmento, la GPU ejecuta tu fragment shader. Recibe los varyings interpolados, los uniforms, puede leer texturas, y además tiene variables predefinidas: <code>gl_FragCoord</code> (la posición en la ventana: el centro del píxel, su profundidad $z_v$ y $1/w$), <code>gl_FrontFacing</code> (si el triángulo está de frente) y <code>gl_PointCoord</code> (en puntos). Su trabajo es escribir el color en su variable <code>out</code> (o en varias, si hay varios destinos: <a href="../05-webgl/08-framebuffers.html">5.8</a>).</p>
+<p>También puede <strong>no</strong> escribir: <code>discard</code> tira el fragmento, que no llega al framebuffer ni al z-buffer. Y puede escribir su propia profundidad en <code>gl_FragDepth</code>. Las dos cosas son legales y a veces imprescindibles, pero tienen un coste oculto que verás en la etapa siguiente.</p>
+<p>Un fragmento no es un píxel: es un <em>candidato</em>. Aún puede ser descartado por las pruebas que vienen, y un mismo píxel puede recibir muchos fragmentos en un frame (uno por cada triángulo que lo cubre).</p>
+
+<h2>11. Operaciones por fragmento</h2>
+<p>Antes de tocar el framebuffer, cada fragmento atraviesa una serie de pruebas y operaciones fijas, siempre en este orden lógico:</p>
+<ol>
+  <li><strong>Scissor</strong> (<code>gl.enable(gl.SCISSOR_TEST)</code> + <code>gl.scissor(x, y, ancho, alto)</code>): descarta lo que caiga fuera de un rectángulo. Barato y útil para dibujar solo en una zona.</li>
+  <li><strong>Stencil</strong> (<code>STENCIL_TEST</code>): compara un valor entero guardado por píxel con una referencia; sirve para máscaras, portales, contornos. Hay que pedir el búfer al crear el contexto (<code>stencil: true</code>).</li>
+  <li><strong>Profundidad</strong> (<code>DEPTH_TEST</code>): compara la $z_v$ del fragmento con la guardada en el z-buffer usando <code>gl.depthFunc</code> (por defecto <code>LESS</code>: pasa si está más cerca). Si pasa, y <code>gl.depthMask</code> lo permite, escribe su $z$. Si falla, el fragmento muere. El z-buffer se limpia a 1,0 (el valor de <code>gl.clearDepth</code> por defecto: lo más lejos posible).</li>
+  <li><strong>Blending</strong> (<code>BLEND</code>): en lugar de sustituir el color que había, lo mezcla según <code>gl.blendFunc</code> y <code>gl.blendEquation</code>: $\text{color} = \text{src} \cdot f_{src} + \text{dst} \cdot f_{dst}$. Lo desmonta <a href="../05-webgl/07-blending.html">5.7</a>.</li>
+  <li><strong>Máscaras de escritura</strong>: <code>gl.colorMask(r, g, b, a)</code> decide qué canales se escriben; <code>gl.depthMask</code> y <code>gl.stencilMask</code>, si se escriben la profundidad y el stencil.</li>
+</ol>
+<p>Todas están desactivadas por defecto (profundidad, blending, scissor y stencil: <code>false</code>; lo comprobamos con <code>getParameter</code>), así que un WebGL recién creado pinta cada fragmento encima de lo que hubiera, en el orden en que llegan los triángulos.</p>
+
+<figure class="m4-figura">
+  <div class="m4-fila">
+    <div><img src="img/juguete-sin-profundidad.png" width="240" height="240" alt="Dos triángulos que se atraviesan; el azul tapa al rojo por completo"><small>Sin prueba de profundidad: gana el último en dibujarse</small></div>
+    <div><img src="img/juguete-con-profundidad.png" width="240" height="240" alt="Los mismos triángulos con la intersección correcta"><small>Con <code>DEPTH_TEST</code>: se ve la intersección</small></div>
+    <div><img src="img/juguete-zbuffer.png" width="240" height="240" alt="El z-buffer como imagen en escala de grises"><small>El z-buffer (negro = cerca, blanco = 1,0)</small></div>
+  </div>
+  <figcaption>Generadas por la GPU de juguete (<code>ejemplo_03_profundidad.py</code>): 5 831 fragmentos del triángulo azul fallan la prueba de profundidad.</figcaption>
+</figure>
+
+<div class="callout bestiario" data-id="m4-clear-no-borra" data-titulo="gl.clear no borra toda la pantalla (o no borra un canal)">
+  <p><strong>Síntoma:</strong> después de dibujar algo con el scissor activado, o con <code>colorMask</code>, <code>gl.clear</code> deja restos del frame anterior: solo se limpia un rectángulo, o el color de fondo sale mal.</p>
+  <p><strong>Causa:</strong> <code>gl.clear</code> <em>respeta</em> el scissor y las máscaras de escritura. Lo comprobamos: con el scissor en un cuadrado de 16 × 16, <code>clear</code> solo pinta ese cuadrado; con <code>colorMask(false, true, true, true)</code>, no toca el canal rojo.</p>
+  <p><strong>Solución:</strong> antes de limpiar, deja el estado limpio: <code>gl.disable(gl.SCISSOR_TEST)</code>, <code>gl.colorMask(true, true, true, true)</code> y, si limpias la profundidad, <code>gl.depthMask(true)</code>. Otra vez la máquina de estados.</p>
+</div>
+
+<h3>Early-z: probar la profundidad antes de sombrear</h3>
+<p>En el orden lógico, la prueba de profundidad va <em>después</em> del fragment shader. Pero si el fragmento va a fallar la prueba, ejecutar el shader es tirar el trabajo. Por eso las GPU hacen la prueba <strong>antes</strong> del shader siempre que el resultado sea idéntico (<em>early-z</em>). Y es idéntico… salvo que el shader pueda cambiar lo que se prueba o se escribe: si usa <code>discard</code> (la GPU no sabe si el fragmento existirá hasta ejecutarlo) o si escribe <code>gl_FragDepth</code> (la profundidad no se conoce hasta el final). En esos casos, el hardware tiene que volver al orden lento.</p>
+<p>Las GPU de Apple (y las de muchos móviles) van más lejos: son de tipo <strong>TBDR</strong> (<em>tile-based deferred rendering</em>): dividen la pantalla en teselas, reúnen todos los triángulos de cada tesela y, para los opacos, averiguan qué fragmento es el visible en cada píxel <em>antes</em> de sombrear ninguno (<em>hidden surface removal</em>). Lo medimos con 32 capas opacas a pantalla completa, una encima de otra, con un shader caro:</p>
+
+<div class="js-playground" data-titulo="¿Cuánto cuesta pintar 32 capas? (mídelo en tu GPU)" data-altura="50" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:10px 16px;font:14px monospace">resultados en la consola ↓ (tarda un par de segundos)</p>
+</script>
+<script type="text/x-js">
+const N = 32;
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 1024;
+const gl = canvas.getContext('webgl2', { antialias: false, depth: true });
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const VS = `#version 300 es
+uniform float u_z;                              // cada capa, a una profundidad
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  gl_Position = vec4(p * 2.0 - 1.0, u_z, 1.0);
+}`;
+const CARO = `vec2 p = gl_FragCoord.xy * 0.001; float a = u_z;
+  for (int i = 0; i < 60; i++) a = sin(a * 1.3 + p.x) + cos(a * 0.7 - p.y);`;
+function programa(final) {
+  const p = gl.createProgram();
+  gl.attachShader(p, shader(gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; uniform float u_z; out vec4 o;
+void main() { ${CARO} ${final} }`));
+  gl.linkProgram(p);
+  return p;
+}
+const opaco = programa('o = vec4(fract(a), u_z, 0.0, 1.0);');
+const conDiscard = programa('if (a > 1000.0) discard; o = vec4(fract(a), u_z, 0.0, 1.0);');   // nunca descarta
+const conFragDepth = programa('gl_FragDepth = gl_FragCoord.z; o = vec4(fract(a), u_z, 0.0, 1.0);');
+const translucido = programa('o = vec4(fract(a), u_z, 0.0, 0.5);');
+gl.bindVertexArray(gl.createVertexArray());
+const px = new Uint8Array(4);
+
+function medir(prog, capas, delanteAtras, profundidad, mezcla) {
+  gl.useProgram(prog);
+  const uz = gl.getUniformLocation(prog, 'u_z');
+  profundidad ? gl.enable(gl.DEPTH_TEST) : gl.disable(gl.DEPTH_TEST);
+  if (mezcla) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); } else gl.disable(gl.BLEND);
+  const ts = [];
+  for (let r = 0; r < 3; r++) {
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t0 = performance.now();
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    for (let i = 0; i < capas; i++) {
+      const k = delanteAtras ? i : capas - 1 - i;       // k = 0: la capa más cercana
+      gl.uniform1f(uz, -0.9 + 1.8 * k / capas);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    ts.push(performance.now() - t0);
+  }
+  return ts.sort((a, b) => a - b)[1];
+}
+medir(opaco, 1, true, false, false);                   // calentar
+const base = medir(opaco, 1, true, false, false);
+const casos = [
+  ['32 opacas, profundidad, de delante a atrás', opaco, true, true, false],
+  ['32 opacas, profundidad, de atrás a delante', opaco, false, true, false],
+  ['32 opacas, sin profundidad (gana la última)', opaco, false, false, false],
+  ['32 con discard (que nunca se ejecuta)', conDiscard, false, true, false],
+  ['32 escribiendo gl_FragDepth', conFragDepth, false, true, false],
+  ['32 translúcidas (blending, alfa 0,5)', translucido, false, false, true],
+];
+console.log('1 capa:'.padEnd(46), base.toFixed(1).padStart(6), 'ms');
+for (const [nombre, p, orden, prof, mezcla] of casos) {
+  const t = medir(p, N, orden, prof, mezcla);
+  console.log(nombre.padEnd(46), t.toFixed(1).padStart(6), 'ms   (' + (t / base).toFixed(1) + '× una capa)');
+}
+</script>
+</div>
+
+<table class="m4-compacta">
+  <thead><tr><th>32 capas a pantalla completa, 1024 × 1024 (Apple M1, varias ejecuciones)</th><th>Tiempo</th><th>× una capa</th></tr></thead>
+  <tbody>
+    <tr><td>1 capa (referencia)</td><td class="num">2,4–3,5 ms</td><td class="num">1</td></tr>
+    <tr><td>opacas, con profundidad, en cualquier orden</td><td class="num">2,2–2,9 ms</td><td class="num">≈ 1</td></tr>
+    <tr><td>opacas, sin prueba de profundidad</td><td class="num">2,4–2,5 ms</td><td class="num">≈ 1</td></tr>
+    <tr><td>con <code>discard</code>, de delante a atrás</td><td class="num">14–15,5 ms</td><td class="num">4–6</td></tr>
+    <tr><td>con <code>discard</code>, de atrás a delante</td><td class="num">60–66 ms</td><td class="num">17–27</td></tr>
+    <tr><td>escribiendo <code>gl_FragDepth</code> (cualquier orden)</td><td class="num">59–66 ms</td><td class="num">17–27</td></tr>
+    <tr><td>translúcidas con blending</td><td class="num">59–66 ms</td><td class="num">17–27</td></tr>
+  </tbody>
+</table>
+<p>En esta GPU, 32 capas opacas cuestan <strong>lo mismo que una</strong>, da igual el orden: solo se sombrea el fragmento visible de cada píxel. En cuanto el shader contiene un <code>discard</code> (¡aunque nunca se ejecute!), escribe <code>gl_FragDepth</code> o mezcla con blending, se pierde ese atajo y se sombrean las 32 capas. En una GPU de escritorio de «modo inmediato» (la mayoría de NVIDIA y AMD) lo esperable es distinto: el orden de delante a atrás aprovecha el early-z y el de atrás a delante sombrea todo; no lo hemos podido medir en esta máquina, así que ejecuta el playground en la tuya.</p>
+
+<div class="callout bestiario" data-id="m4-discard-lento" data-titulo="Añadir un discard hace el shader más lento, aunque descarte píxeles">
+  <p><strong>Síntoma:</strong> para «ahorrar trabajo» añades <code>if (alfa &lt; 0.5) discard;</code> a un shader, o dejas un <code>discard</code> en una rama que casi nunca se ejecuta, y la escena va más lenta.</p>
+  <p><strong>Causa:</strong> con <code>discard</code> (o con <code>gl_FragDepth</code>) la GPU no puede probar la profundidad antes de sombrear ni eliminar superficies ocultas: tiene que ejecutar el shader de todos los fragmentos para saber cuáles sobreviven. Medido en el M1: 32 capas con un <code>discard</code> que nunca se ejecuta, entre 17 y 27 veces el coste de una (según la ejecución); sin él, el coste de una.</p>
+  <p><strong>Solución:</strong> usa shaders sin <code>discard</code> para todo lo opaco y reserva los que descartan para lo que de verdad lo necesita (vegetación, rejillas), dibujado aparte. No escribas <code>gl_FragDepth</code> salvo que sea imprescindible.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un fragment shader opaco termina con <code>if (color.a &lt; 0.01) discard;</code>, y esa condición no se cumple nunca en tu escena. En una GPU con early-z o eliminación de superficies ocultas, ¿qué efecto tiene esa línea?</p>
+  <ul>
+    <li>Ninguno: si nunca se ejecuta, es como si no estuviera.<div class="explicacion">El hardware decide cómo tratar el shader al compilarlo, no en cada fragmento: basta con que el <code>discard</code> <em>pueda</em> ocurrir para que la prueba de profundidad temprana deje de ser segura.</div></li>
+    <li data-correcta>Puede desactivar la prueba de profundidad temprana y hacer que se sombreen fragmentos ocultos.<div class="explicacion">Exacto: la GPU ya no puede saber, antes de ejecutar el shader, qué fragmentos sobrevivirán. En el M1 medimos que 32 capas pasaban de costar lo mismo que una a costar entre 17 y 27 veces más.</div></li>
+    <li>Hace el shader más rápido, porque descarta trabajo.<div class="explicacion"><code>discard</code> evita la escritura del fragmento, pero el shader ya se ha ejecutado entero hasta llegar a él. Lo que se pierde (las pruebas tempranas) suele costar mucho más de lo que se ahorra.</div></li>
+  </ul>
+</div>
+
+<div class="callout hack" data-titulo="Ocultar objetos desde el vertex shader, no con discard">
+  <p>¿Necesitas que un shader pueda ocultar objetos enteros (partículas muertas, instancias apagadas)? No lo hagas con un <code>discard</code> en el fragment shader: aunque no se ejecute, su mera presencia apaga la eliminación de superficies ocultas para todo lo que dibuje ese shader. Hazlo en el vertex shader, sacando los vértices del volumen de recorte:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+// x = 2 > w = 1 en los tres vértices: el triángulo queda fuera del recorte
+if (oculto) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+</script>
+  <p>Si los tres vértices de un triángulo quedan fuera del mismo plano de recorte, el triángulo entero se descarta antes de rasterizar: ni un fragmento. (Colapsar los tres vértices en un mismo punto también funciona: área cero, cero fragmentos.) Lo medimos en el M1 con 32 capas a pantalla completa de 1024 × 1024, dibujadas de atrás a delante: con un shader que lleva el <code>discard</code> para poder ocultar, las capas <em>visibles</em> cuestan 46 ms; con la versión del vertex shader, 2 ms, igual que un shader sin ocultación. Y ocultas cuestan 0,5 ms, lo mismo que no dibujar nada, frente a 1,1 ms con el <code>discard</code>, que rasteriza todos los fragmentos para tirarlos después.</p>
+</div>
+
+<div class="callout senior" data-titulo="El driver también conoce trucos">
+  <p>Un detalle que descubrimos midiendo: con blending activado <em>pero</em> un fragment shader que escribe siempre un alfa constante de 1,0, las 32 capas vuelven a costar lo que una (2,6 ms). El compilador ve que, con <code>SRC_ALPHA, ONE_MINUS_SRC_ALPHA</code> y alfa 1, el blending no cambia nada, y trata el dibujo como opaco. Si el alfa se calcula en tiempo de ejecución, aunque siempre valga 1, el truco no funciona (66 ms). No construyas nada sobre esto (es un detalle del driver de Apple que puede cambiar), pero es un buen recordatorio de que el pipeline de la especificación es un modelo: el hardware y el driver hacen todo lo posible por saltárselo cuando el resultado es el mismo.</p>
+</div>
+
+<h2>12. El framebuffer</h2>
+<p>Lo que sobrevive se escribe en el <strong>framebuffer</strong>: un búfer de color (normalmente 8 bits por canal, RGBA) y, si lo pediste, uno de profundidad y uno de stencil. El de WebGL por defecto es el del canvas; al terminar tu callback de <code>requestAnimationFrame</code>, el navegador lo entrega al compositor de la página, y por defecto el contenido no se conserva para el frame siguiente (<a href="../05-webgl/01-contexto.html">5.1</a>). También puedes dibujar en framebuffers propios, cuyas imágenes son texturas que otro dibujo puede leer: es la base de todos los efectos de posproceso (<a href="../05-webgl/08-framebuffers.html">5.8</a>).</p>
+
+<h2>Programable contra fijo: el mapa completo</h2>
+<table class="m4-compacta">
+  <thead><tr><th>Etapa</th><th>¿Quién la controla?</th><th>Cómo se configura</th><th>En la GPU de juguete (<code>gpu.py</code>)</th></tr></thead>
+  <tbody>
+    <tr><td>Vertex fetch</td><td>fija</td><td>buffers + VAO (<code>vertexAttribPointer</code>)</td><td><code>buscar_vertice</code>, <code>Atributo.leer</code></td></tr>
+    <tr><td>Vertex shader</td><td><strong>tú (GLSL)</strong></td><td>el programa enlazado + uniforms</td><td><code>programa.vertex_shader</code></td></tr>
+    <tr><td>Ensamblado</td><td>fija</td><td>el modo de dibujo (<code>TRIANGLES</code>…)</td><td><code>ensamblar</code></td></tr>
+    <tr><td>Recorte</td><td>fija</td><td>(nada; <code>EXT_depth_clamp</code> lo modifica)</td><td><code>recortar</code></td></tr>
+    <tr><td>División y viewport</td><td>fija</td><td><code>viewport</code>, <code>depthRange</code></td><td><code>a_ventana</code></td></tr>
+    <tr><td>Culling</td><td>fija</td><td><code>CULL_FACE</code>, <code>cullFace</code>, <code>frontFace</code></td><td><code>es_frontal</code>, <code>descartar_por_cara</code></td></tr>
+    <tr><td>Rasterización</td><td>fija</td><td>(casi nada: MSAA al crear el contexto)</td><td><code>rasterizar</code>, <code>arista</code>, <code>cuenta_empate</code></td></tr>
+    <tr><td>Interpolación</td><td>fija</td><td>calificadores <code>smooth</code>/<code>flat</code> en el shader</td><td><code>mezclar</code> (dentro de <code>rasterizar</code>)</td></tr>
+    <tr><td>Fragment shader</td><td><strong>tú (GLSL)</strong></td><td>el programa enlazado + uniforms + texturas</td><td><code>programa.fragment_shader</code></td></tr>
+    <tr><td>Operaciones por fragmento</td><td>fija</td><td><code>enable</code>, <code>depthFunc</code>, <code>blendFunc</code>, <code>colorMask</code>…</td><td><code>escribir_fragmento</code></td></tr>
+  </tbody>
+</table>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 4.2.1 — Del espacio de clip al píxel, a mano</h3>
+  <p>Con <code>gl.viewport(0, 0, 640, 480)</code>, un triángulo sale del vertex shader con los vértices $A = (-1, -1, 0, 2)$, $B = (2, -1, 0, 2)$ y $C = (0, 1{,}5, 0, 1{,}5)$ en espacio de clip. Calcula sus coordenadas de ventana, di si está de frente o de espaldas (con <code>gl.frontFace(gl.CCW)</code>) y si hace falta recortarlo.</p>
+  <details class="pista"><summary>Pista 1</summary><p>Primero comprueba $-w \le x, y, z \le w$ para cada vértice; luego divide por su propia $w$ (cada vértice tiene la suya).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para la orientación, calcula $E_{AB}(C)$ con las coordenadas de ventana. Si es positivo, antihorario.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>Recorte</strong>: $A$: $|{-1}|, |{-1}|, 0 \le 2$ ✓. $B$: $x = 2 \le w = 2$ ✓ (justo en el borde). $C$: $y = 1{,}5 \le 1{,}5$ ✓ (justo en el borde). Todo dentro (dos vértices tocan los planos, pero no los cruzan): no hay recorte.</p>
+    <p><strong>NDC</strong>: $A = (-0{,}5, -0{,}5, 0)$, $B = (1, -0{,}5, 0)$, $C = (0, 1, 0)$.</p>
+    <p><strong>Ventana</strong>: $x_v = (x_{ndc} + 1) \cdot 320$, $y_v = (y_{ndc} + 1) \cdot 240$, $z_v = 0{,}5$. $A = (160, 120)$, $B = (640, 120)$, $C = (320, 480)$.</p>
+    <p><strong>Orientación</strong>: $E_{AB}(C) = (640 - 160)(480 - 120) - (120 - 120)(320 - 160) = 480 \cdot 360 = 172\,800 > 0$: antihorario, <strong>de frente</strong>. El área en pantalla es la mitad: 86 400 píxeles², y el triángulo cubrirá del orden de 86 400 píxeles. Observa que el vértice $B$ cae justo en el borde derecho de la ventana y el $C$, en el superior.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.2.2 — Escribe tú la transformación de viewport</h3>
+  <p>Este playground usa la GPU de juguete en JavaScript y sustituye su función <code>aVentana</code> por la tuya. Ahora mismo devuelve las coordenadas NDC sin transformar, así que el triángulo sale diminuto en la esquina inferior izquierda. Escribe la división de perspectiva y la transformación de viewport para que el triángulo ocupe su sitio en el framebuffer de 64 × 48 píxeles. La consola compara tus resultados con los esperados.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.2.2" data-altura="220" data-incluir="gpujuguete" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const G = GPUJuguete;
+
+// vertice = [posicionClip, varyings];  posicionClip = [x, y, z, w]
+// viewport = [x0, y0, ancho, alto]
+// Debe devolver [xv, yv, zv, 1/w]
+G.aVentana = function (vertice, viewport) {
+  const [x, y, z, w] = vertice[0];
+  const [x0, y0, ancho, alto] = viewport;
+  return [x, y, z, 1 / w];          // TODO: dividir por w y llevar a píxeles
+};
+
+// ---- a partir de aquí, la escena (no hace falta tocarla)
+const vbo = new G.Buffer(new Float32Array([
+  //  x     y    z    w      r    g    b
+  -1.0, -1.0, 0.0, 2.0,   1.0, 0.3, 0.2,
+   1.8, -0.8, 0.0, 2.0,   0.2, 0.9, 0.3,
+   0.0,  1.2, 0.0, 1.5,   0.3, 0.5, 1.0,
+]));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 4, stride: 28, offset: 0 }));
+vao.configurar(1, new G.Atributo(vbo, { size: 3, stride: 28, offset: 16 }));
+const prog = new G.Programa({
+  vertexShader: (a) => [a.a_pos, { v_color: a.a_color }],        // ¡gl_Position ya viene en el buffer!
+  fragmentShader: (v) => [...v.v_color, 1],
+  atributos: { a_pos: [0, 'vec4'], a_color: [1, 'vec3'] },
+});
+const fb = new G.Framebuffer(64, 48);
+fb.limpiar([0.08, 0.09, 0.12, 1]);
+const vistos = [];
+G.dibujarArrays(fb, prog, vao, G.TRIANGLES, 0, 3, null, null, (ev, d) => { if (ev === 'triangulo') vistos.push(d.ventana); });
+G.mostrar(fb, document.getElementById('c'));
+const esperado = [[16, 12], [60.8, 14.4], [32, 43.2]];
+(vistos[0] || []).forEach((p, i) => {
+  const ok = Math.abs(p[0] - esperado[i][0]) < 1e-4 && Math.abs(p[1] - esperado[i][1]) < 1e-4;
+  console.log(`vértice ${i}: (${p[0].toFixed(2)}, ${p[1].toFixed(2)})  esperado (${esperado[i].join(', ')})  ${ok ? '✓' : '✗'}`);
+});
+</script>
+<script type="text/x-js" data-solucion>
+const G = GPUJuguete;
+
+G.aVentana = function (vertice, viewport) {
+  const [x, y, z, w] = vertice[0];
+  const [x0, y0, ancho, alto] = viewport;
+  const xn = x / w, yn = y / w, zn = z / w;          // división de perspectiva → NDC (−1..1)
+  return [
+    x0 + (xn + 1) / 2 * ancho,                        // −1..1 → x0..x0+ancho
+    y0 + (yn + 1) / 2 * alto,                         // −1..1 → y0..y0+alto (y hacia ARRIBA)
+    (zn + 1) / 2,                                     // −1..1 → 0..1 (profundidad)
+    1 / w,                                            // se guarda para la corrección de perspectiva
+  ];
+};
+
+const vbo = new G.Buffer(new Float32Array([
+  -1.0, -1.0, 0.0, 2.0,   1.0, 0.3, 0.2,
+   1.8, -0.8, 0.0, 2.0,   0.2, 0.9, 0.3,
+   0.0,  1.2, 0.0, 1.5,   0.3, 0.5, 1.0,
+]));
+const vao = new G.VAO();
+vao.configurar(0, new G.Atributo(vbo, { size: 4, stride: 28, offset: 0 }));
+vao.configurar(1, new G.Atributo(vbo, { size: 3, stride: 28, offset: 16 }));
+const prog = new G.Programa({
+  vertexShader: (a) => [a.a_pos, { v_color: a.a_color }],
+  fragmentShader: (v) => [...v.v_color, 1],
+  atributos: { a_pos: [0, 'vec4'], a_color: [1, 'vec3'] },
+});
+const fb = new G.Framebuffer(64, 48);
+fb.limpiar([0.08, 0.09, 0.12, 1]);
+const vistos = [];
+G.dibujarArrays(fb, prog, vao, G.TRIANGLES, 0, 3, null, null, (ev, d) => { if (ev === 'triangulo') vistos.push(d.ventana); });
+G.mostrar(fb, document.getElementById('c'));
+const esperado = [[16, 12], [60.8, 14.4], [32, 43.2]];
+(vistos[0] || []).forEach((p, i) => {
+  const ok = Math.abs(p[0] - esperado[i][0]) < 1e-4 && Math.abs(p[1] - esperado[i][1]) < 1e-4;
+  console.log(`vértice ${i}: (${p[0].toFixed(2)}, ${p[1].toFixed(2)})  esperado (${esperado[i].join(', ')})  ${ok ? '✓' : '✗'}`);
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Primero NDC: <code>xn = x / w</code>, igual con <code>y</code> y <code>z</code>. Después, las fórmulas de la sección 6 de esta lección.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El vértice 0 tiene <code>x = −1, w = 2</code>: <code>xn = −0,5</code>, y con un viewport de 64 de ancho, <code>(−0,5 + 1) / 2 · 64 = 16</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La función hace dos cosas seguidas: la división de perspectiva (<code>x / w</code>…) y la transformación de viewport (llevar $[-1, 1]$ a $[x_0, x_0 + \text{ancho}]$ y lo mismo en $y$ y $z$). La cuarta componente, $1/w$, no se usa para posicionar: la GPU de juguete la guarda en cada vértice para interpolar con corrección de perspectiva.</p>
+    <p>Fíjate en el vértice 2: tiene $w = 1{,}5$ y no $2$, así que su división encoge menos: $y_{ndc} = 1{,}2 / 1{,}5 = 0{,}8$ → $y_v = 1{,}8 / 2 \cdot 48 = 43{,}2$. Si hubieras dividido todo por el mismo $w$ (un error común al hacer cuentas a mano) te habría salido otro triángulo. Y fíjate en la y: el vértice 2, con la y más grande, sale arriba en el canvas porque <code>G.mostrar</code> voltea las filas, igual que hace el navegador con el framebuffer de WebGL.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.2.3 — El triángulo que se deshace</h3>
+  <p>Este programa dibuja con WebGL un triángulo con un vértice detrás de la cámara (su $z = +1$ en el espacio de la cámara, que mira hacia $-z$). Debería verse como una gran superficie (un cuadrilátero) que sube desde la parte inferior del lienzo, pero sale una astilla en el borde. La culpa es de una sola línea del vertex shader. Encuéntrala y arréglala; la consola cuenta cuántos píxeles se pintan (unos 22 000 cuando está bien).</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.2.3" data-altura="200" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 200;
+const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+const VS = `#version 300 es
+in vec3 a_pos;
+in vec3 a_color;
+uniform mat4 u_proyeccion;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  vec4 clip = u_proyeccion * vec4(a_pos, 1.0);
+  gl_Position = vec4(clip.xyz / clip.w, 1.0);    // "hago yo la división de perspectiva"
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 fragColor;
+void main() { fragColor = vec4(v_color, 1.0); }`;
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+gl.bindAttribLocation(prog, 0, 'a_pos');
+gl.bindAttribLocation(prog, 1, 'a_color');
+gl.linkProgram(prog);
+gl.useProgram(prog);
+// Perspectiva: 60°, aspecto 1, planos a 0.1 y 100 (la de gluPerspective, column-major)
+const f = 1 / Math.tan(Math.PI / 6), nf = 1 / (0.1 - 100);
+gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'u_proyeccion'), false,
+  new Float32Array([f, 0, 0, 0,  0, f, 0, 0,  0, 0, (100 + 0.1) * nf, -1,  0, 0, 2 * 100 * 0.1 * nf, 0]));
+// Dos vértices delante de la cámara (z = −2) y uno DETRÁS (z = +1)
+const datos = new Float32Array([-1, -1, -2,  1, 0.3, 0.2,   1, -1, -2,  0.2, 0.9, 0.3,   0, 0.6, 1,  0.3, 0.5, 1]);
+gl.bindVertexArray(gl.createVertexArray());
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, datos, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const px = new Uint8Array(200 * 200 * 4);
+gl.readPixels(0, 0, 200, 200, gl.RGBA, gl.UNSIGNED_BYTE, px);
+let pintados = 0;
+for (let i = 0; i < px.length; i += 4) if (px[i] > 40 || px[i + 1] > 40 || px[i + 2] > 60) pintados++;
+console.log('píxeles pintados:', pintados);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 200;
+const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+const VS = `#version 300 es
+in vec3 a_pos;
+in vec3 a_color;
+uniform mat4 u_proyeccion;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  gl_Position = u_proyeccion * vec4(a_pos, 1.0);   // SIN dividir: la GPU recorta y luego divide
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 fragColor;
+void main() { fragColor = vec4(v_color, 1.0); }`;
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+gl.bindAttribLocation(prog, 0, 'a_pos');
+gl.bindAttribLocation(prog, 1, 'a_color');
+gl.linkProgram(prog);
+gl.useProgram(prog);
+const f = 1 / Math.tan(Math.PI / 6), nf = 1 / (0.1 - 100);
+gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'u_proyeccion'), false,
+  new Float32Array([f, 0, 0, 0,  0, f, 0, 0,  0, 0, (100 + 0.1) * nf, -1,  0, 0, 2 * 100 * 0.1 * nf, 0]));
+const datos = new Float32Array([-1, -1, -2,  1, 0.3, 0.2,   1, -1, -2,  0.2, 0.9, 0.3,   0, 0.6, 1,  0.3, 0.5, 1]);
+gl.bindVertexArray(gl.createVertexArray());
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, datos, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const px = new Uint8Array(200 * 200 * 4);
+gl.readPixels(0, 0, 200, 200, gl.RGBA, gl.UNSIGNED_BYTE, px);
+let pintados = 0;
+for (let i = 0; i < px.length; i += 4) if (px[i] > 40 || px[i + 1] > 40 || px[i + 2] > 60) pintados++;
+console.log('píxeles pintados:', pintados);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Calcula la $w$ de clip del tercer vértice: con esta matriz, $w = -z$ en el espacio de la cámara. ¿Qué signo tiene si $z = +1$?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Qué etapa del pipeline necesita conocer la $w$ original para saber que un vértice está detrás de la cámara? ¿Va antes o después de la división?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La línea culpable es <code>gl_Position = vec4(clip.xyz / clip.w, 1.0);</code>. El tercer vértice tiene $w = -1$ (está detrás de la cámara). Al dividir en el shader, su $x$ e $y$ cambian de signo y la GPU recibe un vértice con $w = 1$, aparentemente delante de la cámara pero en una posición «reflejada». El recorte ya no tiene forma de saber que había que cortar el triángulo contra el plano cercano, y lo que llega a la pantalla es otro triángulo: una astilla.</p>
+    <p>La solución es entregar la posición en espacio de clip tal cual: <code>gl_Position = u_proyeccion * vec4(a_pos, 1.0);</code>. La GPU recorta primero (con la $w$ original, detecta que el vértice está detrás y corta el triángulo por el plano cercano) y divide después. El resultado es un cuadrilátero, dos triángulos, con unos 22 000 píxeles. Regla de senior: <strong>nunca dividas por $w$ en el vertex shader</strong>, salvo que sepas con certeza que ningún vértice puede quedar detrás de la cámara.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 4.2.4 — Las transparencias que desaparecen</h3>
+  <p>Tres cuadrados semitransparentes (alfa 0,6) a distintas profundidades, con prueba de profundidad y blending. El cercano (naranja) tapa por completo a los otros dos donde se solapan, como si fuera opaco: de los de detrás no se ve nada a través de él. Con lo que sabes del orden de las operaciones por fragmento, arréglalo para que se vean los tres, mezclados correctamente. Toca solo la parte marcada.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.2.4" data-altura="230" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = 360; canvas.height = 240;
+const gl = canvas.getContext('webgl2', { antialias: false });
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+uniform vec3 u_centro;                  // x, y (NDC) y z (profundidad NDC: −1 cerca, 1 lejos)
+void main() {
+  vec2 p = vec2(gl_VertexID % 2, gl_VertexID / 2) * 2.0 - 1.0;   // 4 vértices de un cuadrado (TRIANGLE_STRIP)
+  gl_Position = vec4(u_centro.xy + p * 0.42, u_centro.z, 1.0);
+}`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; uniform vec4 u_color; out vec4 fragColor;
+void main() { fragColor = u_color; }`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+const uCentro = gl.getUniformLocation(prog, 'u_centro'), uColor = gl.getUniformLocation(prog, 'u_color');
+
+const cuadrados = [                      // en el orden en que llegan de "la escena"
+  { centro: [0.25, -0.15, -0.5], color: [1.0, 0.5, 0.2, 0.6] },   // naranja: el más CERCANO
+  { centro: [0.0, 0.05, 0.0], color: [0.3, 0.8, 0.4, 0.6] },     // verde: en medio
+  { centro: [-0.25, 0.25, 0.5], color: [0.35, 0.5, 1.0, 0.6] },   // azul: el más LEJANO
+];
+
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+// ===== toca a partir de aquí =====
+for (const c of cuadrados) {
+  gl.uniform3fv(uCentro, c.centro);
+  gl.uniform4fv(uColor, c.color);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+canvas.width = 360; canvas.height = 240;
+const gl = canvas.getContext('webgl2', { antialias: false });
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+uniform vec3 u_centro;
+void main() {
+  vec2 p = vec2(gl_VertexID % 2, gl_VertexID / 2) * 2.0 - 1.0;
+  gl_Position = vec4(u_centro.xy + p * 0.42, u_centro.z, 1.0);
+}`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; uniform vec4 u_color; out vec4 fragColor;
+void main() { fragColor = u_color; }`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+const uCentro = gl.getUniformLocation(prog, 'u_centro'), uColor = gl.getUniformLocation(prog, 'u_color');
+
+const cuadrados = [
+  { centro: [0.25, -0.15, -0.5], color: [1.0, 0.5, 0.2, 0.6] },
+  { centro: [0.0, 0.05, 0.0], color: [0.3, 0.8, 0.4, 0.6] },
+  { centro: [-0.25, 0.25, 0.5], color: [0.35, 0.5, 1.0, 0.6] },
+];
+
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+// 1. Ordenar de atrás a delante (z mayor = más lejos) para que cada mezcla vea lo que hay detrás.
+const ordenados = [...cuadrados].sort((a, b) => b.centro[2] - a.centro[2]);
+// 2. Las transparencias no escriben profundidad: así ninguna "tapa" a otra en el z-buffer
+//    (siguen PROBANDO la profundidad, por si hubiera objetos opacos delante).
+gl.depthMask(false);
+for (const c of ordenados) {
+  gl.uniform3fv(uCentro, c.centro);
+  gl.uniform4fv(uColor, c.color);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+gl.depthMask(true);                      // restaurar el estado (para gl.clear y el siguiente frame)
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El naranja se dibuja primero y escribe su profundidad en el z-buffer. ¿Qué les pasa después a los fragmentos del verde y del azul que caen detrás de él? ¿Llegan a la etapa de blending?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Hay dos arreglos complementarios: cambiar el orden de dibujo y dejar de escribir profundidad durante las transparencias (<code>gl.depthMask(false)</code>). ¿Qué pasa si haces solo uno de los dos?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El problema es el orden de las operaciones por fragmento: la prueba de profundidad va <em>antes</em> del blending. El naranja (cercano) se dibuja primero y escribe su $z$; los fragmentos del verde y del azul que caen detrás fallan la prueba y mueren antes de poder mezclarse. El resultado es que un objeto transparente se comporta como opaco para todo lo que se dibuja después.</p>
+    <p>La receta clásica tiene dos partes: <strong>ordenar las transparencias de atrás a delante</strong> (el blending «sobre» no es conmutativo: cada capa se mezcla con lo que ya hay detrás; lo viste con la GPU de juguete en <code>ejemplo_05_blending.py</code>) y <strong>no escribir profundidad</strong> mientras las dibujas (<code>gl.depthMask(false)</code>), aunque sí la <em>prueben</em> para que un objeto opaco que esté delante las tape. En una escena real, primero se dibuja todo lo opaco con la profundidad normal y luego las transparencias así. Si solo ordenas, en este caso ya funciona (cada cuadrado pasa la prueba contra los de detrás); si solo desactivas la escritura, se ven los tres pero mezclados en el orden equivocado (el azul, dibujado el último, queda «encima» del naranja). Lo desarrolla <a href="../05-webgl/07-blending.html">5.7</a>.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>El pipeline es una cadena: <strong>vertex fetch → vertex shader → ensamblado → recorte → división por w → viewport → culling → rasterización → interpolación → fragment shader → pruebas por fragmento → framebuffer</strong>. Solo los dos shaders son programables; el resto se configura.</li>
+    <li>El vertex shader entrega <code>gl_Position</code> en <strong>espacio de clip</strong>, sin dividir. La GPU recorta contra $-w \le x, y, z \le w$ (en la práctica, solo el plano cercano y el lejano de verdad; los lados, con la guard band), divide por $w$ (NDC) y aplica el viewport (píxeles, y hacia arriba, centros en ,5).</li>
+    <li>El signo del área en pantalla decide si un triángulo está de frente (CCW por defecto). El culling está desactivado por defecto.</li>
+    <li>Un píxel pertenece a un triángulo si <strong>su centro</strong> está dentro de las tres funciones de arista. Los empates se resuelven con una regla (en la GPU que medimos, aristas izquierda e inferior) para que ningún píxel compartido se pinte dos veces.</li>
+    <li>Los varyings se interpolan con baricéntricas corregidas con $1/w$; sin corrección, las texturas se doblan (la PS1). La profundidad se interpola linealmente en pantalla.</li>
+    <li>Pruebas por fragmento, en orden: scissor, stencil, profundidad, blending, máscaras. <code>gl.clear</code> respeta el scissor y las máscaras.</li>
+    <li>Early-z y la eliminación de superficies ocultas (en GPU de teselas como las de Apple) evitan sombrear lo que no se ve… salvo con <code>discard</code>, <code>gl_FragDepth</code> o blending.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li>Fabian Giesen, <a href="https://fgiesen.wordpress.com/2013/02/08/triangle-rasterization-in-practice/">Triangle rasterization in practice</a> y <a href="https://fgiesen.wordpress.com/2011/07/05/a-trip-through-the-graphics-pipeline-2011-part-5/">A trip through the Graphics Pipeline, parte 5</a> (recorte y guard band).</li>
+  <li>Microsoft, <a href="https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-rasterizer-stage-rules">reglas de rasterización de Direct3D</a> (la regla top-left, con dibujos).</li>
+  <li>Khronos, <a href="https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf">especificación de OpenGL ES 3.0</a>, capítulos 2 a 4: el pipeline oficial, etapa por etapa.</li>
+  <li>Apple, <a href="https://developer.apple.com/documentation/metal/tailor-your-apps-for-apple-gpus-and-tile-based-deferred-rendering">Tailor your apps for Apple GPUs and tile-based deferred rendering</a>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/gpu-juguete.js"></script>
+<script src="recursos/demo-pipeline.js"></script>
+</body>
+</html>

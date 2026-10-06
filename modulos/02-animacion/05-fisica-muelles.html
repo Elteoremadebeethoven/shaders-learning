@@ -1,0 +1,1025 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.5 · Física: integración y muelles — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m2.css">
+</head>
+<body data-leccion="02-animacion/fisica-muelles">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 2 · Animación con CSS y JavaScript</p>
+  <h1>Física: integración y muelles</h1>
+  <p class="resumen">Un easing tiene duración fija y no sabe a qué velocidad va el objeto; un muelle sí. Aquí aprenderás a simular movimiento paso a paso, por qué el método ingenuo explota, cómo se comporta un muelle amortiguado y cómo usarlo para animaciones que se pueden interrumpir en cualquier momento sin un solo tirón.</p>
+  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 2.3, 2.4</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Integrarás posición, velocidad y aceleración paso a paso y sabrás qué error comete cada método: Euler explícito, semi-implícito (simpléctico) y Verlet.</li>
+      <li>Modelarás un muelle amortiguado y lo describirás con su frecuencia natural $\omega_0$ y su razón de amortiguamiento $\zeta$ (subamortiguado, crítico, sobreamortiguado).</li>
+      <li>Usarás muelles en lugar de easings para animaciones interrumpibles, con los parámetros rigidez / amortiguamiento / masa de las librerías.</li>
+      <li>Conocerás la condición de estabilidad según <code>dt</code> y la solución cerrada del muelle críticamente amortiguado, estable con cualquier <code>dt</code>.</li>
+      <li>Estimarás bien la velocidad del puntero para lanzar objetos con un gesto (<em>flick</em>).</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué física</h2>
+<p>La demo de interrupciones de <a href="04-interpolacion-easing.html">2.4</a> terminaba con un problema sin resolver: al redirigir un tween, la velocidad salta o cae a cero, porque el tween no sabe a qué velocidad se mueve el objeto. El suavizado exponencial lo mejoraba, pero su velocidad también saltaba en cada cambio de destino.</p>
+<p>La física lo resuelve cambiando la pregunta. En lugar de «¿dónde debería estar en el instante <em>t</em>?», pregunta: «¿qué <strong>fuerzas</strong> actúan ahora mismo sobre el objeto, dada su posición y su velocidad?». El estado del objeto incluye su velocidad, así que cuando el destino cambia, la velocidad actual se conserva y las fuerzas la van torciendo poco a poco. No hay duración que cumplir ni curva que reiniciar. A cambio, hay que <strong>simular</strong>: avanzar el estado en pequeños pasos de tiempo, y hacerlo bien.</p>
+
+<h2>Posición, velocidad, aceleración</h2>
+<p>Tres magnitudes encadenadas:</p>
+<ul>
+  <li>La <strong>velocidad</strong> es cuánto cambia la posición por segundo: $v = \frac{dx}{dt}$ (px/s).</li>
+  <li>La <strong>aceleración</strong> es cuánto cambia la velocidad por segundo: $a = \frac{dv}{dt}$ (px/s²).</li>
+  <li>La segunda ley de Newton dice de dónde sale la aceleración: $F = m\,a$, es decir, $a = F / m$. A igual fuerza, un objeto con el doble de masa acelera la mitad.</li>
+</ul>
+<p>Si sabes la fuerza en cada instante, sabes la aceleración; «sumando» aceleraciones obtienes la velocidad, y sumando velocidades, la posición. Esa suma continua se llama <strong>integrar</strong>. Un ordenador no puede integrar en continuo: avanza en pasos de <code>dt</code> segundos, suponiendo que durante cada paso las cosas no cambian demasiado. Cómo se da ese paso es el <strong>integrador</strong>, y la elección importa muchísimo.</p>
+
+<h2>Tres integradores</h2>
+<p>Usaremos como banco de pruebas el sistema más delator que existe: un muelle sin rozamiento. Una masa $m = 1$ unida a un muelle de rigidez $k = 100$ que tira de ella hacia 0 con fuerza $F = -kx$. Soltada desde $x = 1$, debería oscilar entre −1 y 1 para siempre, con energía constante $E = \frac12 k x^2 + \frac12 m v^2 = 50$.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+// 1) Euler explícito: todo con los valores del principio del paso
+const a = -k * x / m;
+const xNueva = x + v * dt;
+v = v + a * dt;
+x = xNueva;
+
+// 2) Euler semi-implícito (simpléctico): primero la velocidad, luego la posición con la velocidad NUEVA
+const a2 = -k * x / m;
+v = v + a2 * dt;
+x = x + v * dt;
+
+// 3) Verlet (de posición): no guarda velocidad, sino la posición anterior
+const a3 = -k * x / m;
+const xSig = 2 * x - xAnterior + a3 * dt * dt;
+xAnterior = x;
+x = xSig;
+</script>
+<ol>
+  <li data-l="2-5">Euler explícito es la traducción literal de las definiciones: la posición avanza con la velocidad de ahora y la velocidad, con la aceleración de ahora. Fíjate en <code>xNueva</code>: hace falta para no usar la velocidad ya actualizada al mover la posición.</li>
+  <li data-l="8-10">El semi-implícito solo cambia el <strong>orden</strong>: actualiza la velocidad y mueve la posición con esa velocidad recién calculada. Una diferencia de dos líneas que, como vas a ver, lo cambia todo.</li>
+  <li data-l="13-16">Verlet parte de una idea distinta: la próxima posición es la actual más «lo que se movió en el último paso» (<code>x - xAnterior</code>) más la aceleración. La velocidad está implícita en la diferencia de posiciones: <code>v ≈ (x - xAnterior) / dt</code>. Se usa mucho en telas y cuerdas, porque para imponer una restricción (dos puntos a distancia fija) basta con mover posiciones y la velocidad se ajusta sola.</li>
+</ol>
+</div>
+
+<p>Esta demo ejecuta los tres a la vez, con el <code>dt</code> que elijas, en tiempo real (con el acumulador de <a href="03-raf.html">2.3</a>), y reinicia cada 6 segundos:</p>
+<div class="demo" id="demo-integradores">
+  <div class="demo-lienzo" style="height:320px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">…</div>
+</div>
+
+<p>Euler explícito gana energía en cada paso: la oscilación crece hasta salirse de la gráfica. Lo calculamos con $k = 100$, $m = 1$ y $dt = 1/60$: la energía, que debería ser 50, valía 1339 a los 2 segundos, 35 874 a los 4 y unos 689 millones a los 10. Los otros dos oscilan alrededor de 50 sin irse a ninguna parte: con $dt = 1/60$, la del semi-implícito se mueve entre 46 y 55, y la de Verlet (con la velocidad estimada por diferencias centradas) entre 49,6 y 50.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.5.1 — Un paso a mano de cada Euler</h3>
+  <p>Con $k = 100$, $m = 1$, $x = 1$, $v = 0$ y un paso grande, $dt = 0{,}1$ s, para que los números sean redondos. La energía inicial es $E = \frac12 \cdot 100 \cdot 1^2 + 0 = 50$.</p>
+  <p><strong>Euler explícito.</strong> Aceleración: $a = -100 \cdot 1 = -100$. Posición: $x_1 = 1 + 0 \cdot 0{,}1 = 1$ (la velocidad de partida era 0, así que no se mueve). Velocidad: $v_1 = 0 - 100 \cdot 0{,}1 = -10$. Energía: $\frac12 \cdot 100 \cdot 1 + \frac12 \cdot 100 = 100$. <strong>Se ha duplicado en un solo paso</strong>: el objeto tiene toda la energía potencial de antes (no se movió) y además ha ganado velocidad.</p>
+  <p><strong>Euler semi-implícito.</strong> Misma aceleración, $-100$. Velocidad: $v_1 = -10$. Posición con la velocidad nueva: $x_1 = 1 - 10 \cdot 0{,}1 = 0$. Energía: $0 + \frac12 \cdot 100 = 50$. En este paso concreto se conserva exactamente (en otros sube o baja un poco, pero no deriva).</p>
+  <p><strong>La interpretación.</strong> En un muelle, posición y velocidad «se pasan» la energía. El explícito calcula el cambio de las dos con el estado viejo, así que cuenta dos veces la energía en tránsito. El semi-implícito deja que la posición «vea» la velocidad ya actualizada, y el reparto cuadra. Con un paso pequeño el error del explícito es menor, pero siempre del mismo signo, y se acumula.</p>
+</section>
+
+<div class="callout senior" data-titulo="por qué el semi-implícito no deriva">
+  <p>Dibuja el estado del muelle como un punto $(x, v)$: la solución exacta recorre una elipse para siempre. Euler explícito avanza cada paso por la tangente a la elipse, y una tangente siempre se sale hacia fuera: la trayectoria es una espiral que se abre. El factor por paso es $\sqrt{1 + (\omega\,dt)^2}$: con $\omega = 10$ rad/s y $dt = 1/60$, 1,0138 por paso, que en 600 pasos multiplica la amplitud por unas 3700.</p>
+  <p>El semi-implícito pertenece a la familia de los integradores <strong>simplécticos</strong>: conservan exactamente el área de cualquier región del plano $(x, v)$ a lo largo de la simulación. Su trayectoria es una elipse ligeramente deformada, pero cerrada: la energía oscila un poco alrededor del valor real y nunca deriva. Por eso es el que usan la mayoría de los motores de física de los juegos comerciales (lo cuenta Glenn Fiedler en el artículo enlazado al final) y el que usaremos en el resto del curso. Verlet también es simpléctico.</p>
+</div>
+
+<div class="callout bestiario" data-id="m2-euler-explota" data-titulo="Un objeto que oscila acaba cada vez más lejos hasta salir disparado">
+  <p><strong>Síntoma:</strong> un péndulo, un muelle o una órbita parecen correctos al principio, pero la oscilación crece lentamente sin que nada la empuje, hasta que el objeto sale de la pantalla o los valores se vuelven <code>Infinity</code> y <code>NaN</code>. Con más FPS tarda más en pasar, pero pasa.</p>
+  <p><strong>Causa:</strong> integración con Euler explícito: la posición avanza con la velocidad del principio del paso (<code>x += v * dt</code> escrito <em>antes</em> de <code>v += a * dt</code>). En cualquier sistema oscilante, eso añade energía en cada paso.</p>
+  <p><strong>Solución:</strong> cambia el orden: primero <code>v += a * dt</code>, después <code>x += v * dt</code> (Euler semi-implícito). Si el sistema es rígido, además limita <code>dt</code> o usa subpasos (ver la estabilidad en <a href="../02-animacion/05-fisica-muelles.html#estabilidad-cuando-explota-un-muelle">2.5</a>).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué diferencia hay entre Euler explícito y Euler semi-implícito?</p>
+  <ul>
+    <li data-correcta>El semi-implícito actualiza primero la velocidad y mueve la posición con la velocidad nueva.<div class="explicacion">Exacto. Dos líneas intercambiadas convierten un método que gana energía sin parar en uno simpléctico, estable en los sistemas oscilantes.</div></li>
+    <li>El semi-implícito usa un <code>dt</code> más pequeño.<div class="explicacion">No: los dos usan el mismo paso. La diferencia está en el orden de las operaciones.</div></li>
+    <li>El semi-implícito resuelve una ecuación en cada paso.<div class="explicacion">Eso es un integrador implícito «de verdad» (Euler implícito), más caro. El semi-implícito sigue siendo explícito y cuesta lo mismo que el explícito.</div></li>
+  </ul>
+</div>
+
+<h2>El muelle amortiguado</h2>
+<p>Un muelle ideal tira del objeto hacia su punto de reposo con una fuerza proporcional a la distancia (ley de Hooke), y el rozamiento frena con una fuerza proporcional a la velocidad:</p>
+$$F = \underbrace{-k\,(x - x_{\text{reposo}})}_{\text{muelle}} \;\underbrace{-\;c\,v}_{\text{amortiguamiento}}, \qquad a = \frac{F}{m}$$
+<p>$k$ es la <strong>rigidez</strong> (<em>stiffness</em>): cuánto tira por cada píxel de distancia. $c$ es el <strong>amortiguamiento</strong> (<em>damping</em>): cuánto frena por cada px/s de velocidad. $m$ es la <strong>masa</strong>. Librerías como Motion (antes framer-motion) o react-spring exponen exactamente estos tres números, con nombres como <code>stiffness</code>/<code>damping</code>/<code>mass</code> o <code>tension</code>/<code>friction</code>/<code>mass</code>.</p>
+<p>Pero los tres números no se leen bien por separado. Lo que de verdad describe el movimiento son dos combinaciones:</p>
+<ul>
+  <li><strong>Frecuencia natural</strong> $\omega_0 = \sqrt{k/m}$ (en rad/s): lo rápido que oscila. El periodo sin rozamiento es $T = 2\pi/\omega_0$. Más rigidez o menos masa, más rápido.</li>
+  <li><strong>Razón de amortiguamiento</strong> $\zeta = \dfrac{c}{2\sqrt{k\,m}}$ (adimensional): cuánto frena comparado con lo justo para no oscilar.</li>
+</ul>
+<p>Según $\zeta$, hay tres regímenes:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Régimen</th><th>$\zeta$</th><th>Comportamiento</th><th>Uso típico</th></tr></thead>
+  <tbody>
+    <tr><td>subamortiguado</td><td>$0 &lt; \zeta &lt; 1$</td><td>Oscila con frecuencia $\omega_0\sqrt{1-\zeta^2}$ y amplitud que decae como $e^{-\zeta\omega_0 t}$. Rebasa el destino.</td><td>Interfaces «con vida», rebotes.</td></tr>
+    <tr><td>crítico</td><td>$\zeta = 1$</td><td>Llega lo más rápido posible <em>sin</em> pasarse.</td><td>Cámaras, cursores, valores que no deben rebasar.</td></tr>
+    <tr><td>sobreamortiguado</td><td>$\zeta &gt; 1$</td><td>Llega sin pasarse, pero más despacio que el crítico, como en miel.</td><td>Casi nunca lo quieres.</td></tr>
+  </tbody>
+</table>
+
+<p>La solución exacta de la ecuación (soltando desde $x = 1$ con $v = 0$ y reposo en 0) se puede dibujar. En el graficador, <code>x</code> es el tiempo en segundos, <code>w</code> es $\omega_0$ y <code>z</code> es $\zeta$; la curva f2 (cian) es el crítico con la misma $\omega_0$ como referencia, y f3 y f4 (rosa y amarilla) son la envolvente $\pm e^{-\zeta\omega_0 t}$ que encierra a la oscilación:</p>
+<div class="graficador" data-x="-0.1,2.0" data-y="-1.1,1.2" data-titulo="x(t) de un muelle amortiguado" data-uniforms='{"w":{"min":2,"max":30,"valor":10,"etiqueta":"ω₀ (rad/s)"},"z":{"min":0,"max":2.5,"valor":0.3,"etiqueta":"ζ"}}'>
+<script type="text/x-exprs">
+muelle(x, w, z)
+muelle(x, w, 1.0)
+exp(-z * w * x)
+-exp(-z * w * x)
+</script>
+<script type="text/x-glsl">
+// x(t) con x(0) = 1, v(0) = 0 y reposo en 0
+float muelle(float t, float w, float z) {
+  if (t < 0.0) return 1.0;
+  if (z < 0.999) {                                   // subamortiguado
+    float wd = w * sqrt(1.0 - z * z);
+    return exp(-z * w * t) * (cos(wd * t) + z * w / wd * sin(wd * t));
+  } else if (z < 1.001) {                            // crítico
+    return (1.0 + w * t) * exp(-w * t);
+  }
+  float s = w * sqrt(z * z - 1.0);                   // sobreamortiguado
+  float r1 = -z * w + s, r2 = -z * w - s;
+  return (-r2 * exp(r1 * t) + r1 * exp(r2 * t)) / (r1 - r2);
+}
+</script>
+</div>
+
+<p>Y en movimiento, con los tres parámetros que expone cualquier librería. El muelle se suelta desde la izquierda cada 3 segundos:</p>
+<div class="demo" id="demo-laboratorio">
+  <div class="demo-lienzo" style="height:300px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">…</div>
+</div>
+
+<div class="callout senior" data-titulo="unidades: rad/s, Hz y segundos">
+  <p>$\omega_0$ está en radianes por segundo. La frecuencia en hercios (oscilaciones por segundo) es $f = \omega_0 / 2\pi$ y el periodo, $T = 1/f = 2\pi/\omega_0$. Con $k = 100$ y $m = 1$: $\omega_0 = 10$ rad/s, $f \approx 1{,}59$ Hz, $T \approx 0{,}63$ s. Una regla útil para el crítico: la distancia restante es $(1 + \omega_0 t)\,e^{-\omega_0 t}$, que baja al 2 % en $\omega_0 t \approx 5{,}83$ y al 1 % en $\omega_0 t \approx 6{,}64$ (lo calculamos resolviendo la ecuación). Con $\omega_0 = 10$, llega al 99 % en unos 0,66 s. Y las unidades de $k$ dependen de las de $x$: si mides en píxeles, $k$ está en «fuerza por píxel», así que los valores de una librería que trabaja en píxeles no se trasladan tal cual a una que trabaja en metros.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.5.2 — De «que rebote un 10 % y se asiente en medio segundo» a $k$, $c$ y $m$</h3>
+  <p>Diseño pide una animación que rebase el destino un 10 % y esté prácticamente quieta en 0,5 s. Trabajamos con $m = 1$.</p>
+  <p><strong>Paso 1: el rebote fija $\zeta$.</strong> En un subamortiguado, el primer rebase relativo es $e^{-\pi\zeta/\sqrt{1-\zeta^2}}$. Despejando para un 10 %: $\zeta = \dfrac{-\ln 0{,}1}{\sqrt{\pi^2 + \ln^2 0{,}1}} \approx 0{,}59$. (Comprobación: con $\zeta = 0{,}5$ el rebase es del 16,3 %; con 0,59, del 10,1 %.)</p>
+  <p><strong>Paso 2: el tiempo de asentamiento fija $\omega_0$.</strong> La envolvente $e^{-\zeta\omega_0 t}$ baja al 2 % cuando $\zeta\omega_0 t \approx 4$ (porque $e^{-4} \approx 0{,}018$). Con $t = 0{,}5$ s: $\omega_0 = 4/(0{,}59 \cdot 0{,}5) \approx 13{,}6$ rad/s.</p>
+  <p><strong>Paso 3: traducir a los parámetros.</strong> $k = m\,\omega_0^2 \approx 184$ y $c = 2\zeta\sqrt{k\,m} = 2\zeta\omega_0 m \approx 16$.</p>
+  <script type="text/plain" class="codigo" data-lang="js">
+    function parametrosMuelle(rebote, asentamiento, masa = 1) {
+      const L = Math.log(rebote);                       // ln(0.1) ≈ −2.303
+      const zeta = -L / Math.sqrt(Math.PI ** 2 + L * L);
+      const w0 = 4 / (zeta * asentamiento);
+      return { rigidez: masa * w0 * w0, amortiguamiento: 2 * zeta * w0 * masa, masa, zeta, w0 };
+    }
+    parametrosMuelle(0.1, 0.5);   // → rigidez ≈ 184, amortiguamiento ≈ 16, zeta ≈ 0.59, w0 ≈ 13.6
+  </script>
+  <p><strong>Conclusión:</strong> diseña con $\zeta$ y $\omega_0$ (o con «rebote» y «tiempo») y convierte a $k$ y $c$ solo al final. Por eso algunas APIs modernas de muelles ofrecen parámetros perceptuales como un rebote entre 0 y 1 y una duración visual, en vez de rigidez y amortiguamiento.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Un muelle tiene $k = 100$, $m = 1$ y $c = 20$. ¿Cómo se comporta?</p>
+  <ul>
+    <li>Oscila un poco antes de pararse.<div class="explicacion">Eso sería con $\zeta &lt; 1$. Calcula: $\zeta = c / (2\sqrt{km}) = 20 / (2 \cdot 10)$.</div></li>
+    <li>No se mueve: el amortiguamiento anula al muelle.<div class="explicacion">El amortiguamiento solo frena en proporción a la velocidad; nunca impide que el muelle mueva el objeto hacia su reposo.</div></li>
+    <li data-correcta>Llega al destino lo más rápido posible sin pasarse: es crítico.<div class="explicacion">Correcto: $\zeta = 20/(2\sqrt{100}) = 1$. Con $c = 10$ sería $\zeta = 0{,}5$ (rebote del 16 %); con $c = 40$, $\zeta = 2$ (sobreamortiguado, lento).</div></li>
+  </ul>
+</div>
+
+<h2>El muelle como sustituto del easing</h2>
+<p>Un animador basado en un muelle guarda posición y velocidad, y en cada frame aplica la fuerza hacia el destino actual. Cambiar el destino no reinicia nada: la velocidad sigue siendo la que era.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+class Muelle1D {
+  constructor({ rigidez = 170, amortiguamiento = 26, masa = 1, valor = 0 } = {}) {
+    Object.assign(this, { rigidez, amortiguamiento, masa });
+    this.x = valor;
+    this.v = 0;
+    this.objetivo = valor;
+  }
+  actualizar(dt) {
+    const SUBPASO = 1 / 240;
+    const n = Math.ceil(dt / SUBPASO);
+    const h = dt / n;
+    for (let i = 0; i < n; i++) {
+      const fuerza = -this.rigidez * (this.x - this.objetivo) - this.amortiguamiento * this.v;
+      this.v += (fuerza / this.masa) * h;
+      this.x += this.v * h;
+    }
+  }
+  enReposo(tolerancia = 0.01) {
+    return Math.abs(this.x - this.objetivo) < tolerancia && Math.abs(this.v) < tolerancia;
+  }
+}
+</script>
+<ol>
+  <li data-l="2">Tres parámetros físicos con valores por defecto razonables. Con estos, ω₀ = √170 ≈ 13 rad/s y ζ = 26 / (2·√170) ≈ 1: casi crítico.</li>
+  <li data-l="4-6">El estado: posición, velocidad y destino. La velocidad es la clave de todo: sobrevive a los cambios de destino.</li>
+  <li data-l="9-11">Subpasos: partimos el <code>dt</code> del frame en trozos de como mucho 1/240 s. A 60 Hz son 4 subpasos; a 144 Hz, 2. Así la integración es casi idéntica en cualquier pantalla y el muelle es estable aunque sea rígido (enseguida vemos por qué).</li>
+  <li data-l="13">La fuerza: muelle hacia el destino actual más rozamiento. Si <code>objetivo</code> cambió en este frame, la fuerza cambia, pero <code>v</code> no.</li>
+  <li data-l="14-15">Euler semi-implícito: primero la velocidad, luego la posición con la velocidad nueva.</li>
+  <li data-l="18-20">Un muelle, como el suavizado exponencial, tarda infinito en llegar. Este método permite dejar de animar (y de gastar CPU) cuando posición y velocidad son despreciables.</li>
+</ol>
+</div>
+
+<p>Compara con la demo de la lección anterior. Los destinos cambian cada 0,6 s, antes de que termine cada movimiento:</p>
+<div class="demo" id="demo-redirigir">
+  <div class="demo-lienzo" style="height:340px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">haz clic en el lienzo para cambiar el destino</div>
+</div>
+<p>Con el muelle, la gráfica de velocidad es continua: sin caídas a cero ni saltos verticales. Es lo que el ojo percibe como «natural»: los objetos reales no cambian de velocidad instantáneamente, porque tienen inercia.</p>
+
+<div class="callout hack">
+  <p>Un muelle sirve para animar cualquier número, no solo posiciones: escala, opacidad, el ángulo de una flecha (aplicando la fuerza sobre la diferencia envuelta de <a href="04-interpolacion-easing.html">2.4</a>), el progreso de un <em>uniform</em> en un shader (lo harás en <a href="../07-integracion/03-transiciones-shader.html">7.3</a>) o incluso un color en Oklab (un muelle por componente). Y para animaciones 2D, dos muelles independientes, uno por eje, dan movimientos curvos preciosos cuando el destino cambia en diagonal.</p>
+</div>
+
+<h2 id="estabilidad-cuando-explota-un-muelle">Estabilidad: cuándo explota un muelle</h2>
+<p>Incluso con el integrador bueno, un muelle puede explotar si el paso es demasiado grande para su rigidez. Para el semi-implícito sin rozamiento, la condición es exacta:</p>
+$$\omega_0 \cdot dt &lt; 2$$
+<p>Lo comprobamos simulando 2000 pasos a 60 Hz: con $k = 14\,000$ ($\omega_0\,dt = 1{,}97$) la amplitud se mantenía acotada; con $k = 14\,500$ ($\omega_0\,dt = 2{,}007$) crecía sin control. Y el amortiguamiento, en contra de la intuición, <strong>empeora</strong> el límite del semi-implícito. Calculando el crecimiento por paso del método para distintos $\zeta$:</p>
+<table class="m2-medidas">
+  <thead><tr><th class="num">$\zeta$</th><th class="num">estable hasta $\omega_0\,dt \approx$</th><th class="num">con $dt = 1/60$, $\omega_0$ máxima</th><th class="num">$k$ máxima ($m = 1$)</th></tr></thead>
+  <tbody>
+    <tr><td class="num">0</td><td class="num">2,00</td><td class="num">120 rad/s</td><td class="num">14 400</td></tr>
+    <tr><td class="num">0,1</td><td class="num">1,81</td><td class="num">109 rad/s</td><td class="num">≈ 11 800</td></tr>
+    <tr><td class="num">0,5</td><td class="num">1,24</td><td class="num">74 rad/s</td><td class="num">≈ 5 500</td></tr>
+    <tr><td class="num">1</td><td class="num">0,83</td><td class="num">50 rad/s</td><td class="num">≈ 2 500</td></tr>
+    <tr><td class="num">2</td><td class="num">0,47</td><td class="num">28 rad/s</td><td class="num">≈ 800</td></tr>
+  </tbody>
+</table>
+<p>Parece holgado a 60 Hz, pero piensa en los casos reales: el usuario vuelve de otra pestaña y el primer <code>dt</code> es de 0,1 s (con el límite de <a href="03-raf.html">2.3</a>); un muelle crítico con $\omega_0 = 20$ da $\omega_0\,dt = 2$, muy por encima de 0,83. Lo simulamos: con $\omega_0 = 20$, $\zeta = 1$ y $dt = 1/20$ s, al cabo de 1 s la posición valía 4181 en vez de casi 0. Por eso el <code>Muelle1D</code> de arriba usa subpasos de 1/240 s: $\omega_0 \cdot h$ se mantiene pequeño pase lo que pase con el frame.</p>
+
+<div class="callout bestiario" data-id="m2-muelle-explota" data-titulo="Un muelle rígido explota al volver de otra pestaña o en un móvil lento">
+  <p><strong>Síntoma:</strong> una animación con muelles funciona en tu equipo, pero en un móvil lento, al volver de otra pestaña o tras un frame largo, el objeto sale disparado, vibra con violencia o desaparece (<code>NaN</code>).</p>
+  <p><strong>Causa:</strong> el integrador (incluso el semi-implícito) es inestable cuando $\omega_0 \cdot dt$ supera un umbral: 2 sin rozamiento y menos con él (≈ 0,83 para un muelle crítico). Un muelle rígido (<code>k</code> grande, <code>m</code> pequeña) con un <code>dt</code> grande lo supera.</p>
+  <p><strong>Solución:</strong> limita <code>dt</code> y divídelo en subpasos pequeños (por ejemplo, de 1/240 s) dentro de cada frame; o usa un paso fijo con acumulador (<a href="../02-animacion/03-raf.html#paso-fijo-con-acumulador">2.3</a>); o, para el muelle crítico, usa su solución cerrada, que es exacta con cualquier <code>dt</code> (<a href="../02-animacion/05-fisica-muelles.html#hack-la-solucion-cerrada-del-muelle-critico">2.5</a>).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Duplicas la rigidez $k$ de un muelle y mantienes $dt$ y $m$. ¿Qué pasa con $\omega_0 \cdot dt$?</p>
+  <ul>
+    <li>Se duplica.<div class="explicacion">$\omega_0 = \sqrt{k/m}$: la rigidez está dentro de la raíz.</div></li>
+    <li data-correcta>Se multiplica por $\sqrt 2 \approx 1{,}41$.<div class="explicacion">Correcto. Para que el margen de estabilidad sea el mismo, tendrías que dividir el paso entre 1,41 (o usar más subpasos). Ojo también con $\zeta = c/(2\sqrt{km})$: con el mismo $c$, al duplicar $k$ el muelle pasa a estar menos amortiguado.</div></li>
+    <li>No cambia: la estabilidad solo depende de $dt$.<div class="explicacion">Depende del producto de la frecuencia natural por el paso: un muelle más rígido oscila más deprisa y necesita pasos más cortos.</div></li>
+  </ul>
+</div>
+
+<h2 id="hack-la-solucion-cerrada-del-muelle-critico">Hack: la solución cerrada del muelle crítico</h2>
+<p>Para $\zeta = 1$, la ecuación del muelle tiene una solución exacta sencillísima. Si $\tilde x = x - \text{objetivo}$ es la distancia al destino, $v_0$ la velocidad actual y $\omega$ la frecuencia natural:</p>
+$$\tilde x(t) = \big(\tilde x_0 + (v_0 + \omega\,\tilde x_0)\,t\big)\,e^{-\omega t} \qquad v(t) = \big(v_0 - \omega\,(v_0 + \omega\,\tilde x_0)\,t\big)\,e^{-\omega t}$$
+<p>Y aquí está el truco: en lugar de <em>integrar</em>, en cada frame usamos la fórmula para saltar exactamente <code>dt</code> segundos hacia delante desde el estado actual. No hay error de integración, así que <strong>es estable con cualquier <code>dt</code></strong>: con 1 ms o con 1 segundo, el resultado es el valor exacto del muelle en ese instante. Y como guardamos la velocidad, los cambios de destino siguen siendo suaves.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function muelleCritico(estado, objetivo, omega, dt) {
+  const d = estado.x - objetivo;
+  const b = estado.v + omega * d;
+  const e = Math.exp(-omega * dt);
+  estado.x = objetivo + (d + b * dt) * e;
+  estado.v = (estado.v - omega * b * dt) * e;
+}
+</script>
+<ol>
+  <li data-l="1">El estado es <code>{ x, v }</code>. <code>omega</code> es la frecuencia natural en rad/s: con 10, se asienta al 99 % en unos 0,66 s.</li>
+  <li data-l="2">La distancia al destino, x̃₀. Trabajar con la distancia permite que el destino cambie entre frames: cada frame empieza un problema nuevo desde el estado actual.</li>
+  <li data-l="3">El coeficiente B = v₀ + ω·x̃₀ que aparece en las dos fórmulas.</li>
+  <li data-l="4">El decaimiento exponencial del intervalo, calculado una sola vez.</li>
+  <li data-l="5">Posición exacta tras <code>dt</code>: (x̃₀ + B·dt)·e<sup>−ω·dt</sup>, más el destino.</li>
+  <li data-l="6">Velocidad exacta tras <code>dt</code>: (v₀ − ω·B·dt)·e<sup>−ω·dt</sup>. Se calcula con los valores de antes del paso (por eso <code>d</code> y <code>b</code> se guardaron primero).</li>
+</ol>
+</div>
+<p>¿De dónde sale? La ecuación $\ddot{\tilde x} + 2\omega\dot{\tilde x} + \omega^2\tilde x = 0$ (la del muelle con $\zeta = 1$) tiene como polinomio característico $r^2 + 2\omega r + \omega^2 = (r + \omega)^2$, con la raíz doble $-\omega$. Las soluciones son $(A + Bt)\,e^{-\omega t}$; imponiendo $\tilde x(0) = \tilde x_0$ y $\dot{\tilde x}(0) = v_0$ salen $A = \tilde x_0$ y $B = v_0 + \omega\tilde x_0$. Para los otros $\zeta$ también hay solución cerrada (la del graficador de arriba), con senos y cosenos, pero es más cara; el crítico es el caso estrella porque es justo el que quieres para seguir un objetivo sin rebasarlo. Es, en esencia, lo que hacen las funciones de «suavizado con inercia» de muchos motores de juego.</p>
+
+<h2>Demos: arrastrar, lanzar y encadenar</h2>
+<h3>Lanzar con un gesto: la velocidad del puntero</h3>
+<p>Para que al soltar un objeto salga con la velocidad de tu gesto (un <em>flick</em>), necesitas estimar la velocidad del puntero. Parece trivial y tiene dos trampas, las dos comprobadas con eventos de puntero sintéticos en Chrome:</p>
+<ul>
+  <li><strong><code>pointerup</code> no trae movimiento.</strong> Su posición es la del último <code>pointermove</code> (medimos (400, 300) en ambos). Si calculas la velocidad entre el último <code>pointermove</code> y el <code>pointerup</code>, siempre sale 0.</li>
+  <li><strong>Los dos últimos <code>pointermove</code> pueden ser viejos.</strong> Si el usuario arrastra rápido, se para 120 ms y suelta, los dos últimos movimientos dicen «iba a 1570 px/s», pero en el instante de soltar estaba quieto. En nuestra prueba, el <code>pointerup</code> llegó 142 ms después del último movimiento.</li>
+</ul>
+<p>La receta robusta: guarda las muestras (tiempo, x, y) de los últimos ~100 ms, y al soltar usa solo las que caen en esa ventana <em>contando hacia atrás desde el instante del <code>pointerup</code></em>. Si no queda ninguna reciente, la velocidad es 0. Como tiempo, usa <code>e.timeStamp</code>: medimos que va en el mismo reloj que <code>performance.now()</code> (164,6 frente a 164,7 ms).</p>
+
+<div class="demo" id="demo-flick">
+  <div class="demo-lienzo" style="height:340px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info">arrastra la bola y suéltala con un gesto rápido</div>
+</div>
+
+<div class="callout bestiario" data-id="m2-flick-falso" data-titulo="Al soltar, el objeto no sale lanzado (o sale lanzado aunque lo soltaste quieto)">
+  <p><strong>Síntoma:</strong> en una interfaz que se lanza con el dedo (un carrusel, una tarjeta, un mapa), a veces el gesto rápido no produce inercia; otras, el objeto sale disparado aunque el usuario se detuvo antes de soltar.</p>
+  <p><strong>Causa:</strong> la velocidad se estima con los eventos equivocados. <code>pointerup</code> tiene la misma posición que el último <code>pointermove</code>, así que la velocidad entre ellos es 0. Y los dos últimos <code>pointermove</code> pueden ser de hace cientos de milisegundos si el dedo se quedó quieto antes de soltar.</p>
+  <p><strong>Solución:</strong> guarda un historial corto de muestras con <code>e.timeStamp</code> y, al soltar, calcula la velocidad con las muestras de los últimos 80–100 ms antes del <code>pointerup</code>; si no hay muestras en esa ventana, la velocidad es 0. Limita además la velocidad máxima: un evento aislado con un <code>timeStamp</code> muy próximo al anterior puede dar valores absurdos.</p>
+</div>
+
+<div class="callout senior" data-titulo="eventos coalescidos y predichos">
+  <p>Recuerda de la lección <a href="../01-web/04-js-dom-eventos.html">1.4</a> que un ratón o un lápiz informan de su posición más veces de las que tu código recibe <code>pointermove</code>: el navegador agrupa (<em>coalesce</em>) las muestras intermedias, y <code>e.getCoalescedEvents()</code> te las devuelve, cada una con su posición y su <code>timeStamp</code>. Para estimar la velocidad de un flick con precisión, mete esas muestras en tu historial en lugar de solo la del evento. Su pareja es <code>e.getPredictedEvents()</code>: posiciones futuras estimadas por el navegador, útiles para reducir la latencia percibida al dibujar un trazo. Lo comprobamos en Chrome enviando 60 movimientos de ratón de golpe: llegaron 31 <code>pointermove</code>, y sus listas de coalescidos sumaban exactamente las 60 posiciones (y los dos métodos existen). Los verás de nuevo en <a href="../07-integracion/02-interaccion.html">7.2</a>.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.5.3 — Una cadena de muelles que sigue al puntero</h3>
+  <p>Cada eslabón es un muelle 2D que persigue al anterior, y el primero persigue al puntero (si no mueves el ratón, sigue un camino automático). El retraso de cada eslabón respecto al anterior se acumula y da ese movimiento de «cola» orgánico sin haber programado ninguna curva.</p>
+<div class="js-playground" data-titulo="Cadena de muelles" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+
+const N = 16;                    // eslabones
+const K = 260, C = 16, M = 1;    // ω0 ≈ 16 rad/s, ζ ≈ 0.5
+const eslabones = Array.from({ length: N }, () => ({ x: canvas.width / 2, y: canvas.height / 2, vx: 0, vy: 0 }));
+let objetivo = { x: canvas.width / 2, y: canvas.height / 2 }, auto = true;
+canvas.addEventListener('pointermove', (e) => { objetivo = { x: e.offsetX, y: e.offsetY }; auto = false; });
+
+function paso(e, ox, oy, h) {    // un subpaso semi-implícito hacia (ox, oy)
+  const ax = (-K * (e.x - ox) - C * e.vx) / M;
+  const ay = (-K * (e.y - oy) - C * e.vy) / M;
+  e.vx += ax * h; e.vy += ay * h;
+  e.x += e.vx * h; e.y += e.vy * h;
+}
+
+let anterior = null;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  if (auto) {                    // camino automático (curva de Lissajous)
+    const s = t / 1000;
+    objetivo = { x: canvas.width / 2 + Math.sin(s * 1.3) * canvas.width * 0.35,
+                 y: canvas.height / 2 + Math.sin(s * 2.1) * canvas.height * 0.3 };
+  }
+  const n = Math.ceil(dt / (1 / 240)), h = dt / Math.max(1, n);
+  for (let k = 0; k < n; k++) {
+    paso(eslabones[0], objetivo.x, objetivo.y, h);
+    for (let i = 1; i < N; i++) paso(eslabones[i], eslabones[i - 1].x, eslabones[i - 1].y, h);
+  }
+  ctx.fillStyle = 'rgba(14, 16, 20, 0.35)';            // borrado parcial: deja estela
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let i = N - 1; i >= 0; i--) {
+    const e = eslabones[i];
+    ctx.fillStyle = `hsl(${250 - i * 9}, 85%, ${65 - i}%)`;
+    ctx.beginPath(); ctx.arc(e.x, e.y, 16 - i * 0.7, 0, Math.PI * 2); ctx.fill();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+  <p><strong>Paso 1: un muelle por eslabón y por eje.</strong> Cada eslabón guarda posición y velocidad en x e y; la función <code>paso</code> aplica la fuerza hacia su objetivo en los dos ejes a la vez, con Euler semi-implícito.</p>
+  <p><strong>Paso 2: el orden importa.</strong> Dentro de cada subpaso, el eslabón 1 persigue la posición del 0 <em>ya actualizada</em> en ese subpaso, el 2 la del 1, etc. Si recorrieras la cadena al revés, cada eslabón perseguiría la posición vieja de su antecesor y la cola se retrasaría un poco más. Ninguna de las dos es «la correcta»: son dos modelos ligeramente distintos.</p>
+  <p><strong>Paso 3: los parámetros.</strong> Con $\zeta \approx 0{,}5$ cada eslabón rebasa un poco a su antecesor y la cadena ondula. Prueba <code>C = 32</code> (crítico, cola rígida y suave) o <code>C = 6</code> (muy elástica). Y observa la estela: el borrado con un rectángulo semitransparente es un truco de Canvas 2D que estudiaremos en <a href="06-canvas2d.html">2.6</a>, con su propio comportamiento raro.</p>
+  <p><strong>Paso 4: los subpasos.</strong> Con $k = 260$, $\omega_0 \approx 16$ rad/s; a 60 Hz sin subpasos, $\omega_0\,dt \approx 0{,}27$: estable de sobra. Pero si subes <code>K</code> a 20 000 ($\omega_0 \approx 141$ rad/s, y con el mismo <code>C</code>, $\zeta \approx 0{,}06$), un único paso por frame a 60 Hz daría $\omega_0\,dt \approx 2{,}36$, por encima del límite de 2 incluso sin rozamiento: la cadena explotaría. Con los subpasos de 1/240 s, $\omega_0 h \approx 0{,}59$ y sigue estable. Fíjate también en lo que le pasa a $\zeta$ al subir <code>K</code> sin tocar <code>C</code>: la cadena se vuelve mucho más elástica.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Para calcular la velocidad de un <em>flick</em>, usas la posición del <code>pointerup</code> y la del último <code>pointermove</code>. ¿Qué obtienes?</p>
+  <ul>
+    <li>La velocidad del gesto en el momento de soltar.<div class="explicacion">Sería lo ideal, pero <code>pointerup</code> no trae una posición nueva: repite la del último movimiento.</div></li>
+    <li>Un valor enorme, porque el intervalo entre eventos es pequeño.<div class="explicacion">Eso pasa cuando dos <code>pointermove</code> llegan casi a la vez con posiciones distintas. Entre el último movimiento y el <code>pointerup</code>, la distancia es 0.</div></li>
+    <li data-correcta>Siempre 0 (o casi).<div class="explicacion">Correcto: las dos posiciones coinciden, así que la distancia es 0 dividida por el tiempo que pasó entre los eventos. Usa una ventana de muestras recientes antes del <code>pointerup</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 2.5.1 — Dos líneas que salvan la simulación</h3>
+  <p>Este muelle sin rozamiento usa Euler explícito, y la consola muestra cómo crece su energía segundo a segundo. Cambia <strong>solo el orden</strong> de las operaciones del paso (Euler semi-implícito) para que la energía se mantenga cerca de 50.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.5.1" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const k = 100, m = 1, PASO = 1 / 60;
+let x = 1, v = 0, tiempo = 0, siguienteInforme = 1;
+
+function paso(dt) {
+  const a = -k * x / m;
+  x = x + v * dt;          // ← posición con la velocidad VIEJA
+  v = v + a * dt;
+}
+
+let anterior = null, acumulador = 0;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t; acumulador += dt;
+  while (acumulador >= PASO) { paso(PASO); acumulador -= PASO; tiempo += PASO; }
+  if (tiempo >= siguienteInforme) {
+    console.log(`t = ${siguienteInforme} s · energía = ${(0.5 * k * x * x + 0.5 * m * v * v).toFixed(2)}`);
+    siguienteInforme++;
+  }
+  const cx = canvas.width / 2, esc = canvas.width * 0.2;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#3a4256'; ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
+  ctx.fillStyle = '#ff6bb5';
+  ctx.beginPath(); ctx.arc(cx + Math.max(-1e4, Math.min(1e4, x)) * esc, canvas.height / 2, 14, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const k = 100, m = 1, PASO = 1 / 60;
+let x = 1, v = 0, tiempo = 0, siguienteInforme = 1;
+
+function paso(dt) {
+  const a = -k * x / m;
+  v = v + a * dt;          // 1) primero la velocidad
+  x = x + v * dt;          // 2) luego la posición, con la velocidad NUEVA
+}
+
+let anterior = null, acumulador = 0;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t; acumulador += dt;
+  while (acumulador >= PASO) { paso(PASO); acumulador -= PASO; tiempo += PASO; }
+  if (tiempo >= siguienteInforme) {
+    console.log(`t = ${siguienteInforme} s · energía = ${(0.5 * k * x * x + 0.5 * m * v * v).toFixed(2)}`);
+    siguienteInforme++;
+  }
+  const cx = canvas.width / 2, esc = canvas.width * 0.2;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#3a4256'; ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
+  ctx.fillStyle = '#ff6bb5';
+  ctx.beginPath(); ctx.arc(cx + Math.max(-1e4, Math.min(1e4, x)) * esc, canvas.height / 2, 14, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>En el paso, la línea de la velocidad tiene que ir antes que la de la posición.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con el orden original, la energía crece exponencialmente: en el playground medimos 1376 a los 2 s y 36 870 a los 4, y llega a millones a los 10 (la pelota se sale enseguida de la pantalla; el dibujo limita la posición para no pintar en coordenadas absurdas). Intercambiando las dos líneas, la posición se mueve con la velocidad ya actualizada y la energía oscila entre 46 y 55 sin derivar. La consola imprime la energía una vez por segundo, siempre en el mismo punto de la oscilación del paso fijo, así que verás valores parecidos pero no idénticos: es la «energía que oscila pero no deriva» de los integradores simplécticos. Fíjate además en que el bucle ya usa paso fijo: el resultado es el mismo en cualquier pantalla.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.5.2 — Tu propio animador con muelle</h3>
+  <p>Completa <code>actualizar(dt)</code> de <code>Muelle1D</code> (fuerza del muelle hacia <code>objetivo</code> más amortiguamiento, Euler semi-implícito y subpasos de como mucho 1/240 s). Cada clic en el lienzo manda la caja a esa posición horizontal; si haces clic varias veces seguidas, la caja debe cambiar de rumbo sin frenazos. Los deslizadores cambian rigidez y amortiguamiento.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.5.2" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="controles">
+  rigidez <input id="k" type="range" min="20" max="600" value="170"> <span id="vk"></span>
+  amortiguamiento <input id="c" type="range" min="0" max="60" value="12"> <span id="vc"></span>
+</div>
+<div class="zona" id="zona"><div class="caja" id="caja"></div></div>
+</script>
+<script type="text/x-css">
+body { font: 12px system-ui, sans-serif; color: #b4bccb; }
+.controles { padding: 8px; }
+.zona { position: absolute; left: 0; right: 0; top: 40px; bottom: 0; cursor: pointer; }
+.caja { position: absolute; top: 40%; left: 0; width: 40px; height: 40px; margin-left: -20px; border-radius: 8px; background: #8b7bff; pointer-events: none; }
+</script>
+<script type="text/x-js">
+class Muelle1D {
+  constructor({ rigidez = 170, amortiguamiento = 26, masa = 1, valor = 0 } = {}) {
+    Object.assign(this, { rigidez, amortiguamiento, masa });
+    this.x = valor; this.v = 0; this.objetivo = valor;
+  }
+  actualizar(dt) {
+    // ← tu código: subpasos de como mucho 1/240 s, fuerza, v y x
+  }
+}
+
+const caja = document.getElementById('caja'), zona = document.getElementById('zona');
+const muelle = new Muelle1D({ valor: 60, rigidez: 170, amortiguamiento: 12 });
+zona.addEventListener('pointerdown', (e) => { muelle.objetivo = e.offsetX; });
+for (const [id, prop] of [['k', 'rigidez'], ['c', 'amortiguamiento']]) {
+  const inp = document.getElementById(id), sal = document.getElementById('v' + id);
+  const aplicar = () => { muelle[prop] = +inp.value; sal.textContent = inp.value; };
+  inp.addEventListener('input', aplicar); aplicar();
+}
+let anterior = null, n = 0;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  if (++n % 90 === 0) muelle.objetivo = 60 + Math.random() * (zona.clientWidth - 120);   // demo sola
+  muelle.actualizar(dt);
+  caja.style.transform = `translateX(${muelle.x}px)`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+class Muelle1D {
+  constructor({ rigidez = 170, amortiguamiento = 26, masa = 1, valor = 0 } = {}) {
+    Object.assign(this, { rigidez, amortiguamiento, masa });
+    this.x = valor; this.v = 0; this.objetivo = valor;
+  }
+  actualizar(dt) {
+    const n = Math.max(1, Math.ceil(dt / (1 / 240)));   // nº de subpasos
+    const h = dt / n;                                     // tamaño de cada subpaso
+    for (let i = 0; i < n; i++) {
+      const fuerza = -this.rigidez * (this.x - this.objetivo) - this.amortiguamiento * this.v;
+      this.v += (fuerza / this.masa) * h;                 // semi-implícito: v primero
+      this.x += this.v * h;
+    }
+  }
+}
+
+const caja = document.getElementById('caja'), zona = document.getElementById('zona');
+const muelle = new Muelle1D({ valor: 60, rigidez: 170, amortiguamiento: 12 });
+zona.addEventListener('pointerdown', (e) => { muelle.objetivo = e.offsetX; });
+for (const [id, prop] of [['k', 'rigidez'], ['c', 'amortiguamiento']]) {
+  const inp = document.getElementById(id), sal = document.getElementById('v' + id);
+  const aplicar = () => { muelle[prop] = +inp.value; sal.textContent = inp.value; };
+  inp.addEventListener('input', aplicar); aplicar();
+}
+let anterior = null, n = 0;
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t;
+  if (++n % 90 === 0) muelle.objetivo = 60 + Math.random() * (zona.clientWidth - 120);   // demo sola
+  muelle.actualizar(dt);
+  caja.style.transform = `translateX(${muelle.x}px)`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Número de subpasos: <code>Math.ceil(dt / (1 / 240))</code>, al menos 1. Tamaño de cada uno: <code>dt / n</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Dentro del bucle: <code>fuerza = -rigidez · (x − objetivo) − amortiguamiento · v</code>; luego <code>v += fuerza / masa · h</code> y <code>x += v · h</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Es el <code>Muelle1D</code> anotado de la lección. Con rigidez 170 y amortiguamiento 12, $\zeta = 12/(2\sqrt{170}) \approx 0{,}46$: la caja rebasa el destino un 20 % aproximadamente y vuelve. Sube el amortiguamiento a 26 para el crítico ($\zeta \approx 1$). Lo importante es lo que pasa al hacer varios clics seguidos: la caja no se detiene, curva su velocidad hacia el nuevo destino. Y el <code>Math.max(1, …)</code> es una defensa barata para el caso límite <code>dt = 0</code> (el primer frame): <code>Math.ceil(0)</code> es 0, el bucle no llega a ejecutarse y <code>h = 0 / 0</code> es <code>NaN</code>, un valor que aquí no se usa pero que, si algún día lo aprovechas fuera del bucle, contaminaría <code>x</code> para siempre (el bestiario de <a href="04-interpolacion-easing.html">2.4</a>). La caja tiene <code>pointer-events: none</code> a propósito: así <code>e.offsetX</code> se mide siempre respecto a la zona y no respecto a la caja cuando haces clic encima de ella.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.5.3 — Domar un muelle rígido a 20 fps</h3>
+  <p>El código simula con <code>rafSim</code> (de <a href="03-raf.html">2.3</a>) una pantalla de 20 Hz. El muelle es muy rígido ($k = 3000$, crítico) y explota: se pone a vibrar y desaparece. Sin cambiar $k$ ni $c$, arréglalo con subpasos para que $\omega_0 \cdot h$ quede por debajo de 0,5.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.5.3" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const HZ = 20;
+let tVirtual = null; const pendientes = [];
+function rafSim(cb) { pendientes.push(cb); }
+function motor(t) {
+  if (tVirtual === null) tVirtual = t;
+  while (tVirtual + 1000 / HZ <= t + 0.5) { tVirtual += 1000 / HZ; pendientes.splice(0).forEach((cb) => cb(tVirtual)); }
+  requestAnimationFrame(motor);
+}
+requestAnimationFrame(motor);
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const K = 3000, M = 1, C = 2 * Math.sqrt(K * M);        // crítico: ζ = 1, ω0 ≈ 54.8 rad/s
+let x = 60, v = 0, objetivo = canvas.width - 60, anterior = null, reloj = 0;
+
+function simular(dt) {
+  const f = -K * (x - objetivo) - C * v;                  // ← un solo paso de dt: inestable
+  v += f / M * dt;
+  x += v * dt;
+}
+
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t; reloj += dt;
+  if (reloj > 1.5) { reloj = 0; objetivo = objetivo > canvas.width / 2 ? 60 : canvas.width - 60; }
+  simular(dt);
+  if (!Number.isFinite(x)) { x = 60; v = 0; console.log('¡explotó! (ω0·dt =', (Math.sqrt(K / M) * dt).toFixed(2) + ')'); }
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ff6bb5';
+  ctx.beginPath(); ctx.arc(Math.max(-50, Math.min(canvas.width + 50, x)), canvas.height / 2, 14, 0, Math.PI * 2); ctx.fill();
+  rafSim(frame);
+}
+rafSim(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const HZ = 20;
+let tVirtual = null; const pendientes = [];
+function rafSim(cb) { pendientes.push(cb); }
+function motor(t) {
+  if (tVirtual === null) tVirtual = t;
+  while (tVirtual + 1000 / HZ <= t + 0.5) { tVirtual += 1000 / HZ; pendientes.splice(0).forEach((cb) => cb(tVirtual)); }
+  requestAnimationFrame(motor);
+}
+requestAnimationFrame(motor);
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const K = 3000, M = 1, C = 2 * Math.sqrt(K * M);        // crítico: ζ = 1, ω0 ≈ 54.8 rad/s
+let x = 60, v = 0, objetivo = canvas.width - 60, anterior = null, reloj = 0;
+
+function simular(dt) {
+  const w0 = Math.sqrt(K / M);
+  const n = Math.max(1, Math.ceil(w0 * dt / 0.5));        // subpasos para que ω0·h ≤ 0.5
+  const h = dt / n;
+  for (let i = 0; i < n; i++) {
+    const f = -K * (x - objetivo) - C * v;
+    v += f / M * h;
+    x += v * h;
+  }
+}
+
+function frame(t) {
+  const dt = anterior === null ? 0 : Math.min((t - anterior) / 1000, 0.1);
+  anterior = t; reloj += dt;
+  if (reloj > 1.5) { reloj = 0; objetivo = objetivo > canvas.width / 2 ? 60 : canvas.width - 60; }
+  simular(dt);
+  if (!Number.isFinite(x)) { x = 60; v = 0; console.log('¡explotó! (ω0·dt =', (Math.sqrt(K / M) * dt).toFixed(2) + ')'); }
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ff6bb5';
+  ctx.beginPath(); ctx.arc(Math.max(-50, Math.min(canvas.width + 50, x)), canvas.height / 2, 14, 0, Math.PI * 2); ctx.fill();
+  rafSim(frame);
+}
+rafSim(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>$\omega_0 = \sqrt{K/M} \approx 54{,}8$ rad/s y $dt = 0{,}05$ s, así que $\omega_0\,dt \approx 2{,}7$, muy por encima del límite de 0,83 para $\zeta = 1$. ¿En cuántos trozos tienes que partir <code>dt</code> para que cada trozo cumpla $\omega_0 \cdot h \le 0{,}5$?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El número de subpasos se calcula a partir de la condición: <code>n = ceil(ω0 · dt / 0.5)</code>. Con $\omega_0\,dt \approx 2{,}74$ salen 6 subpasos por frame, cada uno con $\omega_0\,h \approx 0{,}46$, dentro de la zona estable. El coste es ejecutar 6 veces la fuerza por frame: nada para un muelle, algo a vigilar con miles de partículas (<a href="08-proyecto-particulas.html">2.8</a>). Calcular <code>n</code> a partir de $\omega_0$ (y no con un número fijo) hace que el coste se adapte: a 144 Hz bastaría con 1 subpaso. El margen de 0,5 en lugar de 0,83 no es solo por seguridad: por debajo del límite de estabilidad el método sigue teniendo error, y con pasos más finos el movimiento se parece más al muelle real.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 2.5.4 — Seguimiento crítico exacto, estable con cualquier <code>dt</code></h3>
+  <p>Implementa <code>muelleCritico(estado, objetivo, omega, dt)</code> con la solución cerrada. El deslizador cambia el <code>dt</code> <em>simulado</em> de cada frame (hasta 0,5 s): con la versión integrada que trae el código, la bola se vuelve loca en cuanto subes <code>dt</code>; con la tuya, debe llegar siempre al destino sin pasarse, aunque sea a saltos.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.5.4" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<div style="padding:8px;color:#b4bccb;font:12px system-ui">dt simulado <input id="dt" type="range" min="0.005" max="0.5" step="0.005" value="0.016"> <span id="vdt"></span> s</div>
+<canvas id="c" style="position:absolute;left:0;top:34px"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: calc(100% - 34px); display: block; }
+</script>
+<script type="text/x-js">
+function muelleCritico(estado, objetivo, omega, dt) {
+  // ← versión integrada (semi-implícito, un paso): sustitúyela por la fórmula exacta
+  const f = -omega * omega * (estado.x - objetivo) - 2 * omega * estado.v;
+  estado.v += f * dt;
+  estado.x += estado.v * dt;
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const control = document.getElementById('dt'), salida = document.getElementById('vdt');
+const estado = { x: 60, v: 0 };
+let objetivo = canvas.width - 60, reloj = 0, ultimo = 0;
+
+function frame(t) {
+  const dt = +control.value; salida.textContent = dt.toFixed(3);
+  if (t - ultimo < Math.max(16, dt * 1000)) { requestAnimationFrame(frame); return; }  // un paso cada dt reales
+  ultimo = t; reloj += dt;
+  if (reloj > 2) { reloj = 0; objetivo = objetivo > canvas.width / 2 ? 60 : canvas.width - 60; }
+  muelleCritico(estado, objetivo, 12, dt);
+  if (!Number.isFinite(estado.x)) { estado.x = 60; estado.v = 0; }
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#8791a5'; ctx.beginPath(); ctx.arc(objetivo, canvas.height / 2, 18, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#3fd0e8';
+  ctx.beginPath(); ctx.arc(Math.max(-50, Math.min(canvas.width + 50, estado.x)), canvas.height / 2, 12, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+function muelleCritico(estado, objetivo, omega, dt) {
+  const d = estado.x - objetivo;          // distancia al destino
+  const b = estado.v + omega * d;         // B = v0 + ω·x̃0
+  const e = Math.exp(-omega * dt);        // decaimiento del intervalo
+  estado.x = objetivo + (d + b * dt) * e;
+  estado.v = (estado.v - omega * b * dt) * e;
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const control = document.getElementById('dt'), salida = document.getElementById('vdt');
+const estado = { x: 60, v: 0 };
+let objetivo = canvas.width - 60, reloj = 0, ultimo = 0;
+
+function frame(t) {
+  const dt = +control.value; salida.textContent = dt.toFixed(3);
+  if (t - ultimo < Math.max(16, dt * 1000)) { requestAnimationFrame(frame); return; }  // un paso cada dt reales
+  ultimo = t; reloj += dt;
+  if (reloj > 2) { reloj = 0; objetivo = objetivo > canvas.width / 2 ? 60 : canvas.width - 60; }
+  muelleCritico(estado, objetivo, 12, dt);
+  if (!Number.isFinite(estado.x)) { estado.x = 60; estado.v = 0; }
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#8791a5'; ctx.beginPath(); ctx.arc(objetivo, canvas.height / 2, 18, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#3fd0e8';
+  ctx.beginPath(); ctx.arc(Math.max(-50, Math.min(canvas.width + 50, estado.x)), canvas.height / 2, 12, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Guarda primero <code>d = x − objetivo</code> y <code>b = v + ω·d</code>, porque las fórmulas nuevas de <code>x</code> y <code>v</code> necesitan los valores de antes del paso.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>x = objetivo + (d + b·dt)·e</code> y <code>v = (v − ω·b·dt)·e</code>, con <code>e = Math.exp(−ω·dt)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con $\omega = 12$ y la versión integrada de un solo paso, el límite para $\zeta = 1$ es $\omega\,dt &lt; 0{,}83$, es decir, $dt &lt; 0{,}069$ s: al pasar de ahí, la bola oscila cada vez más y el código la reinicia al detectar <code>NaN</code>. Con la fórmula exacta, cada frame salta exactamente <code>dt</code> segundos por la curva real del muelle crítico: con <code>dt = 0.5</code> la bola da un par de saltos enormes, pero cada posición es un punto de la curva exacta, así que nunca se pasa del destino ni explota.</p>
+    <p>Por qué funciona con cualquier <code>dt</code>: el factor $e^{-\omega\,dt}$ está siempre entre 0 y 1 y el término polinómico $(\tilde x_0 + B\,dt)$ crece solo linealmente, así que el producto nunca se dispara: cada resultado es un punto de la trayectoria real del muelle. No hay condición de estabilidad porque no estamos aproximando nada.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Simular es avanzar el estado (posición y velocidad) en pasos de <code>dt</code> a partir de las fuerzas: $a = F/m$.</li>
+    <li>Euler explícito (<code>x += v·dt</code> antes de <code>v += a·dt</code>) añade energía y hace explotar lo que oscila. Euler semi-implícito (primero <code>v</code>, después <code>x</code>) y Verlet son simplécticos: la energía oscila pero no deriva. Usa el semi-implícito.</li>
+    <li>Muelle amortiguado: $F = -k(x - x_\text{reposo}) - cv$. Se lee con $\omega_0 = \sqrt{k/m}$ y $\zeta = c/(2\sqrt{km})$: $\zeta &lt; 1$ rebota, $\zeta = 1$ llega lo antes posible sin pasarse, $\zeta &gt; 1$ se arrastra.</li>
+    <li>Un muelle guarda velocidad: cambiar el destino no provoca saltos de velocidad. Diseña con rebote y tiempo de asentamiento y convierte a $k$ y $c$.</li>
+    <li>Estabilidad del semi-implícito: $\omega_0\,dt &lt; 2$ sin rozamiento, ≈ 0,83 si es crítico. Limita <code>dt</code> y usa subpasos.</li>
+    <li>El muelle crítico tiene solución cerrada: úsala para saltar <code>dt</code> exacto y tendrás un seguimiento estable con cualquier <code>dt</code>.</li>
+    <li>Para un <em>flick</em>, calcula la velocidad con las muestras de los últimos ~100 ms antes del <code>pointerup</code>, usando <code>e.timeStamp</code>.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://gafferongames.com/post/integration_basics/">Integration Basics</a> (Glenn Fiedler): integradores explicados para programadores de juegos.</li>
+  <li><a href="https://www.ryanjuckett.com/damped-springs/">Damped Springs</a> (Ryan Juckett): las soluciones cerradas de los tres regímenes, con código.</li>
+  <li><a href="https://www.joshwcomeau.com/animation/a-friendly-introduction-to-spring-physics/">A Friendly Introduction to Spring Physics</a> (Josh W. Comeau): muelles aplicados a interfaces web.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m2.js"></script>
+<script>
+Curso.alListo(() => {
+  /* ---------- Demo: tres integradores ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-integradores");
+    const info = raiz.querySelector(".demo-info");
+    const K = 100, M = 1, E0 = 50, DURACION = 6;
+    let paso = 1 / 60, acc = 0, tSim = 0;
+    let st;
+    const hist = [];
+    function reiniciar() {
+      const a0 = -K * 1 / M;
+      st = { eu: { x: 1, v: 0 }, se: { x: 1, v: 0 }, ve: { x: 1, xa: 1 - 0 * paso + 0.5 * a0 * paso * paso } };
+      tSim = 0; acc = 0; hist.length = 0;
+      hist.push({ t: 0, eu: 1, se: 1, ve: 1, Eeu: E0, Ese: E0, Eve: E0 });
+    }
+    function simular(dt) {
+      const e = st.eu; { const a = -K * e.x / M; const xn = e.x + e.v * dt; e.v += a * dt; e.x = xn; }
+      const s = st.se; { const a = -K * s.x / M; s.v += a * dt; s.x += s.v * dt; }
+      const v = st.ve; { const a = -K * v.x / M; const xs = 2 * v.x - v.xa + a * dt * dt; v.vel = (xs - v.xa) / (2 * dt); v.xa = v.x; v.x = xs; }
+      tSim += dt;
+      const En = (x, vv) => 0.5 * K * x * x + 0.5 * M * vv * vv;
+      hist.push({ t: tSim, eu: e.x, se: s.x, ve: v.x, Eeu: En(e.x, e.v), Ese: En(s.x, s.v), Eve: En(v.xa, v.vel) });
+    }
+    reiniciar();
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      dibujar(ctx, e) {
+        acc += e.dt;
+        let n = 0;
+        while (acc >= paso && n < 200) { simular(paso); acc -= paso; n++; }
+        if (tSim > DURACION) reiniciar();
+        const c = e.colores, W = e.w - 70, x0 = 50;
+        ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        const cols = { eu: c.rosa, se: c.acento2, ve: c.amarillo };
+        // gráfica de posición
+        const y0 = 20, h = 150, esc = h / 2 / 2.2, cy = y0 + h / 2;
+        ctx.strokeStyle = c.borde; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, W, h);
+        ctx.beginPath(); ctx.moveTo(x0, cy + 0.5); ctx.lineTo(x0 + W, cy + 0.5); ctx.stroke();
+        ctx.fillStyle = c.tenue; ctx.font = "11px " + c.mono; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+        ctx.fillText("+1", x0 - 6, cy - esc); ctx.fillText("−1", x0 - 6, cy + esc); ctx.fillText("x", x0 - 6, y0 + 8);
+        ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(x0, cy - esc); ctx.lineTo(x0 + W, cy - esc); ctx.moveTo(x0, cy + esc); ctx.lineTo(x0 + W, cy + esc); ctx.stroke(); ctx.setLineDash([]);
+        ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, W, h); ctx.clip();
+        for (const k of ["eu", "se", "ve"]) {
+          ctx.strokeStyle = cols[k]; ctx.lineWidth = 1.8; ctx.beginPath();
+          hist.forEach((p, i) => { const X = x0 + p.t / DURACION * W, Y = cy - Math.max(-10, Math.min(10, p[k])) * esc; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+          ctx.stroke();
+        }
+        ctx.restore();
+        // gráfica de energía (relativa)
+        const y1 = y0 + h + 30, h2 = e.h - y1 - 16;
+        ctx.strokeStyle = c.borde; ctx.strokeRect(x0 + 0.5, y1 + 0.5, W, h2);
+        ctx.fillStyle = c.tenue; ctx.textAlign = "left"; ctx.textBaseline = "bottom"; ctx.fillText("energía / energía inicial", x0 + 4, y1 - 3);
+        ctx.textAlign = "right"; ctx.textBaseline = "middle"; ctx.fillText("1", x0 - 6, y1 + h2 * 2 / 3); ctx.fillText("3", x0 - 6, y1 + 6);
+        ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(x0, y1 + h2 * 2 / 3); ctx.lineTo(x0 + W, y1 + h2 * 2 / 3); ctx.stroke(); ctx.setLineDash([]);
+        ctx.save(); ctx.beginPath(); ctx.rect(x0, y1, W, h2); ctx.clip();
+        for (const k of ["Eeu", "Ese", "Eve"]) {
+          ctx.strokeStyle = cols[k.slice(1).toLowerCase()]; ctx.lineWidth = 1.8; ctx.beginPath();
+          hist.forEach((p, i) => { const X = x0 + p.t / DURACION * W, Y = y1 + h2 - Math.min(3.2, p[k] / E0) / 3 * h2; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+          ctx.stroke();
+        }
+        ctx.restore();
+        if (e.frame % 8 === 0) {
+          const u = hist[hist.length - 1];
+          info.textContent = "t = " + u.t.toFixed(2) + " s · energía (debería ser 50): Euler explícito " + u.Eeu.toFixed(0) +
+            " · semi-implícito " + u.Ese.toFixed(1) + " · Verlet " + u.Eve.toFixed(1) + "   (rosa = explícito, cian = semi-implícito, amarillo = Verlet)";
+        }
+      },
+    });
+    const ctrls = raiz.querySelector(".demo-controles");
+    Curso.selector(ctrls, { etiqueta: "dt", valor: String(1 / 60),
+      opciones: [[String(1 / 240), "1/240 s"], [String(1 / 120), "1/120 s"], [String(1 / 60), "1/60 s"], [String(1 / 30), "1/30 s"], [String(1 / 15), "1/15 s"]],
+      alCambiar: (v) => { paso = +v; reiniciar(); } });
+    Curso.boton(ctrls, "Reiniciar", reiniciar);
+  })();
+
+  /* ---------- Demo: laboratorio k, c, m ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-laboratorio");
+    const info = raiz.querySelector(".demo-info");
+    const p = { k: 100, c: 6, m: 1 };
+    let x = 1, v = 0, reloj = 0;
+    const hist = [];
+    const ctrls = raiz.querySelector(".demo-controles");
+    function textoInfo() {
+      const w0 = Math.sqrt(p.k / p.m), z = p.c / (2 * Math.sqrt(p.k * p.m));
+      let reg = z < 0.995 ? "subamortiguado" : z <= 1.005 ? "crítico" : "sobreamortiguado";
+      let extra = z < 0.995 ? " · rebote " + (Math.exp(-Math.PI * z / Math.sqrt(1 - z * z)) * 100).toFixed(1) + " %" : "";
+      info.textContent = "ω₀ = √(k/m) = " + w0.toFixed(2) + " rad/s (T = " + (2 * Math.PI / w0).toFixed(2) + " s) · ζ = c / (2√(km)) = " + z.toFixed(2) + " → " + reg + extra;
+    }
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      dibujar(ctx, e) {
+        reloj += e.dt;
+        if (reloj > 3) { reloj = 0; x = 1; v = 0; hist.length = 0; }
+        const n = Math.max(1, Math.ceil(e.dt * 480)), h = e.dt / n;
+        for (let i = 0; i < n; i++) { const a = (-p.k * x - p.c * v) / p.m; v += a * h; x += v * h; }
+        if (e.dt > 0) hist.push([reloj, x]);
+        const c = e.colores;
+        ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        // pista con muelle dibujado
+        const cy = 60, cx = e.w / 2, esc = e.w * 0.3, bx = cx + Math.max(-1.6, Math.min(1.6, -x)) * esc;
+        ctx.strokeStyle = c.tenue; ctx.lineWidth = 1; ctx.setLineDash([3, 4]);
+        ctx.beginPath(); ctx.moveTo(cx + 0.5, cy - 30); ctx.lineTo(cx + 0.5, cy + 30); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = c.tenue; ctx.font = "11px " + c.mono; ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText("reposo", cx, cy - 34);
+        ctx.fillStyle = c.borde; ctx.fillRect(20, cy - 30, 6, 60);
+        ctx.strokeStyle = c.texto2; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(26, cy);
+        const vueltas = 14, x1 = bx - 16;
+        for (let i = 1; i <= vueltas; i++) { const X = 26 + (x1 - 26) * i / vueltas; ctx.lineTo(X, cy + (i % 2 ? -10 : 10)); }
+        ctx.lineTo(bx, cy); ctx.stroke();
+        ctx.fillStyle = c.acento; ctx.beginPath(); ctx.arc(bx, cy, 16, 0, Math.PI * 2); ctx.fill();
+        // gráfica x(t)
+        const gx = 40, gy = 120, gw = e.w - 60, gh = e.h - 135, gcy = gy + gh / 2, gesc = gh / 2 / 1.25;
+        ctx.strokeStyle = c.borde; ctx.lineWidth = 1; ctx.strokeRect(gx + 0.5, gy + 0.5, gw, gh);
+        ctx.beginPath(); ctx.moveTo(gx, gcy + 0.5); ctx.lineTo(gx + gw, gcy + 0.5); ctx.stroke();
+        ctx.strokeStyle = c.acento; ctx.lineWidth = 2; ctx.beginPath();
+        hist.forEach(([t, xx], i) => { const X = gx + t / 3 * gw, Y = gcy - Math.max(-1.25, Math.min(1.25, xx)) * gesc; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+        ctx.stroke();
+        ctx.fillStyle = c.tenue; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText("x(t) durante 3 s", gx + 6, gy + 4);
+      },
+    });
+    for (const [clave, etq, min, max, paso] of [["k", "rigidez k", 10, 400, 1], ["c", "amortiguamiento c", 0, 40, 0.5], ["m", "masa m", 0.2, 5, 0.1]]) {
+      Curso.control(ctrls, { etiqueta: etq, min, max, paso, valor: p[clave], alCambiar: (v) => { p[clave] = v; textoInfo(); } });
+    }
+    textoInfo();
+  })();
+
+  /* ---------- Demo: redirigir con muelle ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-redirigir");
+    const info = raiz.querySelector(".demo-info");
+    let modo = "muelle", auto = true, ultimoClic = -10, reloj = 0, tAuto = 0;
+    const pos = { x: 120, y: 120 }, vel = { x: 0, y: 0 }, obj = { x: 120, y: 120 };
+    let tw = null;
+    const K = 170, C = 20, DUR = 0.9, hist = [];
+    let prev = null;
+    const inOut = M2.easings.cubicInOut;
+    function destino(x, y) { obj.x = x; obj.y = y; tw = { dx: pos.x, dy: pos.y, hx: x, hy: y, t0: reloj }; }
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      alPulsar(e) { auto = false; ultimoClic = reloj; destino(e.raton.x, e.raton.y); },
+      dibujar(ctx, e) {
+        reloj += e.dt;
+        const zonaH = e.h - 90;
+        if (auto && reloj - tAuto > 0.6) { tAuto = reloj; destino(40 + Math.random() * (e.w - 80), 30 + Math.random() * (zonaH - 60)); }
+        if (!auto && reloj - ultimoClic > 8) auto = true;
+        if (modo === "muelle") {
+          const n = Math.max(1, Math.ceil(e.dt * 240)), h = e.dt / n;
+          for (let i = 0; i < n; i++) for (const k of ["x", "y"]) { const a = -K * (pos[k] - obj[k]) - C * vel[k]; vel[k] += a * h; pos[k] += vel[k] * h; }
+        } else if (tw) {
+          const p = Math.min(1, (reloj - tw.t0) / DUR), f = inOut(p);
+          pos.x = tw.dx + (tw.hx - tw.dx) * f; pos.y = tw.dy + (tw.hy - tw.dy) * f;
+        }
+        if (prev && e.dt > 0) { hist.push(Math.hypot(pos.x - prev.x, pos.y - prev.y) / e.dt); if (hist.length > 180) hist.shift(); }
+        prev = { x: pos.x, y: pos.y };
+        const c = e.colores;
+        ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        ctx.strokeStyle = c.tenue; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(obj.x - 8, obj.y); ctx.lineTo(obj.x + 8, obj.y); ctx.moveTo(obj.x, obj.y - 8); ctx.lineTo(obj.x, obj.y + 8); ctx.stroke();
+        ctx.fillStyle = modo === "muelle" ? c.verde : c.acento; ctx.beginPath(); ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2); ctx.fill();
+        const gy = e.h - 80, gh = 64, max = 2200;
+        ctx.fillStyle = c.superficie; ctx.fillRect(10, gy, e.w - 20, gh + 8);
+        ctx.strokeStyle = c.acento2; ctx.lineWidth = 2; ctx.beginPath();
+        hist.forEach((v, i) => { const X = 10 + i * (e.w - 20) / 180, Y = gy + gh + 4 - Math.min(v, max) / max * gh; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+        ctx.stroke();
+        ctx.fillStyle = c.tenue; ctx.font = "12px " + c.mono; ctx.textAlign = "left"; ctx.textBaseline = "top";
+        ctx.fillText("velocidad (px/s) de los últimos 3 s", 16, gy + 4);
+        if (e.frame % 20 === 0) info.textContent = (modo === "muelle" ? "muelle: k = 170, c = 20, m = 1 (ζ ≈ 0,77)" : "tween ease-in-out de 0,9 s") + (auto ? " · destinos automáticos cada 0,6 s" : "") + " · haz clic para cambiar el destino";
+      },
+    });
+    Curso.selector(raiz.querySelector(".demo-controles"), { etiqueta: "técnica", valor: "muelle",
+      opciones: [["muelle", "muelle (velocidad continua)"], ["tween", "tween ease-in-out (para comparar)"]],
+      alCambiar: (v) => { modo = v; vel.x = vel.y = 0; tw = { dx: pos.x, dy: pos.y, hx: obj.x, hy: obj.y, t0: reloj }; } });
+  })();
+
+  /* ---------- Demo: arrastrar y lanzar ---------- */
+  (function () {
+    const raiz = document.getElementById("demo-flick");
+    const info = raiz.querySelector(".demo-info");
+    let metodo = "ventana";
+    const bola = { x: 0, y: 0, vx: 0, vy: 0 }, ancla = { x: 0, y: 0 };
+    let arrastrando = false, muestras = [], lanzamiento = null, iniciado = false, auto = true, reloj = 0;
+    const K = 60, C = 4;
+    function velocidadAlSoltar(tUp) {
+      if (metodo === "dos") {
+        const n = muestras.length; if (n < 2) return { x: 0, y: 0 };
+        const a = muestras[n - 2], b = muestras[n - 1], dt = (b.t - a.t) / 1000 || 1e-3;
+        return { x: (b.x - a.x) / dt, y: (b.y - a.y) / dt };
+      }
+      const recientes = muestras.filter((m) => tUp - m.t <= 100);
+      if (recientes.length < 2 || tUp - recientes[recientes.length - 1].t > 50) return { x: 0, y: 0 };
+      const a = recientes[0], b = recientes[recientes.length - 1], dt = (b.t - a.t) / 1000;
+      if (dt <= 0) return { x: 0, y: 0 };
+      let vx = (b.x - a.x) / dt, vy = (b.y - a.y) / dt;
+      const v = Math.hypot(vx, vy), MAX = 4000;
+      if (v > MAX) { vx *= MAX / v; vy *= MAX / v; }
+      return { x: vx, y: vy };
+    }
+    Curso.lienzo2d(raiz.querySelector(".demo-lienzo"), {
+      animar: true,
+      alPulsar(e, ev) {
+        if (Math.hypot(e.raton.x - bola.x, e.raton.y - bola.y) < 40) { arrastrando = true; auto = false; muestras = [{ t: ev.timeStamp, x: e.raton.x, y: e.raton.y }]; }
+      },
+      alMover(e, ev) {
+        if (!arrastrando) return;
+        bola.x = e.raton.x; bola.y = e.raton.y; bola.vx = bola.vy = 0;
+        muestras.push({ t: ev.timeStamp, x: e.raton.x, y: e.raton.y });
+        while (muestras.length > 30) muestras.shift();
+      },
+      alSoltar(e, ev) {
+        if (!arrastrando) return;
+        arrastrando = false;
+        const v = velocidadAlSoltar(ev.timeStamp);
+        bola.vx = v.x; bola.vy = v.y;
+        lanzamiento = { x: bola.x, y: bola.y, vx: v.x, vy: v.y, t: reloj };
+        info.textContent = "velocidad al soltar: " + Math.hypot(v.x, v.y).toFixed(0) + " px/s (" + (metodo === "ventana" ? "ventana de 100 ms antes del pointerup" : "últimos dos pointermove") + ")";
+      },
+      dibujar(ctx, e) {
+        reloj += e.dt;
+        ancla.x = e.w / 2; ancla.y = e.h / 2;
+        if (!iniciado) { bola.x = ancla.x + 120; bola.y = ancla.y - 60; iniciado = true; }
+        if (auto && !arrastrando && Math.floor(reloj / 2.5) !== Math.floor((reloj - e.dt) / 2.5)) {   // lanzamiento automático de ejemplo
+          bola.x = ancla.x - 150; bola.y = ancla.y + 50; bola.vx = 900; bola.vy = -700;
+          lanzamiento = { x: bola.x, y: bola.y, vx: bola.vx, vy: bola.vy, t: reloj };
+        }
+        if (!arrastrando) {
+          const n = Math.max(1, Math.ceil(e.dt * 240)), h = e.dt / n;
+          for (let i = 0; i < n; i++) {
+            const ax = -K * (bola.x - ancla.x) - C * bola.vx, ay = -K * (bola.y - ancla.y) - C * bola.vy;
+            bola.vx += ax * h; bola.vy += ay * h; bola.x += bola.vx * h; bola.y += bola.vy * h;
+          }
+        }
+        const c = e.colores;
+        ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, e.w, e.h);
+        ctx.strokeStyle = c.texto2; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(ancla.x, ancla.y); ctx.lineTo(bola.x, bola.y); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = c.tenue; ctx.beginPath(); ctx.arc(ancla.x, ancla.y, 5, 0, Math.PI * 2); ctx.fill();
+        if (lanzamiento && reloj - lanzamiento.t < 1.2) {
+          const L = 0.12;
+          ctx.strokeStyle = c.amarillo; ctx.lineWidth = 2.5; ctx.beginPath();
+          ctx.moveTo(lanzamiento.x, lanzamiento.y); ctx.lineTo(lanzamiento.x + lanzamiento.vx * L, lanzamiento.y + lanzamiento.vy * L); ctx.stroke();
+        }
+        if (arrastrando && muestras.length > 1) {
+          ctx.fillStyle = c.tenue;
+          for (const m of muestras) { ctx.beginPath(); ctx.arc(m.x, m.y, 2, 0, Math.PI * 2); ctx.fill(); }
+        }
+        ctx.fillStyle = arrastrando ? c.rosa : c.acento; ctx.beginPath(); ctx.arc(bola.x, bola.y, 18, 0, Math.PI * 2); ctx.fill();
+      },
+    });
+    Curso.selector(raiz.querySelector(".demo-controles"), { etiqueta: "velocidad al soltar", valor: "ventana",
+      opciones: [["ventana", "ventana de 100 ms antes del pointerup (bien)"], ["dos", "últimos dos pointermove (mal)"]], alCambiar: (v) => { metodo = v; } });
+  })();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,1289 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4.1 · CPU vs GPU: paralelismo, draw calls y la máquina de estados — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m4.css">
+</head>
+<body data-leccion="04-gpu/cpu-vs-gpu">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 4 · La GPU por dentro</p>
+  <h1>CPU vs GPU: paralelismo, draw calls y la máquina de estados</h1>
+  <p class="resumen">Por qué la GPU es rapidísima haciendo lo mismo un millón de veces y torpe haciendo cosas distintas; qué pasa de verdad cuando llamas a <code>gl.drawArrays</code>; y por qué la API de WebGL es una «máquina de estados» que castiga a quien no sabe qué está enlazado en cada momento.</p>
+  <div class="meta"><span class="chip">⏱ 80 min</span><span class="chip">Requisitos: 1.5, 1.6, 2.1</span><span class="chip">Mide tu propia GPU</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Distinguirás <strong>latencia</strong> y <strong>rendimiento</strong>, y sabrás por qué una GPU sacrifica la primera para ganar la segunda.</li>
+      <li>Entenderás el modelo <strong>SIMT</strong>: warps de 32 (o 64) carriles en paso de marcha, y medirás en tu GPU cuánto cuesta la <strong>divergencia</strong> de un <code>if</code>.</li>
+      <li>Sabrás por qué la memoria (y no el cálculo) suele ser el cuello de botella, y para qué existe la caché de texturas.</li>
+      <li>Verás el camino real de una llamada WebGL: <strong>command buffer</strong>, proceso de la GPU, ANGLE, Metal/Direct3D… y qué llamadas obligan a esperar.</li>
+      <li>Calcularás el coste de un <strong>draw call</strong> y conocerás las dos curas: agrupar (batching) e instancing.</li>
+      <li>Dominarás el patrón <strong>«enlazar para editar»</strong> de la máquina de estados y sus bugs clásicos.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El problema: ocho millones de píxeles en dieciséis milisegundos</h2>
+<p>Una pantalla 4K tiene 3840 × 2160 = 8 294 400 píxeles. A 60 imágenes por segundo, cada imagen tiene que estar lista en 16,7 ms. Si un solo núcleo de CPU calculara los píxeles uno detrás de otro, tendría <strong>dos nanosegundos por píxel</strong>: unos seis ciclos de reloj de un procesador a 3 GHz. Y en un shader de verdad cada píxel necesita decenas o cientos de operaciones (una textura, una iluminación, un poco de ruido…).</p>
+<p>No hay truco de programación que arregle eso: hace falta otra clase de máquina. La lección 0.1 te dio el mapa (la CPU prepara y ordena, la GPU calcula vértices y píxeles). Ahora vamos a abrir la caja de la GPU para entender <em>por qué</em> es tan rápida en unas cosas y tan torpe en otras, porque casi todas las «reglas» de rendimiento de los shaders salen de ahí.</p>
+<p>Empecemos por medir. El siguiente programa hace <strong>exactamente el mismo cálculo</strong> (una cadena de multiplicaciones y sumas) para un millón de «píxeles»: primero en JavaScript, en tu CPU, y después en un fragment shader, en tu GPU. No te preocupes todavía por las llamadas de WebGL que aparecen: las desmontaremos una a una en el <a href="../05-webgl/02-primer-triangulo.html">módulo 5</a>. Aquí solo importan los tiempos.</p>
+
+<div class="js-playground" data-titulo="El mismo cálculo en tu CPU y en tu GPU" data-altura="90" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p id="salida" style="padding:14px 16px;font:14px monospace">midiendo…</p>
+</script>
+<script type="text/x-js">
+const N = 400;                 // iteraciones por píxel (4 multiplicaciones + 4 sumas cada una)
+const PIXELES = 1024 * 1024;   // un "canvas" de 1024 × 1024
+
+// ---- CPU: JavaScript, un solo hilo. Medimos 4096 píxeles y extrapolamos al millón.
+function enCPU(pixeles) {
+  let total = 0;
+  for (let p = 0; p < pixeles; p++) {
+    let a = p * 1e-4, b = a + 0.5, c = a + 0.25, d = a + 0.125;
+    for (let i = 0; i < N; i++) {
+      a = a * 0.999 + 0.001; b = b * 0.999 + 0.001;
+      c = c * 0.999 + 0.001; d = d * 0.999 + 0.001;
+    }
+    total += a + b + c + d;
+  }
+  return total;
+}
+enCPU(256);                                            // "calentar" el compilador JIT
+let t0 = performance.now();
+enCPU(4096);
+const msCPU = (performance.now() - t0) * (PIXELES / 4096);
+
+// ---- GPU: el mismo bucle en un fragment shader, una invocación por píxel.
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 1024;
+const gl = canvas.getContext('webgl2');
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo);
+  gl.shaderSource(s, fuente);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+void main() {                        // un triángulo que tapa todo el canvas (lo explica 4.5)
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float;
+uniform int u_n;
+out vec4 fragColor;
+void main() {
+  float p = gl_FragCoord.x + gl_FragCoord.y * 1024.0;
+  vec4 v = p * 1e-4 + vec4(0.0, 0.5, 0.25, 0.125);   // a, b, c, d en un vec4
+  for (int i = 0; i < u_n; i++) v = v * 0.999 + 0.001;
+  fragColor = vec4(fract(v.x + v.y + v.z + v.w));
+}`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.uniform1i(gl.getUniformLocation(prog, 'u_n'), N);
+gl.bindVertexArray(gl.createVertexArray());
+const px = new Uint8Array(4);
+gl.drawArrays(gl.TRIANGLES, 0, 3); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); // calentar
+t0 = performance.now();
+gl.drawArrays(gl.TRIANGLES, 0, 3);                         // encola el trabajo...
+gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);  // ...y espera a que termine
+const msGPU = performance.now() - t0;
+
+const txt = `CPU (JS, 1 hilo): ${msCPU.toFixed(0)} ms   ·   GPU: ${msGPU.toFixed(1)} ms   ·   ${(msCPU / msGPU).toFixed(0)}× más rápida`;
+document.getElementById('salida').textContent = txt;
+console.log(txt);
+console.log('Operaciones de coma flotante:', (PIXELES * N * 8 / 1e9).toFixed(2), 'miles de millones');
+</script>
+</div>
+
+<p>En el Mac con el que se escribió esta lección (Apple M1 con GPU de 7 núcleos, Chrome 154) la CPU tardó entre 1,0 y 1,5 s (según lo ocupado que estuviera el equipo) y la GPU entre 7 y 10 ms: <strong>de 100 a 230 veces más rápida</strong>. Cuidado con la conclusión: la comparación es injusta a propósito (JavaScript en un solo hilo frente a toda la GPU), pero el orden de magnitud es real. Con un bucle más cuidado medimos en esa GPU unos 0,9 billones de operaciones por segundo (0,9 TFLOPS; el máximo teórico que se publica para ese chip ronda los 2,3), frente a unos 6,5 mil millones (6,5 GFLOPS) de un hilo de JavaScript.</p>
+
+<div class="callout cuidado">
+  <p>Todos los números medidos de esta lección salen de <strong>una</strong> máquina concreta (MacBook con M1, macOS 26, Chrome 154) y varían de una GPU a otra, de un navegador a otro e incluso de una ejecución a otra. Lo que sí es universal es la <em>forma</em> de los resultados: qué es barato, qué es caro y por qué. Ejecuta tú los playgrounds: son tus números los que importan.</p>
+</div>
+
+<h2>Latencia contra rendimiento</h2>
+<p>Hay dos maneras de ser «rápido», y conviene separarlas con cuidado:</p>
+<ul>
+  <li><strong>Latencia</strong>: cuánto tarda en terminar <em>una</em> tarea desde que empieza. Se mide en segundos.</li>
+  <li><strong>Rendimiento</strong> (<em>throughput</em>): cuántas tareas terminan por segundo cuando hay muchas. Se mide en tareas por segundo.</li>
+</ul>
+<p>Un deportivo lleva a una persona de Madrid a Valencia en tres horas; un autobús tarda cuatro, pero lleva a cincuenta. El deportivo gana en latencia; el autobús, en rendimiento. Si tienes que llevar a 5 000 personas, el deportivo no tiene ninguna posibilidad.</p>
+<p>La <strong>CPU es el deportivo</strong>. Cada núcleo dedica la mayor parte de su superficie de silicio a terminar <em>una</em> secuencia de instrucciones cuanto antes: cachés enormes para no esperar a la memoria, predicción de saltos para adivinar por dónde seguirá el programa, ejecución fuera de orden para adelantar trabajo independiente, relojes altísimos. Un M1 tiene 8 núcleos de CPU.</p>
+<p>La <strong>GPU es una flota de autobuses</strong>. Renuncia a casi todo eso y llena el chip de unidades de cálculo sencillas: el M1 de 7 núcleos de GPU tiene unas 900 unidades aritméticas de coma flotante (128 por núcleo). Cada una es más lenta y más «tonta» que un núcleo de CPU, pero todas juntas procesan una cantidad de datos brutal… siempre que el trabajo tenga la forma adecuada: <strong>muchas tareas independientes que hacen lo mismo</strong>. Un fragment shader que se ejecuta una vez por píxel es exactamente eso.</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Reparto del silicio en una CPU y en una GPU">
+  <text x="185" y="22" text-anchor="middle" style="font-weight:700">CPU: pocos núcleos, muy listos</text>
+  <rect class="caja" x="20" y="34" width="330" height="200" rx="8"/>
+  <g>
+    <rect class="acento" x="34" y="48" width="140" height="80" rx="6"/><text x="104" y="78" text-anchor="middle">núcleo</text><text x="104" y="98" text-anchor="middle" class="texto-tenue" style="font-size:11px">predicción de saltos,</text><text x="104" y="112" text-anchor="middle" class="texto-tenue" style="font-size:11px">fuera de orden</text>
+    <rect class="acento" x="194" y="48" width="140" height="80" rx="6"/><text x="264" y="78" text-anchor="middle">núcleo</text><text x="264" y="98" text-anchor="middle" class="texto-tenue" style="font-size:11px">predicción de saltos,</text><text x="264" y="112" text-anchor="middle" class="texto-tenue" style="font-size:11px">fuera de orden</text>
+    <rect class="tenue" x="34" y="140" width="300" height="80" rx="6"/><text x="184" y="176" text-anchor="middle">caché grande</text><text x="184" y="196" text-anchor="middle" class="texto-tenue" style="font-size:11px">para esconder la latencia de la memoria</text>
+  </g>
+  <text x="575" y="22" text-anchor="middle" style="font-weight:700">GPU: miles de carriles sencillos</text>
+  <rect class="caja" x="410" y="34" width="330" height="200" rx="8"/>
+  <g class="texto-tenue">
+    <rect class="acento2" x="424" y="48" width="302" height="30" rx="4"/><text x="575" y="68" text-anchor="middle" style="font-size:11px">control + 32 carriles que ejecutan LA MISMA instrucción</text>
+    <rect class="acento2" x="424" y="84" width="302" height="30" rx="4"/><text x="575" y="104" text-anchor="middle" style="font-size:11px">control + 32 carriles</text>
+    <rect class="acento2" x="424" y="120" width="302" height="30" rx="4"/><text x="575" y="140" text-anchor="middle" style="font-size:11px">control + 32 carriles</text>
+    <rect class="acento2" x="424" y="156" width="302" height="30" rx="4"/><text x="575" y="176" text-anchor="middle" style="font-size:11px">… × muchos</text>
+    <rect class="tenue" x="424" y="194" width="302" height="28" rx="4"/><text x="575" y="213" text-anchor="middle" style="font-size:11px">caché pequeña · muchos registros</text>
+  </g>
+</svg>
+
+<p>La GPU tiene otro truco para no esperar a la memoria, y es la clave de todo lo que viene: en lugar de cachés gigantes, <strong>tiene muchísimo trabajo pendiente</strong>. Cuando un grupo de invocaciones del shader se queda esperando un dato (una lectura de textura puede tardar cientos de ciclos), el planificador cambia en el acto a otro grupo que tenga sus datos listos. Cambiar cuesta cero ciclos, porque cada grupo tiene sus propios registros siempre cargados. La latencia no desaparece: se <em>esconde</em> detrás de otro trabajo. Por eso una GPU necesita que le mandes miles de píxeles a la vez: con poco trabajo no tiene con qué rellenar las esperas.</p>
+
+<div class="callout senior" data-titulo="Ocupación: por qué los shaders enormes pueden ir más lentos">
+  <p>Los registros de un núcleo de GPU se reparten entre todos los grupos que tiene «en vuelo». Si tu shader necesita muchos registros (muchas variables vivas a la vez, arrays locales, bucles desenrollados), caben menos grupos simultáneos: baja la <strong>ocupación</strong> (<em>occupancy</em>) y el planificador tiene menos alternativas cuando uno se bloquea esperando memoria. El síntoma desconcierta: añades cálculo que «no debería costar nada» y el shader entero se vuelve más lento, porque ya no esconde igual de bien las esperas. Las herramientas de perfilado de cada fabricante (Xcode para Apple, Nsight para NVIDIA, Radeon GPU Profiler para AMD) muestran la ocupación de cada shader; WebGL no la expone.</p>
+</div>
+
+<h2>SIMD, SIMT y warps: 32 carriles en paso de marcha</h2>
+<p>Escribes el fragment shader como si fuera para <strong>un</strong> píxel: variables escalares, un <code>if</code>, un bucle. Pero la GPU no ejecuta tu código píxel a píxel. Agrupa las invocaciones de 32 en 32 (en algunas GPU, de 64) y ejecuta cada grupo en <strong>paso de marcha</strong> (<em>lockstep</em>): hay un único contador de programa para las 32, y cada instrucción se aplica a la vez a los 32 «carriles», cada uno con sus propios datos. Es la idea <strong>SIMD</strong> (<em>Single Instruction, Multiple Data</em>, una instrucción, muchos datos) que ya usan las CPU con sus registros vectoriales, pero con una diferencia importante: tú no programas vectores, programas un solo carril y el hardware se encarga de agruparlos. NVIDIA llamó a ese modelo <strong>SIMT</strong> (<em>Single Instruction, Multiple Threads</em>).</p>
+<p>Cada fabricante le pone un nombre distinto al grupo:</p>
+<table class="m4-compacta">
+  <thead><tr><th>Fabricante</th><th>Nombre del grupo</th><th>Carriles</th></tr></thead>
+  <tbody>
+    <tr><td>NVIDIA</td><td><em>warp</em></td><td class="num">32</td></tr>
+    <tr><td>AMD</td><td><em>wavefront</em> (o <em>wave</em>)</td><td class="num">64 en GCN; 32 o 64 en RDNA</td></tr>
+    <tr><td>Apple</td><td><em>SIMD-group</em></td><td class="num">32</td></tr>
+    <tr><td>Intel</td><td>ancho SIMD del hilo</td><td class="num">8, 16 o 32</td></tr>
+    <tr><td>Móviles (Arm Mali, Qualcomm Adreno)</td><td><em>warp</em> / <em>wave</em></td><td class="num">entre 4 y 128, según la generación</td></tr>
+  </tbody>
+</table>
+<p>En este curso diremos <strong>warp</strong> para cualquiera de ellos. Los carriles de un warp que procesa fragmentos se reparten en bloques de 2 × 2 píxeles llamados <strong>quads</strong>: así la GPU puede comparar el valor de una variable en píxeles vecinos (eso son las derivadas <code>dFdx</code>/<code>dFdy</code>, y así elige qué nivel de mipmap leer; lo veremos en <a href="../06-glsl/02-pensar-en-paralelo.html">6.2</a>). Una consecuencia curiosa: si un triángulo cubre un solo píxel de un quad, la GPU ejecuta el shader en los cuatro y tira tres resultados (son las <em>helper invocations</em>). Los triángulos diminutos desperdician mucho trabajo.</p>
+
+<svg class="diagrama" viewBox="0 0 760 200" width="760" role="img" aria-label="Un warp: un contador de programa y 32 carriles">
+  <defs><marker id="m41-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <rect class="caja" x="20" y="20" width="160" height="60" rx="8"/>
+  <text x="100" y="46" text-anchor="middle" style="font-weight:700">1 contador</text>
+  <text x="100" y="66" text-anchor="middle" class="texto-tenue" style="font-size:12px">de programa</text>
+  <text x="330" y="40" text-anchor="middle" style="font-family:var(--mono);font-size:13px">a = sin(a * 1.1 + float(i));</text>
+  <path d="M182 50 L236 50" stroke="currentColor" stroke-width="2" marker-end="url(#m41-fl)"/>
+  <g>
+    <rect class="acento" x="40" y="110" width="20" height="46" rx="3"/><rect class="acento" x="62" y="110" width="20" height="46" rx="3"/>
+    <rect class="acento" x="84" y="110" width="20" height="46" rx="3"/><rect class="acento" x="106" y="110" width="20" height="46" rx="3"/>
+    <rect class="acento" x="128" y="110" width="20" height="46" rx="3"/><rect class="acento" x="150" y="110" width="20" height="46" rx="3"/>
+    <rect class="acento" x="172" y="110" width="20" height="46" rx="3"/><rect class="acento" x="194" y="110" width="20" height="46" rx="3"/>
+    <rect class="acento" x="216" y="110" width="20" height="46" rx="3"/><rect class="acento" x="238" y="110" width="20" height="46" rx="3"/>
+    <rect class="acento" x="260" y="110" width="20" height="46" rx="3"/><rect class="acento" x="282" y="110" width="20" height="46" rx="3"/>
+    <rect class="acento" x="304" y="110" width="20" height="46" rx="3"/><rect class="acento" x="326" y="110" width="20" height="46" rx="3"/>
+    <rect class="acento" x="348" y="110" width="20" height="46" rx="3"/><rect class="acento" x="370" y="110" width="20" height="46" rx="3"/>
+    <text x="440" y="138" class="texto-tenue">… hasta 32 carriles, cada uno con SU a, SU i</text>
+  </g>
+  <text x="40" y="180" class="texto-tenue" style="font-size:12px">carril 0 = píxel (x, y) · carril 1 = píxel (x+1, y) · … la misma instrucción, datos distintos</text>
+</svg>
+
+<div class="quiz">
+  <p class="pregunta">Un warp de 32 carriles ejecuta un fragment shader de 100 instrucciones. ¿Cuántas instrucciones «de máquina» cuesta procesar esos 32 píxeles, si ningún carril toma un camino distinto?</p>
+  <ul>
+    <li>3 200: cien por cada píxel.<div class="explicacion">Eso sería si cada píxel se procesara por separado, como en un núcleo de CPU sin vectores. En el modelo SIMT, cada instrucción avanza los 32 carriles a la vez.</div></li>
+    <li data-correcta>100: cada instrucción se ejecuta una vez y actúa sobre los 32 carriles.<div class="explicacion">Exacto. El warp comparte un único contador de programa: 100 pasos, cada uno con 32 datos distintos. Por eso la GPU gana: el coste de decodificar y planificar una instrucción se reparte entre 32 píxeles.</div></li>
+    <li>Depende del número de núcleos de la GPU.<div class="explicacion">El número de núcleos decide cuántos warps avanzan en paralelo en todo el chip, pero no cuántas instrucciones necesita un warp concreto.</div></li>
+  </ul>
+</div>
+
+<h2>Divergencia: cuando los carriles no se ponen de acuerdo</h2>
+<p>¿Qué pasa con un <code>if</code> si unos carriles del warp quieren ir por la rama del <code>if</code> y otros por la del <code>else</code>? El contador de programa es uno solo: no puede estar en dos sitios. La solución del hardware es sencilla y cara: <strong>ejecuta las dos ramas, una detrás de otra</strong>, y usa una <strong>máscara</strong> de un bit por carril para que, mientras recorre cada rama, solo escriban sus resultados los carriles a los que les toca. Los demás están ahí, ocupando su sitio, sin hacer nada útil.</p>
+<p>A eso se le llama <strong>divergencia</strong>, y es el origen de la frase «los <code>if</code> son malos en los shaders», que es verdad a medias. Juega con el simulador: cada fila es un carril, cada columna un ciclo; en color, lo que hace trabajo útil; en gris, los carriles enmascarados.</p>
+
+<div class="demo" id="demo-carriles">
+  <div class="demo-lienzo" style="height:380px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>Fíjate en cuatro cosas:</p>
+<ul>
+  <li><strong>«if (x &lt; mitad)»</strong>: la mitad de los carriles quiere la rama cara (6 instrucciones) y la otra mitad la barata (2). El warp paga 6 + 2 = 8 ciclos de ramas, en los que la eficiencia cae al 50 % (la demo muestra un 64 % porque cuenta también las tres instrucciones comunes, que aprovechan todos los carriles).</li>
+  <li><strong>«if (uniform)»</strong>: la condición depende de un uniform, que vale lo mismo para todos los carriles (lo verás en <a href="05-uniforms-varyings.html">4.5</a>). Todos van por la misma rama y el <code>else</code> no se ejecuta nunca. Un <code>if</code> <em>coherente</em> es prácticamente gratis.</li>
+  <li><strong>«rama rara»</strong>: basta con que <em>un</em> carril de 32 tome la rama cara para que el warp entero la pague. Sube la probabilidad desde 0 y mira cuándo aparece.</li>
+  <li><strong>El bucle</strong> con un número de vueltas distinto por carril: el warp da tantas vueltas como el carril más lento. Los que terminan antes se quedan esperando.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.1.1 — El coste real de un if divergente</h3>
+  <p>Un fragment shader tiene esta forma: 10 instrucciones comunes, luego un <code>if</code> cuya rama cara cuesta 80 instrucciones y cuya rama barata cuesta 5, y otras 5 instrucciones comunes al final. ¿Cuánto cuesta un warp de 32 carriles si (a) todos van por la rama barata, (b) todos por la cara, (c) 1 carril va por la cara y 31 por la barata? ¿Y qué eficiencia tiene (c)?</p>
+  <ol>
+    <li><strong>Caso (a)</strong>: 10 + 5 + 5 = <strong>20</strong> ciclos (contamos una instrucción por ciclo para simplificar). La rama cara no se ejecuta: ningún carril la necesita, y el hardware lo sabe porque la máscara de esa rama sale entera a cero.</li>
+    <li><strong>Caso (b)</strong>: 10 + 80 + 5 = <strong>95</strong> ciclos.</li>
+    <li><strong>Caso (c)</strong>: el warp ejecuta las dos ramas: 10 + 80 + 5 + 5 = <strong>100</strong> ciclos. Es más caro que si todos hubieran ido por la rama cara, porque además paga la barata.</li>
+    <li><strong>Eficiencia de (c)</strong>: trabajo útil = 32 × 10 + 1 × 80 + 31 × 5 + 32 × 5 = 320 + 80 + 155 + 160 = 715 carril·ciclos. Trabajo pagado = 32 carriles × 100 ciclos = 3 200. Eficiencia = 715 / 3 200 ≈ <strong>22 %</strong>: casi cuatro quintas partes del warp están de brazos cruzados.</li>
+  </ol>
+  <p>Moraleja: lo caro no es el <code>if</code>; es que los carriles <em>de un mismo warp</em> no se pongan de acuerdo. Si los píxeles que toman la rama cara estuvieran juntos (en bloques del tamaño de un warp), casi todos los warps serían del caso (a) o del (b).</p>
+</section>
+
+<h3>Mídelo en tu GPU</h3>
+<p>El simulador cuenta ciclos imaginarios. Vamos a medir de verdad. Este playground dibuja un millón de píxeles con un shader de dos ramas <strong>igual de caras</strong> (un bucle de 400 senos o de 400 cosenos). Lo único que cambia entre medidas es <em>qué píxeles</em> toman cada rama: todos la misma, un damero de 1 píxel (vecinos siempre distintos) o bloques cada vez más grandes. El lienzo muestra el último patrón medido: violeta para una rama, cian para la otra.</p>
+
+<div class="js-playground" data-titulo="Divergencia medida en tu GPU" data-altura="260" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 1024;              // 1 048 576 fragmentos por dibujo
+const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo);
+  gl.shaderSource(s, fuente);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float;
+uniform int u_modo;     // 0: todos la rama A · 1: damero de 1 px · 2: bloques
+uniform int u_bloque;   // lado de los bloques, en píxeles
+uniform int u_n;        // vueltas de cada bucle
+out vec4 fragColor;
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  bool ramaA;
+  if (u_modo == 0)      ramaA = true;
+  else if (u_modo == 1) ramaA = ((c.x ^ c.y) & 1) == 0;
+  else                  ramaA = (((c.x / u_bloque) ^ (c.y / u_bloque)) & 1) == 0;
+  float a = gl_FragCoord.x * 0.001;
+  if (ramaA) { for (int i = 0; i < u_n; i++) a = sin(a * 1.1 + float(i)); }
+  else       { for (int i = 0; i < u_n; i++) a = cos(a * 0.9 - float(i)); }
+  vec3 color = ramaA ? vec3(0.55, 0.48, 1.0) : vec3(0.25, 0.8, 0.9);
+  fragColor = vec4(color * (0.85 + 0.15 * fract(a)), 1.0);   // usar 'a': si no, el compilador borra los bucles
+}`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+const U = (n) => gl.getUniformLocation(prog, n);
+gl.uniform1i(U('u_n'), 400);
+const px = new Uint8Array(4);
+
+function medir(modo, bloque) {
+  gl.uniform1i(U('u_modo'), modo);
+  gl.uniform1i(U('u_bloque'), bloque);
+  const tiempos = [];
+  for (let r = 0; r < 5; r++) {
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);   // esperar a que la GPU esté libre
+    const t0 = performance.now();
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);   // esperar a que termine ESTE dibujo
+    tiempos.push(performance.now() - t0);
+  }
+  tiempos.sort((a, b) => a - b);
+  return tiempos[2];                                            // la mediana de 5
+}
+medir(0, 1);                                                    // calentar
+const casos = [['todos por la rama A', 0, 1], ['damero de 1 px', 1, 1], ['bloques de 2 px', 2, 2],
+               ['bloques de 4 px', 2, 4], ['bloques de 8 px', 2, 8], ['bloques de 16 px', 2, 16], ['bloques de 64 px', 2, 64]];
+for (const [nombre, modo, bloque] of casos) {
+  console.log(nombre.padEnd(22), medir(modo, bloque).toFixed(1).padStart(6), 'ms');
+}
+</script>
+</div>
+
+<p>Nuestros resultados en el M1 (medianas; tus números serán otros):</p>
+<table class="m4-compacta">
+  <thead><tr><th>Patrón de ramas</th><th>Tiempo</th><th>Lectura</th></tr></thead>
+  <tbody>
+    <tr><td>todos por la rama A</td><td class="num">8–9 ms</td><td>sin divergencia: cada warp ejecuta un solo bucle</td></tr>
+    <tr><td>damero de 1 px</td><td class="num">15,5–17 ms</td><td>todos los warps divergen: pagan los dos bucles (el doble)</td></tr>
+    <tr><td>bloques de 2 px y de 4 px</td><td class="num">15,5–17 ms</td><td>siguen divergiendo: un warp abarca más de un bloque</td></tr>
+    <tr><td>bloques de 8 px o más</td><td class="num">≈ 9 ms</td><td>cada warp cae entero dentro de un bloque: sin divergencia</td></tr>
+  </tbody>
+</table>
+<p>El salto entre 4 y 8 píxeles es un dato de hardware que nadie te cuenta: en esta GPU, los 32 carriles de un warp de fragmentos cubren un rectángulo de pantalla que cabe en un bloque alineado de 8 × 8 píxeles pero no en uno de 4 × 4, algo compatible con bloques de 8 × 4 (o de 4 × 8) píxeles. Apple no documenta ese reparto: lo deducimos de la medida, y en otra GPU el salto aparecerá en otro sitio.</p>
+
+<div class="callout bestiario" data-id="m4-if-lento" data-titulo="Un if que casi nunca se cumple hace el shader el doble de lento">
+  <p><strong>Síntoma:</strong> añades a un shader una rama cara que «solo afecta a unos pocos píxeles» (el brillo de unas pocas estrellas, un efecto cuando el ruido supera un umbral) y el shader entero pasa a costar casi lo mismo que si todos los píxeles la ejecutaran.</p>
+  <p><strong>Causa:</strong> divergencia. Si los píxeles que toman la rama están <em>salpicados</em> por la pantalla, casi todos los warps contienen al menos uno, y un warp paga la rama entera en cuanto un solo carril la necesita. Con una probabilidad $p$ por píxel, independiente, la fracción de warps de 32 que la pagan es $1 - (1-p)^{32}$: con $p = 0{,}1$ ya es el 97 %.</p>
+  <p><strong>Solución:</strong> haz la condición <em>coherente</em> (que dependa de regiones grandes: bloques de la pantalla, un uniform, una textura de baja resolución), abarata la rama o divide el trabajo en dos pasadas: una que marque dónde hace falta el efecto y otra que lo calcule solo ahí. Y mide: no te fíes de la intuición.</p>
+</div>
+
+<div class="callout senior" data-titulo="«Sin ifs» no siempre es más rápido">
+  <p>Mucha gente reescribe <code>if (c) x = a; else x = b;</code> como <code>x = mix(b, a, float(c));</code> para «evitar la divergencia». Con ramas cortas no sirve de nada: el compilador ya convierte los <code>if</code> baratos en una instrucción de selección (<em>select</em>) que calcula las dos opciones y se queda con una, sin saltos. Y con ramas largas es peor: la versión «sin if» calcula <em>siempre</em> las dos ramas, incluso en los warps coherentes que habrían ejecutado solo una. Un <code>if</code> sobre un uniform, o sobre algo que cambia por regiones grandes, suele ser la mejor opción. La regla de senior no es «evita los <code>if</code>»; es «evita la divergencia, y mide».</p>
+</div>
+
+<div class="callout hack" data-titulo="Decide por bloques de 8 × 8 píxeles">
+  <p>Si una rama cara depende de la posición y te basta con decidir por regiones (más detalle cerca del centro, un efecto que solo aparece en ciertas zonas), haz que la decisión sea la misma en cada bloque alineado de 8 × 8 píxeles: evalúa la condición en el centro del bloque, no en el píxel.</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+vec2 bloque = floor(gl_FragCoord.xy / 8.0);       // igual en todo el bloque
+bool caro = necesitaDetalle(bloque * 8.0 + 4.0);  // evaluada en su centro
+</script>
+  <p>Así ningún warp se parte: en el playground «Divergencia medida en tu GPU» mediste que, con bloques alineados de 8 píxeles o más, un <code>if</code> con dos ramas caras cuesta lo mismo que una sola rama (≈ 9 ms frente a 16–17 ms). Pagas con bordes «de bloque» en la decisión, y el tamaño seguro depende de la GPU: mídelo con ese playground antes de fiarte.</p>
+</div>
+
+<h2>La memoria: el verdadero cuello de botella</h2>
+<p>Una ALU de GPU calcula una multiplicación-suma por ciclo. Traer un dato de la memoria principal cuesta cientos de ciclos. Y el ancho de banda total es limitado: la memoria unificada del M1 da unos 68 GB/s según las especificaciones publicadas, mientras que su GPU puede hacer del orden de un billón de operaciones por segundo. Si cada operación necesitara un float (4 bytes) recién traído de memoria, la GPU calcularía a menos del 2 % de su capacidad. Por eso un shader rápido es, sobre todo, un shader que <strong>reutiliza</strong> los datos que ya tiene cerca.</p>
+
+<svg class="diagrama" viewBox="0 0 760 210" width="760" role="img" aria-label="Jerarquía de memoria de una GPU">
+  <g>
+    <rect class="acento" x="20" y="30" width="130" height="150" rx="8"/><text x="85" y="60" text-anchor="middle" style="font-weight:700">registros</text>
+    <text x="85" y="84" text-anchor="middle" class="texto-tenue" style="font-size:12px">por carril</text><text x="85" y="104" text-anchor="middle" class="texto-tenue" style="font-size:12px">~1 ciclo</text>
+    <rect class="caja" x="170" y="40" width="140" height="130" rx="8"/><text x="240" y="70" text-anchor="middle" style="font-weight:700">memoria local</text>
+    <text x="240" y="92" text-anchor="middle" class="texto-tenue" style="font-size:12px">del núcleo, compartida</text><text x="240" y="112" text-anchor="middle" class="texto-tenue" style="font-size:12px">(en Apple: la de teselas)</text>
+    <rect class="caja" x="330" y="50" width="130" height="110" rx="8"/><text x="395" y="80" text-anchor="middle" style="font-weight:700">caché L1</text>
+    <text x="395" y="102" text-anchor="middle" class="texto-tenue" style="font-size:12px">y de texturas</text>
+    <rect class="caja" x="480" y="60" width="110" height="90" rx="8"/><text x="535" y="92" text-anchor="middle" style="font-weight:700">caché L2</text>
+    <text x="535" y="114" text-anchor="middle" class="texto-tenue" style="font-size:12px">de toda la GPU</text>
+    <rect class="tenue" x="610" y="70" width="130" height="70" rx="8"/><text x="675" y="98" text-anchor="middle" style="font-weight:700">DRAM</text>
+    <text x="675" y="120" text-anchor="middle" class="texto-tenue" style="font-size:12px">cientos de ciclos</text>
+  </g>
+  <text x="380" y="200" text-anchor="middle" class="texto-tenue" style="font-size:12px">← más cerca, más rápida, más pequeña · · · más lejos, más lenta, más grande →</text>
+</svg>
+
+<p>Las texturas tienen su propia caché, diseñada para un patrón muy concreto: <strong>píxeles vecinos leen texels vecinos</strong>. Las GPU casi nunca guardan los texels fila a fila como en un array de JavaScript: los reordenan en bloques cuadrados (con órdenes parecidos a la curva de Morton, o curva Z; el formato exacto es secreto de cada fabricante), de modo que un bloque pequeño de texels vecinos cae en la misma línea de caché. Cuando los 32 carriles de un warp (que son píxeles vecinos) muestrean texels vecinos, una sola línea de caché sirve a muchos. Por eso existen los mipmaps (<a href="../05-webgl/05-texturas.html">5.5</a>): al alejarse una textura, el mipmap adecuado mantiene la proporción de un texel por píxel y el acceso sigue siendo coherente.</p>
+<p>Lo medimos: el mismo shader lee 16 texels de una textura de 2048 × 2048 (16 MB) por cada píxel; solo cambia <em>cuáles</em>. En la versión coherente, cada píxel lee una ventana de 4 × 4 texels junto a sus vecinos; en la aleatoria, 16 texels al azar por toda la textura. Mismas lecturas, mismas cuentas.</p>
+
+<div class="js-playground" data-titulo="Acceso coherente contra acceso aleatorio a una textura" data-altura="60" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:14px 16px;font:14px monospace">resultado en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 1024;
+const gl = canvas.getContext('webgl2', { antialias: false });
+// Una textura de 2048 × 2048 RGBA (16 MB) llena de bytes pseudoaleatorios
+const T = 2048;
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, T, T);
+const trozo = new Uint8Array(T * 256 * 4);
+for (let i = 0; i < trozo.length; i++) trozo[i] = (i * 2654435761) >>> 24;
+for (let y = 0; y < T; y += 256) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, y, T, 256, gl.RGBA, gl.UNSIGNED_BYTE, trozo);
+
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; precision highp int;
+uniform highp sampler2D u_tex;
+uniform int u_aleatorio;
+out vec4 fragColor;
+uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16; return x; }
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  vec4 suma = vec4(0.0);
+  for (int k = 0; k < 16; k++) {
+    uint h = hash(uint(c.x + c.y * 1024 + k * 1048576));        // el mismo cálculo en los dos modos
+    ivec2 t = u_aleatorio == 0
+      ? c * 2 + ivec2(k % 4, k / 4 + int(h & 1u))                 // ventana 4×4 junto a los vecinos
+      : ivec2(h & 2047u, (h >> 11) & 2047u);                      // un texel cualquiera
+    suma += texelFetch(u_tex, t, 0);                              // leer un texel exacto, sin filtrar
+  }
+  fragColor = suma / 16.0;
+}`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+const px = new Uint8Array(4);
+function medir(aleatorio) {
+  gl.uniform1i(gl.getUniformLocation(prog, 'u_aleatorio'), aleatorio);
+  const ts = [];
+  for (let r = 0; r < 5; r++) {
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t0 = performance.now();
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    ts.push(performance.now() - t0);
+  }
+  return ts.sort((a, b) => a - b)[2];
+}
+medir(0); medir(1);                                              // calentar
+const coh = medir(0), ale = medir(1);
+console.log('coherente:', coh.toFixed(1), 'ms   aleatorio:', ale.toFixed(1), 'ms   →', (ale / coh).toFixed(0) + '× más lento');
+</script>
+</div>
+
+<p>En el M1: <strong>≈ 1 ms</strong> el acceso coherente y <strong>≈ 18 ms</strong> el aleatorio. El mismo número de lecturas, casi veinte veces más lento, solo por el orden. Esta es una de las diferencias más grandes entre un shader de junior y uno de senior: el de senior sabe qué memoria toca cada carril.</p>
+
+<div class="callout senior" data-titulo="Memoria unificada: Apple no es como un PC con tarjeta gráfica">
+  <p>En un PC con tarjeta gráfica, la GPU tiene su propia memoria (VRAM, con cientos de GB/s) al otro lado de un bus PCIe (unos 32 GB/s en PCIe 4.0 x16). Subir datos de la CPU a la GPU es un viaje caro. En Apple Silicon, CPU y GPU comparten la misma memoria física. Aun así, la API de WebGL se comporta como si fueran memorias separadas: <code>gl.bufferData</code> <em>copia</em> tus bytes (verás por qué en <a href="04-vbo-vao.html">4.4</a>), y leer de vuelta con <code>readPixels</code> sigue obligando a esperar a la GPU. Programa siempre como si hubiera un bus lento en medio: tu código correrá también en máquinas donde lo hay.</p>
+</div>
+
+<h2>El driver y el command buffer: tus llamadas no se ejecutan cuando crees</h2>
+<p>Cuando tu JavaScript llama a <code>gl.drawArrays(gl.TRIANGLES, 0, 3)</code>, la GPU no dibuja nada en ese instante. Lo que ocurre es un viaje con varias escalas, y entenderlo explica media docena de comportamientos raros de golpe:</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Camino de una llamada WebGL hasta la GPU">
+  <defs><marker id="m41-fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <rect class="caja" x="10" y="20" width="170" height="92" rx="10"/>
+  <text x="95" y="44" text-anchor="middle" style="font-weight:700">Proceso de la página</text>
+  <text x="95" y="66" text-anchor="middle" style="font-size:12px">tu JS → gl.drawArrays()</text>
+  <text x="95" y="86" text-anchor="middle" class="texto-tenue" style="font-size:12px">valida las reglas de WebGL</text>
+  <text x="95" y="102" text-anchor="middle" class="texto-tenue" style="font-size:12px">y escribe la orden</text>
+  <rect class="acento" x="215" y="36" width="150" height="60" rx="8"/>
+  <text x="290" y="62" text-anchor="middle" style="font-weight:700">command buffer</text>
+  <text x="290" y="82" text-anchor="middle" class="texto-tenue" style="font-size:12px">memoria compartida</text>
+  <rect class="caja" x="400" y="20" width="170" height="92" rx="10"/>
+  <text x="485" y="44" text-anchor="middle" style="font-weight:700">Proceso de la GPU</text>
+  <text x="485" y="66" text-anchor="middle" style="font-size:12px">lee y valida otra vez</text>
+  <text x="485" y="86" text-anchor="middle" class="texto-tenue" style="font-size:12px">ANGLE traduce a</text>
+  <text x="485" y="102" text-anchor="middle" class="texto-tenue" style="font-size:12px">Metal / D3D11 / Vulkan</text>
+  <rect class="caja" x="600" y="20" width="150" height="92" rx="10"/>
+  <text x="675" y="44" text-anchor="middle" style="font-weight:700">Driver + GPU</text>
+  <text x="675" y="66" text-anchor="middle" style="font-size:12px">cola de la GPU</text>
+  <text x="675" y="86" text-anchor="middle" class="texto-tenue" style="font-size:12px">se ejecuta cuando</text>
+  <text x="675" y="102" text-anchor="middle" class="texto-tenue" style="font-size:12px">le llega el turno</text>
+  <path d="M182 66 L211 66" stroke="currentColor" stroke-width="2" marker-end="url(#m41-fl2)"/>
+  <path d="M367 66 L396 66" stroke="currentColor" stroke-width="2" marker-end="url(#m41-fl2)"/>
+  <path d="M572 66 L596 66" stroke="currentColor" stroke-width="2" marker-end="url(#m41-fl2)"/>
+  <path d="M675 116 L675 170 L95 170 L95 116" class="acento2" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#m41-fl2)"/>
+  <text x="385" y="192" text-anchor="middle" style="font-size:12.5px">las consultas (readPixels, getError, getShaderParameter…) tienen que ESPERAR la respuesta</text>
+  <text x="385" y="214" text-anchor="middle" class="texto-tenue" style="font-size:12px">el resto de llamadas vuelve enseguida: la orden solo queda apuntada</text>
+</svg>
+
+<ol>
+  <li><strong>En el proceso de tu página</strong>, la implementación de WebGL comprueba que la llamada es válida (que hay un programa en uso, que los buffers tienen datos suficientes para los vértices que pides…) y <em>escribe la orden</em> en un <strong>command buffer</strong>: un trozo de memoria compartida con otro proceso. Tu llamada vuelve en microsegundos.</li>
+  <li><strong>En el proceso de la GPU</strong> (Chrome ejecuta los gráficos en un proceso aparte por seguridad y estabilidad), alguien lee esas órdenes, las valida otra vez y se las pasa a <strong>ANGLE</strong>, que las traduce a la API nativa del sistema.</li>
+  <li><strong>El driver</strong> convierte todo eso en órdenes del hardware y las mete en la cola de la GPU, que las ejecutará cuando termine lo anterior. Mientras tanto, tu JavaScript ya va por el frame siguiente.</li>
+</ol>
+<p>El resultado es que la CPU y la GPU trabajan <strong>en paralelo y desacopladas</strong>, como una cocina con comandas: el camarero apunta el pedido y vuelve a la sala sin esperar a que el plato esté hecho. Todo va bien mientras nadie pregunte «¿ya está?». Las llamadas que devuelven un dato de la GPU (<code>readPixels</code>, <code>getError</code>, <code>getShaderParameter</code>, <code>getProgramParameter</code>…) son esa pregunta: obligan a enviar lo pendiente y a <strong>esperar la respuesta</strong>. <code>readPixels</code> es la peor, porque necesita el resultado de <em>todos</em> los dibujos anteriores: tu JS se queda bloqueado hasta que la GPU los termina.</p>
+
+<div class="demo" id="demo-cola">
+  <div class="demo-lienzo" style="height:260px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>La animación es un modelo (en pantalla, un segundo equivale a 8 ms de la simulación: va unas 125 veces más despacio que la realidad, y los costes son inventados), pero lo que muestra es exactamente lo que vas a medir ahora en tu navegador:</p>
+
+<div class="js-playground" data-titulo="¿Cuánto tarda cada llamada de verdad?" data-altura="60" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:14px 16px;font:14px monospace">resultado en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 1024;
+const gl = canvas.getContext('webgl2', { antialias: false });
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; uniform int u_n; out vec4 o;
+void main() { float a = gl_FragCoord.x * 0.001;
+  for (int i = 0; i < u_n; i++) a = sin(a * 1.1 + float(i));   // trabajo pesado a propósito
+  o = vec4(fract(a)); }`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+const uN = gl.getUniformLocation(prog, 'u_n');
+gl.uniform1i(uN, 600);
+const px = new Uint8Array(4);
+const esperarGPU = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+const medir = (f) => { const t0 = performance.now(); f(); return performance.now() - t0; };
+esperarGPU(); gl.drawArrays(gl.TRIANGLES, 0, 3); esperarGPU();      // calentar
+
+esperarGPU();
+const tDraw = medir(() => gl.drawArrays(gl.TRIANGLES, 0, 3));
+const tRead = medir(esperarGPU);
+console.log('drawArrays:              ', tDraw.toFixed(2), 'ms  ← solo apunta la orden');
+console.log('readPixels justo después:', tRead.toFixed(2), 'ms  ← espera a que la GPU TERMINE el dibujo');
+
+esperarGPU();
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+const tFinish = medir(() => gl.finish());
+const tRead2 = medir(esperarGPU);
+console.log('finish:                  ', tFinish.toFixed(2), 'ms · readPixels después:', tRead2.toFixed(2), 'ms');
+console.log(tFinish < tRead2 ? '   → tu navegador NO espera en finish(): el que espera es readPixels'
+                             : '   → tu navegador sí espera en finish()');
+
+esperarGPU();
+const tErr = medir(() => { for (let i = 0; i < 1000; i++) gl.getError(); });
+const tUni = medir(() => { for (let i = 0; i < 1000; i++) gl.uniform1i(uN, 600); });
+console.log('1000 × getError:', tErr.toFixed(2), 'ms · 1000 × uniform1i:', tUni.toFixed(2), 'ms');
+</script>
+</div>
+
+<p>Lo que medimos en el M1 con Chrome 154:</p>
+<table class="m4-compacta">
+  <thead><tr><th>Llamada</th><th>Tiempo en el JS</th><th>Por qué</th></tr></thead>
+  <tbody>
+    <tr><td><code>drawArrays</code> (un millón de píxeles pesados)</td><td class="num">0,0–0,1 ms</td><td>solo apunta la orden en el command buffer</td></tr>
+    <tr><td><code>readPixels</code> justo después</td><td class="num">≈ 12 ms</td><td>espera a que la GPU termine el dibujo anterior (con un shader más pesado medimos 40 ms: lo que tarde el dibujo)</td></tr>
+    <tr><td><code>finish</code></td><td class="num">0,0 ms</td><td>en Chrome no espera: se comporta como <code>flush</code> (el <code>readPixels</code> de después sigue esperando los 12 ms)</td></tr>
+    <tr><td><code>getError</code></td><td class="num">0,03–0,06 ms cada uno</td><td>viaje de ida y vuelta al proceso de la GPU: cientos de veces más que <code>uniform1i</code> (la cifra varía con lo ocupado que esté el equipo)</td></tr>
+    <tr><td><code>uniform1i</code>, casi todo <code>getParameter</code></td><td class="num">&lt; 0,0001 ms</td><td>se resuelven sin salir del proceso de la página (hay una copia del estado); 1000 llamadas no llegan a 0,1 ms. Pero la copia no cubre todo: medido aparte, <code>getParameter(gl.COLOR_CLEAR_VALUE)</code> costó 36 µs, lo mismo que <code>getError</code> (más en <a href="../05-webgl/01-contexto.html#getparameter-y-los-limites-de-tu-gpu">5.1</a>)</td></tr>
+  </tbody>
+</table>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.1.2 — Anatomía de una espera</h3>
+  <p>Un perfil de rendimiento de tu aplicación dice: «<code>readPixels</code>: 40 ms». ¿Es lento <code>readPixels</code>? ¿Cómo lo arreglarías?</p>
+  <ol>
+    <li><strong>Lo que ves no es lo que pasa.</strong> Leer 4 bytes cuesta microsegundos. Los 40 ms son la GPU terminando los dibujos que <em>ya</em> habías encolado: el perfil atribuye la espera a la llamada que la destapa. El mismo tiempo lo pagaría la llamada que llegara primero a un punto de sincronización.</li>
+    <li><strong>Comprueba la hipótesis</strong>: pon un <code>readPixels</code> extra justo antes del sospechoso. Si el primero se lleva los 40 ms y el segundo tarda casi nada, el coste era la espera, no la lectura (es lo que hace la función <code>esperarGPU</code> del playground).</li>
+    <li><strong>Evita la espera</strong>: si necesitas leer píxeles (para <em>picking</em>, por ejemplo, <a href="../05-webgl/08-framebuffers.html">5.8</a>), léelos <em>un frame más tarde</em>. En WebGL2 se hace con <code>fenceSync</code> y un buffer de destino (<code>PIXEL_PACK_BUFFER</code>): pides la copia, y en los frames siguientes preguntas con <code>clientWaitSync(fence, 0, 0)</code> (tiempo de espera cero: solo pregunta) hasta que la respuesta es «listo».</li>
+    <li><strong>Y para medir la GPU</strong>, no uses <code>performance.now()</code> alrededor de un dibujo: usa la extensión <code>EXT_disjoint_timer_query_webgl2</code>, que mide el tiempo en la propia GPU, o una barrera como <code>readPixels</code> antes y después, como en los playgrounds de esta lección.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m4-drawcall-0ms" data-titulo="performance.now() dice que dibujar no cuesta nada (y el frame va a tirones)">
+  <p><strong>Síntoma:</strong> mides tu función de dibujo con <code>performance.now()</code> y tarda 0,2 ms, pero la animación va a 20 fps. O cambias un shader por otro diez veces más caro y la medida no se mueve.</p>
+  <p><strong>Causa:</strong> estás midiendo el tiempo de <em>apuntar</em> las órdenes en el command buffer, no el de ejecutarlas. La GPU trabaja después, en paralelo, y el cuello de botella está allí.</p>
+  <p><strong>Solución:</strong> mide la GPU con <code>EXT_disjoint_timer_query_webgl2</code> (cuando exista) o con una barrera (<code>readPixels</code> de un píxel antes y después, solo mientras depuras). Y mira también la pestaña <em>Performance</em> de DevTools, que muestra la actividad de la GPU aparte (<a href="../01-web/07-herramientas.html">1.7</a>); el método completo para saber si te frena la CPU o la GPU está en <a href="../05-webgl/10-depuracion.html#me-frena-la-cpu-o-la-gpu">5.10</a>.</p>
+</div>
+
+<div class="callout bestiario" data-id="m4-readpixels-lento" data-titulo="readPixels o getError tardan milisegundos y congelan el frame">
+  <p><strong>Síntoma:</strong> un <code>getError()</code> puesto «por si acaso» después de cada llamada, o un <code>readPixels</code> en cada frame, y la aplicación pierde fluidez aunque la GPU vaya sobrada.</p>
+  <p><strong>Causa:</strong> son <strong>puntos de sincronización</strong>. <code>getError</code> obliga a un viaje de ida y vuelta al proceso de la GPU (de 30 a 60 µs cada uno en nuestra máquina, según lo ocupada que esté); <code>readPixels</code> además espera a que terminen todos los dibujos anteriores. Mientras, la CPU no hace nada y la GPU se queda sin trabajo encolado: se pierde el paralelismo.</p>
+  <p><strong>Solución:</strong> <code>getError</code> solo en depuración (o una vez por frame, al final). Las lecturas, diferidas uno o dos frames con <code>fenceSync</code>. Y nunca compruebes <code>getShaderParameter</code>/<code>getProgramParameter</code> en el bucle de dibujo: solo al crear los programas.</p>
+</div>
+
+<div class="callout senior" data-titulo="gl.finish() no es lo que parece">
+  <p>La especificación dice que <code>finish()</code> bloquea hasta que termina todo lo enviado. En Chrome, sin embargo, vuelve al instante (lo mediste arriba): se comporta como <code>flush()</code>, que solo empuja las órdenes pendientes. Y <code>clientWaitSync</code> no puede esperar de verdad: <code>gl.getParameter(gl.MAX_CLIENT_WAIT_TIMEOUT_WEBGL)</code> vale <strong>0</strong>, así que solo sirve para preguntar «¿ya?» sin bloquear. WebGL está diseñado para que el hilo principal de la página nunca se quede esperando a la GPU de forma explícita… con la excepción de <code>readPixels</code> hacia memoria de JavaScript, que sí espera.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Rodeas <code>gl.drawArrays(...)</code> con dos <code>performance.now()</code> y obtienes 0,05 ms. ¿Qué has medido?</p>
+  <ul>
+    <li>El tiempo que tarda la GPU en dibujar el triángulo.<div class="explicacion">No: cuando <code>drawArrays</code> vuelve, la GPU probablemente ni ha empezado. La ejecución ocurre después, en otro proceso y en otro chip.</div></li>
+    <li data-correcta>El tiempo de validar la llamada y apuntarla en el command buffer.<div class="explicacion">Exacto. Es el coste en la CPU de tu hilo de JS. El coste en la GPU hay que medirlo con timer queries o con una barrera como <code>readPixels</code>.</div></li>
+    <li>El tiempo de compilar el shader.<div class="explicacion">La compilación ocurre al llamar a <code>compileShader</code>/<code>linkProgram</code> (y, en algunos casos, en el primer dibujo con un estado nuevo, como verás enseguida), no en cada <code>drawArrays</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Cuánto cuesta un draw call</h2>
+<p>Cada <strong>draw call</strong> (cada <code>drawArrays</code> o <code>drawElements</code>) tiene un coste fijo en la CPU, independiente de cuántos triángulos dibuje: las validaciones de WebGL (en los dos procesos), la traducción de ANGLE y el trabajo del driver, que tiene que comprobar qué estado ha cambiado desde el dibujo anterior y preparar el hardware. Dibujar un triángulo o diez mil con una sola llamada cuesta en la CPU casi lo mismo.</p>
+<p>La consecuencia es una ley de hierro de los gráficos en tiempo real: <strong>pocos draw calls grandes, no muchos pequeños</strong>. Lo medimos dibujando 10 000 triángulos diminutos de dos formas: con 10 000 llamadas (cambiando un uniform con la posición en cada una) y con una sola llamada <em>instanciada</em> (una técnica que verás a fondo en <a href="../05-webgl/09-instancing.html">5.9</a>: la GPU repite el mismo triángulo 10 000 veces y cada copia lee su posición de un buffer).</p>
+
+<div class="js-playground" data-titulo="10 000 draw calls contra 1" data-altura="60" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:14px 16px;font:14px monospace">resultado en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const N = 10000;
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 512;
+const gl = canvas.getContext('webgl2', { antialias: false });
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;     // el triángulo (el mismo para todos)
+layout(location = 1) in vec2 a_desp;    // desplazamiento POR INSTANCIA (modo instanciado)
+uniform vec2 u_desp;                    // desplazamiento por DRAW CALL (modo por separado)
+uniform bool u_instanciado;
+void main() {
+  vec2 d = u_instanciado ? a_desp : u_desp;
+  gl_Position = vec4(a_pos * 0.01 + d, 0.0, 1.0);
+}`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; out vec4 o; void main() { o = vec4(1.0, 0.5, 0.2, 1.0); }`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 0, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const desp = new Float32Array(N * 2).map(() => Math.random() * 2 - 1);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, desp, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+gl.vertexAttribDivisor(1, 1);                          // avanza una vez por instancia (5.9)
+const uDesp = gl.getUniformLocation(prog, 'u_desp');
+const uInst = gl.getUniformLocation(prog, 'u_instanciado');
+const px = new Uint8Array(4);
+const esperarGPU = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+
+function porSeparado() {
+  gl.uniform1i(uInst, 0);
+  esperarGPU();
+  const t0 = performance.now();
+  for (let i = 0; i < N; i++) {
+    gl.uniform2f(uDesp, desp[2 * i], desp[2 * i + 1]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  const t1 = performance.now();
+  esperarGPU();
+  return [t1 - t0, performance.now() - t0];
+}
+function instanciado() {
+  gl.uniform1i(uInst, 1);
+  esperarGPU();
+  const t0 = performance.now();
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, N);
+  const t1 = performance.now();
+  esperarGPU();
+  return [t1 - t0, performance.now() - t0];
+}
+porSeparado(); instanciado();                           // calentar
+const a = porSeparado(), b = instanciado();
+console.log(`${N} draw calls: ${a[0].toFixed(1)} ms en tu JS, ${a[1].toFixed(1)} ms hasta que la GPU termina`);
+console.log(`1 draw call instanciado: ${b[0].toFixed(1)} ms en tu JS, ${b[1].toFixed(1)} ms hasta que la GPU termina`);
+</script>
+</div>
+
+<p>En el M1: con 10 000 llamadas, unos <strong>3,5 ms</strong> en total, de los que solo 0,3 ms se gastan en tu hilo de JS (el resto es trabajo del proceso de la GPU); con una llamada instanciada, unos <strong>0,7 ms</strong>. Con 100 000 llamadas el total sube a 26 ms, y el JS pasa de 0,3 a 10 ms: el command buffer tiene un tamaño fijo y, cuando se llena, tu JS tiene que <em>esperar</em> a que el otro proceso lo vacíe. A 60 fps tienes 16,7 ms por frame para todo; 100 000 draw calls ya no caben.</p>
+<p>Las curas son siempre las mismas:</p>
+<ul>
+  <li><strong>Agrupar (<em>batching</em>)</strong>: meter muchos objetos que comparten shader y estado en un mismo buffer y dibujarlos con una llamada. Los sprites de un juego 2D, las letras de un texto, las partículas.</li>
+  <li><strong>Instancing</strong>: cuando los objetos son copias de la misma malla con distintos parámetros (<a href="../05-webgl/09-instancing.html">5.9</a>).</li>
+  <li><strong>Ordenar por estado</strong>: si tienes que hacer muchas llamadas, agrupa las que usan el mismo programa y las mismas texturas, porque lo caro no es el dibujo en sí sino el <em>cambio de estado</em> entre dibujos.</li>
+  <li><strong>Atlas de texturas</strong>: varias imágenes en una sola textura, para no tener que cambiar de textura entre objetos (y poder agruparlos).</li>
+</ul>
+
+<div class="callout bestiario" data-id="m4-tiron-primer-dibujo" data-titulo="Un tirón la primera vez que se dibuja algo nuevo">
+  <p><strong>Síntoma:</strong> la animación va fluida, pero da un tirón (un frame de varios milisegundos de más) la primera vez que aparece un objeto con un shader nuevo, o la primera vez que activas el blending para algo. Las veces siguientes, nada.</p>
+  <p><strong>Causa:</strong> las API modernas (Metal, Direct3D 12, Vulkan) no tienen «estado suelto»: cada combinación de shaders + blending + formato de destino se compila en un objeto de estado de pipeline. ANGLE lo crea (y lo guarda en caché) la <em>primera</em> vez que dibujas con esa combinación. En el M1 medimos: primer <code>drawArrays</code> tras enlazar un programa, 4,7–7 ms; el segundo, 0,5 ms. El primer dibujo con un blending nuevo, 3,6–5,5 ms; el segundo, 0,5 ms. Y eso aparte de los 12–22 ms del propio <code>linkProgram</code>.</p>
+  <p><strong>Solución:</strong> «precalienta» durante la carga: dibuja una vez con cada combinación de programa y estado que vayas a usar, sobre el mismo tipo de destino, sin que se vea. Medimos que sirven tanto un triángulo colocado fuera de la pantalla como un dibujo con <code>gl.viewport(0, 0, 0, 0)</code>: ese dibujo se lleva los 5 ms y el primero de verdad baja a 0,5–1 ms. Y compila los programas pronto; la extensión <code>KHR_parallel_shader_compile</code> permite hacerlo sin bloquear (lo medirás en <a href="../05-webgl/02-primer-triangulo.html">5.2</a>).</p>
+</div>
+
+<h2>OpenGL y WebGL: una máquina de estados</h2>
+<p>Y llegamos a la parte de la API que más bugs produce. OpenGL nació en 1992 como una biblioteca de C para estaciones de trabajo cuyo hardware gráfico era, literalmente, un montón de registros de configuración: «el color actual», «la textura actual», «¿está activada la prueba de profundidad?». La API copió esa forma, y WebGL la heredó intacta a través de OpenGL ES: el contexto <code>gl</code> es una <strong>máquina de estados</strong>. Guarda un montón de variables («lo actual») y casi todas las funciones o bien <em>cambian</em> una de esas variables, o bien <em>actúan sobre lo que haya en ellas en ese momento</em>.</p>
+<p>El ejemplo canónico son los buffers. No existe <code>miBuffer.subirDatos(datos)</code>. Existe esto:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1]), gl.STATIC_DRAW);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+</script>
+<ol>
+  <li data-l="1">Crea un objeto buffer vacío y te da un «asa» para referirte a él. Todavía no tiene memoria ni tipo.</li>
+  <li data-l="2">Coloca <code>buf</code> en el <strong>punto de enlace</strong> <code>ARRAY_BUFFER</code>. No copia nada: es como decir «a partir de ahora, cuando diga ARRAY_BUFFER, me refiero a <code>buf</code>».</li>
+  <li data-l="3">«Mete estos bytes en <em>el buffer que esté enlazado en ARRAY_BUFFER</em>». Fíjate en que <code>buf</code> no aparece en la llamada: si en la línea anterior hubiera otro buffer enlazado, los datos irían a parar a ese otro.</li>
+  <li data-l="4">Configura el atributo 0 para que lea de… otra vez, <em>el buffer enlazado en ARRAY_BUFFER en este instante</em>. Esta llamada, además, guarda el resultado en el VAO actual (lo desmontaremos en <a href="04-vbo-vao.html">4.4</a>).</li>
+</ol>
+</div>
+
+<p>A esto se le llama el patrón <strong>«enlazar para editar»</strong> (<em>bind-to-edit</em>): para tocar un objeto primero lo enlazas, y luego llamas a funciones que actúan sobre «lo enlazado». El estado que guarda el contexto es mucho y está repartido en categorías:</p>
+<table class="m4-compacta">
+  <thead><tr><th>Tipo de estado</th><th>Ejemplos</th><th>Se cambia con</th></tr></thead>
+  <tbody>
+    <tr><td>Puntos de enlace</td><td><code>ARRAY_BUFFER</code>, <code>UNIFORM_BUFFER</code>, <code>TEXTURE_2D</code> (uno por unidad de textura), <code>FRAMEBUFFER</code>, <code>RENDERBUFFER</code></td><td><code>bindBuffer</code>, <code>bindTexture</code>, <code>bindFramebuffer</code>…</td></tr>
+    <tr><td>Objetos «actuales»</td><td>el programa en uso, el VAO enlazado, la unidad de textura activa</td><td><code>useProgram</code>, <code>bindVertexArray</code>, <code>activeTexture</code></td></tr>
+    <tr><td>Capacidades</td><td><code>BLEND</code>, <code>DEPTH_TEST</code>, <code>CULL_FACE</code>, <code>SCISSOR_TEST</code>, <code>STENCIL_TEST</code></td><td><code>enable</code> / <code>disable</code></td></tr>
+    <tr><td>Parámetros</td><td>viewport, color de borrado, función de blending, función de profundidad, máscaras de escritura, <code>UNPACK_FLIP_Y_WEBGL</code></td><td><code>viewport</code>, <code>clearColor</code>, <code>blendFunc</code>, <code>depthFunc</code>, <code>colorMask</code>, <code>pixelStorei</code>…</td></tr>
+    <tr><td>Estado <em>dentro</em> de objetos</td><td>los atributos de un VAO, los uniforms de un programa, los parámetros de filtrado de una textura, los adjuntos de un framebuffer</td><td>enlazando el objeto y llamando a la función correspondiente</td></tr>
+  </tbody>
+</table>
+<p>Y todo ese estado <strong>persiste</strong>: no se reinicia entre frames ni al terminar una función. Lo que dejaste enlazado sigue enlazado mañana. Recorre la demo llamada a llamada: a la izquierda, un código muy típico; a la derecha, el estado del contexto después de cada línea.</p>
+
+<div class="demo" id="demo-estado">
+  <div class="m4-estado"><div class="m4-codigo"></div><div class="m4-panel"></div></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>El fallo está en la última llamada del guion con el bug: el ayudante <code>crearBuffer</code> dejó enlazado <code>bufB</code>, y la edición «del triángulo de la izquierda» fue a parar al de la derecha. Nadie avisa: la llamada es perfectamente válida.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.1.3 — La máquina de estados, escrita en Python</h3>
+  <p>Para ver que no hay magia, la GPU de juguete que construirás en <a href="03-gpu-de-juguete.html">4.3</a> incluye una «cara» idéntica a la de WebGL (<code>python/gpu_juguete/maquina_estados.py</code>). Todo el estado de la máquina son unas pocas variables, y cada función de la API es una línea que las lee o las cambia:</p>
+  <div class="anotado" data-lang="python">
+<script type="text/plain">
+class ContextoGL:
+    def __init__(self, ancho, alto, avisar=True):
+        self.framebuffer = gpu.Framebuffer(ancho, alto)
+        self.vao_por_defecto = gpu.VAO()
+        self.vao_actual = self.vao_por_defecto
+        self.array_buffer = None
+        self.programa_actual = None
+        self.constantes = {}
+        self.estado = gpu.EstadoFijo()
+        self.error = NO_ERROR
+
+    def bind_buffer(self, destino, buffer):
+        if destino == ARRAY_BUFFER:
+            self.array_buffer = buffer
+        elif destino == ELEMENT_ARRAY_BUFFER:
+            self.vao_actual.elementos = buffer
+
+    def buffer_data(self, destino, datos):
+        b = self._enlazado(destino)
+        if b is None:
+            return self._error(INVALID_OPERATION, "no hay ningún buffer enlazado")
+        b.subir(datos)
+
+    def vertex_attrib_pointer(self, loc, size, tipo, normalizado, stride, offset):
+        self.vao_actual.atributos[loc] = gpu.Atributo(self.array_buffer, size, tipo,
+                                                      normalizado, stride, offset)
+</script>
+<ol>
+  <li data-l="1-10">Este es el estado esencial de nuestra máquina: el framebuffer, un VAO por defecto (el que queda enlazado cuando haces <code>bindVertexArray(null)</code>), el VAO actual, lo enlazado en <code>ARRAY_BUFFER</code>, el programa en uso, los valores constantes de atributos, el estado fijo (culling, profundidad, blending…) y el primer error pendiente. El contexto real de WebGL tiene muchas más variables, pero son de la misma naturaleza. (Este listado está abreviado: el archivo real añade el color de borrado y las validaciones de WebGL, como el tipo de cada buffer o el límite del stride.)</li>
+  <li data-l="12-16"><code>bindBuffer</code> no copia ni crea nada: <em>apunta</em> una variable. Fíjate en la asimetría, que es real: <code>ARRAY_BUFFER</code> es una variable del contexto, pero <code>ELEMENT_ARRAY_BUFFER</code> se guarda dentro del VAO actual. Es la confusión clásica que aclaramos en <a href="04-vbo-vao.html">4.4</a>.</li>
+  <li data-l="18-22"><code>bufferData</code> modifica «el buffer enlazado a ese destino», sea cual sea. Si no hay ninguno, apunta el error <code>INVALID_OPERATION</code> y no hace nada más: no lanza una excepción, igual que la API real.</li>
+  <li data-l="24-26">La línea clave de toda la API: el descriptor del atributo se queda con <code>self.array_buffer</code>, el buffer enlazado <em>en ese momento</em>. Cambiar después <code>ARRAY_BUFFER</code> no afecta al VAO.</li>
+</ol>
+  </div>
+  <p>El script <code>ejemplo_06_maquina_estados.py</code> reproduce el bug de la demo con esta clase. Su salida (y la imagen que genera: a la izquierda el resultado con el bug, a la derecha corregido):</p>
+  <script type="text/plain" class="codigo" data-lang="text" data-titulo="python gpu_juguete/ejemplo_06_maquina_estados.py (fragmento)">
+== 1. bind-para-editar ==
+  con bug  : ARRAY_BUFFER enlazado al editar = buf_b
+  corregido: ARRAY_BUFFER enlazado al editar = buf_a
+
+== 2. vertexAttribPointer 'fotografía' el buffer enlazado ==
+  ARRAY_BUFFER enlazado ahora:       buf_b
+  buffer del atributo 0 en vao_a:    buf_a
+  (enlazo vao_b) ARRAY_BUFFER sigue: buf_b ← no es estado del VAO
+  </script>
+  <figure class="m4-figura">
+    <img src="img/juguete-estado-bug.png" width="330" height="120" alt="Dos triángulos: a la izquierda, con el bug, el triángulo azul se ha movido encima del naranja; a la derecha, corregido, se mueve el naranja">
+    <figcaption>Generada por la GPU de juguete. Izquierda: el «triángulo de la izquierda» nunca se movió; el que cambió fue el azul. Derecha: enlazando <code>buf_a</code> antes de editar.</figcaption>
+  </figure>
+</section>
+
+<div class="callout bestiario" data-id="m4-bind-para-editar" data-titulo="Actualizo un buffer (o una textura) y cambia otro objeto">
+  <p><strong>Síntoma:</strong> actualizas los vértices de un objeto y se deforma otro distinto; o cambias el filtrado de una textura y cambia el de otra; o un objeto que dibujabas bien desaparece después de llamar a una función auxiliar que «no tenía nada que ver».</p>
+  <p><strong>Causa:</strong> las funciones de edición (<code>bufferData</code>, <code>bufferSubData</code>, <code>texParameteri</code>, <code>texImage2D</code>…) actúan sobre el objeto <em>enlazado</em> en ese punto de enlace, y alguien (a menudo una función auxiliar) dejó enlazado otro. El estado persiste entre llamadas y entre frames.</p>
+  <p><strong>Solución:</strong> la regla de oro: <strong>enlaza siempre justo antes de editar</strong>, aunque creas que ya está enlazado. Las llamadas de enlace son baratísimas (se resuelven en el proceso de tu página). Y al terminar de configurar un VAO, desenlázalo (<code>gl.bindVertexArray(null)</code>) para que un <code>bindBuffer(ELEMENT_ARRAY_BUFFER, …)</code> posterior no lo modifique por accidente.</p>
+</div>
+
+<div class="callout senior" data-titulo="Cómo lo resuelven las API modernas">
+  <p>OpenGL 4.5 añadió <em>Direct State Access</em>: <code>glNamedBufferData(buf, …)</code> actúa sobre el objeto que le pasas, sin enlazar nada. No existe en WebGL ni en el OpenGL 4.1 de macOS. Las API modernas (Vulkan, Metal, Direct3D 12 y WebGPU, que es la que verás en <a href="../07-integracion/07-siguientes-pasos.html">7.7</a>) eliminaron la máquina de estados: todo el estado de dibujo se agrupa en objetos inmutables creados de antemano (los <em>pipelines</em>) y las órdenes se graban explícitamente en <em>command buffers</em> que tú envías. Más código, pero sin estado oculto. Lo que aprendes aquí (qué estado existe y cuándo se lee) te servirá igual allí: solo cambia quién lo guarda.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Configuras el VAO <code>A</code> con un atributo que lee de <code>bufX</code>. Después enlazas <code>bufY</code> en <code>ARRAY_BUFFER</code> y a continuación enlazas otro VAO, <code>B</code>. ¿Qué devuelve <code>gl.getParameter(gl.ARRAY_BUFFER_BINDING)</code>?</p>
+  <ul>
+    <li><code>bufX</code>, porque es el buffer del VAO <code>A</code>.<div class="explicacion">El VAO <code>A</code> recuerda <code>bufX</code> para su atributo, sí, pero eso no es el enlace <code>ARRAY_BUFFER</code> del contexto.</div></li>
+    <li><code>null</code>, porque el VAO <code>B</code> es nuevo y no tiene nada.<div class="explicacion">Eso pasaría con <code>ELEMENT_ARRAY_BUFFER_BINDING</code>, que sí es estado del VAO. <code>ARRAY_BUFFER</code> no lo es.</div></li>
+    <li data-correcta><code>bufY</code>: el enlace <code>ARRAY_BUFFER</code> es estado del contexto y cambiar de VAO no lo toca.<div class="explicacion">Correcto, y lo comprobamos en Chrome con <code>getParameter</code>: tras enlazar otro VAO, <code>ARRAY_BUFFER_BINDING</code> sigue siendo el último buffer enlazado. Es la confusión número uno sobre los VAO; la desmontamos en <a href="04-vbo-vao.html">4.4</a>.</div></li>
+  </ul>
+</div>
+
+<h2>ANGLE: tu WebGL no llega a la GPU tal cual</h2>
+<p>Ya lo viste en el diagrama: en Chrome, Edge y Safari (y en Firefox sobre Windows) hay una capa llamada <strong>ANGLE</strong> entre WebGL y la GPU. Implementa la semántica de OpenGL ES 3.0 encima de la API nativa del sistema: <strong>Metal</strong> en macOS e iOS, <strong>Direct3D 11</strong> en Windows, <strong>Vulkan</strong> u OpenGL en Linux y Android. En nuestra máquina, el nombre de la GPU que da la extensión <code>WEBGL_debug_renderer_info</code> lo dice claro: <code>ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)</code>.</p>
+<p>Lo más interesante es que <strong>tus shaders también se traducen</strong>: tu GLSL ES se reescribe en MSL (el lenguaje de shaders de Metal), en HLSL (el de Direct3D) o en SPIR-V (Vulkan). La extensión <code>WEBGL_debug_shaders</code> te deja ver el resultado. Este es un fragmento real de lo que ANGLE generó en nuestro Mac para un vertex shader de tres líneas (<code>v_color = a_color; gl_Position = vec4(a_pos * u_escala, 0.0, 1.0);</code>):</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+struct ANGLE_UserUniforms
+{
+  float _uu_escala;
+};
+
+struct ANGLE_VertexOut
+{
+  metal::float3 _uv_color;
+  metal::float4 gl_Position [[position]];
+  float gl_PointSize [[point_size]];
+};
+
+void ANGLE__0_main(thread ANGLE_VertexOut & ANGLE_vertexOut, thread ANGLE_VertexIn & ANGLE_vertexIn, constant ANGLE_UserUniforms & ANGLE_userUniforms)
+{
+  ANGLE_vertexOut.gl_Position = metal::float4(0.0f, 0.0f, 0.0f, 0.0f);
+  ANGLE_vertexOut._uv_color = metal::float3(0.0f, 0.0f, 0.0f);
+  ANGLE_vertexOut._uv_color = ANGLE_vertexIn._ua_color;
+  metal::float2 ANGLE_sbd1 = (ANGLE_vertexIn._ua_pos * ANGLE_userUniforms._uu_escala);
+  ANGLE_vertexOut.gl_Position = ANGLE_sbc6(ANGLE_sbd1, 0.0f, 1.0f);
+}
+    // ...y en la función de entrada de Metal, después de llamar a tu main:
+    ANGLE_vertexOut.gl_Position.z = (ANGLE_vertexOut.gl_Position.z + ANGLE_vertexOut.gl_Position.w) * 0.5f;
+    ANGLE_vertexOut.gl_Position.y = (ANGLE_vertexOut.gl_Position.y * ANGLE_sbdb.w);
+</script>
+<ol>
+  <li data-l="1-4">Tus uniforms acaban en un <code>struct</code> que Metal lee de un buffer de constantes (en el código completo, <code>[[buffer(19)]]</code>). Un uniform es memoria en un buffer, no un «registro mágico». Y todos tus nombres llevan un prefijo (<code>u_escala</code> → <code>_uu_escala</code>, <code>a_pos</code> → <code>_ua_pos</code>) para que no choquen con palabras reservadas de MSL.</li>
+  <li data-l="6-11">Los varyings de salida son campos de otro <code>struct</code>, junto a <code>gl_Position</code>, marcado con el atributo <code>[[position]]</code> que Metal entiende.</li>
+  <li data-l="15-16">¡Tus salidas se inicializan a cero antes de ejecutar tu código! WebGL lo garantiza por seguridad (una salida sin escribir podría filtrar datos de otro programa). En OpenGL nativo, un varying que no escribes vale «cualquier cosa».</li>
+  <li data-l="17-19">Tu código, casi literal.</li>
+  <li data-l="22">GL y Metal no se ponen de acuerdo en el rango de profundidad: en GL, la z de clip va de −w a w; en Metal, de 0 a w. ANGLE lo convierte con <code>(z + w) / 2</code> (en el código real, esa línea va dentro de un <code>if</code> que depende de la configuración de profundidad).</li>
+  <li data-l="23">Y tampoco en el sentido del eje y de la imagen: GL pone el origen abajo y Metal arriba. ANGLE multiplica la y por ±1 según el destino, con un valor que le pasa como uniform interno.</li>
+</ol>
+</div>
+
+<p>Compruébalo en tu navegador (si la extensión no está disponible, el playground te lo dirá):</p>
+
+<div class="js-playground" data-titulo="El shader que ejecuta de verdad tu GPU" data-altura="50" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:10px 16px;font:14px monospace">el código traducido sale en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+const info = gl.getExtension('WEBGL_debug_renderer_info');
+console.log('GPU:', info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : '(oculta por el navegador)');
+const ext = gl.getExtension('WEBGL_debug_shaders');
+if (!ext) {
+  console.warn('Este navegador no expone WEBGL_debug_shaders (Firefox, por ejemplo, la reserva para páginas privilegiadas).');
+} else {
+  const fuente = `#version 300 es
+in vec2 a_pos;
+in vec3 a_color;
+out vec3 v_color;
+uniform float u_escala;
+void main() {
+  v_color = a_color;
+  gl_Position = vec4(a_pos * u_escala, 0.0, 1.0);
+}`;
+  const vs = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vs, fuente);
+  gl.compileShader(vs);
+  const traducido = ext.getTranslatedShaderSource(vs);
+  console.log(`${traducido.length} caracteres (tu shader tenía ${fuente.length}):`);
+  console.log(traducido);
+}
+</script>
+</div>
+
+<p>Consecuencias prácticas de que exista ANGLE:</p>
+<ul>
+  <li>Algunos errores llegan con el texto de ANGLE, no de tu navegador (por ejemplo, <code>GL_INVALID_OPERATION: glDrawArrays: Vertex buffer is not big enough for the draw call</code>, que verás provocar en <a href="04-vbo-vao.html">4.4</a>).</li>
+  <li>El mismo programa puede comportarse ligeramente distinto en Windows y en Mac (distinta API por debajo, distinto compilador de shaders, distinta precisión en algunos casos). Prueba en las dos cuando algo sea crítico.</li>
+  <li>Las características de rendimiento de la GPU de debajo se filtran hacia arriba: en un Mac estás programando, sin saberlo, una GPU de teselas de Apple a través de Metal (lo aprovecharemos en <a href="02-pipeline-grafico.html">4.2</a>).</li>
+  <li>ANGLE también protege: valida límites (verás en <a href="04-vbo-vao.html">4.4</a> que WebGL comprueba que no leas fuera de un buffer, algo que OpenGL nativo no hace) y esquiva errores conocidos de drivers concretos.</li>
+</ul>
+
+<h2>Lo que una GPU no puede hacer</h2>
+<p>El precio de ser una máquina de rendimiento es renunciar a cosas que en la CPU das por hechas. En GLSL ES 3.00, el lenguaje de los shaders de WebGL2 (<a href="../06-glsl/01-lenguaje.html">6.1</a>), comprobamos que:</p>
+<ul>
+  <li><strong>No hay recursión.</strong> Una función que se llama a sí misma no compila: <code>ERROR: Recursive function call in the following call chain: f</code>. No hay pila de llamadas por carril; todas las funciones se <em>insertan</em> en el sitio donde se llaman. Si necesitas recorrer un árbol, usa un bucle con una pila explícita en un array de tamaño fijo.</li>
+  <li><strong>No hay memoria dinámica.</strong> Ni <code>new</code>, ni <code>malloc</code>, ni arrays de tamaño variable: <code>float a[u_n];</code> da <code>array size must be a constant integer expression</code>. Todo el espacio de un shader se conoce al compilar (y cuenta para la ocupación).</li>
+  <li><strong>No hay punteros</strong>, ni <code>double</code> (<code>'double' : Illegal use of reserved word</code>): en WebGL todo es float de 32 bits como mucho (<a href="../03-matematicas/07-precision.html">3.7</a>).</li>
+  <li><strong>Un fragment shader solo escribe en su píxel.</strong> No puede pintar en el píxel de al lado ni leer lo que otra invocación acaba de calcular (la excepción limitada son las derivadas dentro de un quad). Si necesitas combinar resultados de píxeles distintos, dibuja en una textura y léela en una pasada posterior (<a href="../05-webgl/08-framebuffers.html">5.8</a>).</li>
+  <li><strong>No hay memoria entre invocaciones ni entre frames.</strong> Cada ejecución del shader empieza de cero. El estado persistente vive en texturas y buffers que tú alimentas.</li>
+  <li><strong>No hay <code>printf</code> ni depurador paso a paso</strong> en el navegador. Se depura pintando valores como colores (<a href="../05-webgl/10-depuracion.html">5.10</a>).</li>
+  <li><strong>Un bucle muy largo no se «cuelga» sin más</strong>: el sistema operativo vigila la GPU y, si un dibujo tarda demasiado (del orden de segundos), la reinicia y tu contexto WebGL se pierde (<a href="../05-webgl/01-contexto.html">5.1</a>).</li>
+</ul>
+
+<div class="quiz">
+  <p class="pregunta">Quieres que cada píxel de un efecto de desenfoque use el color que ha calculado su vecino de la derecha en el mismo dibujo. ¿Qué haces?</p>
+  <ul>
+    <li>Leo el color del vecino con una variable global del shader.<div class="explicacion">Las variables globales de un shader son privadas de cada invocación: cada carril tiene su copia, y no hay memoria compartida entre fragmentos en WebGL.</div></li>
+    <li>Lo resuelvo con recursión: cada píxel llama a la función de su vecino.<div class="explicacion">GLSL prohíbe la recursión (no compila), y aunque la permitiera, cada invocación no puede ejecutar el trabajo de otra.</div></li>
+    <li data-correcta>Dibujo el efecto en dos pasadas: la primera escribe en una textura y la segunda lee los vecinos de esa textura.<div class="explicacion">Exacto: es la técnica de <em>render-to-texture</em> (<a href="../05-webgl/08-framebuffers.html">5.8</a>). Dentro de un mismo dibujo los fragmentos no se ven entre sí; entre dos dibujos, sí, a través de una textura.</div></li>
+  </ul>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 4.1.1 — ¿Cuántos warps pagan la rama rara?</h3>
+  <p>Un efecto de «destellos» ejecuta una rama cara en cada píxel con probabilidad $p$, de forma independiente y salpicada por la pantalla. Calcula qué fracción de los warps ejecutará la rama cara con $p = 1\,\%$ y con $p = 10\,\%$, para warps de 32 carriles y para warps de 64. ¿Qué pasa con la eficiencia (trabajo útil en la rama cara / trabajo pagado en la rama cara) en cada caso?</p>
+  <details class="pista"><summary>Pista 1</summary><p>Es más fácil calcular lo contrario: ¿qué probabilidad hay de que <em>ningún</em> carril del warp tome la rama?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si cada carril la evita con probabilidad $1 - p$, los 32 la evitan con probabilidad $(1-p)^{32}$.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Un warp paga la rama si al menos un carril la toma: fracción $f = 1 - (1-p)^{n}$, con $n$ el número de carriles.</p>
+    <table class="m4-compacta">
+      <thead><tr><th></th><th>$p = 1\,\%$</th><th>$p = 10\,\%$</th></tr></thead>
+      <tbody>
+        <tr><td>warps de 32</td><td class="num">$1 - 0{,}99^{32} \approx 27{,}5\,\%$</td><td class="num">$1 - 0{,}9^{32} \approx 96{,}6\,\%$</td></tr>
+        <tr><td>warps de 64</td><td class="num">$1 - 0{,}99^{64} \approx 47{,}4\,\%$</td><td class="num">$1 - 0{,}9^{64} \approx 99{,}9\,\%$</td></tr>
+      </tbody>
+    </table>
+    <p>La eficiencia dentro de la rama cara es $p / f$: la fracción de carriles que la necesitan entre la fracción de warps que la pagan. Con $p = 1\,\%$ y warps de 32, $0{,}01 / 0{,}275 \approx 3{,}6\,\%$; con $p = 10\,\%$, $0{,}1 / 0{,}966 \approx 10\,\%$. Con warps de 64 es aún peor con $p = 1\,\%$ ($0{,}01 / 0{,}474 \approx 2{,}1\,\%$) y igual de mala con $p = 10\,\%$ ($0{,}1 / 0{,}999 \approx 10\,\%$: ya casi todos los warps pagan la rama, y solo un carril de cada diez la usa). Aunque solo uno de cada diez píxeles necesite la rama, la GPU la paga en el 97 % de los warps, y los warps más anchos (64) lo empeoran. Por eso los efectos salpicados son caros, y por eso conviene hacerlos coherentes o sacarlos a una pasada aparte. En el ejercicio 4.1.4 lo medirás.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.1.2 — Arregla el bug de la máquina de estados</h3>
+  <p>Este programa quiere subir el triángulo naranja (el de la izquierda) y dejar el azul donde está. Pero, al ejecutarlo, el que se mueve es el azul. Arréglalo <strong>añadiendo una sola línea</strong>, sin tocar las funciones auxiliares. Al terminar, el naranja debe aparecer más arriba y el azul, en su sitio, a la derecha. (No hace falta entender todavía cada llamada de WebGL: céntrate en qué está enlazado en cada momento. La consola te ayuda.)</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.1.2" data-altura="220" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = 400; canvas.height = 220;
+const gl = canvas.getContext('webgl2');
+
+// --- Un programa mínimo que pinta todo del color u_color (lo desmontarás en 5.2)
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s); return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; uniform vec3 u_color; out vec4 o;
+void main() { o = vec4(u_color, 1.0); }`));
+gl.linkProgram(prog);
+const uColor = gl.getUniformLocation(prog, 'u_color');
+
+// --- Ayudantes típicos (NO los modifiques)
+function crearBuffer(datos) {                 // crea, enlaza, rellena... y lo deja ENLAZADO
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, datos, gl.DYNAMIC_DRAW);
+  return b;
+}
+function crearVAO() {                         // el atributo 0 leerá del ARRAY_BUFFER enlazado AHORA
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  return vao;
+}
+
+const bufIzq = crearBuffer(new Float32Array([-0.9, -0.7, -0.1, -0.7, -0.5, 0.2]));
+const vaoIzq = crearVAO();
+const bufDer = crearBuffer(new Float32Array([0.1, -0.7, 0.9, -0.7, 0.5, 0.2]));
+const vaoDer = crearVAO();
+
+// --- Subir el triángulo de la IZQUIERDA
+const nombre = (b) => b === bufIzq ? 'bufIzq' : b === bufDer ? 'bufDer' : String(b);
+console.log('ARRAY_BUFFER enlazado al editar:', nombre(gl.getParameter(gl.ARRAY_BUFFER_BINDING)));
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.9, -0.1, -0.1, -0.1, -0.5, 0.8]), gl.DYNAMIC_DRAW);
+
+// --- Dibujar los dos
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(prog);
+gl.bindVertexArray(vaoIzq); gl.uniform3f(uColor, 1.0, 0.45, 0.3); gl.drawArrays(gl.TRIANGLES, 0, 3);
+gl.bindVertexArray(vaoDer); gl.uniform3f(uColor, 0.35, 0.8, 1.0); gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+canvas.width = 400; canvas.height = 220;
+const gl = canvas.getContext('webgl2');
+
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s); return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; uniform vec3 u_color; out vec4 o;
+void main() { o = vec4(u_color, 1.0); }`));
+gl.linkProgram(prog);
+const uColor = gl.getUniformLocation(prog, 'u_color');
+
+function crearBuffer(datos) {
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, datos, gl.DYNAMIC_DRAW);
+  return b;
+}
+function crearVAO() {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  return vao;
+}
+
+const bufIzq = crearBuffer(new Float32Array([-0.9, -0.7, -0.1, -0.7, -0.5, 0.2]));
+const vaoIzq = crearVAO();
+const bufDer = crearBuffer(new Float32Array([0.1, -0.7, 0.9, -0.7, 0.5, 0.2]));
+const vaoDer = crearVAO();
+
+const nombre = (b) => b === bufIzq ? 'bufIzq' : b === bufDer ? 'bufDer' : String(b);
+gl.bindBuffer(gl.ARRAY_BUFFER, bufIzq);       // ← LA LÍNEA: enlazar justo antes de editar
+console.log('ARRAY_BUFFER enlazado al editar:', nombre(gl.getParameter(gl.ARRAY_BUFFER_BINDING)));
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.9, -0.1, -0.1, -0.1, -0.5, 0.8]), gl.DYNAMIC_DRAW);
+
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(prog);
+gl.bindVertexArray(vaoIzq); gl.uniform3f(uColor, 1.0, 0.45, 0.3); gl.drawArrays(gl.TRIANGLES, 0, 3);
+gl.bindVertexArray(vaoDer); gl.uniform3f(uColor, 0.35, 0.8, 1.0); gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La consola te dice qué buffer está enlazado en <code>ARRAY_BUFFER</code> en el momento de editar. ¿Cuál fue el último que enlazó <code>crearBuffer</code>?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>bufferData</code> no recibe el buffer como argumento: actúa sobre lo enlazado. ¿Qué tendría que estar enlazado justo antes?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Hay que añadir <code>gl.bindBuffer(gl.ARRAY_BUFFER, bufIzq);</code> justo antes del <code>bufferData</code> de edición. El segundo <code>crearBuffer</code> dejó <code>bufDer</code> enlazado, así que la edición iba a parar a él, y como <code>vaoDer</code> lee de <code>bufDer</code>, el triángulo azul se movía.</p>
+    <p>Fíjate en lo que <em>no</em> hace falta: no hay que tocar ningún VAO. <code>vaoIzq</code> sigue apuntando a <code>bufIzq</code> desde que se configuró (el <code>vertexAttribPointer</code> «fotografió» ese buffer), así que basta con cambiar el <em>contenido</em> de <code>bufIzq</code>. Y enlazar un buffer que quizá ya estaba enlazado no cuesta prácticamente nada: por eso la regla es enlazar siempre antes de editar, sin intentar recordar qué había.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.1.3 — De 10 000 draw calls a 1</h3>
+  <p>El programa dibuja 10 000 cuadraditos con un draw call cada uno (la posición va en un uniform) y mide lo que tardan 10 frames. Reescribe la función <code>preparar</code> y la función <code>dibujar</code> para que todo se dibuje con <strong>un único</strong> <code>drawArrays</code>: calcula en JavaScript los 6 vértices de cada cuadrado ya desplazados, mételos todos en un solo buffer y deja <code>u_desp</code> a (0, 0). Debe verse exactamente lo mismo, y la consola debe mostrar un tiempo menor.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.1.3" data-altura="240" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const N = 10000;
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 400;
+const gl = canvas.getContext('webgl2', { antialias: false });
+function shader(tipo, fuente) { const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+uniform vec2 u_desp;
+void main() { gl_Position = vec4(a_pos + u_desp, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; out vec4 o; void main() { o = vec4(1.0, 0.55, 0.3, 1.0); }`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+const uDesp = gl.getUniformLocation(prog, 'u_desp');
+
+// Un cuadrado de lado 0.02 centrado en el origen: 2 triángulos = 6 vértices (x, y)
+const CUADRADO = [-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1].map((v) => v * 0.01);
+// Posiciones "aleatorias" pero repetibles
+const desp = [];
+for (let i = 0; i < N; i++) desp.push([Math.sin(i * 12.9898) * 0.95, Math.cos(i * 78.233) * 0.95]);
+
+function preparar() {
+  gl.bindVertexArray(gl.createVertexArray());
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(CUADRADO), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+}
+function dibujar() {
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  for (const [x, y] of desp) {                 // N draw calls, un uniform distinto en cada uno
+    gl.uniform2f(uDesp, x, y);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+}
+
+preparar();
+const px = new Uint8Array(4);
+dibujar(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);      // calentar
+const t0 = performance.now();
+for (let f = 0; f < 10; f++) dibujar();                                     // 10 frames seguidos...
+gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);                  // ...y esperamos a que acaben
+console.log('10 frames:', (performance.now() - t0).toFixed(1), 'ms');
+</script>
+<script type="text/x-js" data-solucion>
+const N = 10000;
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 400;
+const gl = canvas.getContext('webgl2', { antialias: false });
+function shader(tipo, fuente) { const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+uniform vec2 u_desp;
+void main() { gl_Position = vec4(a_pos + u_desp, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; out vec4 o; void main() { o = vec4(1.0, 0.55, 0.3, 1.0); }`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+const uDesp = gl.getUniformLocation(prog, 'u_desp');
+
+const CUADRADO = [-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1].map((v) => v * 0.01);
+const desp = [];
+for (let i = 0; i < N; i++) desp.push([Math.sin(i * 12.9898) * 0.95, Math.cos(i * 78.233) * 0.95]);
+
+function preparar() {
+  // Todos los cuadrados en UN buffer: 6 vértices × 2 floats × N, ya desplazados en la CPU
+  const todo = new Float32Array(N * 12);
+  desp.forEach(([x, y], i) => {
+    for (let k = 0; k < 6; k++) {
+      todo[i * 12 + 2 * k] = CUADRADO[2 * k] + x;
+      todo[i * 12 + 2 * k + 1] = CUADRADO[2 * k + 1] + y;
+    }
+  });
+  gl.bindVertexArray(gl.createVertexArray());
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, todo, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform2f(uDesp, 0, 0);                   // el desplazamiento ya está en los vértices
+}
+function dibujar() {
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLES, 0, N * 6);       // UN draw call para los 10 000 cuadrados
+}
+
+preparar();
+const px = new Uint8Array(4);
+dibujar(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+const t0 = performance.now();
+for (let f = 0; f < 10; f++) dibujar();                                     // 10 frames seguidos...
+gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);                  // ...y esperamos a que acaben
+console.log('10 frames:', (performance.now() - t0).toFixed(1), 'ms');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El buffer nuevo tiene <code>N × 6</code> vértices, es decir, <code>N × 12</code> floats. El vértice <code>k</code> del cuadrado <code>i</code> empieza en el índice <code>i * 12 + 2 * k</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En <code>dibujar</code>, el <code>drawArrays</code> recibe el primer vértice y cuántos: <code>gl.drawArrays(gl.TRIANGLES, 0, N * 6)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La idea del <em>batching</em> es mover a la CPU (una sola vez) el trabajo que antes hacía el uniform: sumamos el desplazamiento a cada vértice al construir el buffer y así todos los cuadrados caben en un único array de 120 000 floats (480 000 bytes). El dibujo se reduce a una llamada por frame.</p>
+    <p>El precio: si los cuadrados se movieran cada frame, habría que recalcular y volver a subir el buffer (con <code>bufferSubData</code> y <code>DYNAMIC_DRAW</code>), o pasar a instancing (<a href="../05-webgl/09-instancing.html">5.9</a>), donde cada cuadrado lee su desplazamiento de un segundo buffer sin duplicar vértices. En nuestra máquina, los 10 frames pasaron de 40–45 ms a unos 3 ms: los 100 000 draw calls de la versión original no caben en ningún presupuesto de tiempo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 4.1.4 — Mide la rama rara y compárala con la teoría</h3>
+  <p>Completa el shader para que cada píxel tome la rama cara con probabilidad <code>u_p</code>, usando <code>hash01(c)</code> (un número pseudoaleatorio entre 0 y 1 distinto para cada píxel). Después completa la predicción en JavaScript: si $T_0$ es el tiempo con $p = 0$ y $T_1$ con $p = 1$, la teoría del ejercicio 4.1.1 predice $T(p) \approx T_0 + (T_1 - T_0)\,(1 - (1-p)^{32})$. La consola debe mostrar, para cada $p$, el tiempo medido y el predicho. ¿Se parecen? ¿Qué pasaría si el tamaño de warp de tu GPU fuera 64?</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.1.4" data-altura="60" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:14px 16px;font:14px monospace">resultados en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 1024;
+const gl = canvas.getContext('webgl2', { antialias: false });
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; precision highp int;
+uniform float u_p;
+out vec4 fragColor;
+float hash01(ivec2 c) {                               // pseudoaleatorio en [0, 1) por píxel
+  uint h = uint(c.x) * 73856093u ^ uint(c.y) * 19349663u;
+  h ^= h >> 16; h *= 0x7feb352dU; h ^= h >> 15; h *= 0x846ca68bU; h ^= h >> 16;
+  return float(h) / 4294967296.0;
+}
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  float a = gl_FragCoord.x * 0.001;
+  bool cara = false;                                  // TODO: true con probabilidad u_p
+  if (cara) { for (int i = 0; i < 400; i++) a = sin(a * 1.1 + float(i)); }
+  fragColor = vec4(fract(a));
+}`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+const uP = gl.getUniformLocation(prog, 'u_p');
+const px = new Uint8Array(4);
+function medir(p) {
+  gl.uniform1f(uP, p);
+  const ts = [];
+  for (let r = 0; r < 5; r++) {
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t0 = performance.now();
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    ts.push(performance.now() - t0);
+  }
+  return ts.sort((a, b) => a - b)[2];
+}
+medir(0.5);                                           // calentar
+const T0 = medir(0), T1 = medir(1);
+for (const p of [0.001, 0.005, 0.01, 0.03, 0.1, 0.3]) {
+  const prediccion = NaN;                             // TODO: T0 + (T1 - T0) * (1 - (1 - p)^32)
+  console.log(`p = ${String(p).padEnd(5)}  medido ${medir(p).toFixed(1).padStart(5)} ms   predicho ${prediccion.toFixed(1).padStart(5)} ms`);
+}
+console.log(`(T0 = ${T0.toFixed(1)} ms, T1 = ${T1.toFixed(1)} ms)`);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.createElement('canvas');
+canvas.width = canvas.height = 1024;
+const gl = canvas.getContext('webgl2', { antialias: false });
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; precision highp int;
+uniform float u_p;
+out vec4 fragColor;
+float hash01(ivec2 c) {
+  uint h = uint(c.x) * 73856093u ^ uint(c.y) * 19349663u;
+  h ^= h >> 16; h *= 0x7feb352dU; h ^= h >> 15; h *= 0x846ca68bU; h ^= h >> 16;
+  return float(h) / 4294967296.0;
+}
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  float a = gl_FragCoord.x * 0.001;
+  bool cara = hash01(c) < u_p;                        // probabilidad u_p, independiente por píxel
+  if (cara) { for (int i = 0; i < 400; i++) a = sin(a * 1.1 + float(i)); }
+  fragColor = vec4(fract(a));
+}`));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+gl.bindVertexArray(gl.createVertexArray());
+const uP = gl.getUniformLocation(prog, 'u_p');
+const px = new Uint8Array(4);
+function medir(p) {
+  gl.uniform1f(uP, p);
+  const ts = [];
+  for (let r = 0; r < 5; r++) {
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t0 = performance.now();
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    ts.push(performance.now() - t0);
+  }
+  return ts.sort((a, b) => a - b)[2];
+}
+medir(0.5);
+const T0 = medir(0), T1 = medir(1);
+for (const p of [0.001, 0.005, 0.01, 0.03, 0.1, 0.3]) {
+  const prediccion = T0 + (T1 - T0) * (1 - Math.pow(1 - p, 32));
+  console.log(`p = ${String(p).padEnd(5)}  medido ${medir(p).toFixed(1).padStart(5)} ms   predicho ${prediccion.toFixed(1).padStart(5)} ms`);
+}
+console.log(`(T0 = ${T0.toFixed(1)} ms, T1 = ${T1.toFixed(1)} ms)`);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En el shader: <code>bool cara = hash01(c) &lt; u_p;</code>. Si <code>hash01</code> se reparte uniformemente entre 0 y 1, la probabilidad de quedar por debajo de <code>u_p</code> es justo <code>u_p</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En JavaScript, la potencia es <code>Math.pow(1 - p, 32)</code> (o <code>(1 - p) ** 32</code>).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>hash01(c) &lt; u_p</code>, cada píxel toma la rama cara con probabilidad <code>u_p</code> y de forma prácticamente independiente de sus vecinos (el hash mezcla bien los bits). La predicción aplica la fórmula del ejercicio 4.1.1: el tiempo extra es proporcional a la fracción de warps que pagan la rama.</p>
+    <p>En nuestro M1 la predicción con 32 carriles encaja bien: con $p = 0{,}01$ ya se paga en torno al 25–30 % del coste completo, y con $p = 0{,}1$ casi todo. Si tu GPU tuviera warps de 64, la curva subiría todavía más deprisa: con $p = 0{,}01$, el 47 %. De hecho, puedes usar este experimento al revés, para <em>estimar</em> el tamaño de warp de una GPU desconocida: prueba a cambiar el 32 de la fórmula por 16 o por 64 y quédate con el que mejor se ajuste a tus medidas.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><strong>Latencia frente a rendimiento</strong>: la CPU termina pronto <em>una</em> tarea; la GPU termina muchísimas por segundo si todas hacen lo mismo. Esconde la espera de la memoria cambiando entre miles de invocaciones en vuelo.</li>
+    <li><strong>SIMT</strong>: escribes código para un píxel; el hardware lo ejecuta en warps de 32 (o 64) carriles con un solo contador de programa. Con <strong>divergencia</strong>, el warp ejecuta las dos ramas con una máscara. Lo caro no es el <code>if</code>: es que los carriles de un mismo warp no coincidan. En el M1 medimos el doble de tiempo con un damero de 1 píxel, y cero penalización con bloques de 8 píxeles.</li>
+    <li><strong>La memoria manda</strong>: acceso coherente frente a aleatorio a una textura, casi 20 veces de diferencia con las mismas lecturas.</li>
+    <li><strong>Command buffer</strong>: las llamadas de WebGL se apuntan y la GPU las ejecuta después. <code>readPixels</code> y <code>getError</code> fuerzan esperas; <code>finish</code> no espera en Chrome. <code>performance.now()</code> alrededor de un dibujo mide el apunte, no el dibujo.</li>
+    <li><strong>Draw calls</strong>: cada uno tiene un coste fijo en la CPU; agrupa (batching) o usa instancing. El primer dibujo con un programa o un estado nuevos da un tirón (compilación del pipeline): precalienta.</li>
+    <li><strong>Máquina de estados</strong>: casi todo actúa sobre «lo enlazado». Enlaza siempre justo antes de editar; <code>ARRAY_BUFFER</code> es del contexto, <code>ELEMENT_ARRAY_BUFFER</code> es del VAO.</li>
+    <li><strong>ANGLE</strong> traduce tu WebGL (y tus shaders) a Metal, Direct3D o Vulkan: inicializa tus salidas, cambia el rango de profundidad y el sentido de la y. <code>WEBGL_debug_shaders</code> te deja verlo.</li>
+    <li>En un shader no hay recursión, ni memoria dinámica, ni comunicación entre píxeles de un mismo dibujo.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li>Fabian Giesen, <a href="https://fgiesen.wordpress.com/2011/07/09/a-trip-through-the-graphics-pipeline-2011-index/">A trip through the Graphics Pipeline 2011</a>: la serie clásica sobre lo que pasa de verdad dentro del driver y de la GPU.</li>
+  <li>NVIDIA, <a href="https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#simt-architecture">CUDA C++ Programming Guide: SIMT Architecture</a>: warps, divergencia y ocupación explicados por quien los inventó.</li>
+  <li>Apple, <a href="https://developer.apple.com/documentation/metal/tailor-your-apps-for-apple-gpus-and-tile-based-deferred-rendering">Tailor your apps for Apple GPUs and tile-based deferred rendering</a>: cómo es la GPU que hay debajo de tu WebGL en un Mac.</li>
+  <li><a href="https://chromium.googlesource.com/angle/angle">El proyecto ANGLE</a> y la <a href="https://registry.khronos.org/webgl/specs/latest/2.0/">especificación de WebGL 2.0</a>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/demos-41.js"></script>
+</body>
+</html>

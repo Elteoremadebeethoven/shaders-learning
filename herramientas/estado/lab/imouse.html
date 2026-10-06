@@ -1,0 +1,13 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><link rel="stylesheet" href="file:///Users/alex/Projects/shaders/assets/vendor/vendor.bundle.css"><link rel="stylesheet" href="file:///Users/alex/Projects/shaders/assets/css/curso.css"></head>
+<body><main class="leccion"><h1>iMouse</h1>
+<div class="glsl-playground" data-modo="shadertoy" data-texturas="damero,paisaje:256" data-altura="200"><script type="x-shader/x-fragment">
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 uv = fragCoord / iResolution.xy;
+  float d = length(fragCoord - iMouse.xy);
+  vec3 c = texture(iChannel0, uv).rgb * 0.3 + vec3(step(d, 10.0));
+  c.r += iChannelResolution[1].x / 1000.0 * 0.0 + iDate.w * 0.0 + iChannelTime[0] * 0.0 + iSampleRate * 0.0 + iFrameRate * 0.0;
+  fragColor = vec4(c, 1.0);
+}
+</script></div></main>
+<script src="file:///Users/alex/Projects/shaders/assets/vendor/vendor.bundle.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/manifest.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/curso.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/texturas.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/glkit.js"></script><script src="file:///Users/alex/Projects/shaders/assets/js/playground-glsl.js"></script>
+</body></html>

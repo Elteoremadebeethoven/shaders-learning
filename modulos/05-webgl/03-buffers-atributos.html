@@ -1,0 +1,1356 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.3 · Buffers, atributos e índices a fondo — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/buffers-atributos">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>Buffers, atributos e índices a fondo</h1>
+  <p class="resumen">Un vértice real no es solo una posición: lleva color, normal, coordenadas de textura. Aquí aprendes a organizar esos datos en memoria, a reutilizar vértices con índices, a dominar todos los modos de primitiva y a actualizar geometría en cada frame, sabiendo lo que cuesta cada decisión.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 5.2, 1.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Configurarás varios atributos, en buffers separados o entrelazados en uno solo, calculando stride y offset en bytes sin dudar.</li>
+      <li>Elegirás el tipo de dato de cada atributo (float, bytes normalizados, half float, enteros) y sabrás qué recibe el shader en cada caso.</li>
+      <li>Dibujarás con índices (<code>drawElements</code>), conocerás sus límites y el reinicio de primitivas que WebGL2 activa por su cuenta.</li>
+      <li>Distinguirás los siete modos de primitiva, el orden de los vértices (<em>winding</em>) y los comportamientos raros de puntos y líneas.</li>
+      <li>Actualizarás geometría en cada frame con <code>bufferSubData</code> y organizarás una escena con un VAO por malla.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Del triángulo naranja a una malla de verdad</h2>
+<p>El triángulo de <a href="02-primer-triangulo.html">5.2</a> tenía un único atributo: la posición. Cualquier objeto real necesita más datos por vértice: un color, una normal para la iluminación (5.6), coordenadas de textura (5.5), a veces un peso o un identificador. Además, los vértices se comparten: en un cuadrado, dos de los cuatro vértices pertenecen a los dos triángulos, y en una malla de terreno cada vértice pertenece a seis. Y a menudo la geometría cambia en cada frame.</p>
+<p>Todo eso son decisiones sobre cómo colocar bytes en la memoria de la GPU. No son decisiones cosméticas: el ancho de banda de memoria es uno de los recursos más escasos de una GPU, y un vértice de 12 bytes necesita cuatro veces menos ancho de banda que uno de 48. Vamos por partes.</p>
+
+<h2>Varios atributos: posición y color</h2>
+<p>Queremos un triángulo con un color distinto en cada vértice, que el rasterizador interpole entre ellos (el varying de <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>, que ya asomó en el ejercicio 5.2.11). El vertex shader tiene ahora dos entradas, cada una en su location:</p>
+
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Vertex shader con dos atributos">
+#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() {
+  v_color = a_color;                          // se interpola hasta cada fragmento
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}
+</script>
+
+<p>En el lado de JavaScript hay dos formas de dar esos datos: un buffer para cada atributo, o un solo buffer con los datos de cada vértice juntos. Las dos son correctas; conviene dominar ambas.</p>
+
+<h3>Opción A: un buffer por atributo</h3>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.3.1 — Dos buffers, dos atributos</h3>
+  <p>Un buffer con posiciones (2 floats por vértice) y otro con colores (3 floats por vértice). Cada <code>vertexAttribPointer</code> se llama justo después de enlazar <em>su</em> buffer, porque fotografía el buffer enlazado (5.2).</p>
+  <div class="js-playground" data-titulo="Posición y color en buffers separados" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() {
+  v_color = a_color;
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const posiciones = new Float32Array([-0.7, -0.6,   0.7, -0.6,   0.0, 0.7]);
+const colores = new Float32Array([
+  1.0, 0.3, 0.3,    // vértice 0: rojo
+  0.3, 1.0, 0.4,    // vértice 1: verde
+  0.3, 0.5, 1.0,    // vértice 2: azul
+]);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+
+const bufPos = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufPos);
+gl.bufferData(gl.ARRAY_BUFFER, posiciones, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);   // fotografía bufPos
+
+const bufCol = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufCol);
+gl.bufferData(gl.ARRAY_BUFFER, colores, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);   // fotografía bufCol
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <p>El VAO recuerda las dos ranuras, cada una con su buffer, su tamaño y su tipo. Al dibujar, el vértice <em>i</em> recibe <code>a_posicion</code> de los bytes <code>8i…8i+7</code> del primer buffer y <code>a_color</code> de los bytes <code>12i…12i+11</code> del segundo. El color de cada píxel es la mezcla de los tres colores ponderada por la cercanía a cada vértice (coordenadas baricéntricas, corregidas por perspectiva: lo viste en 4.2 y 4.5).</p>
+</section>
+
+<h3>Opción B: datos entrelazados en un solo buffer</h3>
+<p>La alternativa es guardar todo lo de un vértice junto: <code>x, y, r, g, b</code>, y a continuación el siguiente vértice. Es lo que se llama un layout <strong>entrelazado</strong> (<em>interleaved</em>). Ahora el stride y el offset dejan de ser ceros y hay que calcularlos en bytes:</p>
+
+<svg class="diagrama" viewBox="0 0 760 200" width="760" role="img" aria-label="Layout entrelazado de posición y color con stride y offset">
+  <defs>
+    <marker id="m53-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <g style="font-size:12px">
+    <rect x="20" y="40" width="64" height="36" class="acento" stroke-width="2"/><text x="52" y="63" text-anchor="middle">x₀</text>
+    <rect x="84" y="40" width="64" height="36" class="acento" stroke-width="2"/><text x="116" y="63" text-anchor="middle">y₀</text>
+    <rect x="148" y="40" width="64" height="36" class="caja"/><text x="180" y="63" text-anchor="middle">r₀</text>
+    <rect x="212" y="40" width="64" height="36" class="caja"/><text x="244" y="63" text-anchor="middle">g₀</text>
+    <rect x="276" y="40" width="64" height="36" class="caja"/><text x="308" y="63" text-anchor="middle">b₀</text>
+    <rect x="340" y="40" width="64" height="36" class="acento" stroke-width="2"/><text x="372" y="63" text-anchor="middle">x₁</text>
+    <rect x="404" y="40" width="64" height="36" class="acento" stroke-width="2"/><text x="436" y="63" text-anchor="middle">y₁</text>
+    <rect x="468" y="40" width="64" height="36" class="caja"/><text x="500" y="63" text-anchor="middle">r₁</text>
+    <rect x="532" y="40" width="64" height="36" class="caja"/><text x="564" y="63" text-anchor="middle">g₁</text>
+    <rect x="596" y="40" width="64" height="36" class="caja"/><text x="628" y="63" text-anchor="middle">b₁</text>
+    <text x="680" y="63" class="texto-tenue">…</text>
+  </g>
+  <g class="texto-tenue" style="font-size:12px">
+    <text x="20" y="94">0</text><text x="84" y="94">4</text><text x="148" y="94">8</text><text x="212" y="94">12</text><text x="276" y="94">16</text><text x="340" y="94">20</text><text x="404" y="94">24</text><text x="468" y="94">28</text>
+  </g>
+  <path d="M20 120 L336 120" stroke="currentColor" stroke-width="1.5" marker-end="url(#m53-fl)"/>
+  <text x="20" y="140">stride = 5 floats × 4 B = 20 bytes (igual para los dos atributos)</text>
+  <path d="M20 165 L144 165" class="acento2" stroke-width="2" marker-end="url(#m53-fl)"/>
+  <text x="160" y="170">offset de a_color = 2 floats × 4 B = 8 bytes · offset de a_posicion = 0</text>
+</svg>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.3.2 — El mismo triángulo, entrelazado</h3>
+  <div class="anotado" data-lang="js">
+<script type="text/plain">
+const datos = new Float32Array([
+//   x     y      r    g    b
+  -0.7, -0.6,   1.0, 0.3, 0.3,
+   0.7, -0.6,   0.3, 1.0, 0.4,
+   0.0,  0.7,   0.3, 0.5, 1.0,
+]);
+const F = Float32Array.BYTES_PER_ELEMENT;   // 4
+const STRIDE = 5 * F;                       // 20 bytes por vértice
+
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, datos, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, STRIDE, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, STRIDE, 2 * F);
+</script>
+<ol>
+  <li data-l="1-6">Cinco floats por vértice, uno tras otro. Los espacios son para leerlo; en memoria son 60 bytes seguidos.</li>
+  <li data-l="7-8">Calcula stride y offset con <code>BYTES_PER_ELEMENT</code> en vez de escribir números mágicos: si un día cambias el layout, cambias una constante.</li>
+  <li data-l="10-12">Un solo buffer, enlazado una sola vez: los dos <code>vertexAttribPointer</code> lo fotografían.</li>
+  <li data-l="14">Posición: 2 floats, saltando 20 bytes de vértice a vértice, empezando en el byte 0.</li>
+  <li data-l="16">Color: 3 floats, el mismo stride de 20 bytes, pero empezando en el byte 8, justo detrás de x e y.</li>
+</ol>
+  </div>
+  <p>La regla general: el vértice <em>i</em> de un atributo empieza en el byte <code>offset + i × stride</code> del buffer. Con stride 20 y offset 8, el color del vértice 2 empieza en el byte 48, el float número 12 contando desde 0: el <code>0.3</code> del rojo del último vértice. Si tu triángulo sale con colores cambiados o formas imposibles, calcula a mano dónde lee el primer y el último vértice de cada atributo; casi siempre aparece el error.</p>
+</section>
+
+<p>¿Cuál elegir? Lo discutimos en <a href="../04-gpu/04-vbo-vao.html#colocar-los-atributos-entrelazado-o-separado">4.4</a>: entrelazado para mallas estáticas (todo el vértice llega en la misma línea de caché), separado para lo que cambia cada frame (subes solo ese buffer), y a menudo una mezcla de los dos. En WebGL la diferencia de rendimiento entre ambos layouts rara vez decide nada; la de <em>cuánto</em> subes por frame, sí.</p>
+
+<div class="quiz">
+  <p class="pregunta">Cada vértice tiene posición (3 floats), normal (3 floats) y coordenadas de textura (2 floats), entrelazados en ese orden. ¿Stride y offset de las coordenadas de textura?</p>
+  <ul>
+    <li>stride 8, offset 6<div class="explicacion">Estás contando floats, no bytes. <code>vertexAttribPointer</code> trabaja en bytes.</div></li>
+    <li data-correcta>stride 32, offset 24<div class="explicacion">Correcto: 8 floats × 4 bytes = 32 bytes por vértice; delante de las coordenadas de textura hay 6 floats (posición y normal), 24 bytes.</div></li>
+    <li>stride 8, offset 24<div class="explicacion">El offset está bien, pero el stride también es en bytes: 32.</div></li>
+    <li>stride 0, offset 24<div class="explicacion">Stride 0 significa «pegados»: WebGL supondría 2 × 4 = 8 bytes entre vértices, y leería datos de otros atributos. Con datos entrelazados, el stride nunca es 0.</div></li>
+  </ul>
+</div>
+
+<h2>Tipos de dato: no todo tiene que ser float</h2>
+<p>Un color en floats ocupa 16 bytes (RGBA) o 12 (RGB). En bytes, 4. Para mallas con muchos vértices, elegir bien el tipo de cada atributo reduce la memoria y el ancho de banda a la mitad o menos. El truco está en el cuarto argumento de <code>vertexAttribPointer</code>, <code>normalized</code>, y en qué recibe exactamente el shader. Lo medimos leyendo el valor del atributo desde un shader (es la tabla de <a href="../04-gpu/04-vbo-vao.html#tipos-floats-normalizados-y-enteros">4.4</a>, aquí con los tipos que más usarás en WebGL y un <code>UNSIGNED_SHORT</code> normalizado que allí no aparecía):</p>
+<table>
+  <thead><tr><th>Datos en el buffer</th><th><code>type</code></th><th><code>normalized</code></th><th>El shader recibe</th></tr></thead>
+  <tbody>
+    <tr><td><code>Uint8Array [255, 128, 0]</code></td><td><code>UNSIGNED_BYTE</code></td><td><code>true</code></td><td><code>1.0, 0.50196, 0.0</code> (valor / 255)</td></tr>
+    <tr><td><code>Uint8Array [255, 128, 0]</code></td><td><code>UNSIGNED_BYTE</code></td><td><code>false</code></td><td><code>255.0, 128.0, 0.0</code></td></tr>
+    <tr><td><code>Int8Array [−128, −127, 127, 64]</code></td><td><code>BYTE</code></td><td><code>true</code></td><td><code>−1.0, −1.0, 1.0, 0.50394</code> (valor / 127, mínimo −1)</td></tr>
+    <tr><td><code>Uint16Array [65535, 32768]</code></td><td><code>UNSIGNED_SHORT</code></td><td><code>true</code></td><td><code>1.0, 0.50001</code> (valor / 65535)</td></tr>
+    <tr><td><code>Uint16Array</code> con bits de half float</td><td><code>HALF_FLOAT</code></td><td><code>false</code></td><td>los floats de 16 bits (1.0, 0.5…)</td></tr>
+  </tbody>
+</table>
+<p>Tres reglas que se deducen:</p>
+<ul>
+  <li><strong>Normalizar</strong> convierte el rango completo del entero en 0…1 (sin signo) o −1…1 (con signo). Es lo que quieres para colores (bytes) y normales (bytes o shorts con signo). Sin normalizar, el shader recibe el número tal cual, convertido a float.</li>
+  <li><strong>Los enteros con signo</strong> usan la regla de OpenGL ES 3.0: se divide entre 127 (o 32767) y se recorta a −1, así que −128 y −127 dan los dos −1.0 y el 0 se representa exacto.</li>
+  <li><strong>El atributo en el shader sigue siendo <code>float</code>/<code>vec</code></strong>. El buffer guarda bytes; la GPU los convierte al leerlos, gratis.</li>
+</ul>
+
+<p>Y dos reglas más sobre la forma de los datos, también comprobadas:</p>
+<ul>
+  <li><strong>Componentes que faltan</strong>: si el shader declara <code>vec4 a_color</code> y el puntero da <code>size = 3</code>, el shader recibe <code>(r, g, b, 1.0)</code>; con <code>size = 2</code>, <code>(x, y, 0.0, 1.0)</code>; con <code>size = 1</code>, <code>(x, 0.0, 0.0, 1.0)</code>. Los que faltan se rellenan con 0 y la <code>w</code> con 1. Muy útil: puedes guardar posiciones 3D en 12 bytes y declararlas <code>vec4</code> en el shader, con <code>w = 1</code> gratis.</li>
+  <li><strong>Alineación</strong>: stride y offset tienen que ser múltiplos del tamaño del tipo, o <code>vertexAttribPointer</code> da <code>INVALID_OPERATION</code> (<code>Stride must be a multiple of the passed in datatype</code>, <code>Offset must be a multiple…</code>). El stride máximo en WebGL es 255 bytes (con 256: <code>INVALID_VALUE</code>, <code>Stride is over the maximum stride allowed by WebGL</code>).</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.3.3 — Posición en floats y color en bytes, en el mismo buffer</h3>
+  <p>Cada vértice ocupa 12 bytes: 8 de posición (2 floats) y 4 de color (4 bytes RGBA). Para escribir tipos distintos en un mismo <code>ArrayBuffer</code> usamos dos <em>vistas</em> sobre la misma memoria, como en <a href="../01-web/06-binario.html">1.6</a>: una <code>Float32Array</code> y una <code>Uint8Array</code>.</p>
+  <div class="js-playground" data-titulo="Entrelazado con tipos mixtos (12 bytes por vértice)" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec4 a_color;       // llega como float 0…1
+out vec4 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec4 v_color;
+out vec4 color;
+void main() { color = v_color; }`);
+
+const vertices = [
+  { x: -0.7, y: -0.6, rgba: [255, 77, 109, 255] },
+  { x:  0.7, y: -0.6, rgba: [63, 208, 232, 255] },
+  { x:  0.0, y:  0.7, rgba: [139, 123, 255, 255] },
+];
+const STRIDE = 12;                                  // 2 floats (8 B) + 4 bytes
+const memoria = new ArrayBuffer(vertices.length * STRIDE);
+const f32 = new Float32Array(memoria);              // ve la memoria de 4 en 4 bytes
+const u8 = new Uint8Array(memoria);                 // la misma memoria, byte a byte
+vertices.forEach((v, i) => {
+  f32[i * 3 + 0] = v.x;                             // byte i*12 + 0
+  f32[i * 3 + 1] = v.y;                             // byte i*12 + 4
+  u8.set(v.rgba, i * STRIDE + 8);                   // bytes i*12 + 8 … +11
+});
+console.log('bytes del buffer:', memoria.byteLength, '(con floats para el color serían', vertices.length * 24, ')');
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, memoria, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, STRIDE, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, STRIDE, 8);   // normalizado: /255
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <p>Fíjate en los índices: la <code>Float32Array</code> cuenta de 4 en 4 bytes, así que el float número <code>i * 3</code> empieza en el byte <code>i * 12</code> (un vértice ocupa 3 «huecos» de float: dos floats y los 4 bytes del color). La <code>Uint8Array</code> cuenta bytes, y el color va en <code>i * 12 + 8</code>. <code>bufferData</code> acepta directamente el <code>ArrayBuffer</code>. Y el tipo <code>vec4</code> del shader recibe floats de 0 a 1 gracias a <code>normalized = true</code>.</p>
+</section>
+
+<div class="callout nota" id="m5-color-sin-normalizar">
+  <p><strong>Colores blancos o saturados.</strong> Con <code>normalized = false</code>, el shader recibe 255.0, 128.0, 0.0 en lugar de 1.0, 0.5, 0.0, y al escribir el color todo lo que pasa de 1 se recorta a 1: los degradados desaparecen. Es el comportamiento raro <a href="../04-gpu/04-vbo-vao.html#m4-sin-normalizar">«Los colores salen blancos (o saturados) aunque el buffer está bien»</a> de 4.4. Con bytes, <code>gl.UNSIGNED_BYTE</code> y <code>normalized = true</code>; con floats, valores de 0 a 1.</p>
+</div>
+
+<div class="callout senior" data-titulo="Atributos enteros de verdad: vertexAttribIPointer">
+  <p>Con <code>vertexAttribPointer</code>, los enteros del buffer llegan al shader convertidos en <code>float</code>. Si el shader declara un atributo entero (<code>in int a_id</code> o <code>in uvec4 a_huesos</code>, típico para identificadores o índices), hay que usar <code>gl.vertexAttribIPointer(loc, size, type, stride, offset)</code>, sin argumento <code>normalized</code>. Tipo y signo tienen que casar con el shader (la regla completa, en <a href="../04-gpu/04-vbo-vao.html#atributos-enteros-de-verdad-vertexattribipointer">4.4</a>). Si usas el de siempre, WebGL lo detecta al dibujar: <code>GL_INVALID_OPERATION: glDrawArrays: Vertex shader input type does not match the type of the bound vertex attribute</code> (comprobado). Los varyings enteros, además, tienen que ser <code>flat</code>: no se pueden interpolar.</p>
+</div>
+
+<h3>Atributos constantes</h3>
+<p>¿Y si un atributo tiene el mismo valor para todos los vértices de un dibujo? No hace falta un buffer: si la ranura está <em>desactivada</em>, el atributo toma su valor constante, que fijas con <code>gl.vertexAttrib4f(loc, x, y, z, w)</code> (o <code>vertexAttrib1f</code>, <code>2f</code>, <code>3f</code>, <code>4fv</code>, <code>I4i</code>…). En 5.2 vimos que por defecto vale (0, 0, 0, 1), y en <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>, el truco que explota. Un detalle comprobado: ese valor constante es estado <strong>global</strong> del contexto, no del VAO. Si lo cambias con un VAO enlazado y luego enlazas otro, sigue valiendo lo mismo.</p>
+
+<div class="callout hack" data-titulo="Un color por dibujo sin uniforms">
+  <p>Con el color como atributo en la location 1: si un objeto necesita colores por vértice, activas la ranura y la apuntas a un buffer; si otro es de un color liso, desactivas la ranura y haces <code>gl.vertexAttrib4f(1, r, g, b, 1)</code> antes de dibujarlo. El mismo shader sirve para los dos casos. Es el truco clásico de 4.5 para no duplicar programas, ahora con las llamadas de WebGL; la alternativa «oficial», un uniform, llega en 5.4.</p>
+</div>
+
+<h2>Índices: reutilizar vértices con drawElements</h2>
+<p>Un cuadrado son dos triángulos, seis vértices con <code>drawArrays</code>… de los que dos están repetidos. En una rejilla de 100×100 celdas, <code>drawArrays</code> necesitaría 60 000 vértices; con índices bastan 10 201 vértices (101 × 101) y 60 000 índices de 2 bytes. Los <strong>índices</strong> son una lista de números que dicen qué vértice usar en cada posición. Viven en su propio buffer, enlazado a <code>gl.ELEMENT_ARRAY_BUFFER</code> (el EBO de <a href="../04-gpu/04-vbo-vao.html">4.4</a>).</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const posiciones = new Float32Array([
+  -0.5, -0.5,   // 0: abajo izquierda
+   0.5, -0.5,   // 1: abajo derecha
+   0.5,  0.5,   // 2: arriba derecha
+  -0.5,  0.5,   // 3: arriba izquierda
+]);
+const indices = new Uint16Array([0, 1, 2,   0, 2, 3]);
+
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, posiciones, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+</script>
+<ol>
+  <li data-l="1-6">Cuatro vértices únicos, no seis.</li>
+  <li data-l="7">Seis índices: el triángulo (0, 1, 2) y el (0, 2, 3). Ambos en sentido antihorario, lo que importará en un momento.</li>
+  <li data-l="14-15">El buffer de índices se enlaza a <code>ELEMENT_ARRAY_BUFFER</code> <strong>con el VAO enlazado</strong>: a diferencia de <code>ARRAY_BUFFER</code>, este enlace sí se guarda dentro del VAO.</li>
+  <li data-l="17"><code>drawElements(modo, cuenta, tipo, offset)</code>: el modo de siempre; <strong>6</strong> índices a leer; <strong><code>gl.UNSIGNED_SHORT</code></strong>, el tipo de cada índice (tiene que coincidir con el array: <code>Uint16Array</code>); y el <strong>offset en bytes</strong> dentro del buffer de índices donde empezar.</li>
+</ol>
+</div>
+
+<p>El offset está en bytes, no en índices: para dibujar solo el segundo triángulo, <code>drawElements(gl.TRIANGLES, 3, gl.UNSIGNED_SHORT, 6)</code> (tres índices de 2 bytes = 6 bytes de salto). Y tiene que ser múltiplo del tamaño del índice: un offset de 3 con <code>UNSIGNED_SHORT</code> da <code>INVALID_OPERATION: Offset must be a multiple of the passed in datatype</code>. Los tres tipos de índice:</p>
+<table>
+  <thead><tr><th>Array</th><th><code>type</code></th><th>Vértices direccionables</th><th>Notas</th></tr></thead>
+  <tbody>
+    <tr><td><code>Uint8Array</code></td><td><code>UNSIGNED_BYTE</code></td><td>0…254</td><td>Mallas diminutas.</td></tr>
+    <tr><td><code>Uint16Array</code></td><td><code>UNSIGNED_SHORT</code></td><td>0…65534</td><td>Lo habitual. <strong>65535 está reservado</strong> (ver abajo).</td></tr>
+    <tr><td><code>Uint32Array</code></td><td><code>UNSIGNED_INT</code></td><td>0…4 294 967 294</td><td>Siempre disponible en WebGL2 (en WebGL1 era una extensión). El doble de memoria que Uint16.</td></tr>
+  </tbody>
+</table>
+
+<div class="callout nota" id="m5-indice-65535">
+  <p><strong>El índice 65535 no es un vértice.</strong> En WebGL2 el <em>reinicio de primitivas</em> (<em>primitive restart</em>) está <strong>siempre activado</strong> y no se puede desactivar: el índice con todos los bits a 1 (65535 en <code>UNSIGNED_SHORT</code>, 255 en <code>UNSIGNED_BYTE</code>, 4 294 967 295 en <code>UNSIGNED_INT</code>) es una orden de «corta aquí», y <code>gl.enable</code> o <code>gl.isEnabled</code> con esa capacidad dan <code>INVALID_ENUM</code>. Con <code>Uint16Array</code> caben como mucho 65 535 vértices (del 0 al 65 534); con más, <code>Uint32Array</code> y <code>UNSIGNED_INT</code>, o parte la malla. Los síntomas (triángulos que faltan, mallas que se retuercen) y cómo los medimos están en el comportamiento raro <a href="../04-gpu/04-vbo-vao.html#m4-indice-65535">«Con 65 536 vértices o más, parte de la malla desaparece o se retuerce»</a> de 4.4.</p>
+</div>
+
+<div class="callout hack" data-titulo="Usar el reinicio a tu favor">
+  <p>El reinicio es útil con tiras: en una sola llamada puedes dibujar varias <code>TRIANGLE_STRIP</code> o <code>LINE_STRIP</code> independientes, separando sus índices con 65535. Comprobado: los índices <code>[0, 1, 2, 3, 0xFFFF, 4, 5, 6, 7]</code> en modo <code>TRIANGLE_STRIP</code> dibujaron dos cuadrados separados; sin el 0xFFFF, la tira los unía con triángulos intermedios. Así se dibuja, por ejemplo, un terreno fila a fila con una sola llamada.</p>
+</div>
+
+<div class="callout nota" id="m5-ebo-desenlazado">
+  <p><strong>«Must have element array buffer bound».</strong> El enlace de <code>ELEMENT_ARRAY_BUFFER</code> se guarda en el VAO enlazado en ese momento: si enlazas los índices <em>antes</em> de <code>bindVertexArray(vao)</code>, se los queda otro VAO, y si «limpias» con <code>gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null)</code> con tu VAO todavía enlazado, se los quitas (comprobado: tras hacerlo, el VAO devolvía <code>null</code>). Es el comportamiento raro <a href="../04-gpu/04-vbo-vao.html#m4-ebo-vao-equivocado">«drawElements dibuja la malla de otro objeto»</a> de 4.4: configura el EBO dentro del VAO y, si quieres limpiar, primero <code>bindVertexArray(null)</code>. WebGL valida además que ningún índice se salga del buffer de vértices: un índice 7 con 4 vértices da <code>Vertex buffer is not big enough for the draw call</code>.</p>
+</div>
+
+<div class="callout senior" data-titulo="La caché de vértices">
+  <p>Los índices no solo ahorran memoria. Las GPU guardan los resultados recientes del vertex shader en una pequeña caché indexada por el número de vértice: si un índice se repite poco después, reutilizan el resultado en vez de ejecutar otra vez el shader. En una rejilla bien ordenada, cada vértice se comparte entre hasta seis triángulos y se procesa cerca de una sola vez; con <code>drawArrays</code> se procesaría seis. Por eso las herramientas de exportación de mallas reordenan los índices para maximizar esa reutilización (en <a href="../04-gpu/04-vbo-vao.html#por-que-los-indices-ahorran-mas-que-memoria">4.4</a> lo mediste con la GPU de juguete: la misma rejilla pasó de 2,9 ejecuciones del vertex shader por triángulo a 0,64 solo cambiando el orden). Con <code>drawArrays</code> no hay índices que comparar y todo vértice se procesa siempre.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.3.4 — Una rejilla con índices, rellena y en alambre</h3>
+  <p>Generamos una rejilla de N×N celdas: (N+1)² vértices con un color según su posición, y <strong>dos</strong> buffers de índices: uno con los triángulos (6 índices por celda) y otro con las aristas para dibujarlas como líneas. Como el EBO forma parte del VAO, usamos dos VAOs que comparten el mismo buffer de vértices. Mueve el deslizador y mira los contadores.</p>
+  <div class="js-playground" data-titulo="Rejilla indexada" data-altura="300" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles"><label>N = <input id="n" type="range" min="1" max="40" value="8"> <span id="valN"></span></label><span id="info"></span></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 20px; align-items: center; padding: 8px 12px; font: 13px ui-monospace, monospace; color: #b4bccb; }
+#info { color: #3fd0e8; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const bufVertices = gl.createBuffer();
+const vaoRelleno = gl.createVertexArray(), vaoAlambre = gl.createVertexArray();
+const eboRelleno = gl.createBuffer(), eboAlambre = gl.createBuffer();
+for (const [vao, ebo] of [[vaoRelleno, eboRelleno], [vaoAlambre, eboAlambre]]) {
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufVertices);               // el mismo VBO en los dos
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);               // cada VAO, su EBO
+}
+gl.bindVertexArray(null);
+let nIndRelleno = 0, nIndAlambre = 0;
+
+function construir(N) {
+  const lado = N + 1, verts = new Float32Array(lado * lado * 5);
+  for (let j = 0; j < lado; j++) for (let i = 0; i < lado; i++) {
+    const k = (j * lado + i) * 5, u = i / N, v = j / N;
+    verts.set([u * 1.6 - 0.8, v * 1.6 - 0.8, 0.2 + 0.8 * u, 0.3, 0.3 + 0.7 * v], k);
+  }
+  const tri = [], lin = [];
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * lado + i, b = a + 1, c = a + lado, d = c + 1;   // a b abajo, c d arriba
+    tri.push(a, b, d,   a, d, c);                                  // dos triángulos antihorarios
+    lin.push(a, b,   a, c,   a, d);                                // aristas: abajo, izquierda, diagonal
+  }
+  for (let i = 0; i < N; i++) lin.push(N * lado + i, N * lado + i + 1, i * lado + N, (i + 1) * lado + N);   // borde de arriba y derecho
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufVertices);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+  gl.bindVertexArray(vaoRelleno);                                   // el EBO se edita con SU VAO enlazado
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(tri), gl.STATIC_DRAW);
+  gl.bindVertexArray(vaoAlambre);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(lin), gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  nIndRelleno = tri.length; nIndAlambre = lin.length;
+  document.getElementById('valN').textContent = N;
+  document.getElementById('info').textContent = lado * lado + ' vértices · ' + tri.length +
+    ' índices (drawArrays necesitaría ' + tri.length + ' vértices)';
+}
+
+function dibujar() {
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vaoRelleno);
+  gl.drawElements(gl.TRIANGLES, nIndRelleno, gl.UNSIGNED_SHORT, 0);
+  gl.bindVertexArray(vaoAlambre);
+  gl.disableVertexAttribArray(1);                  // SOLO en el VAO de alambre: color constante
+  gl.vertexAttrib3f(1, 0.05, 0.05, 0.08);          // líneas casi negras
+  gl.drawElements(gl.LINES, nIndAlambre, gl.UNSIGNED_SHORT, 0);
+}
+const desl = document.getElementById('n');
+desl.oninput = () => { construir(+desl.value); dibujar(); };
+construir(+desl.value);
+dibujar();
+</script>
+  </div>
+  <p>Detalles que merecen una mirada: <code>bufferData</code> sobre <code>ELEMENT_ARRAY_BUFFER</code> se hace con el VAO correspondiente enlazado, porque ese punto de enlace pertenece al VAO; el VAO de alambre desactiva la ranura del color y usa el valor constante de <code>vertexAttrib3f</code> (el hack de antes); y con N = 40 hay 1 681 vértices para 9 600 índices. <code>drawArrays</code> habría necesitado 9 600 vértices de 20 bytes (192 KB) frente a 1 681 vértices (unos 34 KB) más 19 KB de índices.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Una malla de terreno tiene 300 × 300 vértices. Guardas sus índices en un <code>Uint16Array</code> y dibujas con <code>UNSIGNED_SHORT</code>. ¿Qué pasa?</p>
+  <ul>
+    <li>WebGL da un error porque hay más de 65 535 vértices.<div class="explicacion">WebGL no sabe cuántos vértices <em>querías</em> usar: solo ve índices de 16 bits. Al meter números mayores que 65 535 en un <code>Uint16Array</code>, JavaScript los recorta (se quedan con los 16 bits bajos) antes de que WebGL los vea.</div></li>
+    <li data-correcta>La malla sale incompleta o con triángulos equivocados, sin errores: los índices mayores de 65 535 se han recortado, y los que valen 65 535 cortan la primitiva.<div class="explicacion">Exacto: 90 000 vértices no caben en 16 bits. <code>Uint16Array</code> guarda cada valor módulo 65 536 (el 70 000 pasa a ser 4 464), así que esos triángulos apuntan a vértices equivocados, que existen: no hay error. Y cualquier índice que acabe valiendo 65 535 actúa como reinicio. Solución: <code>Uint32Array</code> y <code>UNSIGNED_INT</code>.</div></li>
+    <li>Funciona, porque <code>UNSIGNED_SHORT</code> admite hasta 65 535 y la GPU amplía automáticamente.<div class="explicacion">Nadie amplía nada: el tipo del índice es exactamente de 16 bits.</div></li>
+  </ul>
+</div>
+
+<h2>Los siete modos de primitiva</h2>
+<p>El primer argumento de <code>drawArrays</code> y <code>drawElements</code> dice cómo agrupar los vértices (o los índices) que llegan en orden:</p>
+<table>
+  <thead><tr><th>Modo</th><th>Agrupa así (vértices 0, 1, 2, 3…)</th><th>Con n vértices</th></tr></thead>
+  <tbody>
+    <tr><td><code>POINTS</code></td><td>cada vértice es un punto</td><td>n puntos</td></tr>
+    <tr><td><code>LINES</code></td><td>(0,1), (2,3), (4,5)…</td><td>⌊n/2⌋ segmentos</td></tr>
+    <tr><td><code>LINE_STRIP</code></td><td>(0,1), (1,2), (2,3)…</td><td>n − 1 segmentos</td></tr>
+    <tr><td><code>LINE_LOOP</code></td><td>como <code>LINE_STRIP</code> y además (n−1, 0)</td><td>n segmentos</td></tr>
+    <tr><td><code>TRIANGLES</code></td><td>(0,1,2), (3,4,5)…</td><td>⌊n/3⌋ triángulos</td></tr>
+    <tr><td><code>TRIANGLE_STRIP</code></td><td>(0,1,2), (2,1,3), (2,3,4), (4,3,5)…: cada vértice nuevo forma un triángulo con los dos anteriores</td><td>n − 2 triángulos</td></tr>
+    <tr><td><code>TRIANGLE_FAN</code></td><td>(0,1,2), (0,2,3), (0,3,4)…: todos comparten el vértice 0</td><td>n − 2 triángulos</td></tr>
+  </tbody>
+</table>
+<p>En la tira, fíjate en el orden (2, 1, 3) del segundo triángulo: WebGL invierte el orden de los triángulos pares para que todos mantengan el mismo sentido de giro, algo que importa en cuanto actives el <em>culling</em> (lo comprobamos: con culling activado, una tira se dibujó entera). Explóralo en vivo: los mismos siete vértices en zigzag, dibujados con cada modo. Cada primitiva sale de un color (el del último de sus vértices, gracias a una variable <code>flat</code> que no se interpola), y los números son los índices de los vértices.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.3.5 — Explorador de primitivas</h3>
+  <div class="js-playground" data-titulo="Los mismos 7 vértices, 7 modos" data-altura="320" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="lienzos"><canvas id="c"></canvas><canvas id="etiquetas"></canvas></div>
+<div class="controles">
+  <select id="modo">
+    <option>POINTS</option><option>LINES</option><option>LINE_STRIP</option><option>LINE_LOOP</option>
+    <option>TRIANGLES</option><option selected>TRIANGLE_STRIP</option><option>TRIANGLE_FAN</option>
+  </select>
+  <span id="info"></span>
+</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+.lienzos { position: relative; flex: 1; min-height: 0; }
+.lienzos canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.controles { display: flex; gap: 16px; align-items: center; padding: 8px 12px; font: 13px ui-monospace, monospace; color: #b4bccb; }
+select { font: 13px ui-monospace, monospace; }
+#info { color: #3fd0e8; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+flat out vec3 v_color;          // flat: toda la primitiva toma el color de su ÚLTIMO vértice
+const vec3 PALETA[7] = vec3[7](vec3(1.0, 0.42, 0.48), vec3(1.0, 0.72, 0.29), vec3(0.24, 0.81, 0.56),
+  vec3(0.25, 0.82, 0.91), vec3(0.55, 0.48, 1.0), vec3(1.0, 0.42, 0.71), vec3(0.9, 0.9, 0.95));
+void main() {
+  v_color = PALETA[gl_VertexID % 7];
+  gl_Position = vec4(a_posicion, 0.0, 1.0);
+  gl_PointSize = 14.0;
+}`, `#version 300 es
+precision highp float;
+flat in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const P = [-0.8, -0.45,  -0.55, 0.45,  -0.3, -0.45,  -0.05, 0.45,  0.2, -0.45,  0.45, 0.45,  0.7, -0.45];
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(P), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// Etiquetas con Canvas 2D, encima del canvas WebGL
+const et = document.getElementById('etiquetas');
+const ctx = et.getContext('2d');
+et.width = et.clientWidth * devicePixelRatio; et.height = et.clientHeight * devicePixelRatio;
+ctx.scale(devicePixelRatio, devicePixelRatio);
+ctx.font = 'bold 14px ui-monospace, monospace'; ctx.fillStyle = '#e4e7ee'; ctx.textAlign = 'center';
+for (let i = 0; i < 7; i++) {
+  const x = (P[i * 2] + 1) / 2 * et.clientWidth, y = (1 - (P[i * 2 + 1] + 1) / 2) * et.clientHeight;
+  ctx.fillText(String(i), x, y + (P[i * 2 + 1] > 0 ? -16 : 28));
+}
+
+const cuenta = { POINTS: '7 puntos', LINES: '3 segmentos (el vértice 6 sobra)', LINE_STRIP: '6 segmentos',
+  LINE_LOOP: '7 segmentos', TRIANGLES: '2 triángulos (el 6 sobra)', TRIANGLE_STRIP: '5 triángulos', TRIANGLE_FAN: '5 triángulos, todos con el 0' };
+const selector = document.getElementById('modo');
+function dibujar() {
+  const modo = selector.value;
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl[modo], 0, 7);
+  if (modo !== 'POINTS') gl.drawArrays(gl.POINTS, 0, 7);     // los vértices, siempre visibles
+  document.getElementById('info').textContent = 'gl.' + modo + ' (' + gl[modo] + ') → ' + cuenta[modo];
+}
+selector.onchange = dibujar;
+dibujar();
+</script>
+  </div>
+  <p>Recorre los modos. <code>TRIANGLE_FAN</code> con estos vértices da un abanico retorcido, porque el zigzag no está pensado para él: el abanico funciona con vértices alrededor de un centro (un círculo, un polígono convexo). <code>LINES</code> y <code>TRIANGLES</code> descartan el vértice 6 sin error, como vimos en 5.2 con <code>count</code>. Y en <code>LINE_LOOP</code> aparece el segmento de cierre entre el 6 y el 0.</p>
+</section>
+
+<h3>Puntos: gl_PointSize y sus rarezas</h3>
+<p>En modo <code>POINTS</code>, el tamaño del punto en píxeles lo decide el vertex shader escribiendo <code>gl_PointSize</code>. Cada punto se rasteriza como un cuadrado centrado en el vértice, y en el fragment shader <code>gl_PointCoord</code> te da la posición dentro de ese cuadrado (de 0 a 1), con la que puedes hacer puntos redondos (<code>if (length(gl_PointCoord - 0.5) &gt; 0.5) discard;</code>). Comportamientos comprobados en la GPU de pruebas:</p>
+<ul>
+  <li><strong>Hay un máximo</strong>: <code>gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)</code> devolvió <code>[1, 511]</code>. Un <code>gl_PointSize = 1000.0</code> se recorta al máximo. En otras GPU el máximo puede ser 64 o incluso menos: no confíes en puntos gigantes.</li>
+  <li><strong>Si no escribes <code>gl_PointSize</code></strong>, la especificación dice que el tamaño es indefinido. Aquí salió de 1 píxel, pero en otra plataforma podría ser otra cosa: escríbelo siempre que dibujes puntos.</li>
+  <li><strong>Los puntos que se salen por el borde</strong>: la especificación de OpenGL ES dice que un punto cuyo <em>centro</em> queda fuera del volumen visible se descarta entero, aunque parte de su cuadrado caiga dentro. En la GPU de pruebas (ANGLE sobre Metal) no pasó: un punto de 50 px con el centro fuera del canvas se dibujó en parte. Resultado: según la plataforma, los puntos grandes desaparecen de golpe al tocar el borde. Para sprites grandes, usa quads de dos triángulos (con instancing, 5.9).</li>
+</ul>
+
+<h3>Líneas: siempre de un píxel</h3>
+
+<div class="callout bestiario" data-id="m5-linewidth" data-titulo="gl.lineWidth no hace nada">
+  <p><strong>Síntoma:</strong> llamas a <code>gl.lineWidth(5)</code> y las líneas siguen midiendo un píxel. No hay ningún error, y <code>gl.getParameter(gl.LINE_WIDTH)</code> incluso devuelve 5.</p>
+  <p><strong>Causa:</strong> el rango admitido lo da <code>gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)</code>, y en prácticamente todas las implementaciones de WebGL actuales es <code>[1, 1]</code> (lo es en la GPU de pruebas: con Chrome sobre Metal, una línea con <code>lineWidth(10)</code> ocupa una sola fila de píxeles). El valor se guarda, pero el rasterizador solo sabe hacer líneas de 1 píxel. APIs modernas como Metal, Direct3D o Vulkan no tienen líneas anchas, y WebGL no las simula.</p>
+  <p><strong>Solución:</strong> las líneas gruesas se dibujan como triángulos: cada segmento se convierte en un rectángulo estrecho (dos triángulos), desplazando sus vértices a lo largo de la perpendicular al segmento (la de <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>). Se puede hacer en JavaScript o en el vertex shader, y es como lo hacen las librerías de mapas y de gráficos. Las líneas de 1 píxel siguen siendo útiles para depurar (el alambre del ejemplo de la rejilla).</p>
+</div>
+
+<h2>El orden de los vértices: winding</h2>
+<p>Cuando la GPU rasteriza un triángulo, mira en qué sentido giran sus vértices <em>en pantalla</em>: antihorario (<em>counter-clockwise</em>, CCW) u horario (CW). Por convención, <strong>antihorario es la cara delantera</strong> (<code>gl.frontFace(gl.CCW)</code>, el valor por defecto) y horario, la trasera. ¿Para qué sirve? En un objeto cerrado (un cubo, una esfera), los triángulos de la parte de atrás se ven girando al revés; si activas el <strong>culling</strong> con <code>gl.enable(gl.CULL_FACE)</code>, la GPU descarta las caras traseras antes de rasterizarlas y te ahorras la mitad del trabajo (5.6). Lo comprobamos: con culling activado, un triángulo CCW se dibujó entero y el mismo triángulo con los vértices en orden CW, ni un píxel. Con <code>gl.frontFace(gl.CW)</code>, al revés.</p>
+<p>Sin culling, ambos se dibujan, pero el fragment shader puede saber cuál está viendo con <code>gl_FrontFacing</code> (un <code>bool</code>). Esto pinta las caras delanteras de naranja y las traseras de azul, un truco excelente para depurar el winding de una malla:</p>
+<script type="text/plain" class="codigo" data-lang="glsl">
+out vec4 color;
+void main() {
+  color = gl_FrontFacing ? vec4(1.0, 0.55, 0.2, 1.0)    // delantera (CCW en pantalla)
+                         : vec4(0.2, 0.5, 1.0, 1.0);    // trasera (CW)
+}
+</script>
+
+<div class="quiz">
+  <p class="pregunta">Tu triángulo es (−0.5, −0.5), (0.0, 0.5), (0.5, −0.5), en ese orden. Activas <code>gl.enable(gl.CULL_FACE)</code> sin tocar nada más. ¿Se ve?</p>
+  <ul>
+    <li>Sí, el culling solo afecta a objetos 3D.<div class="explicacion">El culling mira el sentido de giro en pantalla de cualquier triángulo, 2D o 3D.</div></li>
+    <li data-correcta>No: abajo-izquierda → arriba → abajo-derecha gira en sentido horario, es una cara trasera y el culling la descarta.<div class="explicacion">Correcto. Por defecto la cara delantera es la antihoraria y se descartan las traseras (<code>cullFace(gl.BACK)</code>). Arreglos: invertir el orden de dos vértices o poner <code>gl.frontFace(gl.CW)</code>.</div></li>
+    <li>Sí, pero de otro color.<div class="explicacion">Eso sería <code>gl_FrontFacing</code> sin culling. Con culling, el triángulo ni siquiera llega al fragment shader.</div></li>
+  </ul>
+</div>
+
+<h2>Geometría que cambia: bufferSubData</h2>
+<p>Hasta ahora los buffers se escribían una vez. Pero hay geometría que cambia en cada frame: una línea que sigue al ratón, una onda, un sistema de partículas calculado en JavaScript. Hay tres herramientas:</p>
+<ul>
+  <li><code>gl.bufferData(destino, datos, uso)</code>: reserva memoria nueva (del tamaño de <code>datos</code>) y copia. Llamarla cada frame con el mismo tamaño funciona, pero conceptualmente es «tira el buffer viejo y dame otro».</li>
+  <li><code>gl.bufferSubData(destino, offsetBytes, datos)</code>: copia <code>datos</code> dentro del buffer existente, a partir del byte <code>offsetBytes</code>, sin reservar nada. Si te sales del tamaño del buffer: <code>INVALID_VALUE: bufferSubData: buffer overflow</code>. WebGL2 añade argumentos para subir solo un trozo del array: <code>bufferSubData(destino, offsetBytes, datos, inicio, longitud)</code>, con <code>inicio</code> y <code>longitud</code> contados en <em>elementos</em> del array, no en bytes (comprobado también en <code>bufferData</code>).</li>
+  <li><code>gl.bufferData(destino, tamañoEnBytes, uso)</code>: reserva sin datos (a ceros). Útil para crear un buffer que luego rellenarás a trozos.</li>
+</ul>
+<p>El tercer argumento de <code>bufferData</code>, el <strong>uso</strong>, es una pista para el driver: <code>STATIC_DRAW</code> (escribes una vez, dibujas muchas), <code>DYNAMIC_DRAW</code> (reescribes a menudo) y <code>STREAM_DRAW</code> (escribes, dibujas una o pocas veces y vuelves a escribir); WebGL2 añade las variantes <code>_READ</code> y <code>_COPY</code> para buffers que lees desde JavaScript o copias en la GPU. Es solo una pista: usar un buffer <code>STATIC_DRAW</code> de forma dinámica no da error, y la implementación puede ignorarla. Ponla bien, pero no esperes milagros.</p>
+<p>Para leer de vuelta el contenido de un buffer (depurar, sobre todo), WebGL2 tiene <code>gl.getBufferSubData(destino, offsetBytes, arrayDestino)</code>: tras escribir <code>[1, 2, 3, 4]</code> y luego <code>[20, 30]</code> en el byte 4, devolvió <code>[1, 20, 30, 4]</code>. Es una lectura síncrona desde la GPU: úsala con moderación.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.3.6 — Una onda recalculada en cada frame</h3>
+  <p>Una línea de 2 000 vértices (<code>LINE_STRIP</code>) cuya forma se calcula en JavaScript en cada frame y se sube con <code>bufferSubData</code>. El buffer se reserva una sola vez con el tamaño exacto. La línea de abajo mide cuánto tarda cada parte.</p>
+  <div class="js-playground" data-titulo="Geometría dinámica" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+#info { font: 12px ui-monospace, monospace; color: #b4bccb; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(0.25, 0.82, 0.91, 1.0); }`);
+
+const N = 2000;
+const datos = new Float32Array(N * 2);            // se reutiliza: nada de basura por frame
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.bufferData(gl.ARRAY_BUFFER, datos.byteLength, gl.DYNAMIC_DRAW);   // reservar, sin datos
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+let acumCalc = 0, acumSubida = 0, frames = 0;
+const info = document.getElementById('info');
+function frame(ms) {
+  const t = ms / 1000;
+  const t0 = performance.now();
+  for (let i = 0; i < N; i++) {
+    const x = i / (N - 1) * 2 - 1;
+    datos[i * 2] = x;
+    datos[i * 2 + 1] = 0.5 * Math.sin(x * 9 + t * 3) * Math.cos(x * 2.3 - t);
+  }
+  const t1 = performance.now();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, datos);   // reescribe el buffer entero
+  const t2 = performance.now();
+  acumCalc += t1 - t0; acumSubida += t2 - t1;
+  if (++frames % 30 === 0) {
+    info.textContent = 'calcular en JS: ' + (acumCalc / 30).toFixed(3) + ' ms · bufferSubData (' +
+      (datos.byteLength / 1024).toFixed(1) + ' KB): ' + (acumSubida / 30).toFixed(3) + ' ms por frame';
+    acumCalc = acumSubida = 0;
+  }
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.LINE_STRIP, 0, N);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>El <code>Float32Array</code> se crea una vez y se reutiliza: crear uno nuevo por frame generaría basura para el recolector, y sus pausas se notan como tirones (<a href="../02-animacion/03-raf.html">2.3</a>). El <code>bindBuffer</code> antes de <code>bufferSubData</code> es necesario porque <code>bufferSubData</code> actúa sobre el buffer enlazado en <code>ARRAY_BUFFER</code>, y en un programa real otro código puede haber enlazado otro por el camino.</p>
+</section>
+
+<div class="callout senior" data-titulo="Orphaning, y lo que medimos">
+  <p>En OpenGL nativo existe un problema clásico: si la GPU todavía está dibujando con el buffer del frame anterior y tú llamas a <code>bufferSubData</code> para sobrescribirlo, el driver tiene que esperar a que la GPU termine (o copiar a escondidas). El truco del <em>orphaning</em> es llamar antes a <code>bufferData(destino, tamaño, uso)</code> sin datos: le dices al driver «ya no me importa el contenido viejo», y puede darte memoria nueva mientras la GPU sigue leyendo la antigua. En WebGL el navegador ya copia tus datos a una memoria intermedia antes de pasarlos al proceso de la GPU, así que el efecto depende mucho de la plataforma. Lo medimos subiendo 1,5 MB por frame: <code>bufferSubData</code>, <code>bufferData</code> con datos y <em>orphaning</em> + <code>bufferSubData</code> costaron lo mismo (unas décimas de milisegundo por llamada); lo caro fue calcular los 200 000 vértices en JavaScript, unos 3 ms. Moraleja de senior: antes de aplicar un truco de rendimiento, mide si en tu plataforma sirve de algo. Y recuerda que la alternativa a subir geometría es no subirla: mover objetos con uniforms (5.4) o calcular la animación en el vertex shader (7.4).</p>
+</div>
+
+<h2>Location 0: el atributo que siempre está</h2>
+<p>Un consejo de compatibilidad que verás en guías de WebGL: pon en la location 0 un atributo que <em>siempre</em> esté activo, normalmente la posición. En OpenGL de escritorio antiguo, el atributo 0 era especial (el que «disparaba» el vértice), y los navegadores que implementan WebGL sobre ese OpenGL tenían que simularlo cuando la ranura 0 estaba desactivada, con una penalización de rendimiento y un aviso en la consola. En la GPU de pruebas (ANGLE sobre Metal) dibujamos con la ranura 0 desactivada y la 1 activa sin ningún aviso ni diferencia; aun así, cuesta cero seguir la regla, y por eso en este curso la posición va siempre en <code>layout(location = 0)</code>.</p>
+
+<h2>Varias mallas, varios VAOs</h2>
+<p>Un VAO describe una malla completa: sus buffers, sus formatos y sus índices. Una escena con varias mallas tiene, por tanto, varios VAOs, y dibujarla consiste en ir enlazando cada uno antes de su llamada de dibujo. Como fijamos las locations con <code>layout</code>, un mismo VAO sirve con cualquier programa que use las mismas locations (5.2).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.3.7 — Tres mallas, tres VAOs, un programa</h3>
+  <p>Un triángulo con <code>drawArrays</code>, un cuadrado indexado con <code>drawElements</code> y un hexágono con <code>TRIANGLE_FAN</code>. Una función <code>crearMalla</code> encapsula la configuración de cada VAO; el bucle de dibujo solo enlaza y dibuja.</p>
+  <div class="js-playground" data-titulo="Una escena con tres mallas" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+// Datos entrelazados x, y, r, g, b. Devuelve todo lo necesario para dibujarla.
+function crearMalla(vertices, modo, indices) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
+  if (indices) {
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+  }
+  gl.bindVertexArray(null);                       // limpieza: seguro, el EBO ya está en el VAO
+  return { vao, modo, cuenta: indices ? indices.length : vertices.length / 5, indexada: !!indices };
+}
+
+const triangulo = crearMalla([-0.95, -0.5, 1, 0.4, 0.4,  -0.45, -0.5, 1, 0.7, 0.3,  -0.7, 0.4, 1, 0.5, 0.6], gl.TRIANGLES);
+const cuadrado = crearMalla([-0.25, -0.45, 0.3, 0.8, 0.9,  0.25, -0.45, 0.3, 0.5, 1,  0.25, 0.45, 0.6, 0.4, 1,  -0.25, 0.45, 0.3, 0.9, 0.6],
+  gl.TRIANGLES, [0, 1, 2, 0, 2, 3]);
+const hexagono = (() => {
+  const v = [0.7, 0.0, 1, 1, 1];                  // centro
+  for (let i = 0; i <= 6; i++) {                  // 7 puntos: el último repite el primero para cerrar
+    const a = i / 6 * Math.PI * 2;
+    v.push(0.7 + 0.25 * Math.cos(a) * gl.drawingBufferHeight / gl.drawingBufferWidth, 0.45 * Math.sin(a), 0.55, 0.48, 1);
+  }
+  return crearMalla(v, gl.TRIANGLE_FAN);
+})();
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+for (const m of [triangulo, cuadrado, hexagono]) {
+  gl.bindVertexArray(m.vao);                      // qué malla
+  if (m.indexada) gl.drawElements(m.modo, m.cuenta, gl.UNSIGNED_SHORT, 0);
+  else gl.drawArrays(m.modo, 0, m.cuenta);
+}
+console.log('3 VAOs, 3 draw calls, 1 programa · getError →', gl.getError());
+</script>
+  </div>
+  <p>Este patrón (un objeto por malla con su VAO, su modo y su cuenta; un bucle que enlaza y dibuja) es el esqueleto de cualquier motor. En 5.4 añadiremos a cada objeto sus propios uniforms (posición, color, rotación), y en 5.9 veremos cómo dibujar miles de copias de una malla sin mil llamadas. El hexágono corrige su proporción multiplicando la x por <code>alto/ancho</code> para no salir estirado en un canvas apaisado (el problema del anillo elíptico de 5.1, resuelto a mano; en 5.6 lo hará la matriz de proyección).</p>
+</section>
+
+<h2>GLKit: crearBuffer y atributo</h2>
+<p>Ahora que has escrito a mano buffers y atributos, puedes usar las dos funciones de GLKit que los empaquetan (léelas en <code>assets/js/glkit.js</code>):</p>
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="assets/js/glkit.js (extracto)">
+crearBuffer(gl, datos, uso, destino) {
+  destino = destino || gl.ARRAY_BUFFER;
+  const b = gl.createBuffer();
+  gl.bindBuffer(destino, b);
+  gl.bufferData(destino, datos, uso || gl.STATIC_DRAW);
+  return b;
+},
+
+/* Conecta un atributo del programa con el ARRAY_BUFFER enlazado AHORA.
+   (vertexAttribPointer "fotografía" el buffer que esté enlazado en ese momento.) */
+atributo(gl, programa, nombre, tamaño, tipo, normalizado, stride, offset) {
+  const loc = gl.getAttribLocation(programa, nombre);
+  if (loc === -1) { console.warn('[GLKit] El atributo "' + nombre + '" no existe o el compilador lo eliminó por no usarse.'); return -1; }
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, tamaño, tipo || gl.FLOAT, !!normalizado, stride || 0, offset || 0);
+  return loc;
+},
+</script>
+<p><code>crearBuffer</code> deja el buffer <strong>enlazado</strong> al terminar (útil: puedes llamar a <code>atributo</code> justo después y fotografiará ese buffer), y admite <code>gl.ELEMENT_ARRAY_BUFFER</code> como destino para índices, que se guardará en el VAO enlazado en ese momento. <code>atributo</code> busca la location por nombre con <code>getAttribLocation</code>, para cuando trabajes con shaders sin <code>layout</code>, y trata el −1 como merece: avisa y no pasa el −1 a las demás llamadas. Si tus shaders usan <code>layout</code>, escribir <code>enableVertexAttribArray</code> + <code>vertexAttribPointer</code> directamente es igual de corto. (La versión real de <code>atributo</code> en <code>glkit.js</code> tiene dos parámetros opcionales más al final: <code>divisor</code>, que veremos en <a href="09-instancing.html">5.9</a>, y <code>entero</code>, que llama a <code>vertexAttribIPointer</code> como en el recuadro de arriba. Los ignoramos hasta entonces.)</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.3.1 — Un segundo buffer para el color</h3>
+  <p>El vertex shader ya espera un color en la location 1, pero nadie se lo da y el triángulo sale negro sobre el fondo. Añade un buffer con un color por vértice (el que quieras) y conéctalo al atributo 1.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.3.1" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+// TODO: buffer de colores + atributo 1
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('valor constante del atributo 1:', gl.getVertexAttrib(1, gl.CURRENT_VERTEX_ATTRIB));
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+// Colores: 3 floats por vértice, en su propio buffer
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([1.0, 0.8, 0.2,   1.0, 0.3, 0.5,   0.3, 0.8, 1.0]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+console.log('valor constante del atributo 1:', gl.getVertexAttrib(1, gl.CURRENT_VERTEX_ATTRIB));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué recibe <code>a_color</code> si la ranura 1 está desactivada? La consola lo dice.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Las mismas cinco llamadas que para la posición: crear, enlazar, <code>bufferData</code>, <code>enableVertexAttribArray(1)</code>, <code>vertexAttribPointer(1, 3, …)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con la ranura 1 desactivada, <code>a_color</code> recibe el valor constante (0, 0, 0, 1): negro. La solución crea un segundo buffer, lo enlaza (lo que hace que el siguiente <code>vertexAttribPointer</code> lo fotografíe), activa la ranura 1 y la describe con 3 floats por vértice. El VAO queda con dos ranuras, cada una apuntando a su buffer. Fíjate en que el enlace de <code>ARRAY_BUFFER</code> termina apuntando al buffer de colores y no pasa nada: la ranura 0 ya fotografió el de posiciones.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.3.2 — Colores en bytes</h3>
+  <p>Para ahorrar memoria, los colores se guardan como bytes RGB (0…255) en un <code>Uint8Array</code>: violeta, naranja y turquesa. Pero el triángulo sale completamente blanco. Arréglalo cambiando <strong>solo</strong> la llamada a <code>vertexAttribPointer</code> del color.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.3.2" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array([
+  60, 20, 110,     // violeta oscuro
+  255, 140, 60,    // naranja
+  30, 200, 220,    // turquesa
+]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.UNSIGNED_BYTE, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array([
+  60, 20, 110,     // violeta oscuro
+  255, 140, 60,    // naranja
+  30, 200, 220,    // turquesa
+]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.UNSIGNED_BYTE, true, 0, 0);   // normalizado: 255 → 1.0
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLES, 0, 3);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>¿Qué valor recibe el shader por el 110 del violeta si no se normaliza? ¿Y qué pasa con un color de 110.0 al escribirlo?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>normalized = false</code>, el shader recibe 60.0, 20.0, 110.0… y al escribir el color todo lo que pasa de 1 se recorta a 1. Aquí ningún canal vale 0 en ningún vértice, así que todos los canales de todos los píxeles saturan: blanco puro (si algún canal valiera 0, verías colores chillones con transiciones bruscas cerca de ese vértice). Con <code>normalized = true</code>, la GPU divide entre 255 al leer: el violeta llega como (0.235, 0.078, 0.431). Es el <a href="../04-gpu/04-vbo-vao.html#m4-sin-normalizar">comportamiento raro de los colores saturados</a> de 4.4. El buffer ocupa 9 bytes frente a los 36 de los floats.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.3.3 — Entrelaza</h3>
+  <p>El código tiene posiciones y colores en dos buffers. Reescríbelo con <strong>un solo</strong> <code>Float32Array</code> entrelazado (x, y, r, g, b por vértice) y un solo buffer, calculando stride y offset. El resultado debe verse igual.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.3.3" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const posiciones = new Float32Array([-0.6, -0.6,   0.6, -0.6,   0.6, 0.6,   -0.6, 0.6]);
+const colores = new Float32Array([1, 0.4, 0.4,   1, 0.8, 0.3,   0.3, 0.8, 1,   0.6, 0.4, 1]);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, posiciones, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, colores, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const datos = new Float32Array([
+//  x     y     r    g    b
+  -0.6, -0.6,   1, 0.4, 0.4,
+   0.6, -0.6,   1, 0.8, 0.3,
+   0.6,  0.6,   0.3, 0.8, 1,
+  -0.6,  0.6,   0.6, 0.4, 1,
+]);
+const F = Float32Array.BYTES_PER_ELEMENT;
+const STRIDE = 5 * F;                              // 20 bytes
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, datos, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, STRIDE, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, STRIDE, 2 * F);   // detrás de x, y
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Construye el array a mano: dos números de posición, tres de color, y vuelta a empezar. ¿Cuántos bytes ocupa un vértice?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Los dos atributos usan el mismo stride. Solo cambia el offset: ¿cuántos bytes hay delante del primer <code>r</code>?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada vértice ocupa 5 floats = 20 bytes, así que <code>stride = 20</code> para los dos atributos. La posición empieza en el byte 0 y el color en el byte 8 (tras 2 floats). Si te equivocas con el stride (por ejemplo, dejándolo en 0), WebGL supondría vértices de 8 bytes para la posición y de 12 para el color: formas y colores revueltos. Un buen hábito es escribir los offsets como múltiplos de <code>BYTES_PER_ELEMENT</code>, que documentan de dónde sale cada número. Y aprovecha para repasar el modo: <code>TRIANGLE_FAN</code> con 4 vértices son 2 triángulos, (0, 1, 2) y (0, 2, 3), el cuadrado sin índices.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.3.4 — Los índices del hexágono</h3>
+  <p>Los vértices de un hexágono ya están en el buffer: el centro (vértice 0) y los 6 de alrededor (1 a 6), en sentido antihorario. Escribe el buffer de índices para dibujarlo con <code>drawElements(gl.TRIANGLES, …)</code>: seis triángulos que compartan el centro, todos en sentido antihorario. El código activa el culling, así que un triángulo mal orientado no se verá.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.3.4" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const aspecto = gl.drawingBufferHeight / gl.drawingBufferWidth;
+const v = [0, 0, 1, 1, 1];                              // vértice 0: centro, blanco
+for (let i = 0; i < 6; i++) {                           // vértices 1…6, antihorarios
+  const a = i / 6 * Math.PI * 2;
+  v.push(0.8 * Math.cos(a) * aspecto, 0.8 * Math.sin(a), 0.5 + 0.5 * Math.cos(a), 0.4, 0.5 + 0.5 * Math.sin(a));
+}
+const indices = new Uint16Array([
+  // TODO: 6 triángulos (18 índices)
+]);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+gl.enable(gl.CULL_FACE);                                // descarta los triángulos horarios
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+console.log(indices.length, 'índices · getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec3 a_color;
+out vec3 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec3 v_color;
+out vec4 color;
+void main() { color = vec4(v_color, 1.0); }`);
+
+const aspecto = gl.drawingBufferHeight / gl.drawingBufferWidth;
+const v = [0, 0, 1, 1, 1];
+for (let i = 0; i < 6; i++) {
+  const a = i / 6 * Math.PI * 2;
+  v.push(0.8 * Math.cos(a) * aspecto, 0.8 * Math.sin(a), 0.5 + 0.5 * Math.cos(a), 0.4, 0.5 + 0.5 * Math.sin(a));
+}
+// Triángulo k: centro, vértice k y el siguiente (el 6 conecta con el 1)
+const lista = [];
+for (let k = 1; k <= 6; k++) lista.push(0, k, k === 6 ? 1 : k + 1);
+const indices = new Uint16Array(lista);           // [0,1,2, 0,2,3, 0,3,4, 0,4,5, 0,5,6, 0,6,1]
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+gl.enable(gl.CULL_FACE);
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+console.log(indices.length, 'índices · getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El primer triángulo es (0, 1, 2). ¿Cuál es el segundo? ¿Y el último, que tiene que cerrar el hexágono?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si un triángulo no aparece, has escrito sus vértices en sentido horario: intercambia dos de ellos.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cada triángulo une el centro con dos vértices consecutivos del borde: (0, k, k+1), y el último vuelve al principio: (0, 6, 1). Como los vértices del borde están en orden antihorario, centro → k → k+1 gira también en sentido antihorario y el culling no los descarta. Siete vértices y 18 índices frente a los 18 vértices que necesitaría <code>drawArrays</code>. Y habrás notado que esto es exactamente lo que hace <code>TRIANGLE_FAN</code> sin índices (con el vértice 1 repetido al final, como en el ejemplo 5.3.7): los abanicos son la versión «comprimida» de este patrón.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.3.5 — La rejilla de 300 × 300</h3>
+  <p>Este código genera una rejilla de 300 × 300 celdas (301 × 301 = 90 601 vértices) que debería ocupar casi todo el canvas (de −0.9 a 0.9 en los dos ejes) con un degradado. Pero falta toda la franja de arriba, y en el borde superior hay una muesca rara. No hay ningún error. Encuentra la causa y arréglalo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.3.5" data-altura="260" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(0.2 + 0.8 * v_uv.x, 0.3, 0.3 + 0.7 * v_uv.y, 1.0); }`);
+
+const N = 300, lado = N + 1;
+const verts = new Float32Array(lado * lado * 2);
+for (let j = 0; j < lado; j++) for (let i = 0; i < lado; i++) {
+  verts[(j * lado + i) * 2] = i / N * 1.8 - 0.9;
+  verts[(j * lado + i) * 2 + 1] = j / N * 1.8 - 0.9;
+}
+const lista = [];
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const a = j * lado + i, b = a + 1, c = a + lado, d = c + 1;
+  lista.push(a, b, d, a, d, c);
+}
+const indices = new Uint16Array(lista);
+console.log('vértices:', lado * lado, '· índice máximo pedido:', Math.max(...lista.slice(-6)), '· índice máximo guardado:', Math.max(...indices.slice(-6)));
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+out vec2 v_uv;
+void main() { v_uv = a_posicion * 0.5 + 0.5; gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(0.2 + 0.8 * v_uv.x, 0.3, 0.3 + 0.7 * v_uv.y, 1.0); }`);
+
+const N = 300, lado = N + 1;
+const verts = new Float32Array(lado * lado * 2);
+for (let j = 0; j < lado; j++) for (let i = 0; i < lado; i++) {
+  verts[(j * lado + i) * 2] = i / N * 1.8 - 0.9;
+  verts[(j * lado + i) * 2 + 1] = j / N * 1.8 - 0.9;
+}
+const lista = [];
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const a = j * lado + i, b = a + 1, c = a + lado, d = c + 1;
+  lista.push(a, b, d, a, d, c);
+}
+const indices = new Uint32Array(lista);            // 32 bits: caben los 90 601 vértices
+console.log('vértices:', lado * lado, '· índice máximo pedido:', Math.max(...lista.slice(-6)), '· índice máximo guardado:', Math.max(...indices.slice(-6)));
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.bindVertexArray(vao);
+gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_INT, 0);   // el tipo debe coincidir
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Compara en la consola el índice máximo que el código pidió con el que quedó guardado en el array.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Hay que cambiar dos cosas, y deben ir juntas: el tipo del array y el tercer argumento de <code>drawElements</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los índices llegan hasta 90 600, pero un <code>Uint16Array</code> solo guarda 16 bits: al asignar 90 600, JavaScript se queda con <code>90 600 mod 65 536 = 25 064</code>. Todas las celdas cuyos índices pasan de 65 535 acaban apuntando a vértices unas 218 filas más abajo: se dibujan encima de triángulos que ya existían (y, como el color depende de la posición, no se distinguen), así que la franja de arriba se queda vacía. En la fila frontera, cada triángulo mezcla vértices de arriba y de abajo: de ahí la muesca. Como todos esos vértices existen, WebGL no protesta. Además, los índices que acaban valiendo exactamente 65 535 cortan la primitiva (el reinicio siempre activo). Con <code>Uint32Array</code> y <code>gl.UNSIGNED_INT</code>, todo cabe. Si cambias solo el array y no el tipo, <code>drawElements</code> interpretaría cada índice de 4 bytes como dos de 2 (el de abajo y el de arriba, que casi siempre vale 0): otro destrozo, y tampoco esta vez hay error (lo comprobamos: en el centro del canvas no se pinta nada y <code>getError</code> vale 0).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.3.6 — Solo se mueve un vértice</h3>
+  <p>Un triángulo en el que el vértice de arriba debe oscilar a izquierda y derecha. El código actual reconstruye y sube el buffer entero con <code>bufferData</code> en cada frame. Cámbialo para que reserve el buffer una sola vez y en cada frame suba <strong>solo los 8 bytes</strong> del vértice 2 con <code>bufferSubData</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.3.6" data-altura="220" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+function frame(ms) {
+  const x = 0.6 * Math.sin(ms / 1000 * 2);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, x, 0.7]), gl.DYNAMIC_DRAW);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+void main() { gl_Position = vec4(a_posicion, 0.0, 1.0); }`, `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.55, 0.2, 1.0); }`);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+// Una sola vez: los tres vértices, en un buffer dinámico
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.7, -0.6, 0.7, -0.6, 0.0, 0.7]), gl.DYNAMIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const vertice2 = new Float32Array(2);              // reutilizado en cada frame
+const OFFSET_V2 = 2 * 2 * Float32Array.BYTES_PER_ELEMENT;   // vértice 2 → byte 16
+
+function frame(ms) {
+  vertice2[0] = 0.6 * Math.sin(ms / 1000 * 2);
+  vertice2[1] = 0.7;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferSubData(gl.ARRAY_BUFFER, OFFSET_V2, vertice2);   // solo 8 bytes
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿En qué byte empieza el vértice 2 de un buffer de vértices (x, y) en floats?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Mueve el <code>bufferData</code> fuera del bucle, con los tres vértices iniciales. Dentro del bucle, un <code>Float32Array</code> de 2 elementos (creado fuera) y <code>bufferSubData(ARRAY_BUFFER, offset, esosDos)</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El vértice 2 empieza en el byte <code>2 vértices × 2 floats × 4 bytes = 16</code>. La solución reserva y rellena el buffer una vez y en cada frame escribe 8 bytes en esa posición: un <code>bufferSubData</code> pequeño en lugar de reservar y subir el buffer entero, y sin crear un <code>Float32Array</code> nuevo por frame. Con 3 vértices la diferencia no se mide; con una malla de 100 000 vértices de la que solo cambian unos pocos, sí. Aunque, para mover un objeto entero, ni esto: se usa un uniform (5.4).</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Varios atributos: un buffer por atributo o todos entrelazados. El vértice <em>i</em> de un atributo empieza en el byte <code>offset + i × stride</code>; con datos entrelazados, el stride es el tamaño del vértice completo y nunca 0.</li>
+    <li>Tipos: bytes normalizados para colores (<code>UNSIGNED_BYTE</code>, <code>true</code> → valor/255), bytes o shorts con signo para normales (valor/127, mínimo −1), half floats para ahorrar. Los componentes que faltan se rellenan con (0, 0, 1). Stride y offset múltiplos del tipo; stride ≤ 255. Enteros de verdad: <code>vertexAttribIPointer</code>.</li>
+    <li>Ranura desactivada = valor constante de <code>vertexAttrib*</code>, que es estado global, no del VAO.</li>
+    <li>Índices: <code>ELEMENT_ARRAY_BUFFER</code> (su enlace sí se guarda en el VAO), <code>drawElements(modo, cuenta, tipo, offsetEnBytes)</code>. <code>Uint16</code> llega hasta el vértice 65 534 porque 65 535 es el índice de reinicio, siempre activo en WebGL2; más allá, <code>Uint32</code>.</li>
+    <li>Modos: puntos (<code>gl_PointSize</code>, máximo 511 aquí, recorte por el centro según plataforma), líneas (siempre de 1 píxel: <code>lineWidth</code> no hace nada), triángulos, tiras y abanicos.</li>
+    <li>Winding: antihorario es la cara delantera; el culling descarta las traseras; <code>gl_FrontFacing</code> para depurar.</li>
+    <li>Geometría dinámica: reservar una vez y <code>bufferSubData</code> cada frame; reutilizar los arrays; los usos (<code>STATIC</code>/<code>DYNAMIC</code>/<code>STREAM</code>) son pistas; mide antes de aplicar trucos como el <em>orphaning</em>.</li>
+    <li>La posición en la location 0. Un VAO por malla; dibujar una escena es enlazar VAO y dibujar, malla a malla.</li>
+  </ul>
+</div>
+
+<p>En <a href="04-uniforms-animacion.html">5.4</a> llega el otro canal entre JavaScript y la GPU: los uniforms. Con ellos moveremos, rotaremos y colorearemos cada objeto sin tocar sus buffers, y montaremos el bucle de animación completo.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/drawElements">MDN: <code>drawElements()</code></a> y <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext/vertexAttribIPointer">MDN: <code>vertexAttribIPointer()</code></a>.</li>
+  <li><a href="https://registry.khronos.org/webgl/specs/latest/2.0/">Especificación de WebGL 2.0</a>, sección 5 «Differences Between WebGL and OpenGL ES 3.0»: el reinicio de primitivas siempre activo, las restricciones de los buffers de índices y otras diferencias.</li>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-attributes.html">WebGL2 Fundamentals: Attributes</a>, otra mirada a stride, offset y el estado de los atributos.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

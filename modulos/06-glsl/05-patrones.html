@@ -1,0 +1,984 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.5 · Patrones: repetición, celdas y simetrías — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/a-estilos.css">
+</head>
+<body data-leccion="06-glsl/patrones">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>Patrones: repetición, celdas y simetrías</h1>
+  <p class="resumen">Casi todos los patrones son la misma idea: dividir el plano en celdas iguales y dibujar lo mismo en cada una, con variaciones. Con <code>fract</code>, <code>floor</code>, <code>abs</code>, <code>atan</code> y un hash construirás mosaicos, ladrillos, dameros, caleidoscopios, laberintos de Truchet, panales y zooms infinitos; y aprenderás a vencer a los dos enemigos de la repetición: las formas cortadas en el borde de la celda y el muaré.</p>
+  <div class="meta"><span class="chip">⏱ 120 min</span><span class="chip">Requisitos: 6.2, 6.3, 3.4</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Repetirás el espacio con <code>fract</code> (coordenadas locales) y <code>floor</code> (identificador de celda), y harás que cada copia sea distinta con un hash.</li>
+      <li>Construirás los patrones clásicos: espejo, ladrillos, damero, repetición polar, caleidoscopio, Truchet y hexágonos.</li>
+      <li>Detectarás cuándo una forma se sale de su celda y lo arreglarás buscando en las celdas vecinas, sabiendo lo que cuesta.</li>
+      <li>Entenderás el muaré (el límite de Nyquist) y lo filtrarás con <code>fwidth</code>, y harás patrones que hacen zoom sin fin.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Una celda, infinitas copias</h2>
+<p>En <a href="02-pensar-en-paralelo.html">6.2</a> viste que transformar las coordenadas mueve la forma, y que una transformación que lleve <em>muchos</em> puntos de la pantalla al mismo punto local la multiplica. Esa es la <strong>repetición de dominio</strong>, y casi todos los patrones de este módulo tienen el mismo esqueleto de cuatro líneas (más una para el tamaño del píxel):</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec2 g = p * N;
+vec2 id = floor(g);
+vec2 q = fract(g) - 0.5;
+float d = forma(q);
+float pxq = px * N;
+</script>
+<ol>
+  <li data-l="1"><strong>Escalar.</strong> Multiplicar por <code>N</code> hace que cada unidad de <code>g</code> sea una celda: <code>N</code> celdas por cada unidad de <code>p</code>.</li>
+  <li data-l="2"><strong>El identificador de la celda</strong>: dos enteros (guardados en un <code>vec2</code>), también negativos: la celda a la izquierda de la (0, 0) es la (−1, 0). Con <code>floor</code>, no con <code>int()</code>, que trunca hacia el cero y haría doble la celda del origen (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>).</li>
+  <li data-l="3"><strong>Las coordenadas locales</strong>: <code>fract(g)</code> va de 0 a 1 dentro de cada celda; restando 0.5, de −0.5 a 0.5, con el origen en el centro de la celda.</li>
+  <li data-l="4"><strong>La forma</strong>, escrita una sola vez y centrada en el origen, aparece en todas las celdas. Coste: el mismo que una sola forma.</li>
+  <li data-l="5"><strong>El tamaño de un píxel</strong> en unidades de celda: al multiplicar por <code>N</code>, un píxel ocupa <code>N</code> veces más (la regla de la escala de 6.2 y 6.3). Todo borde suave dentro de la celda usa <code>pxq</code>.</li>
+</ol>
+</div>
+
+<div class="glsl-playground" data-titulo="El esqueleto de la repetición" data-altura="250" data-apilado data-uniforms='{"u_n":{"tipo":"float","min":1,"max":10,"valor":3,"etiqueta":"celdas por unidad"},"u_rejilla":{"tipo":"bool","valor":true,"etiqueta":"ver las celdas"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_n;
+uniform bool u_rejilla;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 g = p * u_n;                    // 1) escalar
+  vec2 id = floor(g);                  // 2) qué celda
+  vec2 q = fract(g) - 0.5;             // 3) dónde, dentro de la celda
+  float pxq = px * u_n;                //    un píxel, en unidades de celda
+  float d = length(q - vec2(0.1, 0.0)) - 0.3;   // 4) la forma (algo descentrada)
+  vec3 col = mod(id.x + id.y, 2.0) < 0.5 ? vec3(0.10, 0.11, 0.14) : vec3(0.14, 0.15, 0.19);
+  if (id == vec2(0.0)) col += vec3(0.10, 0.02, 0.10);            // la celda (0, 0)
+  col = mix(col, vec3(1.0, 0.75, 0.3), clamp(0.5 - d / pxq, 0.0, 1.0));
+  if (u_rejilla) {
+    vec2 b = 0.5 - abs(q);                         // distancia al borde de la celda
+    col = mix(col, vec3(0.45), clamp(1.0 - min(b.x, b.y) / pxq, 0.0, 1.0));
+  }
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>La celda (0, 0) está teñida de violeta: su esquina inferior izquierda es el origen de <code>p</code>, el centro del lienzo. Sube y baja el número de celdas: las formas se multiplican y su borde sigue midiendo un píxel, gracias a <code>pxq</code>. Y fíjate en que la forma está desplazada 0.1 hacia la derecha dentro de su celda: todas las copias lo están, porque todas son la misma forma vista desde su propio origen local.</p>
+
+<div class="callout bestiario" data-id="m6a-cuartos-esquinas" data-titulo="Las formas aparecen en las esquinas de las celdas, partidas en cuatro trozos de colores distintos">
+  <p><strong>Síntoma:</strong> los círculos de un patrón se ven centrados en las esquinas de la rejilla en lugar de en el centro de las celdas; y si cada celda tiene su color, cada círculo sale partido en cuatro cuartos de colores distintos.</p>
+  <p><strong>Causa:</strong> se usa <code>fract(g)</code> sin restar 0.5. Las coordenadas locales van de 0 a 1 con el origen en la esquina inferior izquierda de la celda, así que una forma centrada en el origen solo aporta un cuarto a cada celda; los cuatro cuartos que se juntan en una esquina pertenecen a cuatro celdas distintas, cada una con su propio identificador y su propio color.</p>
+  <p><strong>Solución:</strong> <code>q = fract(g) - 0.5</code> para centrar las coordenadas locales en la celda. Y en general: la forma de cada celda debe caber entera dentro de su celda (más sobre esto en «Formas que se salen de su celda»).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Con <code>N = 4</code>, ¿qué identificador y qué coordenadas locales tiene el punto <code>p = (−0.1, 0.3)</code>?</p>
+  <ul>
+    <li><code>id = (0, 1)</code>, <code>q = (−0.4, −0.3)</code><div class="explicacion"><code>g = (−0.4, 1.2)</code>, y <code>floor(−0.4)</code> es −1, no 0: <code>floor</code> redondea hacia abajo también con negativos.</div></li>
+    <li data-correcta><code>id = (−1, 1)</code>, <code>q = (0.1, −0.3)</code><div class="explicacion">Correcto: <code>g = (−0.4, 1.2)</code>; <code>floor</code> da (−1, 1); <code>fract(−0.4)</code> es 0.6 (lo que sobra desde abajo) y <code>fract(1.2)</code> es 0.2; restando 0.5, (0.1, −0.3).</div></li>
+    <li><code>id = (−1, 1)</code>, <code>q = (−0.9, −0.3)</code><div class="explicacion"><code>fract</code> nunca es negativo: <code>fract(−0.4) = −0.4 − floor(−0.4) = 0.6</code>. Por eso las coordenadas locales van siempre de −0.5 a 0.5.</div></li>
+  </ul>
+</div>
+
+<h3>El límite de la repetición: los números grandes</h3>
+<p>Hay una trampa que no se ve hasta que el patrón lleva mucho tiempo desplazándose, o hasta que la cámara se aleja del origen. <code>fract(g)</code> es la parte de <code>g</code> que queda tras los decimales, y un float32 tiene un número fijo de cifras significativas (<a href="../03-matematicas/07-precision.html">3.7</a>): cuanto mayor es <code>g</code>, menos cifras quedan para los decimales. Hacia un millón, la separación entre floats consecutivos es 0.0625, así que <code>fract</code> solo puede valer 16 cosas distintas: las formas se pixelan en escalones de 1/16 de celda. Hacia diez millones, la separación es 1, y <code>fract</code> vale siempre 0. El deslizador suma a <code>g</code> un desplazamiento de $10^k$ celdas:</p>
+
+<div class="glsl-playground" data-titulo="El mismo patrón, lejos del origen" data-altura="200" data-apilado data-uniforms='{"u_k":{"tipo":"float","min":0,"max":7,"valor":6,"paso":0.5,"etiqueta":"desplazamiento: 10^k celdas"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_k;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y * 4.0;
+  vec2 g = p * 4.0 + pow(10.0, u_k);          // el mismo patrón, muy lejos del origen
+  vec2 q = fract(g) - 0.5;
+  float d = length(q) - 0.3;
+  fragColor = vec4(vec3(clamp(0.5 - d / px, 0.0, 1.0)), 1.0);
+}
+</script>
+</div>
+
+<p>Con <code>k</code> hasta 4, nada. Con 5.5, los bordes ya tiemblan en escalones. Con 6, los círculos son polígonos de 16 pasos por celda. Con 7, desaparecen: todas las coordenadas locales valen lo mismo.</p>
+
+<div class="callout bestiario" data-id="m6a-patron-lejos" data-titulo="El patrón se pixela, tiembla o desaparece tras mucho tiempo en movimiento">
+  <p><strong>Síntoma:</strong> un patrón que se desplaza con el tiempo (un fondo que avanza, un scroll infinito) se ve perfecto al principio y, tras horas, sus formas se vuelven poligonales o tiemblan; o un patrón funciona cerca del origen y se deshace al llevarlo lejos.</p>
+  <p><strong>Causa:</strong> la coordenada que entra en <code>fract</code> es enorme (<code>p * N + u_time * velocidad</code> tras horas, o una posición de mundo grande), y en float32 le quedan pocas cifras para los decimales. <code>fract</code> no puede devolver la precisión que la coordenada ya no tiene.</p>
+  <p><strong>Solución:</strong> mantén pequeñas las coordenadas que entran en la repetición. Si el patrón es periódico, envuelve el desplazamiento en JavaScript (en doble precisión) con un periodo que sea múltiplo de la celda: <code>(velocidad * t) % 1.0</code> para un patrón de periodo 1. Si las celdas tienen identificadores (colores por celda), envía por separado la parte entera del desplazamiento como offset de los identificadores, calculado en la CPU.</p>
+</div>
+
+<h2>Que cada copia sea distinta: el identificador y un hash</h2>
+<p>Un patrón en el que todas las celdas son idénticas es un papel pintado. La vida aparece cuando cada celda es algo distinta: otro color, otro tamaño, otro giro, o ninguna forma. Para eso está el identificador: cualquier función de <code>id</code> da un valor distinto por celda. Si la función es un <strong>hash</strong> (una función que convierte cada entrada en un número que <em>parece</em> aleatorio, pero que es siempre el mismo para la misma entrada), cada celda recibe su «número aleatorio» fijo. En <a href="06-ruido.html">6.6</a> abrirás esta caja negra y entenderás por qué funciona y cuándo falla; por ahora, úsala tal cual:</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Un hash de Dave Hoskins (se explica en 6.6)">
+// Un número en [0, 1) que parece aleatorio, siempre el mismo para la misma entrada
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+</script>
+<p>Con <code>hash12(id)</code> cada celda tiene un número. Para varios números independientes por celda, basta con variar la entrada: <code>hash12(id + 17.0)</code>, <code>hash12(id + vec2(3.1, 71.7))</code>… Son entradas distintas y dan números sin relación entre sí.</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.5.1 — Un mosaico con variación</h3>
+<p>Baldosas redondeadas en las que cada una tiene su color, su tamaño y su giro, y algunas faltan. Los cuatro interruptores activan cada variación por separado.</p>
+<div class="glsl-playground" data-titulo="Cada celda, su azar" data-altura="260" data-apilado data-uniforms='{"u_color":{"tipo":"bool","valor":true,"etiqueta":"color"},"u_tamano":{"tipo":"bool","valor":true,"etiqueta":"tamaño"},"u_giro":{"tipo":"bool","valor":true,"etiqueta":"giro"},"u_huecos":{"tipo":"float","min":0,"max":0.8,"valor":0.15,"etiqueta":"huecos"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform bool u_color, u_tamano, u_giro;
+uniform float u_huecos;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  const float N = 4.0;
+  vec2 g = p * N, id = floor(g), q = fract(g) - 0.5;
+  float pxq = px * N;
+  float h1 = hash12(id), h2 = hash12(id + 17.0), h3 = hash12(id + 41.0);
+  float tam = u_tamano ? mix(0.18, 0.32, h2) : 0.28;         // semitamaño
+  if (u_giro) q = rot(h3 * 1.5708) * q;                      // hasta 90°
+  float d = sdCaja(q, vec2(tam - 0.06)) - 0.06;              // caja redondeada
+  if (h1 < u_huecos) d = 1.0;                                // celda vacía
+  // paleta de coseno «Pastel» de 6.4, indexada por el hash de la celda
+  vec3 pastel = vec3(0.8, 0.5, 0.4) + vec3(0.2, 0.4, 0.2)
+              * cos(6.2831853 * (vec3(2.0, 1.0, 1.0) * h1 + vec3(0.0, 0.25, 0.25)));
+  vec3 tinta = u_color ? pastel : vec3(0.95, 0.7, 0.35);
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), tinta, clamp(0.5 - d / pxq, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+<ol>
+  <li><strong>Tres números por celda</strong>: <code>h1</code>, <code>h2</code> y <code>h3</code> salen del mismo hash con tres entradas distintas, así que son independientes. Cada uno decide una cosa, y así cambiar el tamaño no cambia el color.</li>
+  <li><strong>El tamaño</strong> se reparte entre 0.18 y 0.32 con un <code>mix</code>: el remapeo de 3.4, con el hash como <code>t</code>. El máximo, 0.32, es menor que 0.5: la baldosa cabe en su celda.</li>
+  <li><strong>El giro</strong> se aplica a <code>q</code>, las coordenadas locales: gira cada baldosa alrededor del centro de su celda (transformar el espacio, 6.2). Pero atención: una caja de semitamaño 0.32 girada 45° llega hasta $0.32\sqrt{2} \approx 0.45$ del centro. Todavía cabe. Con 0.4 ya no cabría, y se vería cortada.</li>
+  <li><strong>Los huecos</strong>: si el hash es menor que el umbral, la distancia pasa a 1.0 (muy lejos, en unidades de celda) y no se pinta nada. El mismo <code>h1</code> decide el color (a través de una paleta de coseno de 6.4); como el umbral recorta los valores bajos, desaparecen siempre los colores del principio de la paleta. Usa números distintos para decisiones distintas si no quieres esa correlación.</li>
+</ol>
+</section>
+
+<h2>Espejo: repetir sin costuras</h2>
+<p>Con <code>fract</code>, el borde derecho de una celda toca el borde izquierdo de la siguiente, que es el izquierdo de la misma forma: si la forma no es simétrica, en la frontera hay un salto. La <strong>repetición en espejo</strong> refleja las celdas alternas, de modo que cada frontera separa una forma de su imagen reflejada y todo empalma. Se consigue con la onda triangular de 3.4 en lugar del diente de sierra:</p>
+$$\operatorname{tri}(x) = \big|\,2\operatorname{fract}(x/2) - 1\,\big| \qquad (\text{va de 1 a 0 y vuelve a 1 cada 2 unidades})$$
+
+<div class="glsl-playground" data-titulo="Repetición normal y en espejo" data-altura="230" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  const float N = 3.0;
+  vec2 g = p * N;
+  vec2 q;
+  if (p.x < 0.0) q = fract(g) - 0.5;                           // normal
+  else q = abs(2.0 * fract(g * 0.5) - 1.0) - 0.5;              // espejo
+  float d = length(q - vec2(0.3, 0.25)) - 0.35;   // un círculo que se sale de la celda
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), vec3(0.4, 0.75, 1.0), clamp(0.5 - d / (px * N), 0.0, 1.0));
+  col = mix(col, vec3(0.9), step(abs(p.x), px));              // frontera entre las dos mitades
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>El círculo está descentrado y es más grande que la mitad de la celda. A la izquierda, con <code>fract</code>, cada celda lo muestra cortado a hachazos por sus bordes (la parte que se sale no existe: la celda vecina dibuja su propia copia, no la continuación de esta). A la derecha, en espejo, las mismas formas se juntan con sus reflejos en figuras simétricas y continuas: cada píxel del borde ve, desde los dos lados, exactamente la misma forma.</p>
+
+<div class="quiz">
+  <p class="pregunta">¿Por qué la repetición en espejo no tiene saltos en las fronteras entre celdas?</p>
+  <ul>
+    <li>Porque suaviza las coordenadas locales con un <code>smoothstep</code><div class="explicacion">No hay ningún suavizado: la onda triangular tiene esquinas. Lo que evita el salto es que sea continua.</div></li>
+    <li data-correcta>Porque la coordenada local es continua (una onda triangular): al cruzar la frontera, sigue desde el mismo valor en lugar de saltar de 0.5 a −0.5<div class="explicacion">Correcto. Con <code>fract</code>, la coordenada salta en cada frontera, y la forma de un lado no tiene por qué coincidir con la del otro. Con la triangular, los dos lados de la frontera reciben el mismo valor, así que ven la misma forma.</div></li>
+    <li>Porque dibuja cada forma dos veces<div class="explicacion">Cada píxel evalúa la forma una sola vez, igual que con <code>fract</code>; solo cambia cómo se calcula la coordenada local.</div></li>
+  </ul>
+</div>
+
+<h2>Ladrillos y dameros</h2>
+<p>Dos variaciones del esqueleto que aparecen por todas partes. Los <strong>ladrillos</strong> son celdas rectangulares con las filas alternas desplazadas media celda. El orden importa: primero se calcula en qué fila estás (con <code>floor</code> de la y), después se desplaza la x según la fila, y solo entonces se calcula el identificador y la coordenada local de cada ladrillo:</p>
+
+<div class="glsl-playground" data-titulo="Ladrillos" data-altura="230" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 tam = vec2(0.5, 0.25);                  // un ladrillo: 0.5 × 0.25 unidades de p
+  vec2 g = p / tam;                            // en unidades de ladrillo
+  float fila = floor(g.y);
+  g.x += 0.5 * mod(fila, 2.0);                 // filas impares: media celda
+  vec2 id = floor(g);
+  vec2 q = (fract(g) - 0.5) * tam;             // coordenadas locales, EN UNIDADES DE p
+  float d = sdCaja(q, 0.5 * tam - 0.02 - 0.015) - 0.015;   // mortero de 0.04
+  float h = hash12(id);
+  vec3 barro = mix(vec3(0.62, 0.25, 0.18), vec3(0.78, 0.40, 0.26), h);
+  vec3 col = mix(vec3(0.72, 0.70, 0.66), barro, clamp(0.5 - d / px, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>Un detalle que separa un patrón correcto de uno casi correcto: las celdas son rectangulares, así que las coordenadas locales «en unidades de celda» estirarían la SDF (una unidad en x no mide lo mismo que en y). Por eso <code>q</code> se multiplica de vuelta por <code>tam</code>: la caja redondeada se evalúa en unidades de <code>p</code>, donde las distancias son reales, el mortero mide lo mismo en horizontal que en vertical y el borde suave usa el <code>px</code> de siempre.</p>
+<p>El <strong>damero</strong> ya lo construiste en el ejercicio 3.4.3: la paridad de la suma de los identificadores, <code>mod(floor(g.x) + floor(g.y), 2.0)</code>, alterna entre 0 y 1 en cada celda, en las dos direcciones. Es tan simple que parece imposible que dé problemas, pero es el patrón que peor se porta cuando sus celdas se hacen pequeñas: lo verás en la sección del muaré.</p>
+
+<h2>Repetición polar y caleidoscopios</h2>
+<p>Las celdas no tienen por qué ser cuadrados: en coordenadas polares (<a href="../03-matematicas/03-trigonometria.html">3.3</a>), repetir el ángulo da copias alrededor de un centro, y repetir el radio da anillos. La repetición angular es el mismo truco de <code>mod</code> aplicado a <code>atan</code>:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec2 repetirPolar(vec2 p, float n) {
+  float sector = TAU / n;
+  float a = atan(p.y, p.x);
+  a = mod(a + 0.5 * sector, sector) - 0.5 * sector;
+  return length(p) * vec2(cos(a), sin(a));
+}
+</script>
+<ol>
+  <li data-l="2">Cada una de las <code>n</code> copias ocupa un sector de <code>2π / n</code> radianes.</li>
+  <li data-l="3">El ángulo del punto, en $(-\pi, \pi]$.</li>
+  <li data-l="4">La coordenada local, ahora angular: el mismo «restar el medio para centrar» que en <code>fract(g) - 0.5</code>. Tras esta línea, <code>a</code> va de −sector/2 a sector/2 y vale 0 en el centro de cada sector.</li>
+  <li data-l="5">De vuelta a cartesianas con el ángulo local: todos los sectores se llevan al que rodea el eje +x. La forma se dibuja una sola vez, cerca del eje +x, y aparece <code>n</code> veces.</li>
+</ol>
+</div>
+
+<p>Para un <strong>caleidoscopio</strong>, se añade un espejo dentro de cada sector: <code>a = abs(a)</code> tras la línea 4. Cada sector se divide en dos mitades reflejadas: la figura queda formada por $2n$ mitades alternas (la forma y su reflejo), con $n$ ejes de simetría, y las copias empalman sin saltos en las fronteras entre sectores (es la repetición en espejo, en versión angular). Prueba los dos con una forma asimétrica:</p>
+
+<div class="glsl-playground" data-titulo="Copias alrededor de un centro" data-altura="260" data-apilado data-uniforms='{"u_n":{"tipo":"float","min":2,"max":12,"valor":6,"etiqueta":"copias (n)"},"u_espejo":{"tipo":"bool","valor":false,"etiqueta":"espejo (caleidoscopio)"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time, u_n;
+uniform bool u_espejo;
+out vec4 fragColor;
+const float TAU = 6.2831853;
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 q = rot(-0.2 * u_time) * p;                 // todo gira despacio
+  float sector = TAU / u_n;
+  float a = atan(q.y, q.x);
+  a = mod(a + 0.5 * sector, sector) - 0.5 * sector;
+  if (u_espejo) a = abs(a);
+  q = length(q) * vec2(cos(a), sin(a));
+  // una forma asimétrica cerca del eje +x: una cápsula torcida y un punto
+  float d = sdSegmento(q, vec2(0.25, 0.0), vec2(0.75, 0.18)) - 0.05;
+  d = min(d, length(q - vec2(0.55, -0.1)) - 0.05);
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.6, 0.45), clamp(0.5 - d / px, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>Con un número entero de copias todo encaja. Ahora arrastra el deslizador a un número no entero, como 5.5: aparece una <strong>costura</strong>, una frontera en la que las copias no casan. Es el bicho <a href="../03-matematicas/03-trigonometria.html#m3-costura-atan">«Una costura recta a la izquierda del centro»</a> de 3.3: <code>atan</code> salta de π a −π al cruzar el eje x negativo, y solo si $2\pi$ es un múltiplo exacto del sector los dos lados del salto caen en posiciones equivalentes. Con 5.5 copias, el último sector está incompleto. Aquí la costura no se queda a la izquierda: gira con la figura, porque el ángulo se mide en <code>q</code>, el espacio ya girado, y es el eje x negativo de <code>q</code> el que da vueltas.</p>
+
+<h3>La costura invisible que reaparece con fwidth</h3>
+<p>Aunque el número de copias sea entero y la costura no se vea, el salto de <code>atan</code> sigue ahí, y hay una herramienta que lo delata: las derivadas. Si calculas el ancho del antialiasing con <code>fwidth(a)</code>, en los píxeles donde el ángulo salta de π a −π dentro de un mismo quad, <code>fwidth</code> ve una diferencia de $2\pi$ entre dos píxeles vecinos, y el borde suave de esa fila se vuelve enorme. Lo medimos en un lienzo de prueba, a 30 píxeles a la izquierda del centro: lejos de la costura, <code>fwidth(atan(p.y, p.x))</code> valía 0.035; en la fila de la costura, <strong>6.25</strong>. Y lo más desconcertante: la línea aparece o no según <strong>la paridad del centro</strong>. Si la costura cae entre dos filas de quads distintos (las filas de píxeles se agrupan de dos en dos), ningún quad la ve; si cae en medio de un quad, sí. Cambiar el tamaño del lienzo en un píxel puede encenderla o apagarla.</p>
+
+<div class="glsl-playground" data-titulo="Doce rayos antialiasados con fwidth" data-altura="240" data-apilado data-uniforms='{"u_desfase":{"tipo":"float","min":0,"max":1,"valor":1,"paso":0.5,"etiqueta":"desplazar el centro (px)"},"u_arreglo":{"tipo":"bool","valor":false,"etiqueta":"arreglo"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_desfase;
+uniform bool u_arreglo;
+out vec4 fragColor;
+const float TAU = 6.2831853;
+
+void main() {
+  vec2 c = floor(0.5 * u_resolution) + vec2(0.0, u_desfase);   // centro, en píxeles
+  vec2 p = (gl_FragCoord.xy - c) / (0.5 * u_resolution.y);
+  float v = atan(p.y, p.x) * 12.0 / TAU;         // 12 rayos: v avanza 12 por vuelta
+  float w = fwidth(v);                           // píxel en unidades de v... salvo en la costura
+  if (u_arreglo) w = min(w, fwidth(atan(-p.y, -p.x) * 12.0 / TAU));
+  float d = abs(fract(v) - 0.5) - 0.25;          // franjas de media anchura
+  float m = clamp(0.5 - d / w, 0.0, 1.0);
+  fragColor = vec4(vec3(mix(0.15, 0.9, m)), 1.0);
+}
+</script>
+</div>
+
+<p>Con el desplazamiento en 1 píxel verás una línea gris horizontal a la izquierda del centro: la fila donde <code>fwidth</code> se dispara y la cobertura queda en un gris intermedio. Con 0 o 0.5 desaparece (o aparece, según la altura de tu lienzo). Activa el arreglo: calcula también <code>fwidth</code> del ángulo de <code>-p</code>, cuyo salto está en el eje x <em>positivo</em>, y se queda con el menor de los dos. Lejos de las dos costuras ambos valen lo mismo; en cada costura, el del otro ángulo está bien.</p>
+
+<div class="callout bestiario" data-id="m6a-costura-fwidth" data-titulo="Una línea de píxeles borrosos a la izquierda del centro, que aparece o no según el tamaño del lienzo">
+  <p><strong>Síntoma:</strong> un patrón radial antialiasado (rayos, sectores, una rueda) tiene una línea fina de píxeles grises o borrosos que sale del centro hacia la izquierda. Aparece con unos tamaños de ventana y desaparece con otros, o al mover el centro medio píxel.</p>
+  <p><strong>Causa:</strong> el ancho del borde suave sale de <code>fwidth</code> de un valor derivado del ángulo de <code>atan</code>, que salta de π a −π en el eje x negativo. Si el salto cae dentro de un quad de 2 × 2 píxeles, la derivada ve una diferencia de 2π (6.25 frente a 0.035, medido) y la transición de esa fila ocupa medio lienzo. Si cae entre dos quads, nadie lo ve: de ahí que dependa de la paridad.</p>
+  <p><strong>Solución:</strong> calcula la derivada de algo que no salte: <code>min(fwidth(a), fwidth(atan(-p.y, -p.x)))</code>, o la derivada analítica del ángulo (el ángulo cambia <code>px / r</code> por píxel, con <code>r = length(p)</code>), o el ancho a partir de <code>length(fwidth(p))</code>. Regla general: <code>fwidth</code> de cualquier cosa discontinua (<code>fract</code>, <code>mod</code>, <code>atan</code>, <code>floor</code>) se dispara en la discontinuidad.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un caleidoscopio con <code>n = 7</code> copias no tiene costura, pero con <code>n = 7.5</code> sí. ¿Por qué?</p>
+  <ul>
+    <li>Porque <code>mod</code> con números no enteros es indefinido<div class="explicacion"><code>mod</code> de floats está definido para cualquier divisor distinto de 0. El problema no está en <code>mod</code>, sino en el ángulo que recibe.</div></li>
+    <li data-correcta>Porque <code>atan</code> salta de π a −π, y solo si la vuelta completa es un múltiplo exacto del sector los dos lados del salto caen en posiciones equivalentes de sus sectores<div class="explicacion">Correcto. Con 7.5 sectores, el último es medio sector: justo antes del salto estás a mitad de un sector y justo después, al principio de otro. Las formas de los dos lados no casan.</div></li>
+    <li>Porque con 7.5 copias hay que usar <code>floor</code> en lugar de <code>mod</code><div class="explicacion">Cambiar la función no resuelve nada: con cualquier forma de repartir 7.5 sectores en una vuelta, uno queda incompleto y la frontera del salto no casa.</div></li>
+  </ul>
+</div>
+
+<h2>Truchet: laberintos con dos baldosas</h2>
+<p>En 1704, el sacerdote Sébastien Truchet estudió los patrones que se forman combinando una misma baldosa en distintas orientaciones (las suyas eran cuadrados partidos en diagonal en dos triángulos de colores). La variante más usada hoy tiene dos cuartos de circunferencia en esquinas opuestas: como los arcos tocan el borde de la baldosa justo en el punto medio de cada lado, cualquier combinación de orientaciones empalma con sus vecinas, y el conjunto forma curvas continuas que serpentean sin fin. En un shader, «colocar al azar» es reflejar la baldosa según el hash de la celda:</p>
+
+<div class="glsl-playground" data-titulo="Baldosas de Truchet" data-altura="260" data-apilado data-uniforms='{"u_tipo":{"tipo":"int","min":0,"max":1,"valor":0,"etiqueta":"arcos / diagonales"},"u_n":{"tipo":"float","min":2,"max":12,"valor":5,"etiqueta":"celdas por unidad"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time, u_n;
+uniform int u_tipo;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 g = p * u_n + vec2(0.0, 0.3 * u_time);        // el patrón sube despacio
+  vec2 id = floor(g), q = fract(g) - 0.5;
+  float pxq = px * u_n;
+  if (hash12(id) < 0.5) q.x = -q.x;                   // la mitad de las baldosas, reflejadas
+  float d;
+  if (u_tipo == 0) {
+    // dos cuartos de circunferencia de radio 0.5 con centro en esquinas opuestas
+    d = min(abs(length(q - 0.5) - 0.5), abs(length(q + 0.5) - 0.5));
+  } else {
+    d = abs(q.x - q.y) * 0.70710678;                  // la diagonal (distancia a la recta)
+  }
+  d -= 0.08;                                          // grosor de la línea
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), vec3(0.45, 0.85, 0.75), clamp(0.5 - d / pxq, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>Dos detalles que hacen que funcione. Los arcos de radio 0.5 centrados en las esquinas (0.5, 0.5) y (−0.5, −0.5) tocan los cuatro lados en su punto medio, y el reflejo en x (<code>q.x = -q.x</code>) cambia las esquinas por las otras dos, conservando esos puntos de contacto: por eso cualquier combinación empalma. Y la distancia a los arcos es una distancia de verdad (la de un anillo, 6.3), así que el grosor y el antialiasing son perfectos en toda la curva. La variante de diagonales (<code>u_tipo = 1</code>) es la del famoso programa de una línea <code>10 PRINT</code> del Commodore 64: el laberinto aparece solo.</p>
+
+<h2>Hexágonos: elegir la celda más cercana</h2>
+<p>Las celdas cuadradas tienen un problema estético: los vecinos en diagonal están más lejos que los de los lados. De los polígonos regulares que embaldosan el plano (triángulos, cuadrados y hexágonos), el más «redondo» es el hexágono, y los hexágonos no salen de un solo <code>fract</code>. Salen de un truco que es la antesala de la sección siguiente: <strong>calcular dos celdas candidatas y quedarse con la más cercana</strong>.</p>
+
+<section class="ejemplo">
+<h3>Ejemplo 6.5.2 — Un panal con dos rejillas</h3>
+<div class="glsl-playground" data-titulo="Un panal hexagonal" data-altura="260" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 g = p * 4.0;
+  const vec2 s = vec2(1.0, 1.7320508);             // (1, √3): rejilla rectangular
+  vec2 a = mod(g, s) - 0.5 * s;                    // relativo al centro más cercano de la rejilla A
+  vec2 b = mod(g - 0.5 * s, s) - 0.5 * s;          // lo mismo en la rejilla B, desplazada
+  vec2 q = dot(a, a) < dot(b, b) ? a : b;          // el centro más cercano de los dos
+  vec2 centro = g - q;                             // identificador: el centro del hexágono
+  vec2 k = abs(q);
+  float d = max(dot(k, normalize(s)), k.x) - 0.5;  // SDF (aprox.) del hexágono
+  float h = hash12(floor(centro * 2.0 + 0.5));
+  vec3 miel = mix(vec3(0.95, 0.62, 0.12), vec3(1.0, 0.82, 0.35), h);
+  miel *= 0.8 + 0.2 * sin(u_time * 2.0 + h * 6.2831853);   // cada celda late a su ritmo
+  vec3 col = mix(vec3(0.25, 0.14, 0.04), miel, clamp(0.5 - (d + 0.05) / (px * 4.0), 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+<ol>
+  <li><strong>Dos rejillas rectangulares.</strong> Los centros de un panal se reparten en dos rejillas de celdas de 1 × √3, la segunda desplazada media celda en los dos ejes. <code>mod(g, s) - 0.5 * s</code> es el mismo esqueleto de siempre con celdas rectangulares: el vector desde el centro de la celda de la rejilla A hasta el píxel. Lo mismo para la B.</li>
+  <li><strong>Quedarse con el más cercano.</strong> El píxel pertenece al hexágono cuyo centro tiene más cerca, que es el más cercano de los dos candidatos. Comparar <code>dot(a, a)</code> con <code>dot(b, b)</code> compara distancias al cuadrado, sin raíces. Las fronteras donde los dos candidatos empatan son, justamente, los lados de los hexágonos.</li>
+  <li><strong>El identificador</strong> es el propio centro, <code>g - q</code>. Sus coordenadas no son enteras (la y es múltiplo de √3/2), así que para el hash se redondean a una rejilla fina: <code>floor(centro * 2.0 + 0.5)</code> da un par de enteros distinto para cada centro. Con <code>floor(centro)</code> a secas, dos hexágonos distintos podrían compartir identificador.</li>
+  <li><strong>La distancia al borde</strong> usa la simetría del hexágono (sus seis lados se reducen a dos en el primer cuadrante, con <code>abs</code>): la proyección sobre la normal del lado inclinado, <code>dot(k, normalize(s))</code>, y sobre la del lado vertical, <code>k.x</code>; el máximo de las dos es la distancia al hexágono de apotema 0.5. Es una cota, no una distancia exacta en las esquinas (6.3), pero para un borde de un píxel basta. Restando 0.05 se deja un surco entre celdas.</li>
+</ol>
+</section>
+
+<h2>Formas que se salen de su celda</h2>
+<p>Hasta ahora hemos cuidado que cada forma cupiera en su celda. ¿Qué pasa si no cabe? Recuerda el modelo de 6.2: cada píxel solo pregunta por la forma de <strong>su</strong> celda. La parte de una forma que invade la celda vecina no la ve nadie, porque los píxeles de la vecina solo evalúan la forma de la vecina. El resultado: formas cortadas en seco por líneas rectas invisibles. Pasa en cuanto la forma es grande, o está desplazada al azar dentro de la celda, o gira, o tiene un brillo que se extiende.</p>
+<p>La solución es que cada píxel evalúe también las formas de las celdas de alrededor y se quede con la más cercana. Si ninguna forma se aleja más de una celda de la suya, basta con las 3 × 3 celdas vecinas. En la demo, cada celda tiene una burbuja con su centro desplazado al azar; el píxel (el punto que puedes arrastrar) mide la distancia a las nueve candidatas y la más cercana queda en amarillo. Activa «mirar solo la celda propia» y busca un sitio donde el píxel esté dentro de la burbuja de una vecina.</p>
+
+<div class="demo" id="demo-vecinos">
+  <div class="demo-lienzo" style="height:320px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="glsl-playground" data-titulo="Burbujas: solo la celda propia o las 3 × 3" data-altura="250" data-apilado data-uniforms='{"u_vecinas":{"tipo":"bool","valor":false,"etiqueta":"buscar en las 3 × 3"},"u_radio":{"tipo":"float","min":0.1,"max":0.8,"valor":0.5,"etiqueta":"radio máximo"},"u_mover":{"tipo":"float","min":0,"max":1,"valor":0.8,"etiqueta":"desplazamiento"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform bool u_vecinas;
+uniform float u_radio, u_mover;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  const float N = 3.0;
+  vec2 g = p * N, id = floor(g), f = fract(g);     // f: 0..1 dentro de la celda
+  float dMin = 1e9, hMin = 0.0;
+  for (int j = -1; j <= 1; j++)
+  for (int i = -1; i <= 1; i++) {
+    vec2 v = vec2(float(i), float(j));
+    if (!u_vecinas && v != vec2(0.0)) continue;   // modo «solo la propia»
+    vec2 c = id + v;                               // la celda candidata
+    vec2 centro = v + 0.5 + (vec2(hash12(c), hash12(c + 71.0)) - 0.5) * u_mover;
+    float r = u_radio * mix(0.5, 1.0, hash12(c + 13.0));
+    float d = length(f - centro) - r;              // f y centro, relativos a la celda propia
+    if (d < dMin) { dMin = d; hMin = hash12(c + 5.0); }
+  }
+  vec3 tinta = 0.55 + 0.45 * cos(6.2831853 * (hMin + vec3(0.0, 0.33, 0.67)));
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), tinta, clamp(0.5 - dMin / (px * N), 0.0, 1.0));
+  vec2 b = min(f, 1.0 - f);
+  col = mix(col, vec3(0.35), 0.5 * step(min(b.x, b.y), px * N));   // rejilla, para ver las celdas
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>Sin la búsqueda, las burbujas grandes o desplazadas salen cortadas por las líneas de la rejilla. Con la búsqueda, están enteras: cada píxel se queda con la burbuja cuyo borde tiene más cerca (la de menor distancia con signo, la unión de 6.3). Donde dos burbujas se solapan, la frontera entre sus colores es la curva en la que las dos distancias empatan, no el borde de ninguna de las dos. Fíjate en cómo se escribe: el centro de cada candidata se expresa relativo a la celda <em>propia</em> (<code>v + 0.5 + desplazamiento</code>), y se compara con <code>f</code>, la posición del píxel en su propia celda. Así todas las distancias están en el mismo sistema, sin restar números grandes.</p>
+
+<div class="callout bestiario" data-id="m6a-formas-cortadas" data-titulo="Las formas del patrón aparecen cortadas por líneas rectas invisibles">
+  <p><strong>Síntoma:</strong> en un patrón repetido, algunas formas tienen un lado recto, como si alguien las hubiera recortado con tijeras; los cortes forman una rejilla invisible. Pasa sobre todo al desplazarlas al azar, agrandarlas, girarlas o añadirles un brillo.</p>
+  <p><strong>Causa:</strong> la forma de una celda se extiende a la celda vecina, pero los píxeles de la vecina solo evalúan la forma de su propia celda. La parte que invade no la dibuja nadie.</p>
+  <p><strong>Solución:</strong> o haz que la forma quepa (desplazamiento + tamaño + giro dentro de medio lado de celda), o evalúa las celdas vecinas y quédate con la distancia mínima: las 3 × 3 si las formas pueden alejarse hasta una celda entera de la suya. Si solo sobresalen poco, basta con las 2 × 2 más cercanas al píxel (las de su cuadrante).</p>
+</div>
+
+<div class="callout senior" data-titulo="Lo que cuesta mirar a los vecinos, y a qué se parece">
+  <p>La búsqueda en 3 × 3 multiplica por nueve el coste de la forma. Con formas baratas no importa; con una SDF cara, sí, y hay dos maneras de ahorrar. La primera, reducir el vecindario: si las formas no sobresalen más de media celda, el píxel solo puede estar dentro de las de su celda y las de las tres vecinas de su cuadrante (2 × 2, cuatro evaluaciones), que se eligen con <code>step(0.5, f)</code>. La segunda, acotar: si una candidata está tan lejos que ni con el radio máximo podría llegar al píxel, se salta. Y una observación que te servirá en 6.6: si en lugar de burbujas te quedas con la distancia al centro más cercano, esto que acabas de escribir es exactamente el <strong>ruido celular</strong> (Worley o Voronoi): puntos aleatorios por celda y, para cada píxel, la distancia al más cercano de los vecinos.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En un patrón de celdas de lado 1, cada forma es un círculo de radio 0.2 desplazado al azar hasta 0.25 en cada eje desde el centro de su celda. ¿Hace falta buscar en las vecinas?</p>
+  <ul>
+    <li>No: el radio es menor que la mitad de la celda<div class="explicacion">La conclusión es correcta, pero el motivo no: el radio solo no basta, hay que sumarle el desplazamiento. Un círculo del mismo radio desplazado hasta 0.35 también tendría un radio menor que 0.5, y sí se saldría (0.35 + 0.2 = 0.55).</div></li>
+    <li data-correcta>No: en cada eje, el círculo llega como mucho a 0.25 + 0.2 = 0.45 del centro, que es menos que 0.5<div class="explicacion">Correcto. En el peor caso, el borde del círculo queda a 0.05 del lado de su celda, así que nunca invade la vecina. (Las esquinas no importan: una forma se sale de su celda si sobrepasa alguno de los lados.) Con un desplazamiento de 0.35, ya habría que buscar en las vecinas.</div></li>
+    <li>Sí, siempre que haya desplazamiento aleatorio<div class="explicacion">El desplazamiento solo obliga a buscar si, sumado al tamaño, hace que la forma sobrepase el lado de la celda. Aquí 0.25 + 0.2 = 0.45 &lt; 0.5.</div></li>
+  </ul>
+</div>
+
+<h2>Muaré: cuando el patrón es más fino que el píxel</h2>
+<p>Un fragment shader toma <strong>una muestra</strong> del patrón por píxel: el valor en el centro del píxel. Mientras las celdas miden muchos píxeles, esa muestra representa bien lo que hay. Pero cuando el patrón oscila más deprisa que los píxeles (una celda de menos de dos píxeles), la muestra cae en sitios casi arbitrarios del patrón, y aparecen dibujos que no existen: ondas, curvas, manchas que se mueven al revés. Es el <strong>aliasing</strong>, y su versión en patrones regulares se llama <strong>muaré</strong>. El teorema de muestreo de Nyquist lo resume: para representar una oscilación hacen falta al menos dos muestras por periodo.</p>
+<p>Ya lo viste con texturas en <a href="../05-webgl/05-texturas.html#m5-muare">5.5</a>, donde los mipmaps lo arreglaban: la GPU lee una versión promediada de la imagen cuando se dibuja pequeña. Un patrón procedural <strong>no tiene mipmaps</strong>: la GPU no sabe qué es tu función ni cómo promediarla. Te toca a ti. El ejemplo clásico es un suelo en perspectiva con un damero: cerca del horizonte, cada píxel abarca muchas casillas.</p>
+
+<div class="glsl-playground" data-titulo="Un damero hasta el horizonte" data-altura="260" data-apilado data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":2,"valor":0,"etiqueta":"modo"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_modo;       // 0 sin filtrar · 1 desvanecer · 2 filtro de caja analítico
+out vec4 fragColor;
+
+float damero(vec2 g) { return mod(floor(g.x) + floor(g.y), 2.0); }
+
+// El damero promediado sobre el área de un píxel (Iñigo Quilez)
+float dameroFiltrado(vec2 g) {
+  vec2 w = fwidth(g) + 1e-4;                  // el píxel, en unidades de casilla
+  vec2 i = 2.0 * (abs(fract((g - 0.5 * w) * 0.5) - 0.5)
+                - abs(fract((g + 0.5 * w) * 0.5) - 0.5)) / w;
+  return 0.5 - 0.5 * i.x * i.y;
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec3 col = vec3(0.35, 0.45, 0.70);                     // cielo
+  if (p.y < -0.02) {
+    float z = 1.0 / -p.y;                                // profundidad: crece hacia el horizonte
+    vec2 g = vec2(p.x * z, z + u_time) * 2.0;            // coordenadas del suelo (perspectiva)
+    float v;
+    if (u_modo == 0) v = damero(g);
+    else if (u_modo == 1) {
+      float w = length(fwidth(g));                       // casillas por píxel
+      v = mix(damero(g), 0.5, smoothstep(0.3, 1.0, w));  // gris medio cuando no cabe
+    } else v = dameroFiltrado(g);
+    col = vec3(mix(0.1, 0.9, v));
+  }
+  fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+
+<p>Tres tratamientos, del peor al mejor:</p>
+<ul>
+  <li><strong>Modo 0, sin filtrar.</strong> Cerca de la cámara, perfecto. Hacia el horizonte, un hervidero de ondas y dibujos falsos que además se mueven al avanzar. Eso es el muaré.</li>
+  <li><strong>Modo 1, desvanecer.</strong> <code>fwidth(g)</code> dice cuántas casillas cruza un píxel. Cuando se acerca a una, el patrón ya no se puede representar, y lo sustituimos por su valor medio: gris. Es barato y funciona con cualquier patrón cuyo promedio conozcas, pero el paso de «patrón» a «gris» es algo visible.</li>
+  <li><strong>Modo 2, filtro de caja analítico.</strong> La forma elegante: calcular el <strong>promedio exacto</strong> del damero sobre el cuadrado que ocupa el píxel, con una fórmula. El damero es un producto de dos ondas cuadradas, una en x y otra en y; la integral de una onda cuadrada es una onda triangular (<code>abs(fract(…) − 0.5)</code>), así que el promedio de la onda cuadrada entre <code>g − w/2</code> y <code>g + w/2</code> es la diferencia de la triangular en esos dos puntos dividida por <code>w</code>. Y como el filtro de caja se aplica por separado en cada eje, el promedio del producto es el producto de los promedios. Resultado: un damero nítido de cerca que se funde en gris hacia el horizonte sin ningún muaré, y sin coste apreciable.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m6a-muare-procedural" data-titulo="El patrón hierve, forma ondas o parpadea cuando se hace pequeño o se aleja">
+  <p><strong>Síntoma:</strong> un patrón procedural (rayas, damero, puntos, rejilla) se ve bien de cerca pero, al reducirlo, alejarlo o verlo en perspectiva, aparecen curvas, ondas y manchas que no existen, que además se mueven o parpadean con la animación.</p>
+  <p><strong>Causa:</strong> el patrón oscila más deprisa de lo que muestrean los píxeles (menos de dos píxeles por periodo, el límite de Nyquist). Cada píxel toma una sola muestra en su centro, que cae en un punto casi arbitrario del periodo. Los mipmaps que salvan a las texturas no existen para una función.</p>
+  <p><strong>Solución:</strong> mide con <code>fwidth</code> cuántos periodos cruza el píxel y, cuando pase de unos 0.5, sustituye el patrón por su valor medio (desvanecer) o, mejor, usa una versión filtrada analíticamente (el promedio exacto sobre el píxel, como <code>dameroFiltrado</code>). Como último recurso, supermuestreo: evaluar el patrón en varios puntos del píxel y promediar (cuesta tantas veces como muestras).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Por qué un damero de una textura con mipmaps no produce muaré a lo lejos y un damero procedural sí?</p>
+  <ul>
+    <li>Porque las texturas tienen más resolución que los shaders<div class="explicacion">La resolución no es el problema: el shader puede evaluar el patrón con precisión infinita en cada punto. El problema es que solo lo evalúa en un punto por píxel.</div></li>
+    <li data-correcta>Porque la GPU elige un mipmap ya promediado cuando el texel es más pequeño que el píxel, y para una función no existe esa versión promediada: hay que calcularla<div class="explicacion">Correcto. Los mipmaps son el damero prefiltrado a distintas escalas; <code>texture()</code> mide con derivadas cuánto abarca el píxel y lee el nivel adecuado. Con una función, la GPU solo sabe evaluarla en un punto; el filtrado lo tienes que escribir tú (con <code>fwidth</code> y, si puedes, la integral analítica).</div></li>
+    <li>Porque <code>mod</code> y <code>floor</code> son imprecisos con números grandes<div class="explicacion">La precisión influye muy lejos del origen (lo vimos al principio), pero el muaré aparece a distancias normales: es un problema de muestreo, no de precisión.</div></li>
+  </ul>
+</div>
+
+<h2>Zoom infinito</h2>
+<p>Un zoom es escalar las coordenadas con el tiempo. El problema de un zoom «sin fin» es que la escala crece sin límite (y con ella los números: la sección de la precisión) y que cualquier patrón acaba desapareciendo de la vista. Hay dos trucos para hacer un zoom que dure para siempre, y los dos usan <code>fract</code> sobre el tiempo:</p>
+<ul>
+  <li><strong>Capas que se relevan.</strong> Se dibujan varias copias del patrón a escalas que se doblan (1, 2, 4, 8…), cada una con un peso que sube, llega a un máximo y baja. Todas crecen con <code>exp2(fract(t))</code>: al acabar un ciclo, cada capa ha doblado su escala y ocupa exactamente el lugar (y el peso) de la siguiente. El salto de <code>fract</code> de 1 a 0 es invisible.</li>
+  <li><strong>Coordenadas log-polares.</strong> En el espacio $(\log r, \theta)$, multiplicar la escala es <em>sumar</em> a $\log r$: un zoom es una traslación. Un patrón que se repite en $\log r$ hace zoom infinito con solo desplazar esa coordenada con el tiempo. Es el truco de los efectos tipo Droste.</li>
+</ul>
+
+<div class="glsl-playground" data-titulo="Dos zooms infinitos" data-altura="260" data-apilado data-uniforms='{"u_modo":{"tipo":"int","min":0,"max":1,"valor":0,"etiqueta":"capas / log-polar"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_modo;
+out vec4 fragColor;
+const float TAU = 6.2831853;
+
+float puntos(vec2 g, float pxg) {                   // una rejilla de puntos
+  float d = length(fract(g) - 0.5) - 0.18;
+  return clamp(0.5 - d / pxg, 0.0, 1.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float v = 0.0;
+  if (u_modo == 0) {
+    float t = fract(u_time * 0.25);                 // un ciclo cada 4 s
+    for (int k = 0; k < 4; k++) {
+      float e = float(k) + t;                       // la escala de esta capa, en octavas: 0..4
+      float escala = exp2(e);                       // 1..16
+      float peso = sin(3.14159265 * e / 4.0);       // 0 al nacer y al morir
+      v += peso * peso * puntos(p * 16.0 / escala, px * 16.0 / escala);
+    }
+  } else {
+    float r = max(length(p), 1e-3);
+    vec2 lp = vec2(log(r) - 0.5 * u_time, atan(p.y, p.x) / TAU);   // (log r, vueltas)
+    vec2 g = lp * vec2(2.0, 16.0);                  // celdas en log-polar: 16 sectores
+    float casilla = mod(floor(g.x) + floor(g.y), 2.0);
+    float w = fwidth(g.x);            // casillas por píxel (g.x no tiene la costura de atan)
+    v = mix(casilla, 0.5, smoothstep(0.25, 0.6, w));                 // desvanecer en el centro
+  }
+  fragColor = vec4(vec3(0.08) + v * vec3(0.95, 0.75, 0.4), 1.0);
+}
+</script>
+</div>
+
+<p>En el modo de capas, los puntos crecen sin parar y nunca se agotan: cuando los más grandes se desvanecen por los bordes, han nacido otros más pequeños. Lee el peso: <code>sin(π e / 4)²</code> vale 0 en <code>e = 0</code> (la capa nace invisible) y en <code>e = 4</code> (muere invisible), y como la capa <code>k</code> con <code>t = 1</code> tiene la misma <code>e</code> que la capa <code>k + 1</code> con <code>t = 0</code>, el salto de <code>fract</code> no cambia nada en pantalla. En el modo log-polar, las casillas se agrandan desde el centro hacia fuera eternamente, con solo restar el tiempo a <code>log(r)</code>. Tres cuidados: 16 sectores (un entero, sin costura, y par: con un damero, un número impar dejaría dos casillas del mismo color juntas en la costura, como en el ejercicio 6.5.2); el desvanecimiento en el centro, donde las casillas se hacen infinitamente pequeñas y producirían el muaré de la sección anterior; y medir el tamaño de las casillas con <code>fwidth(g.x)</code>, que sale de <code>log(r)</code> y es continua, y no con <code>g.y</code>, que sale de <code>atan</code> y se dispararía en la costura. El <code>max(length(p), 1e-3)</code> evita <code>log(0)</code>, que es −∞.</p>
+
+<div class="callout hack" id="cuando-falla-mod" data-titulo="Un patrón que se repite sin costuras en una textura">
+  <p>Si quieres que un patrón con variación por celda se pueda repetir como una textura (por ejemplo, para guardarlo en un FBO de 5.8 y usarlo como mosaico), envuelve el identificador antes del hash, para que la celda <code>P</code> reciba el mismo número que la 0, la <code>P + 1</code> el de la 1, y el patrón completo se repita cada <code>P</code> celdas. La tentación es <code>hash12(mod(id, P))</code>, y casi siempre funciona… salvo cuando no: en el ejercicio 6.1.4 viste que <code>mod</code> puede devolver <code>P</code> en lugar de 0, y una celda así recibiría el número de la celda <code>P</code>: el mosaico tendría una baldosa intrusa. La versión a prueba de redondeos es <code>id - P * floor((id + 0.5) / P)</code>: con el + 0.5, el cociente nunca cae cerca de un entero (es un número «y medio» dividido por <code>P</code>), así que el <code>floor</code> no puede equivocarse; la medimos con los rangos y divisores del párrafo siguiente y no falló ninguna vez. Es la misma idea que el ruido que se repite de 6.6.</p>
+  <p>¿Cuándo falla <code>mod</code>? Lo volvimos a medir con identificadores enteros, y la causa es concreta: con el <em>fast math</em> que Chrome usa sobre Metal, <code>mod(x, P) = x - P * floor(x / P)</code> calcula la división como <code>x * (1.0 / P)</code>, y 1/7 redondeado a float (0.142857149) es algo mayor que el real. Para un múltiplo positivo de 7, el cociente sale un pelo por encima del entero y <code>floor</code> acierta; para uno negativo sale un pelo por debajo (con <code>x = −441</code>, −63.0000038), <code>floor</code> baja a −64 y <code>mod</code> devuelve 7. Así que <strong>solo fallan múltiplos negativos de <code>P</code></strong>, y cuántos depende de cuántos identificadores negativos tengas: de −500 a 999 499 (solo 500 negativos), 39 fallos con <code>P = 7</code> y 10 con <code>P = 13</code>; de −500 000 a 499 999, 43 682 con <code>P = 7</code> (el 61 % de sus múltiplos negativos) y 13 099 con <code>P = 13</code>; de 0 a 999 999, ninguno. Da igual que la cuenta esté repartida por píxeles o metida en un bucle: salen las mismas cifras, idénticas a las de emular <code>x * (1/P)</code> en float32 en la CPU. Con <code>P</code> = 3, 5 o 100 el producto redondea al entero exacto y no falló ninguno; con potencias de 2 (8, 64), 1/P es exacto.</p>
+</div>
+
+<div class="callout senior" data-titulo="fract también redondea">
+  <p>En 3.4 viste que <code>fract(x)</code> está en $[0, 1)$. Matemáticamente, sí. En float32, <code>fract(x) = x − floor(x)</code> puede redondear hasta 1.0: lo medimos con <code>x = −1e−9</code>, que da <code>floor(x) = −1</code> y <code>fract(x) = 1.0</code> exacto (la resta −1e−9 + 1 no cabe en 24 bits y se redondea a 1). Es lo que pasa con el fast math que Chrome usa por defecto sobre Metal; con el fast math desactivado (un <code>isnan</code> en el shader: en los editores del curso, siempre; en tu propia página, solo la primera vez que se compila, <a href="06-ruido.html#m6b-hash-fastmath">6.6</a>), el <code>fract</code> de Metal se queda en 0.99999994, el float justo por debajo de 1, así que el resultado depende incluso de cómo se compile el shader. En un patrón, ese píxel (uno entre millones, justo en una frontera) recibe la coordenada local del borde superior de su celda con el identificador de la de abajo. Casi nunca se ve, pero explica algún píxel suelto de otro color en un patrón con colores por celda, y es la razón de que las funciones que indexan con <code>fract</code> (una paleta, un array) deban recortar el índice: <code>min(int(fract(x) * n), n − 1)</code>. Lo mismo le pasa a <code>mod</code>, que con divisores como 7 devuelve exactamente el divisor en muchos de sus múltiplos negativos (lo acabas de ver en la caja anterior).</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.5.1 — Un suelo de baldosas</h3>
+  <p>Cubre el lienzo de baldosas cuadradas: 3 por cada unidad de <code>p</code> (el lienzo mide 2 de alto, así que salen 6 filas), con las esquinas redondeadas (radio 0.08, en unidades de celda), juntas claras de 0.1 celdas de ancho y un color terracota distinto en cada baldosa (entre dos tonos, elegido con <code>hash12</code>). El borde, de un píxel.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.5.1" data-altura="230" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec3 junta = vec3(0.85, 0.83, 0.78);
+  vec3 col = junta;          // TODO: las baldosas
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  const float N = 3.0;
+  vec2 g = p * N, id = floor(g), q = fract(g) - 0.5;
+  float pxq = px * N;                                   // un píxel, en celdas
+  // junta de 0.1: la baldosa mide 0.9, semitamaño 0.45; radio 0.08
+  float d = sdCaja(q, vec2(0.45 - 0.08)) - 0.08;
+  vec3 tinta = mix(vec3(0.72, 0.38, 0.25), vec3(0.88, 0.58, 0.40), hash12(id));
+  vec3 junta = vec3(0.85, 0.83, 0.78);
+  vec3 col = mix(junta, tinta, clamp(0.5 - d / pxq, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El esqueleto: <code>g = p * 3.0</code>, <code>id = floor(g)</code>, <code>q = fract(g) - 0.5</code>, y el píxel medido en celdas.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si la junta mide 0.1 celdas, la baldosa mide 0.9 y su semitamaño es 0.45. Para redondear sin cambiar el tamaño: caja de <code>0.45 − 0.08</code> inflada 0.08 (6.3).</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Todo es el esqueleto de la lección más una SDF de 6.3. La junta no se dibuja: es lo que queda fuera de las baldosas, porque cada baldosa mide 0.9 de una celda de 1 y deja 0.05 a cada lado (0.1 entre dos baldosas vecinas). El color de cada baldosa es un <code>mix</code> entre dos terracotas con el hash de su identificador como parámetro: fijo para cada baldosa, distinto entre baldosas.</p>
+    <p>El único detalle fino es el borde: la SDF está en unidades de celda, así que se compara con <code>pxq = px * 3.0</code>. Con <code>px</code> sin escalar, el borde mediría un tercio de píxel y se vería dentado.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.5.2 — Un sol de rayos alternos</h3>
+  <p>Dibuja un sol: un disco de radio 0.25 y <code>n</code> rayos a su alrededor (el deslizador), que alternen entre largos (hasta 0.85) y cortos (hasta 0.6), girando despacio. Usa la repetición polar para dibujar un solo rayo largo y uno corto. Después, prueba con un número impar de rayos y explica lo que ves.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.5.2" data-altura="250" data-apilado data-uniforms='{"u_n":{"tipo":"int","min":3,"max":17,"valor":12,"etiqueta":"rayos"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_n;
+out vec4 fragColor;
+const float TAU = 6.2831853;
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float d = length(p) - 0.25;                 // el disco
+  // TODO: los rayos, con repetición polar y alternando largo/corto
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.78, 0.3), clamp(0.5 - d / px, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_n;
+out vec4 fragColor;
+const float TAU = 6.2831853;
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+float sdSegmento(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  float d = length(p) - 0.25;                           // el disco
+  vec2 q = rot(-0.15 * u_time) * p;                     // todo gira
+  float n = float(u_n), sector = TAU / n;
+  float a = atan(q.y, q.x);
+  float k = floor((a + 0.5 * sector) / sector);         // número de sector (entero)
+  a = mod(a + 0.5 * sector, sector) - 0.5 * sector;     // ángulo local
+  q = length(q) * vec2(cos(a), sin(a));
+  float largo = mod(k, 2.0) < 0.5 ? 0.85 : 0.6;         // sectores pares largos, impares cortos
+  float rayo = sdSegmento(q, vec2(0.33, 0.0), vec2(largo, 0.0)) - 0.035;
+  d = min(d, rayo);
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), vec3(1.0, 0.78, 0.3), clamp(0.5 - d / px, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Además del ángulo local, necesitas saber <em>en qué sector</em> está el píxel: es el identificador de la repetición polar, <code>floor((a + sector / 2) / sector)</code>. Su paridad decide si el rayo es largo o corto.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con el ángulo local, dibuja el rayo como una cápsula a lo largo del eje +x (<code>sdSegmento</code> de 6.3), desde un poco fuera del disco hasta su longitud.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La repetición polar tiene, como la cuadrada, dos salidas: la coordenada local (el ángulo dentro del sector, que se usa para dibujar) y el identificador (el número de sector, que se usa para variar). Con <code>k</code> par el rayo es largo y con <code>k</code> impar, corto. El rayo es una cápsula a lo largo del eje +x del sector local, y aparece <code>n</code> veces.</p>
+    <p>Con un número impar de rayos aparece un defecto: en un punto de la vuelta hay dos rayos del mismo tipo seguidos (a la izquierda del centro al empezar; después la pareja gira con el sol, porque la costura está en el eje x negativo de <code>q</code>, el espacio girado). No es un error del código, es aritmética: una alternancia largo-corto necesita un número par de elementos para cerrar la vuelta. Mira la numeración: el sector 0 es el del eje +x, y los números crecen hacia arriba y decrecen hacia abajo. Con <code>n</code> par (por ejemplo, 12), el salto de <code>atan</code> cae en mitad de un sector, que recibe el número 6 por arriba y −6 por abajo: la misma paridad, así que es un solo sector bien dibujado. Con <code>n</code> impar (por ejemplo, 7), el salto cae justo en una frontera, entre el sector 3 y el −3: son vecinos, tienen la misma paridad y reciben el mismo tipo de rayo. Es la costura de la lección apareciendo en el identificador aunque el ángulo local esté bien. La solución de diseño: una alternancia de periodo 2 necesita un número de sectores par (y, en general, divisible por el periodo de la alternancia).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.5.3 — Cintas transportadoras</h3>
+  <p>Haz filas de cajas redondeadas (4 filas por unidad de altura) que se deslicen: las filas pares hacia la derecha y las impares hacia la izquierda, cada fila a una velocidad distinta (0.5, 0.75 o 1 celda por segundo, según la fila). Cada caja tiene un color de <code>hash12</code>, y <strong>cada caja debe conservar su color mientras se mueve</strong>. El código de partida mueve las cajas, pero los colores se quedan quietos mientras las cajas pasan por debajo: arréglalo.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.5.3" data-altura="230" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 g = p * 4.0;
+  vec2 id = floor(g);                                   // (¿aquí?)
+  float fila = floor(g.y);
+  float dir = mod(fila, 2.0) < 0.5 ? 1.0 : -1.0;
+  float velocidad = 0.5 + 0.25 * mod(fila, 3.0);
+  g.x -= dir * velocidad * u_time;                      // desplazar la fila
+  vec2 q = fract(g) - 0.5;
+  float d = sdCaja(q, vec2(0.38, 0.3) - 0.1) - 0.1;
+  vec3 tinta = 0.55 + 0.45 * cos(6.2831853 * (hash12(id) + vec3(0.0, 0.33, 0.67)));
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), tinta, clamp(0.5 - d / (px * 4.0), 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float sdCaja(vec2 p, vec2 b) {
+  vec2 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  vec2 g = p * 4.0;
+  float fila = floor(g.y);                              // 1) la fila, antes de mover nada
+  float dir = mod(fila, 2.0) < 0.5 ? 1.0 : -1.0;
+  float velocidad = 0.5 + 0.25 * mod(fila, 3.0);
+  g.x -= dir * velocidad * u_time;                      // 2) mover la fila
+  vec2 id = floor(g);                                   // 3) el identificador, YA movido
+  vec2 q = fract(g) - 0.5;
+  float d = sdCaja(q, vec2(0.38, 0.3) - 0.1) - 0.1;
+  vec3 tinta = 0.55 + 0.45 * cos(6.2831853 * (hash12(id) + vec3(0.0, 0.33, 0.67)));
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), tinta, clamp(0.5 - d / (px * 4.0), 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿En qué espacio está calculado el identificador que colorea cada caja: en el de la pantalla o en el de la cinta que se mueve?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El identificador se calculaba antes de desplazar <code>g</code>, en el espacio fijo de la pantalla: cada <em>posición</em> de la pantalla tenía su color, y las cajas (dibujadas con <code>q</code>, que sí se calcula tras el desplazamiento) pasaban por debajo de los colores. Calculando <code>id</code> después del desplazamiento, el identificador pertenece al espacio de la cinta: cada caja se lleva su número, y con él su color.</p>
+    <p>La fila, en cambio, tiene que calcularse <em>antes</em> de mover nada, porque de ella dependen la dirección y la velocidad. El orden correcto es: fila, desplazamiento, identificador y coordenada local. Es la misma lección que con los ladrillos: primero lo que decide la transformación, luego la transformación, luego las celdas.</p>
+    <p>Un apunte de 3.7 y de esta lección: <code>g.x</code> crece sin límite con el tiempo. Tras muchas horas perdería precisión (el bicho del patrón lejos del origen). En una aplicación que corra días, enviarías el desplazamiento de cada velocidad envuelto desde JavaScript (y, si importa que cada caja conserve su color para siempre, la parte entera por separado).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.5.4 — Discos que no se cortan</h3>
+  <p>El código dibuja un disco por celda, con su centro desplazado al azar hasta 0.4 celdas en cada eje y un radio aleatorio entre 0.25 y 0.55: muchos se salen de su celda y aparecen cortados. Arréglalo buscando en las 3 × 3 celdas vecinas, de modo que cada disco se vea entero con su color, que donde se solapan quede delante el disco cuyo borde está más cerca del píxel, y que cada disco tenga un contorno oscuro de 0.03 celdas.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.5.4" data-altura="250" data-apilado>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  const float N = 3.0;
+  float pxq = px * N;
+  vec2 g = p * N, id = floor(g), f = fract(g);
+  // Solo la celda propia: TODO, las 3 × 3
+  vec2 centro = 0.5 + (vec2(hash12(id), hash12(id + 71.0)) - 0.5) * 0.8;
+  float r = mix(0.25, 0.55, hash12(id + 13.0));
+  float d = length(f - centro) - r;
+  vec3 tinta = 0.55 + 0.45 * cos(6.2831853 * (hash12(id + 5.0) + vec3(0.0, 0.33, 0.67)));
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), tinta, clamp(0.5 - d / pxq, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float px = 2.0 / u_resolution.y;
+  const float N = 3.0;
+  float pxq = px * N;
+  vec2 g = p * N, id = floor(g), f = fract(g);
+  float dMin = 1e9;
+  vec3 tMin = vec3(0.0);
+  for (int j = -1; j <= 1; j++)
+  for (int i = -1; i <= 1; i++) {
+    vec2 v = vec2(float(i), float(j));
+    vec2 c = id + v;                                    // la celda vecina
+    vec2 centro = v + 0.5 + (vec2(hash12(c), hash12(c + 71.0)) - 0.5) * 0.8;
+    float r = mix(0.25, 0.55, hash12(c + 13.0));
+    float d = length(f - centro) - r;                   // todo relativo a la celda propia
+    if (d < dMin) {
+      dMin = d;
+      tMin = 0.55 + 0.45 * cos(6.2831853 * (hash12(c + 5.0) + vec3(0.0, 0.33, 0.67)));
+    }
+  }
+  vec3 col = mix(vec3(0.09, 0.10, 0.13), tMin, clamp(0.5 - dMin / pxq, 0.0, 1.0));
+  // contorno: una banda de 0.03 celdas por dentro del borde del disco elegido
+  float borde = abs(dMin + 0.015) - 0.015;
+  col = mix(col, vec3(0.05), clamp(0.5 - borde / pxq, 0.0, 1.0));
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Recorre <code>i</code> y <code>j</code> de −1 a 1. Para la celda vecina <code>id + v</code>, calcula su centro, su radio y su color con el hash de <em>esa</em> celda, y expresa el centro relativo a la celda propia sumándole <code>v</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Guarda la distancia mínima y el color de la celda que la da. El contorno es una banda alrededor del borde del disco ganador: <code>abs(dMin + w/2) − w/2</code> la pone por dentro.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>¿Por qué basta con 3 × 3? El centro de un disco está como mucho a 0.4 celdas del centro de la suya y su radio es como mucho 0.55: el disco llega, en el peor caso, a 0.95 del centro de su celda, es decir, 0.45 dentro de la celda vecina. Nunca alcanza la vecina de la vecina, así que cada píxel solo puede estar dentro de los discos de su celda y de las ocho de alrededor.</p>
+    <p>El truco que evita errores es el sistema de coordenadas: <code>f</code> es la posición del píxel dentro de su celda (de 0 a 1), y el centro de la vecina se expresa en ese mismo sistema sumando su desplazamiento <code>v</code>. Las distancias son pequeñas y exactas, sin restar números grandes. Quedarse con la distancia mínima con signo hace que, donde dos discos se solapan, gane aquel cuyo borde está más cerca: es la unión de las SDF (6.3), con el color del que la aporta.</p>
+    <p>El contorno usa la distancia ganadora: <code>abs(dMin + 0.015) − 0.015</code> es una banda de 0.03 centrada 0.015 por dentro del borde, así que queda entera dentro del disco. Como <code>dMin</code> es la unión, el contorno rodea la silueta del conjunto; dentro de la zona común, la frontera entre los dos colores es la curva donde las dos distancias empatan (un arco de hipérbola), y allí no hay contorno. Si quisieras que un disco tapara de verdad a otro, como en el algoritmo del pintor, el criterio sería otro: entre los discos que contienen al píxel, quedarse con el de mayor prioridad (por ejemplo, el de mayor hash), en lugar del de menor distancia.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Esqueleto de la repetición: <code>g = p * N</code>, <code>id = floor(g)</code>, <code>q = fract(g) - 0.5</code>, la forma en <code>q</code> y el píxel medido en celdas (<code>px * N</code>).</li>
+    <li>El identificador da variación por celda a través de un hash (<code>hash12</code>, que abrirás en 6.6); entradas distintas dan números independientes.</li>
+    <li>Coordenadas grandes rompen <code>fract</code> (precisión de float32): envuelve los desplazamientos en JavaScript.</li>
+    <li>Espejo con la onda triangular: fronteras sin saltos. Ladrillos: primero la fila, luego desplazar, luego las celdas; en celdas rectangulares, evalúa la SDF en unidades reales.</li>
+    <li>Repetición polar con <code>mod</code> del ángulo; caleidoscopio con <code>abs</code> del ángulo local. Número entero de copias o costura. <code>fwidth</code> de algo que salta (<code>atan</code>, <code>fract</code>) se dispara en el salto, y según la paridad del quad.</li>
+    <li>Truchet: dos orientaciones al azar de una baldosa cuyos contactos coinciden. Hexágonos: dos rejillas y el centro más cercano.</li>
+    <li>Una forma que se sale de su celda aparece cortada: que quepa, o busca en las 3 × 3 vecinas (9 veces el coste; 2 × 2 si sobresale poco). Es la estructura del ruido celular.</li>
+    <li>Muaré: menos de dos píxeles por periodo. Los patrones no tienen mipmaps: desvanece con <code>fwidth</code> o filtra analíticamente (el damero filtrado).</li>
+    <li>Zoom infinito: capas a escalas que se doblan, relevadas con <code>fract(t)</code>, o traslación en coordenadas log-polares.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://thebookofshaders.com/09/?lan=es">The Book of Shaders — Patrones</a>: la repetición de dominio contada con otros ejemplos, incluidos Truchet y ladrillos.</li>
+  <li><a href="https://iquilezles.org/articles/checkerfiltering/">Iñigo Quilez — Filtering the checkerboard pattern</a>: la derivación completa del damero filtrado.</li>
+  <li><a href="https://iquilezles.org/articles/sdfrepetition/">Iñigo Quilez — Domain repetition</a>: la repetición de dominio a fondo, con el problema de las celdas vecinas y sus soluciones.</li>
+  <li><a href="https://www.redblobgames.com/grids/hexagons/">Red Blob Games — Hexagonal grids</a>: todo sobre rejillas hexagonales (coordenadas, vecinos, distancias), con diagramas interactivos.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/a-demos.js"></script>
+</body>
+</html>

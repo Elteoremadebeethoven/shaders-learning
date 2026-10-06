@@ -1,0 +1,966 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.6 · Canvas 2D a fondo — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m2.css">
+<style>
+  .m2-tres-lienzos { display: flex; flex-wrap: wrap; gap: 14px; padding: 14px; background: var(--code-bg); }
+  .m2-tres-lienzos figure { margin: 0; flex: 1 1 200px; }
+  .m2-tres-lienzos canvas { width: 100%; height: 130px; display: block; border: 1px solid var(--border); border-radius: 6px; }
+  .m2-tres-lienzos figcaption { font: 12px/1.4 var(--mono); color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body data-leccion="02-animacion/canvas2d">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 2 · Animación con CSS y JavaScript</p>
+  <h1>Canvas 2D a fondo</h1>
+  <p class="resumen">El canvas es una hoja de píxeles sobre la que dibujas con órdenes inmediatas. Aquí aprenderás a que salga nítido en cualquier pantalla, el modelo de <em>paths</em> y sus trampas, las líneas de un píxel, las transformaciones, la composición y la manipulación de píxeles, y qué optimizaciones de rendimiento siguen valiendo hoy (medidas, no heredadas).</p>
+  <div class="meta"><span class="chip">⏱ 120 min</span><span class="chip">Requisitos: 1.1, 1.2, 2.3</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Distinguirás el tamaño del búfer y el tamaño CSS y harás un canvas nítido con <code>devicePixelRatio</code>, <code>ResizeObserver</code> y <code>devicePixelContentBoxSize</code>.</li>
+      <li>Dominarás el modelo de <em>paths</em> (<code>beginPath</code>, subpaths, <code>fill</code>/<code>stroke</code>) y sabrás por qué olvidar <code>beginPath</code> ralentiza y ensucia el dibujo.</li>
+      <li>Dibujarás líneas nítidas entendiendo el truco del medio píxel, y usarás las transformaciones con <code>save</code>/<code>restore</code>, <code>setTransform</code> y <code>transform</code>.</li>
+      <li>Borrarás, dejarás estelas (y sabrás por qué nunca se borran del todo), compondrás con <code>globalCompositeOperation</code> y dibujarás imágenes.</li>
+      <li>Manipularás píxeles con <code>ImageData</code> y medirás por qué el bucle por píxel en CPU pide a gritos una GPU.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Un lienzo de píxeles, no un árbol de objetos</h2>
+<p>Con el DOM, si dibujas un círculo con un <code>&lt;div&gt;</code>, el navegador lo recuerda: puedes moverlo cambiando su estilo y él se encarga de repintar lo que haga falta. El canvas funciona al revés: es un <strong>modo inmediato</strong>. Cuando llamas a <code>ctx.fill()</code>, el navegador convierte la forma en píxeles y se olvida de ella. No hay «círculo» que mover: hay píxeles de colores. Para animar, borras y redibujas todo en cada frame, en tu bucle de <code>requestAnimationFrame</code> (<a href="03-raf.html">2.3</a>). A cambio, dibujar miles de cosas es mucho más barato que tener miles de elementos DOM.</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  const canvas = document.getElementById('lienzo');
+  const ctx = canvas.getContext('2d');          // CanvasRenderingContext2D
+  const ctxOpaco = otroCanvas.getContext('2d', { alpha: false });   // opciones al crearlo
+</script>
+<p>Tres detalles del contexto, comprobados (los dos primeros ya los viste en la lección <a href="../01-web/01-html.html">1.1</a>):</p>
+<ul>
+  <li>Llamar otra vez a <code>getContext('2d')</code> devuelve <strong>el mismo objeto</strong>: el contexto se crea una sola vez por canvas.</li>
+  <li>Un canvas solo puede tener <strong>un tipo</strong> de contexto: tras pedir <code>'2d'</code>, <code>getContext('webgl2')</code> devolvió <code>null</code>. Si quieres mezclar, usa dos canvas superpuestos.</li>
+  <li>Un canvas recién creado es negro <em>transparente</em>, <code>(0, 0, 0, 0)</code>, y el contexto empieza con <code>fillStyle = '#000000'</code>, <code>lineWidth = 1</code>, <code>font = '10px sans-serif'</code>, <code>textBaseline = 'alphabetic'</code> y <code>textAlign = 'start'</code>.</li>
+</ul>
+<p>Las opciones del segundo argumento solo cuentan la primera vez: <code>alpha: false</code> promete que el canvas es opaco (el navegador puede componerlo más barato), <code>willReadFrequently: true</code> lo prepara para leer píxeles a menudo (lo veremos al final) y <code>colorSpace: 'display-p3'</code> permite colores fuera de sRGB en pantallas que los soportan.</p>
+
+<h2>Dos tamaños: el búfer y la caja</h2>
+<p>Un canvas tiene dos tamaños independientes, y confundirlos es el error número uno:</p>
+<ul>
+  <li><strong>El búfer</strong>: los atributos <code>width</code> y <code>height</code> (<code>canvas.width</code>, <code>canvas.height</code>), en píxeles del propio canvas. Por defecto, 300 × 150 (comprobado).</li>
+  <li><strong>La caja</strong>: lo que ocupa en la página según el CSS, en píxeles CSS (<code>canvas.clientWidth</code>, <code>clientHeight</code>).</li>
+</ul>
+<p>Si no coinciden, el navegador estira el búfer para llenar la caja: si el búfer es más pequeño, todo sale borroso; si tiene otra proporción, deformado (es el comportamiento raro <a href="../01-web/01-html.html#m1-circulo-ovalado">«Dibujo un círculo y sale un óvalo borroso»</a> de la lección 1.1). Y hay un tercer número: <code>window.devicePixelRatio</code> (DPR), cuántos píxeles físicos de la pantalla hay en cada píxel CSS. En un portátil «retina» vale 2; en muchos móviles, 3; con el zoom del navegador cambia (con zoom al 125 % en una pantalla normal, 1,25). Para que cada píxel del búfer caiga sobre un píxel físico, el búfer debe medir la caja multiplicada por el DPR.</p>
+
+<div class="demo" id="demo-nitidez">
+  <div class="m2-tres-lienzos">
+    <figure><canvas id="nit-a"></canvas><figcaption>A · búfer a la mitad de la caja</figcaption></figure>
+    <figure><canvas id="nit-b"></canvas><figcaption>B · búfer = caja CSS (ignora el DPR)</figcaption></figure>
+    <figure><canvas id="nit-c"></canvas><figcaption>C · búfer = caja × devicePixelRatio</figcaption></figure>
+  </div>
+  <div class="demo-info">…</div>
+</div>
+<p>A se ve borroso en cualquier pantalla. B y C son idénticos en una pantalla con DPR 1, pero en una de DPR 2 o 3, B se ve blando y C nítido: si tu pantalla es de DPR 1, prueba con el zoom del navegador al 200 % y compara.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.6.1 — Un lienzo nítido, paso a paso</h3>
+  <p>Esta es la función que usaremos en el resto del curso para cualquier canvas 2D que se adapte a su caja:</p>
+  <div class="anotado" data-lang="js">
+<script type="text/plain">
+function ajustarLienzo(canvas, ctx) {
+  const dpr = window.devicePixelRatio || 1;
+  const ancho = Math.round(canvas.clientWidth * dpr);
+  const alto = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== ancho || canvas.height !== alto) {
+    canvas.width = ancho;
+    canvas.height = alto;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { w: canvas.clientWidth, h: canvas.clientHeight };
+}
+
+function frame() {
+  const { w, h } = ajustarLienzo(canvas, ctx);
+  ctx.clearRect(0, 0, w, h);
+  ctx.beginPath(); ctx.arc(w / 2, h / 2, 40, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+</script>
+<ol>
+  <li data-l="2">El DPR de la pantalla donde está la ventana. El <code>|| 1</code> cubre entornos antiguos donde no existe.</li>
+  <li data-l="3-4">El tamaño que debe tener el búfer: la caja CSS por el DPR, redondeado a entero (el búfer solo admite enteros; si asignas 416,25, se trunca a 416).</li>
+  <li data-l="5-8">Solo asignamos si cambió. <strong>Asignar <code>width</code> o <code>height</code> borra el canvas y reinicia todo el estado del contexto</strong>, aunque asignes el mismo valor: lo comprobamos con <code>canvas.width = canvas.width</code>, y la transformación, <code>fillStyle</code>, <code>lineWidth</code>, <code>globalAlpha</code> y el modo de composición volvieron a sus valores iniciales. Hacerlo en cada frame es tirar trabajo (y, en algunos navegadores, reservar memoria nueva).</li>
+  <li data-l="9">Escalamos el sistema de coordenadas por el DPR: a partir de aquí dibujamos en píxeles CSS y el contexto los convierte a píxeles del búfer. Usamos <code>setTransform</code> (que <em>reemplaza</em> la transformación) y no <code>scale</code> (que <em>multiplica</em>): si llamáramos a <code>scale(dpr, dpr)</code> en cada frame, la escala se acumularía (2, 4, 8…).</li>
+  <li data-l="10">Devolvemos el tamaño CSS para dibujar con él.</li>
+  <li data-l="14">Al principio de cada frame: el coste es casi nulo si nada cambió, y si la ventana cambia de tamaño o se mueve a otro monitor con otro DPR, el canvas se adapta solo.</li>
+</ol>
+</div>
+  <p><strong>¿Es suficiente?</strong> Casi siempre. Pero tiene un fallo sutil que distingue a quien ha luchado con líneas de un píxel: el número de píxeles físicos que ocupa una caja no es exactamente su ancho por el DPR, porque el navegador alinea la caja con la rejilla de píxeles de la pantalla según su <em>posición</em>. Lo medimos con un canvas de 333,3 px CSS de ancho colocado a 7,3 px del borde: con DPR 1, el cálculo ingenuo dio 333 píxeles y el real, 334; con un DPR 2 real (Chrome lanzado con <code>--force-device-scale-factor=2</code>), el ingenuo con <code>Math.round</code> dio 667 y el real 666, y el calculado con <code>clientHeight</code> (que ya viene redondeado) dio 204 de alto cuando el real era 203. Un píxel de diferencia significa que el navegador reescala el búfer un 0,15 %, y las líneas de un píxel se ven con muaré o ligeramente borrosas.</p>
+  <p><strong>La respuesta exacta</strong> la da <code>ResizeObserver</code> (que conociste en la lección <a href="../01-web/04-js-dom-eventos.html">1.4</a>) observando la caja <code>'device-pixel-content-box'</code>: el navegador te dice cuántos píxeles de dispositivo usa para pintar el contenido, y te avisa cuando cambian (también si solo cambia el DPR):</p>
+  <script type="text/plain" class="codigo" data-lang="js" data-lineas>
+    let anchoDisp = 0, altoDisp = 0, anchoCSS = 0, altoCSS = 0;
+    const observador = new ResizeObserver(([entrada]) => {
+      anchoCSS = entrada.contentBoxSize[0].inlineSize;       // con decimales, sin redondear
+      altoCSS = entrada.contentBoxSize[0].blockSize;
+      if (entrada.devicePixelContentBoxSize) {               // lo exacto (no todos los navegadores lo tienen)
+        anchoDisp = entrada.devicePixelContentBoxSize[0].inlineSize;
+        altoDisp = entrada.devicePixelContentBoxSize[0].blockSize;
+      } else {                                               // plan B: casi exacto
+        anchoDisp = Math.round(anchoCSS * devicePixelRatio);
+        altoDisp = Math.round(altoCSS * devicePixelRatio);
+      }
+    });
+    try { observador.observe(canvas, { box: 'device-pixel-content-box' }); }
+    catch (e) { observador.observe(canvas); }                 // navegadores que no la conocen
+
+    function frame() {
+      if (anchoDisp === 0) { requestAnimationFrame(frame); return; }   // aún no ha llegado la primera medida
+      if (canvas.width !== anchoDisp || canvas.height !== altoDisp) { canvas.width = anchoDisp; canvas.height = altoDisp; }
+      // la escala exacta ya no es el DPR: es búfer / caja (334 / 333,3 = 1,002…)
+      ctx.setTransform(canvas.width / anchoCSS, 0, 0, canvas.height / altoCSS, 0, 0);
+      // … dibujar en px CSS …
+      requestAnimationFrame(frame);
+    }
+  </script>
+  <p>Fíjate en la línea 20: con tamaños exactos, la escala del búfer respecto a la caja ya no es exactamente el DPR. Y en la línea 17, la guarda del primer frame: los callbacks de <code>requestAnimationFrame</code> se ejecutan <em>antes</em> que las notificaciones de <code>ResizeObserver</code> del mismo frame (lecciones <a href="../01-web/04-js-dom-eventos.html">1.4</a> y <a href="../01-web/05-event-loop.html">1.5</a>), así que en el primer frame todavía no hay medidas, y sin la guarda el búfer se pondría a 0 × 0 y la escala saldría <code>0 / 0</code>. En la lección <a href="../05-webgl/01-contexto.html">5.1</a> verás este mismo patrón aplicado a WebGL, con alguna trampa más.</p>
+</section>
+
+<div class="callout bestiario" data-id="m2-contexto-reseteado" data-titulo="Tras redimensionar el canvas, el dibujo sale pequeño, negro o sin estilos">
+  <p><strong>Síntoma:</strong> después de cambiar el tamaño de la ventana (o en el primer frame), el canvas dibuja a la mitad de tamaño en una pantalla retina, con líneas de 1 px negras en lugar de tus colores, o sin la fuente que habías configurado. A veces el problema aparece y desaparece al cambiar de monitor.</p>
+  <p><strong>Causa:</strong> asignar <code>canvas.width</code> o <code>canvas.height</code> borra el búfer y <strong>reinicia todo el estado del contexto 2D</strong>: la transformación (tu <code>scale(dpr, dpr)</code>), <code>fillStyle</code>, <code>strokeStyle</code>, <code>lineWidth</code>, <code>font</code>, <code>globalAlpha</code>, la composición… Lo comprobamos incluso asignando el mismo valor que ya tenía.</p>
+  <p><strong>Solución:</strong> trata el estado del contexto como algo que hay que volver a poner tras cada redimensionado: aplica <code>setTransform(dpr, 0, 0, dpr, 0, 0)</code> al principio de cada frame y configura los estilos justo antes de dibujar, no una sola vez al arrancar. Y redimensiona solo si el tamaño cambió.</p>
+</div>
+
+<div class="callout cuidado">
+  <p>La receta tiene un requisito que es fácil olvidar: la caja del canvas debe tener tamaño propio por CSS (<code>width: 100%; height: 100%</code> dentro de un contenedor con tamaño, o valores concretos). Si no lo tiene, la caja toma el tamaño del búfer (comprobado: sin CSS, tras <code>width = 600</code> su <code>clientWidth</code> pasó a 600), y al multiplicar por el DPR la caja crece, lo que hace crecer el búfer en la siguiente medida, y así sin fin. Es el comportamiento raro <a href="../01-web/04-js-dom-eventos.html#m1-canvas-crece">«El canvas crece sin parar»</a> de la lección 1.4.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un canvas no tiene atributos <code>width</code>/<code>height</code> y el CSS le da <code>width: 600px; height: 300px</code>. Dibujas un círculo con <code>arc(150, 75, 50, …)</code>. ¿Qué ves en una pantalla de DPR 1?</p>
+  <ul>
+    <li>Un círculo nítido de radio 50 en la esquina superior izquierda.<div class="explicacion">Las coordenadas se refieren al búfer, que por defecto mide 300 × 150, y ese búfer se estira a 600 × 300.</div></li>
+    <li>Nada: sin atributos de tamaño, el canvas mide 0 × 0.<div class="explicacion">El búfer por defecto es de 300 × 150, no 0 × 0.</div></li>
+    <li data-correcta>Un círculo borroso de radio 100 en el centro de la caja.<div class="explicacion">Correcto: (150, 75) es el centro del búfer de 300 × 150, y el búfer se escala ×2 en los dos ejes para llenar la caja, así que el círculo se ve el doble de grande y borroso. Si el CSS fuera de 600 × 150, además se vería ovalado.</div></li>
+  </ul>
+</div>
+
+<h2>Coordenadas y paths</h2>
+<p>El origen está en la esquina superior izquierda del canvas y el eje Y crece <strong>hacia abajo</strong>, como en CSS. En WebGL crecerá hacia arriba (<a href="../01-web/02-css.html">1.2</a> ya te lo advertía). Una consecuencia: los ángulos positivos giran en sentido horario en pantalla, así que <code>arc(x, y, r, 0, Math.PI / 2)</code> dibuja el cuarto de círculo inferior derecho.</p>
+<p>Casi todo se dibuja con <strong>paths</strong> (trazados). El contexto guarda un único <em>path actual</em>, que es una lista de <em>subpaths</em> (líneas quebradas o curvas). Las órdenes de construcción no dibujan nada; solo añaden al path:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+ctx.beginPath();
+ctx.moveTo(20, 20);
+ctx.lineTo(120, 20);
+ctx.lineTo(70, 90);
+ctx.closePath();
+ctx.moveTo(200, 50);
+ctx.arc(170, 50, 30, 0, Math.PI * 2);
+ctx.fillStyle = '#8b7bff';
+ctx.fill();
+ctx.lineWidth = 3;
+ctx.strokeStyle = '#ffcb6b';
+ctx.stroke();
+</script>
+<ol>
+  <li data-l="1">Vacía el path actual. Todo lo que había se descarta (lo ya pintado se queda en los píxeles, claro).</li>
+  <li data-l="2">Empieza un subpath nuevo en (20, 20) sin trazar nada.</li>
+  <li data-l="3-4">Añade dos segmentos rectos al subpath actual.</li>
+  <li data-l="5"><code>closePath</code> añade un segmento de vuelta al inicio del subpath. <strong>No termina el path</strong> ni empieza uno nuevo: es un error de concepto muy común pensar que es lo contrario de <code>beginPath</code>.</li>
+  <li data-l="6-7">Un segundo subpath: el círculo. El <code>moveTo</code> previo evita una trampa: <code>arc</code> une con una línea recta el punto actual con el inicio del arco (el punto en ángulo 0: (200, 50)). Sin el <code>moveTo</code>, verías una línea desde el vértice del triángulo hasta el círculo.</li>
+  <li data-l="8-9"><code>fill</code> rellena <em>todos</em> los subpaths del path actual (con la regla <em>nonzero</em> por defecto; <code>fill('evenodd')</code> hace agujeros donde se solapan).</li>
+  <li data-l="10-12"><code>stroke</code> traza el contorno de todos los subpaths con el estilo actual. El path sigue ahí después de <code>fill</code> y <code>stroke</code>: no se consume.</li>
+</ol>
+</div>
+<p>El repertorio de construcción: <code>moveTo</code>, <code>lineTo</code>, <code>arc(x, y, r, ángulo0, ángulo1, antihorario)</code>, <code>arcTo</code>, <code>ellipse</code>, <code>rect</code>, <code>roundRect</code> (esquinas redondeadas; existe en Chrome actual), <code>quadraticCurveTo</code> y <code>bezierCurveTo</code> (las curvas de Bézier que conociste en <a href="02-css-transiciones.html">2.2</a>, ahora en el plano). Y si vas a dibujar la misma forma muchas veces, <code>new Path2D()</code> guarda un path reutilizable que pasas a <code>ctx.fill(path)</code>.</p>
+
+<h3>La trampa de olvidar <code>beginPath</code></h3>
+<p>Como el path actual persiste, si en cada frame añades un círculo y llamas a <code>fill()</code> sin <code>beginPath()</code>, el path crece: en el frame 300 tiene 300 círculos y <code>fill()</code> los vuelve a rellenar todos. Aunque borres el canvas con <code>clearRect</code>, reaparecen, con el color del último <code>fillStyle</code>. Y cada frame es más lento que el anterior:</p>
+<div class="js-playground" data-titulo="Sin beginPath" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<label style="position:absolute;left:10px;top:8px;color:#b4bccb;font:13px system-ui"><input type="checkbox" id="bp"> usar beginPath()</label>
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const casilla = document.getElementById('bp');
+let frame = 0, tiempos = [];
+
+function dibujar(t) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);          // borramos… ¿o no?
+  const x = canvas.width / 2 + Math.cos(t / 400) * canvas.width * 0.35;
+  const y = canvas.height / 2 + Math.sin(t / 250) * canvas.height * 0.3;
+  if (casilla.checked) ctx.beginPath();
+  ctx.moveTo(x + 10, y);
+  ctx.arc(x, y, 10, 0, Math.PI * 2);
+  ctx.fillStyle = `hsl(${(t / 10) % 360}, 80%, 60%)`;
+  const t0 = performance.now();
+  ctx.fill();
+  tiempos.push(performance.now() - t0);
+  if (++frame % 120 === 0) {
+    const media = tiempos.reduce((a, b) => a + b, 0) / tiempos.length;
+    console.log(`frame ${frame}: fill() tarda ${media.toFixed(3)} ms de media`);
+    tiempos = [];
+  }
+  requestAnimationFrame(dibujar);
+}
+requestAnimationFrame(dibujar);
+casilla.addEventListener('change', () => { ctx.beginPath(); frame = 0; });
+</script>
+</div>
+<p>Sin la casilla, verás la trayectoria entera dibujada con el color del momento, aunque cada frame empieza con <code>clearRect</code>. Medimos el coste: en un canvas de 400 × 300, <code>fill()</code> pasaba de 0,1 ms a 0,5 ms en 300 frames, y crece sin límite: al cabo de un minuto la animación empieza a perder frames. Nota el detalle de <code>performance.now()</code> alrededor de <code>fill()</code>: en un canvas acelerado por GPU, lo que mides es el coste de <em>registrar</em> la orden, no el de pintarla, que ocurre después (el mismo engaño que el comportamiento raro <a href="../04-gpu/01-cpu-vs-gpu.html#m4-drawcall-0ms">«performance.now() dice que dibujar no cuesta nada»</a> de la lección 4.1).</p>
+
+<div class="callout bestiario" data-id="m2-beginpath-olvidado" data-titulo="Las formas anteriores reaparecen en el canvas y todo va cada vez más lento">
+  <p><strong>Síntoma:</strong> aunque borras el canvas en cada frame, aparecen las posiciones anteriores de los objetos, todas con el último color usado; o las líneas se van engrosando y oscureciendo; y la animación, fluida al principio, se ralentiza con el tiempo.</p>
+  <p><strong>Causa:</strong> falta <code>ctx.beginPath()</code>. El path actual persiste entre llamadas y entre frames: cada <code>moveTo</code>/<code>arc</code>/<code>lineTo</code> se añade a él, y cada <code>fill()</code> o <code>stroke()</code> vuelve a pintar todos los subpaths acumulados. <code>clearRect</code> borra píxeles, no el path.</p>
+  <p><strong>Solución:</strong> llama a <code>ctx.beginPath()</code> antes de construir cada forma (o cada grupo de formas que compartan estilo). Para formas que repites, usa objetos <code>Path2D</code>, que no dependen del path actual.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">¿Qué hace <code>ctx.closePath()</code>?</p>
+  <ul>
+    <li data-correcta>Añade un segmento recto desde el punto actual hasta el inicio del subpath actual.<div class="explicacion">Correcto: «cierra» la figura. Importa sobre todo para <code>stroke()</code>, porque así la esquina de cierre se une con <code>lineJoin</code> en lugar de dejar dos extremos sueltos. <code>fill()</code> cierra los subpaths implícitamente de todos modos.</div></li>
+    <li>Termina el path actual para que el siguiente <code>lineTo</code> empiece uno nuevo.<div class="explicacion">No: para eso es <code>beginPath()</code>. Tras <code>closePath</code> sigues en el mismo path.</div></li>
+    <li>Rellena y traza la figura.<div class="explicacion"><code>closePath</code> no pinta nada; solo modifica el path. Pintar es cosa de <code>fill()</code> y <code>stroke()</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Líneas: grosor, extremos y el medio píxel</h2>
+<p>El trazo de <code>stroke()</code> se centra sobre el path: una línea de <code>lineWidth = 1</code> en <code>x = 10</code> ocupa desde <code>x = 9,5</code> hasta <code>x = 10,5</code>. Y aquí está la trampa: los píxeles del búfer ocupan de un entero al siguiente (el píxel 9 va de 9 a 10). Esa línea cubre <em>media</em> columna 9 y <em>media</em> columna 10, así que el antialiasing pinta las dos al 50 %: una línea gris de 2 px en lugar de una negra de 1 px. Lo comprobamos leyendo los píxeles: línea negra en <code>x = 10</code> sobre blanco → columnas 9 y 10 con valor 128; en <code>x = 20,5</code> → solo la columna 20, con valor 0.</p>
+
+<svg class="diagrama" viewBox="0 0 700 160" width="700" role="img" aria-label="Una línea de 1 px en x=10 cubre dos medias columnas; en x=10,5 cubre una columna entera">
+  <text x="10" y="20" style="font-weight:700">lineTo en x = 10</text>
+  <g class="tenue">
+    <rect x="20" y="30" width="50" height="100"/><rect x="70" y="30" width="50" height="100"/><rect x="120" y="30" width="50" height="100"/><rect x="170" y="30" width="50" height="100"/>
+  </g>
+  <rect x="120" y="30" width="50" height="100" fill="var(--muted)" opacity="0.55"/><rect x="170" y="30" width="50" height="100" fill="var(--muted)" opacity="0.55"/>
+  <rect x="145" y="30" width="50" height="100" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 3"/>
+  <line x1="170" y1="25" x2="170" y2="135" stroke="var(--accent)" stroke-width="2"/>
+  <text x="45" y="148" text-anchor="middle" class="texto-tenue">7</text><text x="95" y="148" text-anchor="middle" class="texto-tenue">8</text><text x="145" y="148" text-anchor="middle" class="texto-tenue">9</text><text x="195" y="148" text-anchor="middle" class="texto-tenue">10</text>
+  <text x="250" y="70" class="texto-tenue" style="font-size:12px">el trazo (9,5 → 10,5) cubre medio</text><text x="250" y="88" class="texto-tenue" style="font-size:12px">píxel 9 y medio 10: gris, 2 px</text>
+  <text x="440" y="20" style="font-weight:700">lineTo en x = 10,5</text>
+  <g class="tenue">
+    <rect x="450" y="30" width="50" height="100"/><rect x="500" y="30" width="50" height="100"/><rect x="550" y="30" width="50" height="100"/><rect x="600" y="30" width="50" height="100"/>
+  </g>
+  <rect x="600" y="30" width="50" height="100" fill="currentColor" opacity="0.85"/>
+  <line x1="625" y1="25" x2="625" y2="135" stroke="var(--accent)" stroke-width="2"/>
+  <text x="475" y="148" text-anchor="middle" class="texto-tenue">7</text><text x="525" y="148" text-anchor="middle" class="texto-tenue">8</text><text x="575" y="148" text-anchor="middle" class="texto-tenue">9</text><text x="625" y="148" text-anchor="middle" class="texto-tenue">10</text>
+</svg>
+
+<p>El famoso «truco del medio píxel» (<code>x + 0.5</code>) viene de ahí. Pero ojo, porque depende del DPR: con <code>setTransform(2, …)</code> (DPR 2), una línea de 1 px CSS mide 2 píxeles del búfer, y centrada en <code>x = 10</code> CSS (20 del búfer) cubre exactamente las columnas 19 y 20: nítida sin sumar nada. Lo comprobamos: con escala 2, las líneas en 10 y en 10,5 salían nítidas, y la de 10,25 salía borrosa. La regla general: <strong>una línea es nítida cuando sus bordes (centro ± grosor/2) caen en bordes de píxel del búfer</strong>. Con grosor impar en píxeles del búfer, el centro va en medio píxel; con grosor par, en un entero. Y con un DPR fraccionario (1,25; 1,5) no hay forma de acertar en todas las líneas.</p>
+
+<div class="callout bestiario" data-id="m2-linea-medio-pixel" data-titulo="Una línea de 1 px sale gris, borrosa y de 2 px de ancho">
+  <p><strong>Síntoma:</strong> las líneas finas de una rejilla, un gráfico o un borde dibujado con <code>stroke()</code> se ven grises y blandas en lugar de negras y definidas, aunque el grosor sea 1 y las coordenadas enteras.</p>
+  <p><strong>Causa:</strong> el trazo se centra sobre el path. Una línea de 1 píxel del búfer centrada en un entero ocupa medio píxel a cada lado, y el antialiasing pinta dos columnas al 50 %. Comprobado leyendo los píxeles: 128 y 128 en lugar de 0.</p>
+  <p><strong>Solución:</strong> haz que los bordes del trazo caigan en bordes de píxel del búfer: con grosor impar (en píxeles del búfer), coordenadas en <code>n + 0,5</code>; con grosor par, enteras. Con <code>setTransform(dpr, …)</code>, piensa en píxeles del búfer: a DPR 2, una línea de 1 px CSS mide 2 y va nítida en coordenadas CSS enteras. Para rectángulos rellenos (<code>fillRect</code>) usa coordenadas y tamaños enteros: <code>fillRect(5.5, 0, 3, 10)</code> dejó columnas a medias (128) en los dos bordes.</p>
+</div>
+
+<p>El resto del estilo de línea: <code>lineCap</code> (extremos: <code>butt</code> por defecto, <code>round</code>, <code>square</code>), <code>lineJoin</code> (esquinas: <code>miter</code>, <code>round</code>, <code>bevel</code>) con <code>miterLimit</code> (a partir de qué ángulo una esquina en pico se corta), y <code>setLineDash([8, 4])</code> con <code>lineDashOffset</code> para líneas discontinuas.</p>
+<div class="callout hack">
+  <p>Animar <code>lineDashOffset</code> produce la «marcha de hormigas» de las selecciones de los programas de dibujo, con una línea: <code>ctx.lineDashOffset = -t * 30</code>. Y combinando <code>setLineDash([largo, largo])</code> con <code>lineDashOffset</code> decreciendo de <code>largo</code> a 0 consigues el efecto de un trazo que «se dibuja» solo, el mismo truco que se usa en SVG con <code>stroke-dasharray</code>.</p>
+</div>
+
+<h2>Transformaciones</h2>
+<p>El contexto tiene una transformación actual (una matriz 2D, como la de CSS en <a href="../01-web/02-css.html">1.2</a> y la de <a href="../03-matematicas/05-matrices.html">3.5</a>) que se aplica a todo lo que dibujas. Tres métodos la modifican <strong>multiplicándola</strong>: <code>translate(x, y)</code>, <code>rotate(ángulo)</code> y <code>scale(sx, sy)</code>. Cada llamada actúa sobre el sistema de coordenadas <em>ya transformado</em>: tras <code>translate(100, 0)</code> y <code>rotate(Math.PI / 2)</code>, el eje X local apunta hacia abajo, y <code>fillRect(0, 0, 50, 10)</code> dibuja un rectángulo vertical que empieza en (100, 0).</p>
+<ul>
+  <li><strong><code>save()</code> y <code>restore()</code></strong> guardan y recuperan <em>todo</em> el estado en una pila: transformación, estilos, <code>lineWidth</code>, <code>font</code>, <code>globalAlpha</code>, composición, región de recorte (<code>clip</code>)… Se pueden anidar, y un <code>restore()</code> de más no da error: simplemente no hace nada (comprobado).</li>
+  <li><strong><code>setTransform(a, b, c, d, e, f)</code></strong> <em>reemplaza</em> la matriz; <strong><code>transform(a, b, c, d, e, f)</code></strong> la <em>multiplica</em>. Lo comprobamos: tras <code>translate(10, 0)</code> y <code>transform(2, 0, 0, 2, 0, 0)</code>, la matriz era <code>matrix(2, 0, 0, 2, 10, 0)</code>; <code>setTransform(2, 0, 0, 2, 5, 5)</code> la dejó exactamente en esos valores. <code>resetTransform()</code> equivale a <code>setTransform(1, 0, 0, 1, 0, 0)</code> y <code>getTransform()</code> devuelve un <code>DOMMatrix</code>.</li>
+  <li>El trazo también se transforma: con <code>scale(3, 1)</code>, una línea vertical de <code>lineWidth = 1</code> salió de 3 px de ancho. Si quieres escalar la forma pero no el grosor, construye el path con la transformación y haz <code>restore()</code> <em>antes</em> de <code>stroke()</code>: el path ya está en coordenadas del búfer y el trazo usa la transformación del momento de llamar a <code>stroke()</code> (comprobado: 1 px).</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.6.2 — Un sistema solar con transformaciones anidadas</h3>
+  <p>Un planeta gira alrededor del sol y una luna alrededor del planeta. Con coordenadas absolutas tendrías que sumar senos y cosenos a mano; con transformaciones anidadas, cada cuerpo se dibuja en el origen de su propio sistema:</p>
+<div class="js-playground" data-titulo="Sistema solar con save/restore" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function ajustarLienzo() {
+  const dpr = devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [canvas.clientWidth, canvas.clientHeight];
+}
+
+function cuerpo(radio, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(0, 0, radio, 0, Math.PI * 2); ctx.fill();
+}
+
+function frame(ms) {
+  const t = ms / 1000;
+  const [w, h] = ajustarLienzo();
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, w, h);
+
+  ctx.save();
+  ctx.translate(w / 2, h / 2);          // origen en el centro: aquí está el sol
+  cuerpo(26, '#ffcb6b');
+
+  ctx.save();
+  ctx.rotate(t * 0.8);                  // la órbita del planeta gira…
+  ctx.translate(110, 0);                // …y el planeta está a 110 px en ese sistema girado
+  cuerpo(12, '#3fd0e8');
+
+  ctx.save();
+  ctx.rotate(t * 3);                    // la luna gira alrededor del PLANETA
+  ctx.translate(26, 0);
+  cuerpo(5, '#e4e7ee');
+  ctx.restore();                        // volvemos al sistema del planeta
+
+  ctx.restore();                        // volvemos al sistema del sol
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.beginPath(); ctx.arc(0, 0, 110, 0, Math.PI * 2); ctx.stroke();   // la órbita, en el sistema del sol
+  ctx.restore();                        // volvemos al sistema del canvas
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+  <p><strong>Paso 1: la pila.</strong> Cada <code>save()</code> guarda la transformación de ese momento; cada <code>restore()</code> vuelve a ella. La estructura del código refleja la jerarquía: sol ⊃ planeta ⊃ luna. Es un <em>grafo de escena</em> en miniatura, lo mismo que hacen Three.js o cualquier motor 3D con matrices de modelo (<a href="../03-matematicas/06-espacios-coordenadas.html">3.6</a>).</p>
+  <p><strong>Paso 2: el orden de <code>rotate</code> y <code>translate</code>.</strong> Rotar y luego trasladar coloca el planeta en un círculo: la traslación ocurre en el sistema ya girado. Si trasladaras y luego rotaras, el planeta giraría sobre sí mismo en un punto fijo (pruébalo intercambiando las líneas).</p>
+  <p><strong>Paso 3: la luna hereda.</strong> La luna se transforma dentro del sistema del planeta: gira alrededor de él mientras él orbita, sin ninguna suma de senos. Su posición absoluta es el producto de las tres transformaciones.</p>
+  <p><strong>Paso 4: <code>ajustarLienzo</code> dentro de la pila.</strong> El <code>setTransform(dpr, …)</code> de cada frame va fuera de los <code>save</code>/<code>restore</code>, así que todas las transformaciones se componen encima de la escala por DPR.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Tras <code>ctx.translate(100, 50); ctx.scale(2, 2); ctx.translate(10, 0);</code>, ¿dónde cae el punto (0, 0) que dibujes?</p>
+  <ul>
+    <li>En (110, 50).<div class="explicacion">Eso sería si la escala no afectara a la segunda traslación. Pero cada operación actúa en el sistema ya transformado: el <code>translate(10, 0)</code> se hace en unidades escaladas ×2.</div></li>
+    <li data-correcta>En (120, 50).<div class="explicacion">Correcto: la segunda traslación mide 10 unidades del sistema escalado, que son 20 px del canvas. 100 + 20 = 120. En matrices: T(100, 50) · S(2) · T(10, 0) aplicado a (0, 0).</div></li>
+    <li>En (220, 100).<div class="explicacion">Eso sería escalar también la primera traslación. La escala solo afecta a lo que viene después de ella.</div></li>
+  </ul>
+</div>
+
+<h2>Borrar, estelas y composición</h2>
+<p>Tres formas de empezar un frame, con efectos distintos:</p>
+<ul>
+  <li><code>ctx.clearRect(0, 0, w, h)</code>: pone los píxeles a negro transparente. Deja ver lo que haya detrás del canvas en la página.</li>
+  <li><code>ctx.fillRect(0, 0, w, h)</code> con un color opaco: un fondo sólido. Con <code>getContext('2d', { alpha: false })</code>, es lo natural.</li>
+  <li><code>ctx.fillRect(0, 0, w, h)</code> con un color <strong>semitransparente</strong>: los frames anteriores se ven a través, cada vez más tenues. Es el truco clásico de las estelas (lo usaste en la cadena de muelles de <a href="05-fisica-muelles.html">2.5</a>).</li>
+</ul>
+<p>El truco de la estela tiene un comportamiento raro que casi nadie explica. Cada frame, el color de un píxel se mezcla con el del fondo: $c \leftarrow c + (f - c)\,\alpha$. Pero el búfer guarda enteros de 8 bits (0–255): si la diferencia $|f - c|\cdot\alpha$ es menor que medio nivel, el redondeo deja el valor igual para siempre. Lo medimos: pintando blanco y cubriéndolo cada frame con el fondo oscuro del curso <code>rgba(14, 16, 20, α)</code>, con α = 0,2 el píxel se quedó atascado en (16, 18, 22) y con α = 0,05 en (23, 25, 29), a 9 niveles del fondo. La estela nunca termina de borrarse: queda un rastro fantasma, más visible cuanto más larga es la estela.</p>
+
+<div class="callout bestiario" data-id="m2-estela-fantasma" data-titulo="La estela del canvas nunca desaparece del todo">
+  <p><strong>Síntoma:</strong> con el truco de borrar cada frame con un rectángulo semitransparente, los objetos dejan un rastro tenue permanente que no se va nunca, sobre todo con estelas largas (α pequeño) y fondos no negros. En algunos monitores se ve claramente; en otros, casi nada.</p>
+  <p><strong>Causa:</strong> el canvas guarda cada canal en 8 bits. Cada frame el valor se acerca al fondo una fracción α de la distancia, redondeando al entero más cercano; cuando la distancia es menor que $0{,}5/\alpha$ niveles, el paso redondeado es 0 y el valor se queda congelado. Medido: con α = 0,05 sobre un fondo (14, 16, 20), el píxel se quedó en (23, 25, 29).</p>
+  <p><strong>Solución:</strong> no acumules: guarda las últimas posiciones de cada objeto y redibuja la estela entera en cada frame con transparencias decrecientes (así un frame limpio borra todo). Si necesitas acumular, limpia del todo cada cierto tiempo o usa un búfer de más precisión (un framebuffer de coma flotante en WebGL, lección <a href="../05-webgl/08-framebuffers.html">5.8</a>).</p>
+</div>
+
+<h3>Transparencia y modos de composición</h3>
+<p><code>globalAlpha</code> multiplica la opacidad de todo lo que dibujes. <code>globalCompositeOperation</code> decide cómo se combina cada píxel nuevo (fuente) con el que ya había (destino). El valor por defecto es <code>'source-over'</code> (lo nuevo encima). Los más útiles para animación:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Modo</th><th>Qué hace</th><th>Para qué</th></tr></thead>
+  <tbody>
+    <tr><td><code>'lighter'</code></td><td>Suma los colores y satura en 255. Medido: (100, 50, 200) + (100, 50, 100) = (200, 100, 255).</td><td>Luz, fuego, partículas brillantes: donde se solapan, más brillo (proyecto <a href="08-proyecto-particulas.html">2.8</a>).</td></tr>
+    <tr><td><code>'destination-out'</code></td><td>Borra el destino donde pintas (con la opacidad de lo que pintas).</td><td>Gomas de borrar, agujeros, máscaras.</td></tr>
+    <tr><td><code>'multiply'</code> / <code>'screen'</code></td><td>Multiplica (oscurece) / multiplica los inversos (aclara).</td><td>Sombras y luces sobre una imagen.</td></tr>
+    <tr><td><code>'source-atop'</code></td><td>Pinta solo donde ya había algo.</td><td>Colorear una silueta ya dibujada.</td></tr>
+    <tr><td><code>'copy'</code></td><td>Sustituye el destino por la fuente, incluida su transparencia.</td><td>Copiar un búfer tal cual (lo usa el graficador del curso).</td></tr>
+  </tbody>
+</table>
+<p>Estos modos son la versión 2D del <em>blending</em> de la GPU, que controlarás a mano en WebGL en la lección <a href="../05-webgl/07-blending.html">5.7</a>.</p>
+
+<h3>Imágenes: <code>drawImage</code></h3>
+<p><code>drawImage</code> dibuja una imagen, un vídeo u <strong>otro canvas</strong>, con tres formas de llamarlo:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+  ctx.drawImage(img, dx, dy);                          // tamaño natural en (dx, dy)
+  ctx.drawImage(img, dx, dy, dw, dh);                  // escalada a dw × dh
+  ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);  // recorta (sx, sy, sw, sh) de la fuente y lo escala
+</script>
+<p>La tercera forma es la de las <em>hojas de sprites</em>: una sola imagen con todos los fotogramas, de la que recortas el que toca. Al escalar, el navegador interpola: con <code>ctx.imageSmoothingEnabled = false</code> usa el vecino más cercano. Lo medimos escalando una imagen de 2 × 1 píxeles (negro y blanco) a 20 × 10: con suavizado, la transición pasaba por 90, 140, 191; sin él, saltaba de 0 a 255. Imprescindible para <em>pixel art</em>. Recuerda que con <code>file://</code> no puedes leer píxeles de imágenes cargadas de disco (el canvas queda «contaminado», lección <a href="../01-web/07-herramientas.html">1.7</a>); dibujar sí puedes.</p>
+
+<h2>Píxeles a mano: <code>ImageData</code></h2>
+<p>Hasta ahora le decías al canvas <em>qué</em> dibujar. También puedes escribir los píxeles uno a uno:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+const d = img.data;
+for (let y = 0; y < img.height; y++) {
+  for (let x = 0; x < img.width; x++) {
+    const i = (y * img.width + x) * 4;
+    const gris = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+    d[i] = d[i + 1] = d[i + 2] = gris;
+  }
+}
+ctx.putImageData(img, 0, 0);
+</script>
+<ol>
+  <li data-l="1"><code>getImageData(x, y, ancho, alto)</code> devuelve una <strong>copia</strong> de esa región del búfer. Las coordenadas son del búfer: no le afecta la transformación actual.</li>
+  <li data-l="2"><code>data</code> es un <code>Uint8ClampedArray</code> (lección <a href="../01-web/06-binario.html">1.6</a>) con 4 bytes por píxel en orden R, G, B, A, fila a fila desde arriba. Su tamaño: ancho × alto × 4.</li>
+  <li data-l="5">El índice del píxel (x, y): se salta <code>y</code> filas completas de <code>ancho</code> píxeles y luego <code>x</code> píxeles, y se multiplica por 4 bytes. Es la misma cuenta que harás con texturas y búferes en la GPU.</li>
+  <li data-l="6">La luminancia con los pesos de sRGB/Rec. 709 (el verde pesa más porque el ojo es más sensible a él). Estrictamente, estos pesos son para valores lineales; aplicarlos a valores codificados en sRGB es una aproximación (<a href="04-interpolacion-easing.html">2.4</a>).</li>
+  <li data-l="7">Asignar a un <code>Uint8ClampedArray</code> <strong>redondea y satura</strong>: comprobamos que 300 se guarda como 255, −5 como 0, 254,7 como 255, y 1,5 y 2,5 como 2 (redondeo al par más cercano). No hace falta <code>Math.round</code> ni <code>clamp</code>.</li>
+  <li data-l="10"><code>putImageData</code> escribe los píxeles tal cual. <strong>Ignora</strong> la transformación, <code>globalAlpha</code> y <code>globalCompositeOperation</code>: lo comprobamos con una traslación, alfa 0,2 y modo <code>'lighter'</code>, y los píxeles se escribieron opacos, sin trasladar y sin sumar.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m2-alfa-premultiplicado" data-titulo="getImageData no devuelve los colores que escribiste con putImageData">
+  <p><strong>Síntoma:</strong> escribes un píxel semitransparente con <code>putImageData</code> y, al leerlo con <code>getImageData</code>, el color es otro. Con transparencias muy bajas el error es enorme; los datos que guardabas «dentro» de un canvas (una tabla, un mapa de alturas) se corrompen.</p>
+  <p><strong>Causa:</strong> internamente el canvas guarda los colores <em>premultiplicados</em> por su alfa (R·A, G·A, B·A), en 8 bits. Al escribir se multiplica y al leer se divide, y se pierde precisión. Medido: escribimos (255, 128, 7, 3) y leímos (255, 170, 0, 3); con (200, 100, 50, 128) leímos (199, 100, 50, 128). Con alfa 0, el color se pierde por completo.</p>
+  <p><strong>Solución:</strong> no uses un canvas 2D como almacén de datos arbitrarios si el alfa no es 255: guarda los datos en un <code>TypedArray</code> propio. Si solo necesitas mostrar píxeles, trabaja con alfa 255. Para datos en la GPU, las texturas de WebGL (<a href="../05-webgl/05-texturas.html">5.5</a>) permiten controlar la premultiplicación.</p>
+</div>
+
+<div class="callout senior" data-titulo="willReadFrequently y el coste de leer">
+  <p>Un canvas acelerado vive en la memoria de la GPU. Leerlo con <code>getImageData</code> obliga a esperar a que la GPU termine y a copiar los píxeles a la memoria del procesador, algo lento si lo haces a menudo. Chrome lo detecta y lo avisa en la consola; lo vimos en nuestras pruebas: <code>Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true</code>. Con <code>getContext('2d', { willReadFrequently: true })</code> le dices desde el principio que el canvas se leerá mucho, y el navegador lo mantiene en la CPU (sin aceleración de dibujo, pero con lecturas baratas). Úsalo en canvas que procesas píxel a píxel; no en el de tu animación principal.</p>
+  <p>Un truco de velocidad para bucles de píxeles: crea una vista <code>new Uint32Array(img.data.buffer)</code> y escribe un píxel entero de una vez. Cuidado con el orden de los bytes: los TypedArrays usan el orden de la máquina, y en las máquinas <em>little-endian</em> (todas las habituales; lo comprobamos en la nuestra) el entero es <code>(A &lt;&lt; 24) | (B &lt;&lt; 16) | (G &lt;&lt; 8) | R</code>, al revés de lo que parece. Es la misma trampa del orden de bytes que viste con <code>DataView</code> en la lección <a href="../01-web/06-binario.html">1.6</a>.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 2.6.3 — El bucle por píxel en CPU frente a la GPU</h3>
+  <p>Calculemos un patrón animado que depende de cada píxel: $v = \sin(0{,}05\,x + t)\cdot\cos(0{,}05\,y + t)$. En JavaScript, un bucle que recorre todos los píxeles y escribe el <code>ImageData</code>. El playground mide cuánto tarda cada frame; prueba a cambiar la resolución:</p>
+<div class="js-playground" data-titulo="Bucle por píxel en CPU" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<label style="position:absolute;left:8px;top:6px;z-index:1;color:#e4e7ee;font:12px system-ui;background:#0e1014cc;padding:3px 6px;border-radius:4px">
+  resolución del búfer <select id="esc"><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+</label>
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let img, u32;
+
+function preparar(escala) {
+  canvas.width = Math.round(canvas.clientWidth * escala);
+  canvas.height = Math.round(canvas.clientHeight * escala);
+  img = ctx.createImageData(canvas.width, canvas.height);
+  u32 = new Uint32Array(img.data.buffer);        // un píxel = un entero (little-endian: ABGR)
+}
+preparar(1);
+document.getElementById('esc').onchange = (e) => preparar(+e.target.value);
+
+let tiempos = [], frames = 0;
+function frame(ms) {
+  const t = ms / 1000, W = img.width, H = img.height;
+  const t0 = performance.now();
+  for (let y = 0, i = 0; y < H; y++) {
+    const cy = Math.cos(y * 0.05 + t);
+    for (let x = 0; x < W; x++, i++) {
+      const v = Math.sin(x * 0.05 + t) * cy;          // entre -1 y 1
+      const r = (128 + 127 * v) | 0, g = (128 - 127 * v) | 0;
+      u32[i] = (255 << 24) | (200 << 16) | (g << 8) | r;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  tiempos.push(performance.now() - t0);
+  if (++frames % 60 === 0) {
+    const m = tiempos.reduce((a, b) => a + b, 0) / tiempos.length;
+    console.log(`${W}×${H} = ${(W * H / 1e6).toFixed(2)} Mpx → ${m.toFixed(1)} ms por frame`);
+    tiempos = [];
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</div>
+  <p><strong>Paso 1: medir.</strong> En nuestra máquina, con un búfer de 800 × 600 (0,48 megapíxeles), el bucle tardaba unos 10,7 ms por frame escribiendo los bytes uno a uno, y 9,1 ms con la vista <code>Uint32Array</code>. Ya son dos tercios del presupuesto de 60 Hz para un efecto trivial.</p>
+  <p><strong>Paso 2: extrapolar.</strong> El coste es proporcional al número de píxeles. Una pantalla de 1920 × 1080 con DPR 2 tiene 8,3 megapíxeles: unas 17 veces más, del orden de 180 ms por frame. Unos 5 fps. Y eso con una fórmula de dos funciones trigonométricas; un efecto real tiene decenas de operaciones por píxel.</p>
+  <p><strong>Paso 3: la misma cuenta en la GPU.</strong> Aquí está exactamente la misma fórmula como <em>fragment shader</em>: un programa que la GPU ejecuta una vez por píxel, en paralelo sobre miles de núcleos (lección <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>). A resolución completa de tu pantalla va a 60 fps sin despeinarse:</p>
+<div class="glsl-playground" data-titulo="La misma fórmula en un fragment shader" data-altura="300">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;   // tamaño del lienzo en píxeles físicos
+uniform float u_time;        // segundos
+out vec4 fragColor;
+
+void main() {
+  // gl_FragCoord.y crece hacia ARRIBA; lo invertimos para que coincida con el canvas 2D
+  vec2 p = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
+  float v = sin(p.x * 0.05 + u_time) * cos(p.y * 0.05 + u_time);
+  fragColor = vec4((128.0 + 127.0 * v) / 255.0, (128.0 - 127.0 * v) / 255.0, 200.0 / 255.0, 1.0);
+}
+</script>
+</div>
+  <p><strong>Conclusión:</strong> Canvas 2D es perfecto para dibujar formas (la GPU las rasteriza por ti), pero en cuanto necesitas calcular algo <em>por cada píxel</em> en cada frame, la CPU no da abasto. Esa es la frontera que cruzarás en el módulo 4 y que convierte a los shaders en el tema central del curso.</p>
+</section>
+
+<h2>Rendimiento: qué sigue valiendo hoy</h2>
+<p>Circulan muchas recetas para acelerar Canvas 2D (usar sprites precalculados, coordenadas enteras, agrupar paths, minimizar cambios de estilo). Casi todas nacieron cuando el canvas se pintaba por software. Las medimos en Chrome 154 (GPU Apple M1, con el canvas acelerado por GPU que Chrome usa por defecto, y con un canvas por software creado con <code>willReadFrequently</code>, obligando a pintar con una lectura de 1 píxel). Tiempo de JavaScript por frame dibujando 20 000 formas pequeñas:</p>
+<table class="m2-medidas">
+  <thead><tr><th>Estrategia (20 000 formas)</th><th class="num">canvas GPU</th><th class="num">canvas CPU</th></tr></thead>
+  <tbody>
+    <tr><td>un <code>beginPath</code> + <code>arc</code> + <code>fill</code> por círculo</td><td class="num">2,0 ms</td><td class="num">17,4 ms</td></tr>
+    <tr><td>todos los círculos en un único path y un <code>fill</code></td><td class="num">5,6 ms</td><td class="num">24,5 ms</td></tr>
+    <tr><td><code>drawImage</code> de un sprite precalculado de 10 × 10</td><td class="num">16,2 ms</td><td class="num">35,5 ms</td></tr>
+    <tr><td><code>fillRect</code> en coordenadas fraccionarias</td><td class="num">2,2 ms</td><td class="num">14,9 ms</td></tr>
+    <tr><td><code>fillRect</code> en coordenadas enteras</td><td class="num">2,5 ms</td><td class="num">8,6 ms</td></tr>
+    <tr><td><code>fillRect</code> cambiando de color en cada forma (5 colores)</td><td class="num">2,8 ms</td><td class="num">9,1 ms</td></tr>
+    <tr><td><code>fillRect</code> agrupado por color</td><td class="num">2,2 ms</td><td class="num">8,4 ms</td></tr>
+  </tbody>
+</table>
+<p>Y con 3000 formas <em>caras</em> de construir: un degradado radial creado para cada círculo tardó 4,3 ms (GPU) y 10,3 ms (CPU), frente a 2,5 y 7,4 ms dibujando un sprite con el degradado ya pintado; una estrella de 10 puntas con relleno y borde, 3,0 y 10,6 ms frente a 2,0 y 7,3 ms con sprite. En cambio, un texto corto con <code>fillText</code> fue <em>más rápido</em> que su sprite (1,7 frente a 2,4 ms en GPU), seguramente porque el navegador ya guarda en caché los glifos rasterizados de cada fuente.</p>
+<p>Lo que se deduce, con la advertencia de que son medidas de una máquina y un navegador concretos:</p>
+<ul>
+  <li><strong>Mide antes de optimizar.</strong> Con aceleración por GPU, el coste dominante es el de JavaScript llamando a la API: unos 0,1 µs por <code>fillRect</code> en nuestra máquina. 20 000 formas simples caben en un frame.</li>
+  <li><strong>Un path gigante no es mejor</strong>: construir un path con 20 000 subpaths fue más lento que 20 000 paths pequeños en los dos tipos de canvas.</li>
+  <li><strong>Los sprites compensan cuando la forma es cara</strong> (degradados, muchas curvas, relleno más borde, sombras), no para círculos y rectángulos, y no para texto en Chrome.</li>
+  <li><strong>Las coordenadas enteras importan en canvas por software</strong> (un 42 % menos en <code>fillRect</code>) y dan igual en GPU. Agrupar por color ahorró entre un 8 % (CPU) y un 21 % (GPU).</li>
+  <li><strong>Lo que más cuesta es no poder hacerlo en la GPU.</strong> Por encima de unas decenas de miles de objetos, o si cada objeto necesita cálculo por píxel, la solución no es otro truco de Canvas 2D sino WebGL: <em>instancing</em> (<a href="../05-webgl/09-instancing.html">5.9</a>) y partículas en la GPU (<a href="../07-integracion/05-particulas-gpu.html">7.5</a>). Lo comprobarás en el proyecto de la lección <a href="08-proyecto-particulas.html">2.8</a>.</li>
+</ul>
+
+<div class="callout senior" data-titulo="sacar el canvas del hilo principal: OffscreenCanvas">
+  <p>Todo lo anterior ocurre en el hilo principal, compitiendo con el resto de tu página: si otra parte de la aplicación hace una tarea larga, tu animación de canvas se congela (<a href="01-pipeline-render.html">2.1</a>). Hay una salida: <code>canvas.transferControlToOffscreen()</code> entrega el control del canvas a un <code>OffscreenCanvas</code> que puedes enviar a un <em>Web Worker</em> (lección <a href="../01-web/05-event-loop.html">1.5</a>), y el worker dibuja en él con el mismo contexto 2D y su propio <code>requestAnimationFrame</code>. Lo comprobamos incluso abriendo la página con <code>file://</code> (con el worker creado a partir de un <code>Blob</code>): durante un bloqueo de 1,5 s del hilo principal, el cuadrado que animaba el worker siguió avanzando 75 px cada 250 ms, a su velocidad exacta.</p>
+  <script type="text/plain" class="codigo" data-lang="js">
+    const codigo = `onmessage = (e) => {
+      const ctx = e.data.canvas.getContext('2d');
+      function frame(t) { /* ... dibujar con ctx ... */ requestAnimationFrame(frame); }
+      requestAnimationFrame(frame);
+    };`;
+    const worker = new Worker(URL.createObjectURL(new Blob([codigo], { type: 'text/javascript' })));
+    const offscreen = canvas.transferControlToOffscreen();   // el canvas del DOM ya no se puede dibujar desde aquí
+    worker.postMessage({ canvas: offscreen }, [offscreen]);  // se TRANSFIERE, no se copia
+  </script>
+  <p>El precio: el worker no tiene acceso al DOM, así que los eventos del ratón y los cambios de tamaño hay que enviárselos con <code>postMessage</code>, y después de transferirlo ya no puedes llamar a <code>getContext</code> sobre el canvas original.</p>
+</div>
+
+<h2>Texto</h2>
+<p>El texto en canvas es una imagen más: <code>fillText(texto, x, y)</code> y <code>strokeText</code> lo rasterizan en el momento. Se configura con <code>font</code> (el <em>shorthand</em> de CSS, por defecto <code>'10px sans-serif'</code>), <code>textAlign</code> (<code>start</code> por defecto; <code>center</code>, <code>right</code>…, respecto a la <code>x</code>) y <code>textBaseline</code> (<code>alphabetic</code> por defecto; <code>top</code>, <code>middle</code>, <code>bottom</code>…, respecto a la <code>y</code>). <code>measureText</code> devuelve medidas: para «Hola» en <code>20px sans-serif</code> obtuvimos un ancho de 41,13 px y una altura sobre la línea base de 14,35 px (dependen de la fuente del sistema).</p>
+<div class="js-playground" data-titulo="textAlign, textBaseline y measureText" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dpr = devicePixelRatio || 1;
+canvas.width = Math.round(canvas.clientWidth * dpr);
+canvas.height = Math.round(canvas.clientHeight * dpr);
+ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+const W = canvas.clientWidth;
+
+ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, W, canvas.clientHeight);
+const bases = ['top', 'middle', 'alphabetic', 'bottom'];
+bases.forEach((base, i) => {
+  const x = 30 + i * (W - 40) / 4, y = 70;
+  ctx.strokeStyle = '#ff6bb5'; ctx.beginPath(); ctx.moveTo(x - 10, y + 0.5); ctx.lineTo(x + 110, y + 0.5); ctx.stroke();  // la y indicada
+  ctx.font = '22px system-ui, sans-serif'; ctx.fillStyle = '#e4e7ee';
+  ctx.textAlign = 'left'; ctx.textBaseline = base;
+  ctx.fillText('Hgp', x, y);
+  ctx.font = '11px monospace'; ctx.fillStyle = '#8791a5'; ctx.textBaseline = 'top';
+  ctx.fillText(base, x, y + 40);
+});
+
+// measureText: la caja real del texto
+ctx.font = `bold ${Math.min(36, W / 11).toFixed(0)}px system-ui, sans-serif`;   // que quepa en el ancho
+ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+const texto = 'Shaders + Animación', x = W / 2, y = 210;
+const m = ctx.measureText(texto);
+ctx.fillStyle = '#8b7bff'; ctx.fillText(texto, x, y);
+ctx.strokeStyle = '#ffcb6b';
+ctx.strokeRect(x - m.actualBoundingBoxLeft, y - m.actualBoundingBoxAscent,
+               m.actualBoundingBoxLeft + m.actualBoundingBoxRight, m.actualBoundingBoxAscent + m.actualBoundingBoxDescent);
+console.log('ancho:', m.width.toFixed(1), 'px · sube', m.actualBoundingBoxAscent.toFixed(1), '· baja', m.actualBoundingBoxDescent.toFixed(1));
+</script>
+</div>
+<div class="callout cuidado">
+  <p>Si usas una fuente web (<code>@font-face</code>), el canvas no espera a que se descargue: si dibujas antes, sale con la fuente de reserva y no se corrige solo, porque el canvas no recuerda el texto. Espera a <code>document.fonts.load('bold 36px MiFuente')</code> (o a <code>document.fonts.ready</code>) antes del primer dibujo, o redibuja cuando termine de cargar. En animaciones que redibujan cada frame, el problema se arregla solo en cuanto llega la fuente.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 2.6.1 — Del borroso al nítido</h3>
+  <p>El canvas se ve borroso y la rejilla, deformada, porque el búfer se queda en 300 × 150. Escribe <code>ajustarLienzo()</code> para que el búfer tenga el tamaño de la caja por el DPR y se dibuje en píxeles CSS, y haz que las líneas de la rejilla de 1 px salgan nítidas. La consola muestra los tamaños.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.6.1" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function ajustarLienzo() {
+  // ← ajusta canvas.width / canvas.height y la transformación
+  return { w: canvas.width, h: canvas.height };
+}
+
+function dibujar() {
+  const { w, h } = ajustarLienzo();
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#3a4256'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x <= w; x += 20) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+  for (let y = 0; y <= h; y += 20) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+  ctx.stroke();
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath(); ctx.arc(w / 2, h / 2, 50, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#e4e7ee'; ctx.font = '16px system-ui'; ctx.fillText('texto nítido', 20, 30);
+}
+dibujar();
+console.log('búfer:', canvas.width, '×', canvas.height, '· caja CSS:', canvas.clientWidth, '×', canvas.clientHeight, '· DPR:', devicePixelRatio);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function ajustarLienzo() {
+  const dpr = window.devicePixelRatio || 1;
+  const ancho = Math.round(canvas.clientWidth * dpr), alto = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== ancho || canvas.height !== alto) { canvas.width = ancho; canvas.height = alto; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);          // dibujamos en px CSS
+  return { w: canvas.clientWidth, h: canvas.clientHeight, dpr };
+}
+
+function dibujar() {
+  const { w, h, dpr } = ajustarLienzo();
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#3a4256';
+  ctx.lineWidth = 1 / dpr;                          // 1 píxel del BÚFER, sea cual sea el DPR
+  const medio = 0.5 / dpr;                          // medio píxel del búfer, en px CSS
+  ctx.beginPath();
+  for (let x = 0; x <= w; x += 20) { ctx.moveTo(x + medio, 0); ctx.lineTo(x + medio, h); }
+  for (let y = 0; y <= h; y += 20) { ctx.moveTo(0, y + medio); ctx.lineTo(w, y + medio); }
+  ctx.stroke();
+  ctx.fillStyle = '#8b7bff';
+  ctx.beginPath(); ctx.arc(w / 2, h / 2, 50, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#e4e7ee'; ctx.font = '16px system-ui'; ctx.fillText('texto nítido', 20, 30);
+}
+dibujar();
+console.log('búfer:', canvas.width, '×', canvas.height, '· caja CSS:', canvas.clientWidth, '×', canvas.clientHeight, '· DPR:', devicePixelRatio);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Copia la función del ejemplo 2.6.1 y devuelve el tamaño CSS (<code>clientWidth</code>, <code>clientHeight</code>), no el del búfer: el dibujo trabaja en px CSS.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para las líneas: con <code>setTransform(dpr, …)</code>, un <code>lineWidth</code> de <code>1 / dpr</code> mide un píxel del búfer, y ese píxel es nítido si su centro está en un medio píxel del búfer: <code>0.5 / dpr</code> en px CSS.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con el búfer a caja × DPR y la escala por <code>setTransform</code>, el círculo y el texto salen nítidos y con la proporción correcta. La rejilla tiene un matiz: con <code>lineWidth = 1</code> en px CSS, a DPR 2 cada línea mide 2 píxeles del búfer y en coordenadas enteras sale nítida, pero a DPR 1 necesita el medio píxel y a DPR 1,5 mediría 1,5 píxeles (imposible de alinear). La solución hace las líneas de exactamente 1 píxel del búfer (<code>1 / dpr</code>) y las centra en medio píxel del búfer (<code>0.5 / dpr</code>): nítidas con cualquier DPR, al precio de ser más finas en pantallas de alta densidad (que es lo que suele quererse en una rejilla de fondo).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.6.2 — Un reloj con transformaciones</h3>
+  <p>Dibuja un reloj analógico con la hora actual: las 12 marcas de las horas y las tres agujas (horas, minutos y segundos), usando <code>translate</code> al centro, <code>rotate</code> y <code>save</code>/<code>restore</code>. Cada aguja debe dibujarse con el mismo código «vertical hacia arriba» y girarse con <code>rotate</code>. El segundero debe moverse de forma continua, no a saltos.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.6.2" data-altura="320" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+function ajustarLienzo() {
+  const dpr = devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [canvas.clientWidth, canvas.clientHeight];
+}
+
+// Dibuja una aguja vertical hacia ARRIBA desde el origen actual
+function aguja(largo, grosor, color) {
+  ctx.strokeStyle = color; ctx.lineWidth = grosor; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, 8); ctx.lineTo(0, -largo); ctx.stroke();
+}
+
+function frame() {
+  const [w, h] = ajustarLienzo();
+  const r = Math.min(w, h) * 0.42;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, w, h);
+  const ahora = new Date();
+  // ← 1. traslada al centro  2. marcas  3. agujas con rotate  (usa save/restore)
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+function ajustarLienzo() {
+  const dpr = devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [canvas.clientWidth, canvas.clientHeight];
+}
+
+// Dibuja una aguja vertical hacia ARRIBA desde el origen actual
+function aguja(largo, grosor, color) {
+  ctx.strokeStyle = color; ctx.lineWidth = grosor; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, 8); ctx.lineTo(0, -largo); ctx.stroke();
+}
+
+function frame() {
+  const [w, h] = ajustarLienzo();
+  const r = Math.min(w, h) * 0.42;
+  ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, w, h);
+  const ahora = new Date();
+  const s = ahora.getSeconds() + ahora.getMilliseconds() / 1000;   // continuo
+  const m = ahora.getMinutes() + s / 60;
+  const hh = (ahora.getHours() % 12) + m / 60;
+
+  ctx.save();
+  ctx.translate(w / 2, h / 2);
+  // marcas: 12 rotaciones de 30°; cada una dentro de su save/restore
+  for (let i = 0; i < 12; i++) {
+    ctx.save();
+    ctx.rotate(i * Math.PI / 6);
+    ctx.fillStyle = '#8791a5';
+    ctx.fillRect(-1.5, -r, 3, i % 3 === 0 ? 18 : 10);
+    ctx.restore();
+  }
+  // agujas: ángulo = fracción de vuelta × 2π, medido desde las 12 en sentido horario
+  ctx.save(); ctx.rotate(hh / 12 * 2 * Math.PI); aguja(r * 0.5, 6, '#e4e7ee'); ctx.restore();
+  ctx.save(); ctx.rotate(m / 60 * 2 * Math.PI); aguja(r * 0.78, 4, '#3fd0e8'); ctx.restore();
+  ctx.save(); ctx.rotate(s / 60 * 2 * Math.PI); aguja(r * 0.9, 1.5, '#ff6bb5'); ctx.restore();
+  ctx.fillStyle = '#ff6bb5'; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Una aguja vertical hacia arriba ya apunta a las 12. Girarla un ángulo positivo con <code>rotate</code> la mueve en sentido horario (el eje Y va hacia abajo), justo como un reloj. Una vuelta completa son $2\pi$.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para que el segundero no salte, añade los milisegundos: <code>s = getSeconds() + getMilliseconds() / 1000</code>. Para que el minutero avance entre minutos, súmale <code>s / 60</code>; y al horario, <code>m / 60</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Todo gira alrededor del centro, así que la primera transformación es <code>translate(w/2, h/2)</code>. Cada marca y cada aguja se dibujan con el mismo código, en su sistema local, entre un <code>save</code> y un <code>restore</code>: la rotación de una no afecta a la siguiente. Los ángulos son la fracción de vuelta por $2\pi$: horas/12, minutos/60, segundos/60. Y como en Canvas 2D el eje Y apunta hacia abajo, los ángulos positivos giran en sentido horario: no hace falta ningún signo menos, justo al revés que en el círculo trigonométrico de <a href="../03-matematicas/03-trigonometria.html">3.3</a>. El reloj es un buen ejemplo de animación que no necesita <code>dt</code>: el estado se calcula a partir de un tiempo absoluto (<code>new Date()</code>), así que siempre es correcto, aunque la pestaña haya estado oculta.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 2.6.3 — Filtros de píxeles a mano</h3>
+  <p>El playground dibuja una textura generada (el «paisaje» de la librería del curso). Completa <code>aplicarFiltro</code> para que, según el selector, convierta la imagen a escala de grises (luminancia), la invierta (negativo) o la reduzca a 4 niveles por canal (posterizado), leyendo con <code>getImageData</code> y escribiendo con <code>putImageData</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.6.3" data-altura="320" data-incluir="texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<select id="filtro" style="position:absolute;left:8px;top:8px;z-index:1">
+  <option value="gris">escala de grises</option><option value="negativo">negativo</option><option value="posterizar">posterizar (4 niveles)</option>
+</select>
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+select { font: 12px system-ui, sans-serif; padding: 3px 6px; color: #e4e7ee; background: #1f2430; border: 1px solid #3a4256; border-radius: 6px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });   // lo vamos a leer
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const fuente = Texturas.crear('paisaje', 512);                        // un canvas generado
+
+function aplicarFiltro(tipo) {
+  const W = canvas.width, H = canvas.height, mitad = Math.floor(W / 2);
+  ctx.drawImage(fuente, 0, 0, W, H);                                  // original entera
+  const img = ctx.getImageData(mitad, 0, W - mitad, H);               // solo la mitad derecha
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    // ← transforma d[i], d[i+1], d[i+2] según 'tipo'
+  }
+  ctx.putImageData(img, mitad, 0);
+  ctx.fillStyle = '#fff'; ctx.fillRect(mitad - 1, 0, 2, H);
+}
+const sel = document.getElementById('filtro');
+sel.onchange = () => aplicarFiltro(sel.value);
+aplicarFiltro(sel.value);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });   // lo vamos a leer
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const fuente = Texturas.crear('paisaje', 512);                        // un canvas generado
+
+function aplicarFiltro(tipo) {
+  const W = canvas.width, H = canvas.height, mitad = Math.floor(W / 2);
+  ctx.drawImage(fuente, 0, 0, W, H);                                  // original entera
+  const img = ctx.getImageData(mitad, 0, W - mitad, H);               // solo la mitad derecha
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    if (tipo === 'gris') {
+      const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;                 // el array redondea solo
+      d[i] = d[i + 1] = d[i + 2] = y;
+    } else if (tipo === 'negativo') {
+      d[i] = 255 - r; d[i + 1] = 255 - g; d[i + 2] = 255 - b;         // el alfa no se toca
+    } else {
+      const q = (v) => Math.round(v / 255 * 3) / 3 * 255;             // 4 niveles: 0, 85, 170, 255
+      d[i] = q(r); d[i + 1] = q(g); d[i + 2] = q(b);
+    }
+  }
+  ctx.putImageData(img, mitad, 0);
+  ctx.fillStyle = '#fff'; ctx.fillRect(mitad - 1, 0, 2, H);
+}
+const sel = document.getElementById('filtro');
+sel.onchange = () => aplicarFiltro(sel.value);
+aplicarFiltro(sel.value);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Los índices <code>i</code>, <code>i+1</code> e <code>i+2</code> son rojo, verde y azul; <code>i+3</code> es el alfa y no hace falta tocarlo. El negativo de un canal es <code>255 − valor</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Posterizar a 4 niveles: lleva el valor a [0, 3], redondea y vuelve a [0, 255]: <code>Math.round(v / 255 * 3) / 3 * 255</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los tres filtros son funciones del color de cada píxel, independientes de sus vecinos: exactamente el tipo de cálculo que hace un fragment shader, pero aquí lo ejecuta la CPU píxel a píxel. <code>Uint8ClampedArray</code> redondea y satura al asignar, así que la luminancia fraccionaria no necesita <code>Math.round</code>. Fíjate en tres detalles: <code>willReadFrequently: true</code>, porque vamos a leer el canvas; <code>putImageData</code> en <code>(mitad, 0)</code>, porque la región leída empezaba ahí (sus coordenadas son del búfer, sin transformación); y que el efecto es un filtro, no una animación: hacerlo en cada frame a pantalla completa costaría lo que mediste en el ejemplo 2.6.3. En <a href="../06-glsl/08-texturas-efectos.html">6.8</a> harás estos mismos filtros en un shader.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 2.6.4 — Una estela sin fantasmas</h3>
+  <p>La pelota deja una estela con el truco del rectángulo semitransparente, y tras unos segundos queda un rastro fantasma permanente (se ve mejor con α muy bajo). Reescribe el dibujo para que la estela se calcule en cada frame a partir de las <strong>últimas 40 posiciones</strong> guardadas, dibujadas con opacidad y tamaño decrecientes sobre un fondo borrado del todo. El rastro fantasma debe desaparecer.</p>
+  <div class="js-playground" data-titulo="Ejercicio 2.6.4" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+ctx.fillStyle = '#0e1014'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+function posicion(t) {
+  return { x: canvas.width / 2 + Math.cos(t * 1.1) * canvas.width * 0.38,
+           y: canvas.height / 2 + Math.sin(t * 2.3) * canvas.height * 0.36 };
+}
+
+function frame(ms) {
+  const t = ms / 1000;
+  ctx.fillStyle = 'rgba(14, 16, 20, 0.04)';      // estela acumulada: nunca se borra del todo
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const p = posicion(t);
+  ctx.fillStyle = '#e4e7ee';
+  ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+
+function posicion(t) {
+  return { x: canvas.width / 2 + Math.cos(t * 1.1) * canvas.width * 0.38,
+           y: canvas.height / 2 + Math.sin(t * 2.3) * canvas.height * 0.36 };
+}
+
+const N = 40;
+const historial = [];                            // últimas N posiciones (la más nueva al final)
+
+function frame(ms) {
+  const t = ms / 1000;
+  historial.push(posicion(t));
+  if (historial.length > N) historial.shift();
+
+  ctx.fillStyle = '#0e1014';                     // borrado COMPLETO: ningún resto sobrevive
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < historial.length; i++) {
+    const k = (i + 1) / historial.length;        // de casi 0 (la más vieja) a 1 (la actual)
+    ctx.globalAlpha = k * k;                     // se desvanece de forma no lineal
+    ctx.fillStyle = '#e4e7ee';
+    ctx.beginPath(); ctx.arc(historial[i].x, historial[i].y, 3 + 7 * k, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;                           // ¡restaurar! el estado persiste entre frames
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Guarda cada posición en un array con <code>push</code> y quita la más vieja con <code>shift</code> cuando pase de 40. En cada frame, borra con un color opaco y dibuja todas las posiciones.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para la opacidad decreciente, <code>ctx.globalAlpha</code> con un valor que dependa de la antigüedad de cada posición. No olvides devolverlo a 1 al terminar.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La estela acumulada depende de la historia completa del búfer, y el redondeo a 8 bits hace que esa historia nunca se olvide del todo. La estela recalculada depende solo de las últimas 40 posiciones: cada frame empieza con un fondo opaco y dibuja todo de nuevo, así que no queda ningún resto. Es un principio que vale para todo el curso: <strong>calcular a partir del estado es más robusto que acumular sobre el resultado</strong>. El precio es dibujar 40 círculos por frame en vez de uno, que para Canvas 2D es nada (y la estela no depende de los FPS de la misma forma: son 40 frames, así que a 120 Hz dura la mitad de tiempo; si quieres una duración fija, guarda el instante de cada posición y descarta por antigüedad). El <code>ctx.globalAlpha = 1</code> final es importante: el estado del contexto persiste entre frames, y el <code>fillRect</code> del frame siguiente se pintaría con la última opacidad.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Canvas 2D es modo inmediato: dibujas píxeles y se olvidan las formas; para animar, redibujas cada frame. Un canvas tiene un solo tipo de contexto.</li>
+    <li>Búfer (<code>width</code>/<code>height</code>, por defecto 300 × 150) frente a caja CSS: búfer = caja × DPR y <code>setTransform(dpr, …)</code> para dibujar en px CSS. Asignar <code>width</code>/<code>height</code> borra y reinicia el estado. Para píxeles exactos, <code>ResizeObserver</code> con <code>devicePixelContentBoxSize</code>.</li>
+    <li>El path actual persiste: <code>beginPath()</code> antes de cada forma o se redibuja todo lo anterior. <code>closePath()</code> cierra el subpath, no termina el path.</li>
+    <li>El trazo se centra en el path: líneas nítidas cuando sus bordes caen en bordes de píxel del búfer (medio píxel con grosor impar). Depende del DPR.</li>
+    <li>Transformaciones: se multiplican en el sistema local; <code>save</code>/<code>restore</code> guardan todo el estado; <code>setTransform</code> reemplaza y <code>transform</code> multiplica.</li>
+    <li>Estelas por acumulación dejan fantasmas por el redondeo a 8 bits; mejor recalcularlas. <code>'lighter'</code> suma luz.</li>
+    <li><code>ImageData</code>: RGBA en un <code>Uint8ClampedArray</code>; <code>putImageData</code> ignora transformación, alfa y composición; el alfa premultiplicado pierde precisión. El bucle por píxel en CPU cuesta decenas de ms: trabajo para la GPU.</li>
+    <li>Rendimiento: mide. Menos llamadas, agrupar por estilo, sprites solo para formas caras, coordenadas enteras en canvas por software; y para decenas de miles de objetos, WebGL.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial">Canvas tutorial</a> y <a href="https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Optimizing_canvas">Optimizing canvas</a> en MDN.</li>
+  <li><a href="https://html.spec.whatwg.org/multipage/canvas.html">La especificación del elemento canvas</a> (HTML Living Standard): la fuente de verdad sobre el estado, los paths y la composición.</li>
+  <li><a href="https://web.dev/articles/device-pixel-content-box">Pixel-perfect rendering with devicePixelContentBox</a> (web.dev).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m2.js"></script>
+<script>
+Curso.alListo(() => {
+  /* ---------- Demo: tres canvas, tres nitideces ---------- */
+  const raiz = document.getElementById("demo-nitidez");
+  const info = raiz.querySelector(".demo-info");
+  const lienzos = [["nit-a", 0.5, false], ["nit-b", 1, false], ["nit-c", 1, true]];
+  function dibujar() {
+    const c = Curso.colores();
+    const textos = [];
+    for (const [id, factor, usarDpr] of lienzos) {
+      const canvas = document.getElementById(id), ctx = canvas.getContext("2d");
+      const dpr = usarDpr ? (window.devicePixelRatio || 1) : 1;
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      canvas.width = Math.max(1, Math.round(w * factor * dpr));
+      canvas.height = Math.max(1, Math.round(h * factor * dpr));
+      const esc = factor * dpr;
+      ctx.setTransform(esc, 0, 0, esc, 0, 0);
+      ctx.fillStyle = c.fondo; ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = c.tenue; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 10; x < w; x += 12) { ctx.moveTo(x + 0.5, 70); ctx.lineTo(x + 0.5, h - 10); }
+      ctx.stroke();
+      ctx.fillStyle = c.acento; ctx.beginPath(); ctx.arc(40, 38, 22, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = c.texto; ctx.font = "15px " + c.fuente; ctx.textBaseline = "middle"; ctx.textAlign = "left";
+      ctx.fillText("Texto 15px · ƒ(x)", 72, 38);
+      textos.push(id.slice(-1).toUpperCase() + ": búfer " + canvas.width + "×" + canvas.height);
+    }
+    const cB = document.getElementById("nit-b");
+    info.textContent = "tu devicePixelRatio = " + (window.devicePixelRatio || 1) + " · caja CSS " + cB.clientWidth + "×" + cB.clientHeight + " · " + textos.join(" · ");
+  }
+  dibujar();
+  if ("ResizeObserver" in window) new ResizeObserver(() => dibujar()).observe(document.getElementById("nit-c"));
+  document.addEventListener("curso:tema", dibujar);
+  if (window.matchMedia) {
+    // redibujar si cambia el DPR (zoom del navegador o cambio de monitor)
+    const vigilar = () => { const mq = matchMedia("(resolution: " + (window.devicePixelRatio || 1) + "dppx)"); mq.addEventListener("change", () => { dibujar(); vigilar(); }, { once: true }); };
+    vigilar();
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,1411 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7.2 · Interacción: ratón, touch y scroll — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m7.css">
+</head>
+<body data-leccion="07-integracion/interaccion">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 7 · JavaScript + shaders juntos</p>
+  <h1>Interacción: ratón, touch y scroll</h1>
+  <p class="resumen">El shader no sabe nada del usuario: solo recibe números. Esta lección es el camino de esos números, desde el evento del DOM hasta el uniform, sin desfases, sin saltos y sin olvidar a quien usa el teclado, prefiere menos movimiento o no ve la pantalla.</p>
+  <div class="meta"><span class="chip">⏱ 140 min</span><span class="chip">Requisitos: 1.4, 2.4, 7.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Llevarás el puntero del evento al shader guardando lo correcto en el evento y convirtiendo en el frame, de forma que sobreviva al scroll, al zoom y a la calidad adaptativa.</li>
+      <li>Suavizarás el puntero con <code>dt</code>, medirás su velocidad para dirigir efectos y dejarás ondas al hacer clic con un array de uniforms usado como buffer circular.</li>
+      <li>Manejarás varios dedos a la vez y el scroll, y harás que elementos del DOM guíen al shader con un canvas detrás de la página, conociendo su frame de retraso.</li>
+      <li>Añadirás teclado, respetarás <code>prefers-reduced-motion</code> y mantendrás la página accesible aunque el canvas sea invisible para un lector de pantalla.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Del evento al píxel: qué guardar y cuándo convertir</h2>
+<p>En <a href="../01-web/04-js-dom-eventos.html">1.4</a> recorriste los cuatro sistemas de coordenadas del puntero y la conversión completa hasta <code>gl_FragCoord</code>. Aquí la damos por sabida y nos ocupamos de lo que una aplicación añade: <em>en qué momento</em> se convierte y <em>qué</em> se guarda en el estado. Primero, el recorrido en un dibujo:</p>
+
+<svg class="diagrama" viewBox="0 0 760 210" width="760" role="img" aria-label="De clientX a gl_FragCoord en cuatro pasos">
+  <defs>
+    <marker id="m72-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="10" y="20" width="160" height="80" rx="10"/>
+  <text x="90" y="44" text-anchor="middle" style="font-weight:700">evento</text>
+  <text x="90" y="64" text-anchor="middle" style="font-size:12px">clientX, clientY</text>
+  <text x="90" y="84" text-anchor="middle" class="texto-tenue" style="font-size:11px">px CSS · ventana · y ↓</text>
+  <path d="M172 60 L204 60" stroke="currentColor" stroke-width="2" marker-end="url(#m72-fl)"/>
+  <rect class="caja" x="208" y="20" width="160" height="80" rx="10"/>
+  <text x="288" y="44" text-anchor="middle" style="font-weight:700">caja del canvas</text>
+  <text x="288" y="64" text-anchor="middle" style="font-size:12px">x = cx − r.left</text>
+  <text x="288" y="84" text-anchor="middle" class="texto-tenue" style="font-size:11px">px CSS · caja · y ↓</text>
+  <path d="M370 60 L402 60" stroke="currentColor" stroke-width="2" marker-end="url(#m72-fl)"/>
+  <rect class="caja" x="406" y="20" width="160" height="80" rx="10"/>
+  <text x="486" y="44" text-anchor="middle" style="font-weight:700">búfer</text>
+  <text x="486" y="64" text-anchor="middle" style="font-size:12px">× canvas.width / r.width</text>
+  <text x="486" y="84" text-anchor="middle" class="texto-tenue" style="font-size:11px">px del búfer · y ↓</text>
+  <path d="M568 60 L600 60" stroke="currentColor" stroke-width="2" marker-end="url(#m72-fl)"/>
+  <rect class="caja acento" x="604" y="20" width="146" height="80" rx="10"/>
+  <text x="677" y="44" text-anchor="middle" style="font-weight:700">GL</text>
+  <text x="677" y="64" text-anchor="middle" style="font-size:12px">y = alto − y</text>
+  <text x="677" y="84" text-anchor="middle" class="texto-tenue" style="font-size:11px">como gl_FragCoord · y ↑</text>
+  <rect class="caja" x="10" y="130" width="358" height="62" rx="10" style="stroke-dasharray:6 4"/>
+  <text x="189" y="154" text-anchor="middle">cambia sin eventos del puntero:</text>
+  <text x="189" y="176" text-anchor="middle" class="texto-tenue" style="font-size:12px">r.left / r.top (scroll, layout)</text>
+  <rect class="caja" x="406" y="130" width="344" height="62" rx="10" style="stroke-dasharray:6 4"/>
+  <text x="578" y="154" text-anchor="middle">cambia sin eventos del puntero:</text>
+  <text x="578" y="176" text-anchor="middle" class="texto-tenue" style="font-size:12px">canvas.width (DPR, zoom, calidad adaptativa)</text>
+</svg>
+
+<p>La fila de abajo es la clave de esta sección. Tres de los cuatro pasos dependen de cosas que cambian <strong>sin que llegue ningún evento del puntero</strong>. El rectángulo del canvas cambia si la página se desplaza o si el layout se mueve (un acordeón que se abre encima). El tamaño del búfer cambia con el zoom, al pasar la ventana a otro monitor o cuando la calidad adaptativa de <a href="01-arquitectura.html">7.1</a> baja la resolución. Lo comprobamos con el ratón quieto sobre un canvas y la página desplazándose con la rueda: no llegó ni un <code>pointermove</code>; solo un <code>pointerleave</code> cuando el canvas terminó de salir de debajo del cursor.</p>
+<p>La consecuencia es una regla de arquitectura: <strong>el evento guarda las coordenadas crudas (<code>clientX</code>, <code>clientY</code>) y la conversión se hace en el frame</strong>, con el rectángulo y el tamaño de búfer de ese frame. Leer <code>getBoundingClientRect()</code> al principio del frame es barato: el layout está limpio (medimos 0,4 µs por llamada) y, además, es justo el paso «leer» del orden del frame de 7.1.</p>
+
+<div class="callout bestiario" data-id="m7-puntero-despegado" data-titulo="El efecto se despega del puntero sin que lo muevas (al hacer scroll, zoom o cambiar la calidad)">
+  <p><strong>Síntoma:</strong> el halo sigue perfectamente al ratón mientras lo mueves, pero al desplazar la página con la rueda (sin mover el ratón) se queda pegado a la página y no al cursor; o, al hacer zoom, cambiar de monitor o cuando la resolución se adapta, salta a otro sitio. Vuelve a su lugar en cuanto mueves el ratón.</p>
+  <p><strong>Causa:</strong> el evento convirtió el puntero a coordenadas que dependen de cosas que cambian sin eventos del puntero: coordenadas relativas al canvas (que se mueve con el scroll) o píxeles del búfer (que cambian de tamaño). Durante el scroll con el ratón quieto no llega ningún <code>pointermove</code> (comprobado), así que nadie actualiza el valor guardado.</p>
+  <p><strong>Solución:</strong> guarda <code>clientX</code>/<code>clientY</code> en el evento y convierte en cada frame, con el <code>getBoundingClientRect()</code> y el <code>canvas.width</code> de ese frame. Si el efecto debe desaparecer al salir el puntero, apóyate en <code>pointerleave</code>, que sí llega. Los otros bichos clásicos del puntero ya tienen su ficha: <a href="../01-web/04-js-dom-eventos.html#m1-raton-invertido">la y invertida</a>, <a href="../01-web/04-js-dom-eventos.html#m1-raton-desplazado">el factor DPR o el borde olvidados</a> y <a href="../06-glsl/02-pensar-en-paralelo.html#m6a-espacios-mezclados">los espacios mezclados en el shader</a>.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.2.1 — Tres maneras de guardar el puntero</h3>
+  <p>El anillo blanco es del DOM y marca siempre dónde está de verdad el puntero. La cruz la dibuja el shader con el valor guardado según el modo elegido. Mueve el puntero por el lienzo y después, <strong>sin moverlo</strong>, haz scroll con la rueda sobre él o pulsa «cambiar resolución» (lo que haría la calidad adaptativa).</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.2.1 — ¿Qué guarda el evento?" data-altura="340" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<div id="panel">
+  <select id="modo">
+    <option value="bufer">el evento guarda px del búfer</option>
+    <option value="caja">el evento guarda px de la caja</option>
+    <option value="crudo" selected>el evento guarda clientX/Y; se convierte en el frame</option>
+  </select>
+  <button id="res">cambiar resolución</button>
+  <span id="info"></span>
+</div>
+<canvas id="c"></canvas>
+<div id="anillo"></div>
+<p class="relleno">↓ Haz scroll con la rueda sobre el lienzo sin mover el ratón.</p>
+</script>
+<script type="text/x-css">
+body { height: 760px; }
+#panel { position: sticky; top: 0; z-index: 2; padding: 6px 8px; background: #0e1014; color: #b4bccb; font: 12px system-ui; }
+button, select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+#c { display: block; width: 100%; height: 250px; margin-top: 40px; touch-action: none; }
+#anillo { position: fixed; left: 0; top: 0; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 2px solid #fff;
+  border-radius: 50%; pointer-events: none; will-change: transform; display: none; }
+.relleno { color: #8791a5; font: 13px system-ui; padding: 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const anillo = document.getElementById('anillo');
+const modo = document.getElementById('modo');
+const info = document.getElementById('info');
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;           // px del búfer, origen abajo
+out vec4 fragColor;
+void main() {
+  vec2 d = abs(gl_FragCoord.xy - u_mouse);
+  float cruz = step(min(d.x, d.y), 1.0) * step(max(d.x, d.y), 40.0);
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 col = mix(vec3(0.09, 0.1, 0.16), vec3(0.14, 0.12, 0.26), uv.y);
+  fragColor = vec4(mix(col, vec3(1.0, 0.42, 0.71), cruz), 1.0);
+}`;
+// Lo que guarda cada modo en el evento
+const guardado = { bufer: [0, 0], caja: [0, 0], crudo: [0, 0] };
+let visto = false;
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  guardado.bufer = [(e.clientX - r.left) * canvas.width / r.width, (r.bottom - e.clientY) * canvas.height / r.height];
+  guardado.caja = [e.clientX - r.left, e.clientY - r.top];
+  guardado.crudo = [e.clientX, e.clientY];
+  visto = true;
+});
+let escala = 1;
+document.getElementById('res').onclick = () => { escala = escala === 1 ? 0.5 : 1; };
+
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, VS, FS);
+const u = GLKit.uniforms(gl, programa);
+const vao = gl.createVertexArray();
+
+function frame() {
+  const r = canvas.getBoundingClientRect();               // 1. leer, al principio del frame
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(r.width * dpr * escala));   // «calidad» manual: 100 % o 50 %
+  const h = Math.max(1, Math.round(r.height * dpr * escala));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  let m;
+  if (modo.value === 'bufer') {                           // tal cual se guardó
+    m = guardado.bufer;
+  } else if (modo.value === 'caja') {                     // caja → búfer, ahora
+    m = [guardado.caja[0] * w / r.width, (r.height - guardado.caja[1]) * h / r.height];
+  } else {                                                // crudo → caja → búfer, ahora
+    m = [(guardado.crudo[0] - r.left) * w / r.width, (r.bottom - guardado.crudo[1]) * h / r.height];
+  }
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(programa);
+  GLKit.ponerUniform(gl, u.u_resolution, [w, h]);
+  GLKit.ponerUniform(gl, u.u_mouse, m);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // La verdad, en el DOM: el anillo fijo está donde está el puntero (clientX/Y, sin convertir)
+  anillo.style.display = visto ? 'block' : 'none';
+  anillo.style.transform = `translate(${guardado.crudo[0]}px, ${guardado.crudo[1]}px)`;
+  info.textContent = `búfer ${w}×${h}`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Con «px del búfer», la cruz se escapa en los dos casos: al cambiar la resolución, el número guardado ya no significa lo mismo (a la mitad de resolución, la cruz aparece al doble de distancia del origen, abajo a la izquierda), y al hacer scroll se queda pegada a la página. Con «px de la caja», la resolución ya no le afecta (la conversión al búfer se hace en el frame), pero el scroll sí. Solo con las coordenadas crudas y la conversión completa en el frame, la cruz sigue al anillo pase lo que pase. Fíjate también en el anillo: es un elemento <code>position: fixed</code> movido con <code>clientX</code>/<code>clientY</code> sin ninguna conversión, porque el DOM fijo vive justo en el sistema de coordenadas de la ventana.</p>
+</section>
+
+<div class="callout senior" data-titulo="rect.width, no clientWidth ni devicePixelRatio">
+  <p>Para pasar de px CSS a px del búfer, divide por el ancho del <em>rectángulo</em> (<code>getBoundingClientRect().width</code>) y multiplica por <code>canvas.width</code>. Esa proporción incluye todo lo que pueda haber entre las dos cosas: el DPR, su límite, la calidad adaptativa y hasta un <code>transform: scale()</code> de CSS sobre el canvas (el rectángulo mide la caja ya escalada). Multiplicar por <code>devicePixelRatio</code> solo acierta cuando el búfer mide exactamente caja × DPR, y en una app con <code>dprMax</code> o calidad adaptativa casi nunca es así. La excepción son las rotaciones: con <code>rotate()</code>, el rectángulo es la caja que envuelve al canvas girado y ninguna proporción sirve.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu app baja la resolución del búfer a la mitad cuando va lenta. El puntero se guarda así en el <code>pointermove</code>: <code>x = (e.clientX − r.left) * canvas.width / r.width</code>. El usuario deja el ratón quieto sobre un punto y la calidad baja. ¿Dónde dibuja el shader el efecto a partir de ese momento?</p>
+  <ul>
+    <li>En el mismo sitio: la x se calculó con el tamaño correcto del búfer.<div class="explicacion">Era correcto <em>cuando se calculó</em>. El búfer ha pasado a la mitad de píxeles, y el mismo número de píxeles del búfer corresponde ahora al doble de distancia en pantalla.</div></li>
+    <li data-correcta>Al doble de distancia del origen (la esquina inferior izquierda), hasta que el ratón se mueva.<div class="explicacion">Correcto. El valor guardado sigue siendo, por ejemplo, 600 px del búfer; con el búfer a la mitad, 600 px son el doble de lejos en pantalla. En cuanto llega otro <code>pointermove</code> se recalcula y vuelve a su sitio: un salto intermitente que desconcierta.</div></li>
+    <li>A la mitad de distancia del origen.<div class="explicacion">Al revés: con menos píxeles en el mismo espacio, cada píxel del búfer cubre más pantalla, así que el mismo número queda más lejos.</div></li>
+  </ul>
+</div>
+
+<h2>Suavizar el puntero y medir su velocidad</h2>
+<p>Un efecto que sigue al ratón con exactitud se ve nervioso: el puntero va a saltos (un evento por frame como mucho, y con la mano temblorosa) y el efecto hereda cada salto. Casi siempre queda mejor con un poco de inercia. La herramienta la conoces de <a href="../02-animacion/04-interpolacion-easing.html">2.4</a>: el suavizado exponencial exacto, que recorre en cada frame la fracción <code>1 − 2^(−dt/semivida)</code> de lo que falta, igual a cualquier frecuencia de pantalla. Con una semivida de 50 a 100 ms, el efecto sigue al puntero de cerca pero sin temblores.</p>
+<p>Tres decisiones de integración que la lección 2.4 no podía tomar por ti:</p>
+<ul>
+  <li><strong>En qué unidades suavizar.</strong> En px CSS de la caja (o de 0 a 1), nunca en px del búfer, por la razón de la sección anterior.</li>
+  <li><strong>Con qué <code>dt</code>.</strong> Con el reloj de 7.1 tienes dos: <code>dt</code> (escalado, 0 en pausa) y <code>dtReal</code>. Si pausas la escena, ¿debe el halo dejar de seguir al ratón? Normalmente no: la mano del usuario no está en pausa. Usa <code>dtReal</code> para lo que responde al usuario y <code>dt</code> para lo que es parte de la animación.</li>
+  <li><strong>El primer valor.</strong> Si el valor suavizado empieza en (0, 0) o en el centro, el primer movimiento hace que el efecto llegue volando desde allí. Al primer evento (y al volver a entrar tras salir) hay que colocarlo directamente en la posición real.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m7-barrido-inicial" data-titulo="Al entrar el ratón, el efecto llega volando desde una esquina">
+  <p><strong>Síntoma:</strong> la primera vez que el puntero entra en el canvas (o cada vez que vuelve a entrar), el halo no aparece bajo el cursor: cruza la escena desde la esquina inferior izquierda, desde el centro o desde donde salió, y tarda unas décimas en alcanzarlo.</p>
+  <p><strong>Causa:</strong> el valor suavizado arranca en su valor inicial (0, 0) o se quedó donde salió el puntero, y el suavizado hace exactamente su trabajo: recorrer esa distancia con inercia.</p>
+  <p><strong>Solución:</strong> al llegar el primer evento, y en el primer frame tras un <code>pointerleave</code>, asigna el valor suavizado directamente a la posición real y pon la velocidad a 0. Después, suaviza. Si quieres que el efecto aparezca con suavidad, anima su intensidad (de 0 a 1), no su posición.</p>
+</div>
+
+<p>La velocidad del puntero es una entrada muy expresiva: una estela que se alarga, una distorsión que crece, un color que se calienta con los movimientos rápidos. Se puede sacar de dos formas. La precisa es la de 2.5: guardar las muestras de los eventos con su <code>e.timeStamp</code> y dividir desplazamiento entre tiempo. La práctica, que basta para efectos visuales, es derivar la posición suavizada: <code>(suavizada − anterior) / dt</code>, y suavizar también el resultado para que no tiemble. Guárdala en px CSS por segundo y, al enviarla al shader, conviértela a px del búfer con la misma proporción que la posición (y con la y invertida).</p>
+
+<div class="callout senior" data-titulo="Más muestras que frames: getCoalescedEvents, getPredictedEvents y pointerrawupdate">
+  <p>Un ratón de 1000 Hz genera más posiciones de las que caben en tus frames, y Chrome te entrega como mucho un <code>pointermove</code> por frame con el último punto (<a href="../01-web/04-js-dom-eventos.html">1.4</a>). Para un efecto visual es lo que quieres. Si necesitas todas las muestras (un trazo de dibujo continuo, una velocidad muy precisa), <code>e.getCoalescedEvents()</code> te da las intermedias, cada una con su posición y su <code>timeStamp</code>, y <code>e.getPredictedEvents()</code> unas cuantas futuras estimadas por el navegador para reducir la latencia percibida del trazo. Y existe un evento aparte, <code>pointerrawupdate</code>, que llega en cuanto hay datos, sin esperar al frame. Comprobamos que los tres existen en el Chrome de pruebas (<code>'onpointerrawupdate' in window</code> es <code>true</code>), pero no los necesitarás para un shader: el frame es tu unidad de trabajo.</p>
+</div>
+
+<p>Todo esto (coordenadas crudas en el evento, conversión en el frame, primer valor sin barrido, suavizado y velocidad) está en <code>M7.Puntero</code> de <a href="recursos/m7kit.js">m7kit</a>. Este es su núcleo:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const anotar = (e) => {
+  this.cx = e.clientX; this.cy = e.clientY;
+  this.tipo = e.pointerType; this.visto = true;
+};
+el.addEventListener('pointermove', (e) => { anotar(e); this.dentro = true; });
+el.addEventListener('pointerleave', () => { this.dentro = false; this.fresco = true; });
+
+actualizar(dt) {
+  const r = this.el.getBoundingClientRect();
+  this.ancho = r.width || 1; this.alto = r.height || 1;
+  this.x = this.cx - r.left; this.y = this.cy - r.top;
+  if (!this.visto) return;
+  if (this.fresco) {
+    this.sx = this.x; this.sy = this.y; this.vx = this.vy = 0;
+    this.fresco = false;
+    return;
+  }
+  if (dt <= 0) return;
+  const ax = this.sx, ay = this.sy;
+  this.sx = suavizar(this.sx, this.x, this.semivida, dt);
+  this.sy = suavizar(this.sy, this.y, this.semivida, dt);
+  this.vx = suavizar(this.vx, (this.sx - ax) / dt, 0.05, dt);
+  this.vy = suavizar(this.vy, (this.sy - ay) / dt, 0.05, dt);
+}
+aGL(canvas, x = this.sx, y = this.sy) {
+  return [x * canvas.width / this.ancho,
+          (this.alto - y) * canvas.height / this.alto];
+}
+</script>
+<ol>
+  <li data-l="1-5">Los eventos solo anotan las coordenadas crudas de la ventana y el tipo de puntero (<code>'mouse'</code>, <code>'touch'</code>, <code>'pen'</code>).</li>
+  <li data-l="7">Al salir, marcamos <code>fresco</code>: la próxima posición se tomará tal cual, sin suavizado desde donde salió.</li>
+  <li data-l="9-12">Una vez por frame, al principio: el rectángulo de <em>este</em> frame convierte las coordenadas crudas a px CSS de la caja. Si la página se desplazó, <code>r.top</code> ya lo refleja.</li>
+  <li data-l="14-18">El remedio del bestiario del barrido: la primera posición (o la primera tras salir) se asigna directamente y la velocidad empieza en 0.</li>
+  <li data-l="19-23">Suavizado exacto de 2.4 para la posición (con la semivida elegida, 60 ms por defecto) y velocidad como derivada de la posición suavizada, suavizada a su vez con 50 ms.</li>
+  <li data-l="26-29">A píxeles del búfer, con la proporción <code>canvas.width / ancho</code> y la y invertida, en el momento de dibujar.</li>
+</ol>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.2.2 — Una estela que depende de la velocidad</h3>
+  <p>El halo se estira detrás del puntero en proporción a su velocidad y cambia de color con los movimientos rápidos. Prueba movimientos lentos, rápidos y bruscos cambios de dirección. La línea de abajo muestra la velocidad en px CSS por segundo.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.2.2 — Estela y velocidad" data-altura="320" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info">mueve el puntero sobre el lienzo</div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+#info { position: absolute; left: 8px; bottom: 6px; color: #b4bccb; font: 12px ui-monospace, monospace; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_mouse;        // px del búfer, origen abajo
+uniform vec2 u_vel;          // px del búfer por segundo (y hacia arriba)
+uniform float u_escala;      // px del búfer por px CSS
+uniform float u_intensidad;  // 0 fuera del lienzo, 1 dentro
+out vec4 fragColor;
+void main() {
+  vec2 d = gl_FragCoord.xy - u_mouse;
+  float v = length(u_vel);
+  vec2 dir = v > 1.0 ? u_vel / v : vec2(1.0, 0.0);
+  float s = dot(d, dir);                         // a lo largo del movimiento (+ delante)
+  float q = dot(d, vec2(-dir.y, dir.x));         // a lo ancho
+  float ancho = 26.0 * u_escala;
+  float largo = ancho + v * 0.09;                // detrás, la estela crece con la velocidad
+  float a = s < 0.0 ? s / largo : s / ancho;
+  float g = exp(-(a * a + (q / ancho) * (q / ancho)));
+  vec3 frio = vec3(0.25, 0.82, 0.91), calido = vec3(1.0, 0.42, 0.71);
+  vec3 col = mix(frio, calido, clamp(v / (1500.0 * u_escala), 0.0, 1.0));
+  fragColor = vec4(vec3(0.05, 0.06, 0.09) + col * g * u_intensidad, 1.0);
+}`;
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const puntero = new M7.Puntero(canvas, { semivida: 0.05 });
+const app = M7.crearApp(canvas, {
+  estado: { intensidad: 0 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    puntero.actualizar(app.reloj.dtReal);                        // responde al usuario: tiempo real
+    e.intensidad = M7.suavizar(e.intensidad, puntero.dentro ? 1 : 0, 0.12, app.reloj.dtReal);
+  },
+  dibujar(gl, e, app) {
+    const k = app.ancho / puntero.ancho;                         // px del búfer por px CSS
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_mouse, puntero.aGL(canvas));
+    GLKit.ponerUniform(gl, app.gpu.u.u_vel, [puntero.vx * k, -puntero.vy * k]);   // y hacia arriba
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    GLKit.ponerUniform(gl, app.gpu.u.u_intensidad, e.intensidad);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (puntero.visto) info.textContent = 'velocidad: ' + Math.hypot(puntero.vx, puntero.vy).toFixed(0) + ' px CSS/s';
+  },
+});
+</script>
+  </div>
+  <p>Los detalles que hacen que funcione en cualquier pantalla: todas las longitudes del shader se multiplican por <code>u_escala</code> (px del búfer por px CSS), así que la estela mide lo mismo en una pantalla retina que en una normal y con cualquier nivel de calidad; la velocidad llega en px del búfer por segundo con la y invertida (en CSS la y crece hacia abajo); y la intensidad se anima de 0 a 1 al entrar y de 1 a 0 al salir, en lugar de hacer aparecer el halo de golpe. El puntero y la intensidad usan <code>dtReal</code>: si la app tuviera un botón de pausa, el halo seguiría respondiendo.</p>
+</section>
+
+<h2>Ondas al hacer clic: un array de uniforms como buffer circular</h2>
+<p>Un clic que deja una onda es fácil: un uniform con la posición y el instante del clic. Varios clics seguidos, cada uno con su onda viva a la vez, necesitan memoria: el shader no recuerda nada entre frames (<a href="../06-glsl/02-pensar-en-paralelo.html">6.2</a>), así que alguien tiene que pasarle en cada frame la lista de ondas vivas. La estructura de datos es un <strong>buffer circular</strong> (<em>ring buffer</em>): un array de tamaño fijo N y un índice que apunta al próximo hueco; cada onda nueva se escribe en ese hueco y el índice avanza con <code>(i + 1) % N</code>, de modo que la onda N + 1 sobrescribe a la más antigua. Sin crecer, sin borrar, sin reordenar.</p>
+<p>En el shader, la lista es un array de uniforms: <code>uniform vec3 u_ondas[8];</code>. Esto es lo que comprobamos sobre ellos en el Chrome de pruebas:</p>
+<ul>
+  <li><code>getActiveUniform</code> lo presenta como <code>u_ondas[0]</code>, de tipo <code>FLOAT_VEC3</code> y tamaño 8. La location de <code>'u_ondas'</code> y la de <code>'u_ondas[0]'</code> son la misma, y también se puede pedir la de un elemento suelto (<code>'u_ondas[5]'</code>).</li>
+  <li><code>gl.uniform3fv(loc, datos)</code> con 24 floats rellena los 8 elementos de una vez. Con 12 floats solo rellena los 4 primeros y el resto conserva su valor anterior; con 30, los sobrantes se ignoran sin error; con 10 (no múltiplo de 3), <code>INVALID_VALUE: uniform3fv: invalid size</code> y no se asigna nada.</li>
+  <li>El límite se cuenta en «vectores de uniforms» (filas de 4 componentes), y un array de 8 <code>vec3</code> ocupa 8 filas: la cuarta componente de cada una solo la pueden aprovechar otras variables sueltas. El límite es <code>MAX_FRAGMENT_UNIFORM_VECTORS</code>: 1024 en la máquina de pruebas; WebGL2 garantiza al menos 224. Para unas decenas de ondas sobra; el coste real es que cada píxel recorre el bucle entero.</li>
+</ul>
+<p>Queda una decisión de diseño con más miga de lo que parece: <strong>qué número del tiempo mandar</strong>. Lo natural es guardar el instante del clic (<code>t0</code>) y que el shader calcule <code>edad = u_time − t0</code>. Funciona, pero hereda dos problemas: los dos tiempos tienen que salir del mismo reloj (el de 7.1, con sus pausas y escalas), y el shader resta dos floats de 32 bits que crecen sin parar, con la pérdida de precisión de <a href="../05-webgl/04-uniforms-animacion.html#m5-tiempo-float32">5.4</a> (y envolver <code>u_time</code> rompería la resta justo al envolver). La alternativa de un senior: <strong>manda edades, no instantes</strong>. JavaScript calcula <code>edad = reloj.t − t0</code> con 64 bits en cada frame y el shader recibe números pequeños que empiezan en 0.</p>
+
+<div class="callout bestiario" data-id="m7-ondas-otro-reloj" data-titulo="Las ondas del clic no aparecen, aparecen ya terminadas o se congelan con la pausa">
+  <p><strong>Síntoma:</strong> haces clic y no pasa nada; o la onda aparece un instante ya muy abierta y desvanecida; o, al pausar la escena, las ondas siguen expandiéndose (o se paran las ondas pero no la escena).</p>
+  <p><strong>Causa:</strong> el instante del clic y el tiempo del shader vienen de relojes distintos. Típicamente <code>t0 = e.timeStamp</code> o <code>performance.now()</code> (milisegundos desde que se cargó la página) frente a un <code>u_time</code> en segundos del reloj de la app (que no cuenta las pausas): la edad sale enorme o negativa. O el shader resta dos tiempos grandes en float32 y la edad llega cuantizada.</p>
+  <p><strong>Solución:</strong> un solo reloj: el evento anota el clic, <code>actualizar</code> lo registra con <code>t0 = reloj.t</code>, y en cada frame se envía <code>edad = reloj.t − t0</code> calculada en JavaScript. Las ondas quedan sincronizadas con la pausa y la cámara lenta y la precisión no depende de cuánto tiempo lleve abierta la página.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.2.3 — Ondas sobre el agua</h3>
+  <p>Cada clic deja una onda que refracta la imagen. Al principio, un pequeño guion lanza tres ondas solas; después, haz clic rápido en varios sitios: caben 8 a la vez y la novena sobrescribe a la más antigua (mira el índice del hueco en la línea de abajo).</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.2.3 — Ondas con buffer circular" data-altura="330" data-apilado data-incluir="glkit,m7kit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+#info { position: absolute; left: 8px; bottom: 6px; color: #fff; font: 12px ui-monospace, monospace; text-shadow: 0 1px 2px #000; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+#define N_ONDAS 8
+uniform sampler2D u_tex;
+uniform vec2 u_resolution;
+uniform vec3 u_ondas[N_ONDAS];   // xy: centro de 0 a 1 (origen abajo) · z: edad en s (< 0: hueco libre)
+out vec4 fragColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 aspecto = vec2(u_resolution.x / u_resolution.y, 1.0);
+  vec2 desplazar = vec2(0.0);
+  float brillo = 0.0;
+  for (int i = 0; i < N_ONDAS; i++) {
+    float edad = u_ondas[i].z;
+    if (edad < 0.0) continue;
+    vec2 d = (uv - u_ondas[i].xy) * aspecto;        // en alturas del lienzo: círculos, no elipses
+    float r = length(d);
+    float x = r - edad * 0.45;                       // distancia al frente, que avanza 0,45 alturas/s
+    float onda = sin(x * 70.0) * exp(-x * x * 500.0) * exp(-edad * 1.6);
+    desplazar += (r > 1e-4 ? d / r : vec2(0.0)) * onda * 0.012;
+    brillo += onda;
+  }
+  vec3 col = texture(u_tex, uv + desplazar / aspecto).rgb;
+  fragColor = vec4(col + 0.12 * brillo, 1.0);
+}`;
+const N = 8, VIDA = 3;                                 // huecos y segundos de vida de cada onda
+const centros = new Float32Array(N * 2);
+const inicios = new Float64Array(N).fill(-Infinity);  // t0 en segundos del reloj (64 bits, en JS)
+const datos = new Float32Array(N * 3);                // lo que viaja a la GPU: x, y, edad
+let siguiente = 0;                                    // el índice del buffer circular
+
+function nuevaOnda(x, y, t) {
+  centros[siguiente * 2] = x; centros[siguiente * 2 + 1] = y;
+  inicios[siguiente] = t;
+  siguiente = (siguiente + 1) % N;                    // la más antigua se sobrescribe
+}
+
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+const pendientes = [];                                // los eventos solo anotan
+canvas.addEventListener('pointerdown', (e) => pendientes.push([e.clientX, e.clientY]));
+const guion = [[0.3, 0.3, 0.55], [0.9, 0.68, 0.4], [1.5, 0.45, 0.72]];   // [t, x, y]
+
+const imagen = Texturas.crear('paisaje');
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray(),
+                tex: GLKit.crearTextura(gl, imagen, { wrap: gl.MIRRORED_REPEAT }) };
+  },
+  actualizar(e, dt, app) {
+    const t = app.reloj.t;
+    while (guion.length && t >= guion[0][0]) { const [, x, y] = guion.shift(); nuevaOnda(x, y, t); }
+    if (pendientes.length) {
+      const r = canvas.getBoundingClientRect();
+      for (const [cx, cy] of pendientes) nuevaOnda((cx - r.left) / r.width, (r.bottom - cy) / r.height, t);
+      pendientes.length = 0;
+    }
+  },
+  dibujar(gl, e, app) {
+    let vivas = 0;
+    for (let i = 0; i < N; i++) {
+      const edad = app.reloj.t - inicios[i];          // la resta, en JavaScript
+      datos[i * 3] = centros[i * 2];
+      datos[i * 3 + 1] = centros[i * 2 + 1];
+      datos[i * 3 + 2] = edad <= VIDA ? edad : -1;    // -1: hueco libre para el shader
+      if (edad <= VIDA) vivas++;
+    }
+    const g = app.gpu;
+    gl.useProgram(g.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, g.tex);
+    GLKit.ponerUniform(gl, g.u.u_tex, 0);
+    GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, g.u.u_ondas, datos);       // uniform3fv con los 24 floats
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    info.textContent = `ondas vivas: ${vivas}/${N} · próximo hueco: ${siguiente}`;
+  },
+});
+</script>
+  </div>
+  <p>Lo que merece atención: el <code>pointerdown</code> solo anota el clic; <code>actualizar</code> lo convierte con el rectángulo del frame y lo registra con el tiempo del reloj; y <code>dibujar</code> calcula las edades en JavaScript y marca con −1 los huecos caducados, que el shader salta con <code>continue</code>. Las distancias se miden con el aspecto corregido (<a href="../06-glsl/02-pensar-en-paralelo.html">6.2</a>) para que las ondas sean círculos. La textura usa <code>MIRRORED_REPEAT</code> porque el desplazamiento puede leer un poco fuera de [0, 1] en los bordes, y con <code>REPEAT</code> aparecería el lado contrario (<a href="../06-glsl/08-texturas-efectos.html">6.8</a>). <code>GLKit.ponerUniform</code> ve que <code>u_ondas</code> es un <code>FLOAT_VEC3</code> y llama a <code>uniform3fv</code> con el array entero.</p>
+</section>
+
+<h2>Varios dedos a la vez</h2>
+<p>Los Pointer Events unifican ratón, dedo y lápiz (<a href="../01-web/04-js-dom-eventos.html">1.4</a>), y cada puntero trae un <code>pointerId</code> propio. Con el ratón hay uno solo; en una pantalla táctil, uno por dedo. Lo comprobamos simulando dos dedos con el protocolo de depuración de Chrome: cada dedo llegó con su <code>pointerId</code> (2 y 3), el primero con <code>isPrimary = true</code> y el segundo con <code>false</code>, y los movimientos y el <code>pointerup</code> de cada uno llegaron por separado, con su id. Un tercer toque, más tarde, recibió el id 4: los ids no se reutilizan de inmediato, así que no sirven como índice de un array.</p>
+<p>Para el shader, la estructura es la de las ondas: un array de uniforms de tamaño fijo (5 dedos es un máximo razonable) y, en JavaScript, un <code>Map</code> de <code>pointerId</code> a un hueco del array. Cuatro detalles hacen que funcione con dedos reales:</p>
+<ul>
+  <li><strong><code>touch-action: none</code></strong> en el CSS del canvas. Sin él, en cuanto el dedo se desplaza, el navegador decide que es un scroll y cancela el puntero: en nuestra prueba, un arrastre sobre un canvas sin esa propiedad produjo un <code>pointerdown</code> y, enseguida, un <code>pointercancel</code> (el bestiario <a href="../01-web/04-js-dom-eventos.html#m1-arrastre-perdido">del arrastre perdido</a>).</li>
+  <li><strong><code>setPointerCapture(e.pointerId)</code></strong> en el <code>pointerdown</code>, para seguir recibiendo los movimientos de ese dedo aunque salga del canvas.</li>
+  <li><strong><code>pointercancel</code> igual que <code>pointerup</code></strong>. Si no lo tratas, un dedo que el sistema cancela (una llamada entrante, un gesto del sistema) se queda «pegado» para siempre en tu array.</li>
+  <li><strong>Huecos estables.</strong> A cada dedo se le asigna el primer hueco libre al tocar y se libera al soltar (después de desvanecerse). Así cada dedo conserva su color y su historia mientras dura.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.2.4 — Un halo por dedo</h3>
+  <p>En una pantalla táctil, toca con varios dedos a la vez: cada uno tiene su color y se desvanece al soltarlo. Con ratón, mantén pulsado y arrastra (el ratón es un solo puntero). Mientras no toques nada, dos «dedos fantasma» hacen una demostración.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.2.4 — Multitouch" data-altura="320" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+#info { position: absolute; left: 8px; bottom: 6px; color: #b4bccb; font: 12px ui-monospace, monospace; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+#define MAX_DEDOS 5
+uniform vec3 u_dedos[MAX_DEDOS];   // xy: px del búfer (origen abajo) · z: intensidad 0..1
+uniform float u_escala;            // px del búfer por px CSS
+out vec4 fragColor;
+vec3 color(float i) { return 0.55 + 0.45 * cos(6.2831 * (i * 0.21 + vec3(0.0, 0.33, 0.67))); }
+void main() {
+  vec3 col = vec3(0.05, 0.06, 0.09);
+  for (int i = 0; i < MAX_DEDOS; i++) {
+    float k = u_dedos[i].z;
+    if (k <= 0.0) continue;
+    float d = distance(gl_FragCoord.xy, u_dedos[i].xy) / (60.0 * u_escala);
+    col += color(float(i)) * k * exp(-d * d * 2.5);
+  }
+  fragColor = vec4(col, 1.0);
+}`;
+const MAX = 5;
+const huecos = new Array(MAX).fill(null);             // hueco → pointerId (o null)
+const dedos = new Map();                              // pointerId → { cx, cy, activo, k, hueco }
+const canvas = document.getElementById('c');
+const info = document.getElementById('info');
+let fantasmas = true;                                 // demostración hasta el primer toque
+
+canvas.addEventListener('pointerdown', (e) => {
+  fantasmas = false;
+  const hueco = huecos.indexOf(null);
+  if (hueco < 0) return;                              // ya hay 5 dedos: se ignora el sexto
+  huecos[hueco] = e.pointerId;
+  canvas.setPointerCapture(e.pointerId);
+  dedos.set(e.pointerId, { cx: e.clientX, cy: e.clientY, activo: true, k: 0, hueco });
+});
+canvas.addEventListener('pointermove', (e) => {
+  const d = dedos.get(e.pointerId);
+  if (d) { d.cx = e.clientX; d.cy = e.clientY; }
+});
+const soltar = (e) => { const d = dedos.get(e.pointerId); if (d) d.activo = false; };
+canvas.addEventListener('pointerup', soltar);
+canvas.addEventListener('pointercancel', soltar);     // ¡igual que pointerup!
+
+const datos = new Float32Array(MAX * 3);
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    const dtr = app.reloj.dtReal;
+    for (const [id, d] of dedos) {
+      d.k = M7.suavizar(d.k, d.activo ? 1 : 0, 0.08, dtr);
+      if (!d.activo && d.k < 0.01) { huecos[d.hueco] = null; dedos.delete(id); }   // libera el hueco
+    }
+  },
+  dibujar(gl, e, app) {
+    const r = canvas.getBoundingClientRect();         // conversión en el frame
+    const k = app.ancho / r.width;
+    datos.fill(0);
+    if (fantasmas) {
+      const t = app.reloj.t;
+      for (let i = 0; i < 2; i++) {
+        const a = t * (0.9 + 0.4 * i) + i * 3;
+        datos[i * 3] = (0.5 + 0.28 * Math.cos(a)) * app.ancho;
+        datos[i * 3 + 1] = (0.5 + 0.3 * Math.sin(a * 1.3)) * app.alto;
+        datos[i * 3 + 2] = 0.8;
+      }
+    }
+    for (const d of dedos.values()) {
+      datos[d.hueco * 3] = (d.cx - r.left) * k;
+      datos[d.hueco * 3 + 1] = (r.bottom - d.cy) * k;
+      datos[d.hueco * 3 + 2] = d.k;
+    }
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_dedos, datos);
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    info.textContent = fantasmas ? 'demostración: toca o haz clic' : 'punteros: ' + ([...dedos.keys()].join(', ') || 'ninguno');
+  },
+});
+</script>
+  </div>
+  <p>La línea de abajo muestra los <code>pointerId</code> vivos: con ratón verás siempre el 1; con dedos, números que van creciendo. Fíjate en que el dedo que se suelta no se borra enseguida: se marca como inactivo, su intensidad cae con suavidad y solo al llegar casi a cero libera su hueco. Si un sexto dedo toca la pantalla, no hay hueco y se ignora; no rompe nada.</p>
+</section>
+
+<h2>El scroll como entrada</h2>
+<p>Los efectos guiados por el scroll convierten una posición de la página en un número de 0 a 1 que el shader interpreta: un color que cambia al bajar, un objeto que se abre al llegar a una sección, un fondo que se desplaza más despacio que el contenido (parallax). Dos fórmulas cubren casi todos los casos:</p>
+<ul>
+  <li><strong>Progreso de la página:</strong> <code>p = scrollY / (scrollHeight − innerHeight)</code>, de 0 arriba del todo a 1 abajo del todo.</li>
+  <li><strong>Progreso de una sección:</strong> con su rectángulo <code>r</code> y la altura de la ventana <code>vh</code>, <code>p = clamp((vh − r.top) / (vh + r.height), 0, 1)</code>: 0 cuando su borde superior asoma por abajo y 1 cuando su borde inferior desaparece por arriba.</li>
+</ul>
+<p>¿Dónde se leen esos valores? La receta clásica es escuchar el evento <code>scroll</code>. Pero lo medimos: en el Chrome de pruebas, cada evento <code>scroll</code> se despachó dentro del frame, justo antes de los callbacks de rAF (entre 0 y 0,1 ms antes, en los 12 casos), y el rAF siguiente vio exactamente el mismo <code>scrollY</code>. Es decir, <strong>no necesitas el evento</strong>: leer <code>scrollY</code> y los rectángulos en el paso «leer» del frame da los mismos valores, una sola vez por frame y en el sitio donde ya lees el resto del layout. Si aun así usas el evento (para no despertar el bucle cuando nada cambia, por ejemplo), que el manejador solo anote que hubo scroll: sin leer layout, sin tocar GL. El <code>{ passive: true }</code> no le hace daño, aunque el evento <code>scroll</code> no se puede cancelar y el navegador no espera por él; donde un listener no pasivo sí frena el desplazamiento es en <code>wheel</code>, <code>touchstart</code> y <code>touchmove</code> (<a href="../01-web/04-js-dom-eventos.html#m1-pasivo">1.4</a>).</p>
+
+<div class="callout senior" data-titulo="El canvas fijo va un frame por detrás del scroll">
+  <p>En Chrome, el desplazamiento lo hace el hilo del compositor (<a href="../02-animacion/01-pipeline-render.html">2.1</a>): mueve el contenido de la página sin esperar a tu JavaScript. Tu canvas, en cambio, se dibuja en el hilo principal con el <code>scrollY</code> que conoce tu rAF, que es el del frame anterior. Lo medimos grabando la pantalla durante un gesto de scroll táctil a 1500 px/s con un rectángulo WebGL que debía coincidir con una tarjeta del DOM: con el canvas <code>position: fixed</code>, el rectángulo iba 25 px por detrás de la tarjeta <em>en todos los frames</em> del desplazamiento (un frame de scroll). Con el canvas dentro del contenido (<code>position: absolute</code> en la sección, dibujando relativo a su propio rectángulo), el compositor desplaza el canvas y la tarjeta juntos y la coincidencia fue perfecta en todos los frames. Moraleja: si el efecto va pegado a elementos concretos (un borde, un recorte), el canvas debe desplazarse con ellos; si es difuso (un brillo, un degradado de fondo), el frame de retraso no se ve, sobre todo si además suavizas el progreso.</p>
+</div>
+
+<div class="callout bestiario" data-id="m7-canvas-fijo-retraso" data-titulo="Al hacer scroll rápido, el efecto del canvas de fondo se despega de los elementos">
+  <p><strong>Síntoma:</strong> un fondo WebGL fijo dibuja brillos o recortes alineados con tarjetas del DOM. Quieto, encaja al píxel; al desplazar la página deprisa (sobre todo con el dedo o un trackpad), el efecto va detrás de los elementos, como si arrastrara, y se recoloca al parar.</p>
+  <p><strong>Causa:</strong> el compositor desplaza el DOM sin esperar al hilo principal, y tu canvas fijo se dibuja con el <code>getBoundingClientRect()</code> que ve tu rAF, un frame más antiguo. Medido: 25 px de desfase constante a 1500 px/s.</p>
+  <p><strong>Solución:</strong> para efectos pegados a elementos, pon el canvas dentro del contenido que se desplaza (en la sección, o un canvas por sección si son pocas, cuidando el límite de contextos) y dibuja relativo a su propio rectángulo. Para fondos difusos, acepta el frame de retraso y suaviza. Para la parte del DOM, las animaciones CSS guiadas por scroll (<code>animation-timeline: scroll()</code>, donde el navegador las admita) corren en el compositor y no tienen retraso.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.2.5 — El DOM guía al shader (y el canvas detrás de la página)</h3>
+  <p>Una página con tres tarjetas y un canvas detrás. El shader lee dos cosas del DOM en cada frame: el progreso de la página (suavizado), que desplaza el color del fondo, y el rectángulo de cada tarjeta, alrededor del cual dibuja un brillo y un borde rosa de 2 px que debería coincidir con el borde blanco del DOM. Desplázate dentro del playground; hazlo muy rápido con el canvas fijo y después con «canvas dentro del contenido».</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.2.5 — Scroll y elementos del DOM" data-altura="360" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="fondo"></canvas>
+<div id="panel"><label><input type="checkbox" id="dentro"> canvas dentro del contenido</label> <span id="info"></span></div>
+<div id="contenido">
+  <h1>Desplázate ↓</h1>
+  <section class="tarjeta"><h2>Una</h2><p>El brillo lo dibuja el shader con el rectángulo de esta tarjeta.</p></section>
+  <section class="tarjeta"><h2>Dos</h2><p>El borde rosa es de WebGL; el blanco, del DOM.</p></section>
+  <section class="tarjeta"><h2>Tres</h2><p>El color de fondo sigue al progreso de la página.</p></section>
+  <p class="fin">Fin de la página</p>
+</div>
+</script>
+<script type="text/x-css">
+html, body { margin: 0; background: transparent; }
+#fondo { position: fixed; left: 0; top: 0; width: 100%; height: 100%; display: block; z-index: -1; }
+.dentro #fondo { position: absolute; }
+#panel { position: sticky; top: 0; z-index: 2; padding: 6px 10px; background: rgba(14,16,20,0.85); color: #b4bccb; font: 12px system-ui; }
+#contenido { color: #e4e7ee; font: 14px/1.5 system-ui; padding: 10px 0 40px; }
+h1 { font: 700 22px system-ui; margin: 30px 24px 180px; }
+.tarjeta { width: 62%; margin: 0 auto 170px; padding: 10px 18px; border: 1px solid rgba(255,255,255,0.8); border-radius: 14px; background: rgba(14,16,20,0.35); }
+.tarjeta h2 { font: 700 17px system-ui; margin: 4px 0; }
+.fin { text-align: center; color: #8791a5; margin-bottom: 120px; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_progreso;          // 0..1, suavizado
+uniform vec4 u_tarjetas[3];        // x, y (esquina inferior izquierda), ancho, alto: px del búfer
+uniform float u_escala;            // px del búfer por px CSS
+out vec4 fragColor;
+float caja(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 a = vec3(0.10, 0.08, 0.22), b = vec3(0.02, 0.18, 0.22);
+  vec3 col = mix(a, b, clamp(u_progreso * 1.2 - uv.y * 0.3 + 0.1, 0.0, 1.0));
+  for (int i = 0; i < 3; i++) {
+    vec4 t = u_tarjetas[i];
+    vec2 centro = t.xy + 0.5 * t.zw;
+    float d = caja(gl_FragCoord.xy - centro, 0.5 * t.zw, 14.0 * u_escala);   // SDF de 6.3, en px del búfer
+    col += vec3(0.55, 0.48, 1.0) * 0.5 * exp(-max(d, 0.0) / (22.0 * u_escala));
+    col = mix(col, vec3(1.0, 0.42, 0.71), smoothstep(1.5, 0.5, abs(d)));    // borde de ~2 px
+  }
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('fondo');
+const tarjetas = [...document.querySelectorAll('.tarjeta')];
+const casilla = document.getElementById('dentro');
+const info = document.getElementById('info');
+casilla.onchange = () => {
+  document.documentElement.classList.toggle('dentro', casilla.checked);
+  canvas.style.height = casilla.checked ? document.documentElement.scrollHeight + 'px' : '';
+};
+const datos = new Float32Array(12);
+
+const app = M7.crearApp(canvas, {
+  dprMax: 1.5,
+  estado: { progreso: 0, progresoSuave: 0 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    // 1. Leer: el progreso de la página, en el frame (sin evento scroll)
+    const max = document.documentElement.scrollHeight - innerHeight;
+    e.progreso = max > 0 ? scrollY / max : 0;
+    e.progresoSuave = M7.suavizar(e.progresoSuave, e.progreso, 0.15, app.reloj.dtReal);
+  },
+  dibujar(gl, e, app) {
+    const rc = canvas.getBoundingClientRect();                  // leer: todo junto, al principio
+    const k = app.ancho / rc.width;
+    tarjetas.forEach((t, i) => {
+      const r = t.getBoundingClientRect();
+      datos[i * 4] = (r.left - rc.left) * k;                    // relativo al CANVAS, no a la ventana
+      datos[i * 4 + 1] = (rc.bottom - r.bottom) * k;            // y hacia arriba
+      datos[i * 4 + 2] = r.width * k;
+      datos[i * 4 + 3] = r.height * k;
+    });
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_progreso, e.progresoSuave);
+    GLKit.ponerUniform(gl, app.gpu.u.u_tarjetas, datos);
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    info.textContent = `progreso ${e.progreso.toFixed(2)} (suave ${e.progresoSuave.toFixed(2)}) · búfer ${app.ancho}×${app.alto}`;
+  },
+});
+</script>
+  </div>
+  <p>Tres detalles del código que resuelven los tres bichos de la sección. El progreso se lee en <code>actualizar</code>, sin escuchar <code>scroll</code>, y se suaviza con 150 ms de semivida. Los rectángulos se leen todos juntos al principio de <code>dibujar</code>, antes de escribir nada en el DOM (la línea de información se escribe al final), así que ninguna lectura fuerza un layout. Y se convierten <em>relativos al rectángulo del canvas</em>: con el canvas fijo, ese rectángulo es la ventana; dentro del contenido, es el propio canvas, y las tarjetas no se mueven respecto a él mientras dura el scroll. En el modo «dentro», el canvas mide lo que toda la página (por eso limitamos el DPR a 1,5): es el precio de que el compositor lo desplace junto con el contenido.</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Quieres pasar al shader el progreso de scroll de la página. ¿Cuál de estos lugares para leer <code>scrollY</code> es el mejor en una app con el esqueleto de 7.1?</p>
+  <ul>
+    <li>Un listener de <code>scroll</code> que lee <code>scrollY</code> y asigna el uniform con <code>gl.uniform1f</code>.<div class="explicacion">Dos errores de arquitectura: una llamada de GL fuera del frame (el programa en uso puede no ser el tuyo, 7.1) y un sitio más donde se lee layout. El valor es el mismo que leerías en el frame.</div></li>
+    <li>Un <code>setInterval</code> de 16 ms que lee <code>scrollY</code> y lo guarda en el estado.<div class="explicacion">No está sincronizado con los frames: unas veces leerás dos veces entre frames y otras ninguna, con los tirones de 2.3.</div></li>
+    <li data-correcta>En el paso «leer» del frame (al principio de <code>actualizar</code>), guardándolo en el estado; el uniform se asigna al dibujar.<div class="explicacion">Correcto. Medido: el evento <code>scroll</code> se despacha justo antes del rAF y el rAF ve el mismo <code>scrollY</code>, así que leer en el frame no pierde nada y lo tienes junto al resto de lecturas de layout, antes de cualquier escritura.</div></li>
+  </ul>
+</div>
+
+<h2>Teclado</h2>
+<p>El teclado llega por <code>keydown</code> y <code>keyup</code>, y en <a href="../01-web/04-js-dom-eventos.html">1.4</a> viste la diferencia entre <code>e.key</code> (el carácter, que depende de la distribución del teclado) y <code>e.code</code> (la tecla física: <code>KeyW</code> está en el mismo sitio en un teclado QWERTY y en uno AZERTY, donde escribe una Z). Para controles de juego, <code>code</code>; para escribir texto, <code>key</code>. La integración con la arquitectura es la misma de siempre: los eventos mantienen un conjunto de teclas pulsadas y <code>actualizar</code> lo lee con <code>dt</code>. Pero un canvas añade una trampa propia:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+canvas.tabIndex = 0;
+const teclas = new Set();
+canvas.addEventListener('keydown', (e) => {
+  if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+  teclas.add(e.code);
+});
+canvas.addEventListener('keyup', (e) => teclas.delete(e.code));
+canvas.addEventListener('blur', () => teclas.clear());
+
+// en actualizar(estado, dt):
+const dx = (teclas.has('ArrowRight') || teclas.has('KeyD') ? 1 : 0)
+         - (teclas.has('ArrowLeft') || teclas.has('KeyA') ? 1 : 0);
+estado.x += dx * VELOCIDAD * dt;
+</script>
+<ol>
+  <li data-l="1">Sin esto, el canvas no puede recibir el foco y sus <code>keydown</code> no llegan nunca (bestiario de abajo). <code>tabIndex = 0</code> lo mete en el orden de tabulación en su posición natural; un valor negativo lo haría enfocable solo con clic o con <code>focus()</code>.</li>
+  <li data-l="3-6">El conjunto de teclas pulsadas, por su <code>code</code>. El <code>preventDefault</code> solo para las teclas que el navegador usaría para desplazar la página (flechas y espacio), y solo mientras el canvas tiene el foco: fuera de él, la página debe seguir desplazándose con normalidad.</li>
+  <li data-l="8">Al perder el foco, se vacía el conjunto: si la ventana pierde el foco con una tecla pulsada, su <code>keyup</code> nunca llega (<a href="../01-web/04-js-dom-eventos.html#m1-tecla-atascada">la tecla atascada</a> de 1.4).</li>
+  <li data-l="11-13">La lectura, en <code>actualizar</code>, con velocidad por segundo y <code>dt</code>: igual a cualquier frecuencia de pantalla (<a href="../02-animacion/03-raf.html">2.3</a>). Las teclas repetidas del sistema (<code>e.repeat</code>) no importan, porque no contamos eventos: leemos un estado.</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m7-canvas-sin-teclado" data-titulo="El canvas no responde al teclado (aunque haya hecho clic en él)">
+  <p><strong>Síntoma:</strong> has añadido <code>canvas.addEventListener('keydown', …)</code>, haces clic sobre el canvas, pulsas teclas y el manejador nunca se ejecuta. Con el listener en <code>document</code> sí funciona.</p>
+  <p><strong>Causa:</strong> un canvas no es enfocable por defecto. El clic no le da el foco, así que las teclas van al elemento enfocado, que es el <code>body</code>. Lo comprobamos: tras un clic en un canvas sin <code>tabindex</code>, el <code>keydown</code> llegó a <code>document</code> con <code>target = BODY</code> y el listener del canvas no se enteró; con <code>tabindex="0"</code>, el clic lo enfocó y su listener sí se ejecutó.</p>
+  <p><strong>Solución:</strong> <code>tabindex="0"</code> en el canvas (y un estilo <code>:focus-visible</code> para que se vea cuándo tiene el foco). Si los controles deben funcionar en toda la página, escucha en <code>window</code>, pero entonces no bloquees con <code>preventDefault</code> las teclas que el usuario necesita para desplazarse y rellenar formularios.</p>
+</div>
+
+<h2>Movimiento reducido: <code>prefers-reduced-motion</code></h2>
+<p>Algunas personas sufren mareos, náuseas o migrañas con el movimiento en pantalla, y los sistemas operativos tienen un ajuste para pedir menos. La página lo lee con la media query <code>prefers-reduced-motion</code>, que en CSS ya usaste en <a href="../02-animacion/02-css-transiciones.html">2.2</a>. En JavaScript, con <code>matchMedia</code>:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const consulta = matchMedia('(prefers-reduced-motion: reduce)');
+function aplicarPreferencia() {
+  app.estado.reducir = consulta.matches;
+  app.reloj.escala = consulta.matches ? 0 : 1;
+}
+consulta.addEventListener('change', aplicarPreferencia);
+aplicarPreferencia();
+</script>
+<ol>
+  <li data-l="1">Un objeto <code>MediaQueryList</code>: su <code>matches</code> dice si ahora mismo se cumple.</li>
+  <li data-l="2-5">Con el reloj de 7.1, reducir el movimiento autónomo es una línea: escala 0 deja la escena quieta (una imagen fija, digna) mientras la interacción sigue viva, porque el puntero usa <code>dtReal</code>. El estado recuerda la preferencia para que <code>dibujar</code> pueda sustituir efectos de movimiento por otros suaves.</li>
+  <li data-l="6">La preferencia puede cambiar con la página abierta. Lo comprobamos emulando el ajuste con el protocolo de depuración de Chrome: <code>matches</code> pasó de <code>false</code> a <code>true</code> y el evento <code>change</code> llegó en el acto.</li>
+</ol>
+</div>
+
+<p>¿Qué cuenta como «menos movimiento»? No es apagarlo todo, es quitar lo que se mueve solo o de forma amplia: fondos que fluyen sin parar, parallax y efectos atados al scroll, zooms y giros grandes, destellos. Suele poder quedarse lo que el usuario provoca y es pequeño o no implica desplazamiento: un cambio de color o de brillo al pasar el puntero, una onda sustituida por un fundido breve. Y ofrece un interruptor visible en la propia página, porque la preferencia del sistema es un valor por defecto, no la última palabra. Un criterio que no es opcional: nada que parpadee más de tres veces por segundo (es uno de los criterios de accesibilidad WCAG, por el riesgo de crisis epilépticas).</p>
+
+<h2>Accesibilidad: el canvas no existe para un lector de pantalla</h2>
+<p>Para un lector de pantalla, un canvas son píxeles sin significado. Lo comprobamos mirando el árbol de accesibilidad que Chrome construye (el que leen los lectores de pantalla, visible en DevTools): un <code>&lt;canvas&gt;</code> sin atributos aparece como un nodo «Canvas» sin nombre; con <code>role="img"</code> y <code>aria-label="…"</code> aparece como una imagen con esa descripción; con <code>aria-hidden="true"</code> desaparece del árbol; y el contenido que pongas <em>dentro</em> del elemento canvas (párrafos, botones), que no se pinta, sí aparece en el árbol. Con eso se deciden tres casos:</p>
+<ul>
+  <li><strong>Decorativo</strong> (un fondo animado): <code>aria-hidden="true"</code> en el canvas y todo el contenido real (títulos, textos, botones) en el DOM, encima. Nunca dibujes el texto de la página en WebGL: no se puede leer, seleccionar, traducir ni ampliar.</li>
+  <li><strong>Con significado pero estático</strong> (un gráfico, una ilustración que aporta información): <code>role="img"</code> y un <code>aria-label</code> que la describa en una frase, o un pie de figura visible.</li>
+  <li><strong>Interactivo</strong> (un configurador, un juego): foco con teclado (<code>tabindex</code>, sección anterior), controles que existan como botones reales del DOM y un texto que describa el estado cuando cambie. Según la especificación ARIA, los hijos de un elemento con <code>role="img"</code> son presentacionales, así que no pongas controles interactivos dentro de un canvas con ese rol.</li>
+</ul>
+<p>Dos detalles visuales completan la lista: el contraste del texto sobre un fondo que se mueve (pon una capa semitransparente detrás del texto o limita el rango de colores del shader en esa zona: el contraste mínimo recomendado para texto normal es 4,5:1) y el <code>pointer-events: none</code> en un canvas de fondo, para que los clics lleguen a los elementos de la página que hay encima (y escuchar el puntero en <code>window</code> si el shader lo necesita).</p>
+
+<div class="quiz">
+  <p class="pregunta">Tu portada tiene un canvas WebGL a pantalla completa como fondo decorativo, con el título y los botones encima en el DOM. ¿Qué atributos lleva el canvas?</p>
+  <ul>
+    <li><code>role="img"</code> y <code>aria-label="Fondo animado de ondas moradas"</code>.<div class="explicacion">Así el lector de pantalla anunciará una imagen que no aporta nada, cada vez que la recorra. Una descripción es para lo que tiene significado; lo decorativo se oculta.</div></li>
+    <li data-correcta><code>aria-hidden="true"</code>, y el CSS <code>pointer-events: none</code>.<div class="explicacion">Correcto. <code>aria-hidden</code> lo saca del árbol de accesibilidad (comprobado: desaparece) y <code>pointer-events: none</code> deja que los clics lleguen al contenido de encima. Todo lo importante ya está en el DOM.</div></li>
+    <li><code>tabindex="0"</code>, para que se pueda llegar a él con el teclado.<div class="explicacion">Un fondo decorativo no debe recibir el foco: sería una parada inútil en el recorrido con el tabulador. <code>tabindex</code> es para canvas interactivos.</div></li>
+  </ul>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 7.2.1 — El halo que se queda atrás</h3>
+  <p>El halo sigue al puntero mientras lo mueves, pero si haces scroll con la rueda sin mover el ratón (la página del playground se desplaza) se queda pegado a la página. Arréglalo para que siga bajo el cursor también durante el scroll, sin añadir ningún listener de <code>scroll</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.2.1" data-altura="320" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<p>↓ Deja el ratón quieto sobre el lienzo y haz scroll con la rueda.</p>
+</script>
+<script type="text/x-css">
+body { height: 900px; }
+#c { display: block; width: 100%; height: 260px; margin-top: 30px; }
+p { color: #8791a5; font: 13px system-ui; padding: 0 10px; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_mouse;      // px del búfer, origen abajo
+uniform float u_escala;    // px del búfer por px CSS
+out vec4 fragColor;
+void main() {
+  float d = distance(gl_FragCoord.xy, u_mouse) / (40.0 * u_escala);
+  fragColor = vec4(vec3(0.07, 0.08, 0.12) + vec3(0.55, 0.48, 1.0) * exp(-d * d), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const raton = { x: 0, y: 0 };                        // px CSS dentro de la caja del canvas
+
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  raton.x = e.clientX - r.left;
+  raton.y = e.clientY - r.top;
+});
+
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, app) {
+    const k = app.ancho / app.anchoCSS;
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_mouse, [raton.x * k, (app.altoCSS - raton.y) * k]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_mouse;      // px del búfer, origen abajo
+uniform float u_escala;    // px del búfer por px CSS
+out vec4 fragColor;
+void main() {
+  float d = distance(gl_FragCoord.xy, u_mouse) / (40.0 * u_escala);
+  fragColor = vec4(vec3(0.07, 0.08, 0.12) + vec3(0.55, 0.48, 1.0) * exp(-d * d), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const crudo = { cx: 0, cy: 0 };                      // clientX/Y: coordenadas de la VENTANA
+
+canvas.addEventListener('pointermove', (e) => {      // el evento solo anota lo crudo
+  crudo.cx = e.clientX;
+  crudo.cy = e.clientY;
+});
+
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, app) {
+    const r = canvas.getBoundingClientRect();        // el rectángulo de ESTE frame (ya desplazado)
+    const k = app.ancho / r.width;
+    const x = (crudo.cx - r.left) * k;
+    const y = (r.bottom - crudo.cy) * k;
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_mouse, [x, y]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Durante el scroll con el ratón quieto no llega ningún <code>pointermove</code>. ¿Qué parte de <code>raton.x</code> y <code>raton.y</code> se ha quedado vieja: la posición del ratón en la ventana o la del canvas?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Guarda <code>clientX</code>/<code>clientY</code> tal cual y resta el <code>getBoundingClientRect()</code> en <code>dibujar</code>, en cada frame.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El código original restaba el rectángulo en el evento: <code>raton.y = e.clientY − r.top</code>. Al desplazar la página, el ratón sigue en el mismo sitio de la ventana (su <code>clientY</code> no cambia), pero el canvas sube, así que la y correcta dentro de la caja cambia en cada frame. Como no llega ningún evento, nadie recalcula la resta y el halo se queda donde estaba respecto al canvas: pegado a la página.</p>
+    <p>La solución guarda lo que no cambia sin eventos, las coordenadas de la ventana, y hace la resta en <code>dibujar</code> con el rectángulo de ese frame. De paso usa <code>r.width</code> para la proporción del búfer (la del rectángulo actual). Es exactamente lo que hace <code>M7.Puntero</code> en su <code>actualizar</code>. El coste es una lectura de <code>getBoundingClientRect()</code> por frame, unos 0,4 µs con el layout limpio.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.2.2 — Ocho ondas a la vez</h3>
+  <p>Ahora cada clic reemplaza la única onda que existe. Conviértelo en un buffer circular de 8 ondas simultáneas, con <code>u_ondas[8]</code> en el shader y las edades calculadas en JavaScript (−1 para los huecos libres). El guion del final lanza cuatro ondas seguidas: al terminar deben verse las cuatro a la vez, y la consola debe imprimir el índice del próximo hueco después de cada una (1, 2, 3, 4).</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.2.2" data-altura="320" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+body { overflow: hidden; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec3 u_onda;       // xy: centro de 0 a 1 · z: edad en s (< 0: no hay onda)
+out vec4 fragColor;
+float anillo(vec2 uv, vec3 o) {
+  if (o.z < 0.0) return 0.0;
+  vec2 d = (uv - o.xy) * vec2(u_resolution.x / u_resolution.y, 1.0);
+  float x = length(d) - o.z * 0.4;
+  return exp(-x * x * 900.0) * exp(-o.z * 1.2);
+}
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float a = anillo(uv, u_onda);
+  fragColor = vec4(vec3(0.05, 0.06, 0.1) + vec3(0.25, 0.82, 0.91) * a, 1.0);
+}`;
+let onda = { x: 0.5, y: 0.5, t0: -Infinity };
+function nuevaOnda(x, y, t) {
+  onda = { x, y, t0: t };
+}
+const canvas = document.getElementById('c');
+const pendientes = [];
+canvas.addEventListener('pointerdown', (e) => pendientes.push([e.clientX, e.clientY]));
+
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    const r = canvas.getBoundingClientRect();
+    for (const [cx, cy] of pendientes) nuevaOnda((cx - r.left) / r.width, (r.bottom - cy) / r.height, app.reloj.t);
+    pendientes.length = 0;
+  },
+  dibujar(gl, e, app) {
+    const edad = app.reloj.t - onda.t0;
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_onda, [onda.x, onda.y, edad < 3 ? edad : -1]);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+// ---------- guion de prueba (no lo toques) ----------
+[[0.25, 0.3, 0.5], [0.45, 0.7, 0.6], [0.65, 0.5, 0.3], [0.85, 0.4, 0.75]].forEach(([t, x, y]) =>
+  setTimeout(() => { nuevaOnda(x, y, app.reloj.t); console.log('onda en', x, y, '· próximo hueco:', typeof siguiente === 'number' ? siguiente : '(no hay buffer circular)'); }, t * 1000));
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+#define N 8
+uniform vec2 u_resolution;
+uniform vec3 u_ondas[N];   // xy: centro de 0 a 1 · z: edad en s (< 0: hueco libre)
+out vec4 fragColor;
+float anillo(vec2 uv, vec3 o) {
+  if (o.z < 0.0) return 0.0;
+  vec2 d = (uv - o.xy) * vec2(u_resolution.x / u_resolution.y, 1.0);
+  float x = length(d) - o.z * 0.4;
+  return exp(-x * x * 900.0) * exp(-o.z * 1.2);
+}
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float a = 0.0;
+  for (int i = 0; i < N; i++) a += anillo(uv, u_ondas[i]);
+  fragColor = vec4(vec3(0.05, 0.06, 0.1) + vec3(0.25, 0.82, 0.91) * a, 1.0);
+}`;
+const N = 8, VIDA = 3;
+const centros = new Float32Array(N * 2);
+const inicios = new Float64Array(N).fill(-Infinity);   // t0 de cada hueco, en JavaScript
+const datos = new Float32Array(N * 3);                 // x, y, edad × 8 → uniform3fv
+let siguiente = 0;
+function nuevaOnda(x, y, t) {
+  centros[siguiente * 2] = x;
+  centros[siguiente * 2 + 1] = y;
+  inicios[siguiente] = t;
+  siguiente = (siguiente + 1) % N;                     // la novena sobrescribe a la más antigua
+}
+const canvas = document.getElementById('c');
+const pendientes = [];
+canvas.addEventListener('pointerdown', (e) => pendientes.push([e.clientX, e.clientY]));
+
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    const r = canvas.getBoundingClientRect();
+    for (const [cx, cy] of pendientes) nuevaOnda((cx - r.left) / r.width, (r.bottom - cy) / r.height, app.reloj.t);
+    pendientes.length = 0;
+  },
+  dibujar(gl, e, app) {
+    for (let i = 0; i < N; i++) {
+      const edad = app.reloj.t - inicios[i];          // edades, no instantes: la resta en 64 bits
+      datos[i * 3] = centros[i * 2];
+      datos[i * 3 + 1] = centros[i * 2 + 1];
+      datos[i * 3 + 2] = edad < VIDA ? edad : -1;
+    }
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_ondas, datos);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+// ---------- guion de prueba (no lo toques) ----------
+[[0.25, 0.3, 0.5], [0.45, 0.7, 0.6], [0.65, 0.5, 0.3], [0.85, 0.4, 0.75]].forEach(([t, x, y]) =>
+  setTimeout(() => { nuevaOnda(x, y, app.reloj.t); console.log('onda en', x, y, '· próximo hueco:', typeof siguiente === 'number' ? siguiente : '(no hay buffer circular)'); }, t * 1000));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En JavaScript necesitas tres cosas de tamaño fijo: los centros (<code>Float32Array(16)</code>), los instantes de inicio (<code>Float64Array(8)</code>, llenos de <code>-Infinity</code>) y un índice <code>siguiente</code> que avance con <code>(siguiente + 1) % 8</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En el shader, <code>uniform vec3 u_ondas[8];</code> y un bucle que sume <code>anillo(uv, u_ondas[i])</code>. En <code>dibujar</code>, rellena un <code>Float32Array(24)</code> con x, y y la edad (o −1) de cada hueco y pásalo entero: <code>GLKit.ponerUniform</code> llamará a <code>uniform3fv</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El buffer circular son tres arrays paralelos de 8 huecos y un índice. <code>nuevaOnda</code> escribe en el hueco <code>siguiente</code> y lo avanza módulo 8: la novena onda cae en el hueco 0, el de la primera, que a esas alturas es la más antigua. Nada se borra ni se desplaza, y el coste es el mismo con 1 onda que con 8.</p>
+    <p>En cada frame, <code>dibujar</code> convierte los instantes en edades con una resta en JavaScript (64 bits) y marca con −1 los huecos vacíos (los de <code>-Infinity</code> dan una edad infinita) o caducados. El shader recibe números pequeños, empieza cada onda en 0 y descarta los huecos negativos dentro de <code>anillo</code>. La consola muestra el índice avanzando 1, 2, 3, 4. Fíjate en que <code>Float64Array</code> para los instantes no es un capricho: son el tiempo del reloj, que crece sin parar, y conviene restarlos con toda la precisión antes de reducirlos a float32.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.2.3 — El scroll, bien leído</h3>
+  <p>Este efecto funciona, pero rompe tres reglas: lee el layout y llama a GL dentro de un listener de <code>scroll</code>, y el valor llega al shader a saltos. Reescríbelo para que el progreso se lea en el frame (sin listener de <code>scroll</code>), se suavice con una semivida de 0,15 s y el uniform se asigne en <code>dibujar</code>. La consola imprime cada segundo el progreso crudo y el suavizado.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.2.3" data-altura="330" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="bloque">↓ Desplázate dentro del playground</div>
+<div class="bloque">…</div>
+<div class="bloque">…</div>
+<div class="bloque">fin</div>
+</script>
+<script type="text/x-css">
+html, body { margin: 0; background: transparent; }
+#c { position: fixed; left: 0; top: 0; width: 100%; height: 100%; display: block; z-index: -1; }
+.bloque { height: 300px; color: #e4e7ee; font: 16px system-ui; padding: 20px; box-sizing: border-box; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_progreso;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 c = vec2(mix(-0.9, 0.9, u_progreso), 0.0);      // un disco que cruza con el scroll
+  float d = length(p - c) - 0.25;
+  vec3 fondo = mix(vec3(0.10, 0.08, 0.22), vec3(0.02, 0.18, 0.22), u_progreso);
+  fragColor = vec4(mix(vec3(0.55, 0.48, 1.0), fondo, smoothstep(0.0, 0.01, d)), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, app) {
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+let crudo = 0;
+addEventListener('scroll', () => {
+  const max = document.documentElement.scrollHeight - innerHeight;
+  crudo = scrollY / max;
+  app.gl.useProgram(app.gpu.p);                         // ✗ GL fuera del frame
+  GLKit.ponerUniform(app.gl, app.gpu.u.u_progreso, crudo);
+});
+setInterval(() => console.log('progreso crudo ' + crudo.toFixed(3) + (app.estado.suave !== undefined ? ' · suave ' + app.estado.suave.toFixed(3) : '')), 1000);
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_progreso;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  vec2 c = vec2(mix(-0.9, 0.9, u_progreso), 0.0);      // un disco que cruza con el scroll
+  float d = length(p - c) - 0.25;
+  vec3 fondo = mix(vec3(0.10, 0.08, 0.22), vec3(0.02, 0.18, 0.22), u_progreso);
+  fragColor = vec4(mix(vec3(0.55, 0.48, 1.0), fondo, smoothstep(0.0, 0.01, d)), 1.0);
+}`;
+const canvas = document.getElementById('c');
+let crudo = 0;
+const app = M7.crearApp(canvas, {
+  estado: { suave: 0 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    const max = document.documentElement.scrollHeight - innerHeight;   // 1. leer, en el frame
+    crudo = max > 0 ? scrollY / max : 0;                              //    (protege el rango vacío)
+    e.suave = M7.suavizar(e.suave, crudo, 0.15, app.reloj.dtReal);    // 2. suavizar con dt
+  },
+  dibujar(gl, e, app) {
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_progreso, e.suave);            // 3. GL solo aquí
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+setInterval(() => console.log('progreso crudo ' + crudo.toFixed(3) + (app.estado.suave !== undefined ? ' · suave ' + app.estado.suave.toFixed(3) : '')), 1000);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Mueve el cálculo de <code>crudo</code> a un <code>actualizar(e, dt, app)</code> de <code>crearApp</code>. Guarda el valor suavizado en <code>e.suave</code> (el <code>estado</code> de la app).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>M7.suavizar(actual, objetivo, semivida, dt)</code> devuelve el nuevo valor. ¿<code>dt</code> o <code>dtReal</code>? El scroll lo provoca el usuario. Y protege la división: si la página no tiene scroll, <code>max</code> vale 0.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La versión original llamaba a <code>useProgram</code> y asignaba el uniform dentro del evento: funciona mientras la app tenga un solo programa y el contexto esté vivo, y se rompe en cuanto no (7.1). Además, el uniform saltaba al valor nuevo en cada evento, y con una rueda de ratón por pasos eso se ve como un disco que avanza a trompicones.</p>
+    <p>La solución lee <code>scrollY</code> en <code>actualizar</code> (medimos que el evento <code>scroll</code> se despacha justo antes del rAF, así que el valor es el mismo), protege la división por un rango vacío (un <code>max</code> de 0 daría <code>NaN</code>, el bicho de <a href="../02-animacion/04-interpolacion-easing.html#m2-invlerp-nan">2.4</a>), suaviza con la fórmula exacta de 2.4 y deja la llamada de GL en <code>dibujar</code>. En la consola verás el valor suavizado alcanzar al crudo unas décimas de segundo después de cada movimiento: esa inercia es la que convierte los saltos de la rueda en un deslizamiento continuo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.2.4 — Teclado y movimiento reducido</h3>
+  <p>El disco debería moverse con las flechas (o WASD) cuando el lienzo tiene el foco, y el fondo ondulante debería quedarse quieto si el usuario prefiere menos movimiento (la casilla simula la preferencia del sistema). Ahora mismo, ni lo uno ni lo otro. Arréglalo: el lienzo debe poder enfocarse (y mostrarlo), las flechas no deben desplazar la página mientras tiene el foco, las teclas se vacían al perder el foco y la preferencia (real o simulada) pone la escala del reloj a 0.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.2.4" data-altura="320" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<label id="panel"><input type="checkbox" id="simular"> simular prefers-reduced-motion</label>
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+body { margin: 0; }
+#panel { display: block; padding: 6px 10px; color: #b4bccb; font: 12px system-ui; }
+#c { display: block; width: 100%; height: 270px; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec2 u_pos;          // posición del disco, de −1 a 1 (en alturas)
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float ondas = 0.5 + 0.5 * sin(p.x * 6.0 + u_time * 2.0) * sin(p.y * 5.0 - u_time * 1.5);
+  vec3 col = mix(vec3(0.06, 0.07, 0.12), vec3(0.12, 0.16, 0.28), ondas);
+  float d = length(p - u_pos) - 0.15;
+  fragColor = vec4(mix(vec3(1.0, 0.42, 0.71), col, smoothstep(0.0, 0.01, d)), 1.0);
+}`;
+const canvas = document.getElementById('c');
+const teclas = new Set();
+canvas.addEventListener('keydown', (e) => teclas.add(e.code));
+canvas.addEventListener('keyup', (e) => teclas.delete(e.code));
+
+const app = M7.crearApp(canvas, {
+  estado: { x: 0, y: 0 },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    const dtr = app.reloj.dtReal;                      // el disco responde al usuario: tiempo real
+    const dx = (teclas.has('ArrowRight') || teclas.has('KeyD') ? 1 : 0) - (teclas.has('ArrowLeft') || teclas.has('KeyA') ? 1 : 0);
+    const dy = (teclas.has('ArrowUp') || teclas.has('KeyW') ? 1 : 0) - (teclas.has('ArrowDown') || teclas.has('KeyS') ? 1 : 0);
+    e.x = Math.max(-1.5, Math.min(1.5, e.x + dx * 1.2 * dtr));
+    e.y = Math.max(-0.85, Math.min(0.85, e.y + dy * 1.2 * dtr));
+  },
+  dibujar(gl, e, app) {
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, app.gpu.u.u_pos, [e.x, e.y]);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+console.log('canvas.tabIndex = ' + canvas.tabIndex + ' (−1: no se puede enfocar con el tabulador)');
+</script>
+<script type="text/x-css" data-solucion>
+body { margin: 0; }
+#panel { display: block; padding: 6px 10px; color: #b4bccb; font: 12px system-ui; }
+#c { display: block; width: 100%; height: 270px; }
+#c:focus-visible { outline: 3px solid #8b7bff; outline-offset: -3px; }   /* que se vea el foco */
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec2 u_pos;          // posición del disco, de −1 a 1 (en alturas)
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float ondas = 0.5 + 0.5 * sin(p.x * 6.0 + u_time * 2.0) * sin(p.y * 5.0 - u_time * 1.5);
+  vec3 col = mix(vec3(0.06, 0.07, 0.12), vec3(0.12, 0.16, 0.28), ondas);
+  float d = length(p - u_pos) - 0.15;
+  fragColor = vec4(mix(vec3(1.0, 0.42, 0.71), col, smoothstep(0.0, 0.01, d)), 1.0);
+}`;
+const canvas = document.getElementById('c');
+canvas.tabIndex = 0;                                   // 1. enfocable (con clic y con el tabulador)
+const teclas = new Set();
+canvas.addEventListener('keydown', (e) => {
+  if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();   // 2. sin desplazar la página
+  teclas.add(e.code);
+});
+canvas.addEventListener('keyup', (e) => teclas.delete(e.code));
+canvas.addEventListener('blur', () => teclas.clear()); // 3. sin teclas atascadas
+
+const app = M7.crearApp(canvas, {
+  estado: { x: 0, y: 0, reducir: false },
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    const dtr = app.reloj.dtReal;                      // el disco responde al usuario: tiempo real
+    const dx = (teclas.has('ArrowRight') || teclas.has('KeyD') ? 1 : 0) - (teclas.has('ArrowLeft') || teclas.has('KeyA') ? 1 : 0);
+    const dy = (teclas.has('ArrowUp') || teclas.has('KeyW') ? 1 : 0) - (teclas.has('ArrowDown') || teclas.has('KeyS') ? 1 : 0);
+    e.x = Math.max(-1.5, Math.min(1.5, e.x + dx * 1.2 * dtr));
+    e.y = Math.max(-0.85, Math.min(0.85, e.y + dy * 1.2 * dtr));
+  },
+  dibujar(gl, e, app) {
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_time, app.reloj.t);
+    GLKit.ponerUniform(gl, app.gpu.u.u_pos, [e.x, e.y]);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+// 4. Movimiento reducido: la preferencia real O la simulada
+const consulta = matchMedia('(prefers-reduced-motion: reduce)');
+const simular = document.getElementById('simular');
+function aplicarPreferencia() {
+  app.estado.reducir = consulta.matches || simular.checked;
+  app.reloj.escala = app.estado.reducir ? 0 : 1;      // el fondo se queda quieto; el disco sigue (dtReal)
+  console.log('reducir movimiento: ' + app.estado.reducir);
+}
+consulta.addEventListener('change', aplicarPreferencia);
+simular.addEventListener('change', aplicarPreferencia);
+aplicarPreferencia();
+console.log('canvas.tabIndex = ' + canvas.tabIndex + ' (−1: no se puede enfocar con el tabulador)');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La consola ya te da la primera pista: <code>tabIndex</code> vale −1. Sin foco, los <code>keydown</code> del canvas no llegan (el bestiario de la sección de teclado). Y para ver el foco, un estilo <code>#c:focus-visible</code> en la pestaña CSS.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para la preferencia: <code>matchMedia('(prefers-reduced-motion: reduce)')</code>, su evento <code>change</code> y la casilla. El fondo depende de <code>u_time</code>, que sale de <code>app.reloj.t</code>: ¿qué propiedad del reloj lo detiene sin detener el disco?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Cuatro cambios, uno por regla de la lección. <code>canvas.tabIndex = 0</code> permite que el clic y el tabulador le den el foco, y el estilo <code>:focus-visible</code> (en la pestaña CSS de la solución) lo hace visible: quien usa el teclado necesita saber dónde está. El <code>preventDefault</code> de las flechas y el espacio evita que la página se desplace mientras mueves el disco, solo cuando el canvas tiene el foco. El <code>blur</code> vacía las teclas para que ninguna se quede atascada al cambiar de ventana.</p>
+    <p>Para el movimiento reducido, la misma función atiende a la preferencia del sistema y a la casilla, y pone <code>reloj.escala</code> a 0: el fondo, que depende de <code>u_time = reloj.t</code>, se congela; el disco, que usa <code>dtReal</code>, sigue respondiendo a las teclas. Ese es el reparto que buscábamos: sin movimiento autónomo, con toda la interacción.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 7.2.5 — Tarjetas que brillan</h3>
+  <p>Un canvas fijo detrás de tres tarjetas del DOM. El shader ya sabe dibujar un brillo alrededor de un rectángulo (<code>brillo()</code>), pero no recibe ninguno. Haz que reciba los rectángulos de las tarjetas en <code>u_tarjetas[3]</code> (px del búfer, relativos al canvas, y hacia arriba) y una intensidad por tarjeta en <code>u_brillos[3]</code>, animada con un <code>M7.Muelle</code> por tarjeta hacia 1 al pasar el puntero por encima y hacia 0 al salir. Debe funcionar mientras la página se desplaza.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.2.5" data-altura="340" data-apilado data-incluir="glkit,m7kit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="fondo"></canvas>
+<div id="contenido">
+  <section class="tarjeta">Pasa el puntero</section>
+  <section class="tarjeta">por encima de</section>
+  <section class="tarjeta">cada tarjeta</section>
+</div>
+</script>
+<script type="text/x-css">
+html, body { margin: 0; background: transparent; }
+#fondo { position: fixed; left: 0; top: 0; width: 100%; height: 100%; display: block; z-index: -1; }
+#contenido { padding: 30px 0 200px; }
+.tarjeta { width: 55%; margin: 0 auto 60px; padding: 26px 18px; border-radius: 14px; background: rgba(14,16,20,0.55);
+  border: 1px solid rgba(255,255,255,0.25); color: #e4e7ee; font: 16px system-ui; text-align: center; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_escala;              // px del búfer por px CSS
+// uniform vec4 u_tarjetas[3];       // ← x, y (abajo-izquierda), ancho, alto en px del búfer
+// uniform float u_brillos[3];       // ← 0..1
+out vec4 fragColor;
+float caja(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+vec3 brillo(vec4 t, float k) {
+  float d = caja(gl_FragCoord.xy - (t.xy + 0.5 * t.zw), 0.5 * t.zw, 14.0 * u_escala);
+  return vec3(0.55, 0.48, 1.0) * k * exp(-max(d, 0.0) / (26.0 * u_escala));
+}
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 col = mix(vec3(0.05, 0.06, 0.1), vec3(0.08, 0.07, 0.16), uv.y);
+  // col += brillo(u_tarjetas[i], u_brillos[i]) para cada tarjeta
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('fondo');
+const tarjetas = [...document.querySelectorAll('.tarjeta')];
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, app) {
+    const k = app.ancho / app.anchoCSS;
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_escala;              // px del búfer por px CSS
+uniform vec4 u_tarjetas[3];          // x, y (abajo-izquierda), ancho, alto en px del búfer
+uniform float u_brillos[3];          // 0..1
+out vec4 fragColor;
+float caja(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+vec3 brillo(vec4 t, float k) {
+  float d = caja(gl_FragCoord.xy - (t.xy + 0.5 * t.zw), 0.5 * t.zw, 14.0 * u_escala);
+  return vec3(0.55, 0.48, 1.0) * k * exp(-max(d, 0.0) / (26.0 * u_escala));
+}
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 col = mix(vec3(0.05, 0.06, 0.1), vec3(0.08, 0.07, 0.16), uv.y);
+  for (int i = 0; i < 3; i++) col += brillo(u_tarjetas[i], u_brillos[i]);
+  fragColor = vec4(col, 1.0);
+}`;
+const canvas = document.getElementById('fondo');
+const tarjetas = [...document.querySelectorAll('.tarjeta')];
+// Un muelle por tarjeta (2.5), un poco subamortiguado para que el brillo «rebote» al encenderse
+const muelles = tarjetas.map(() => new M7.Muelle({ rigidez: 170, amortiguamiento: 18 }));
+tarjetas.forEach((t, i) => {                          // los eventos solo cambian el OBJETIVO del muelle
+  t.addEventListener('pointerenter', () => { muelles[i].objetivo = 1; });
+  t.addEventListener('pointerleave', () => { muelles[i].objetivo = 0; });
+});
+const rects = new Float32Array(12), brillos = new Float32Array(3);
+const app = M7.crearApp(canvas, {
+  iniciar(gl, app) {
+    const p = GLKit.crearPrograma(gl, VS, FS);
+    app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  actualizar(e, dt, app) {
+    muelles.forEach((m, i) => { m.actualizar(app.reloj.dtReal); brillos[i] = Math.max(0, m.x); });
+  },
+  dibujar(gl, e, app) {
+    const rc = canvas.getBoundingClientRect();         // lecturas juntas, al principio
+    const k = app.ancho / rc.width;
+    tarjetas.forEach((t, i) => {
+      const r = t.getBoundingClientRect();
+      rects[i * 4] = (r.left - rc.left) * k;
+      rects[i * 4 + 1] = (rc.bottom - r.bottom) * k;   // y hacia arriba
+      rects[i * 4 + 2] = r.width * k;
+      rects[i * 4 + 3] = r.height * k;
+    });
+    gl.useProgram(app.gpu.p);
+    GLKit.ponerUniform(gl, app.gpu.u.u_resolution, [app.ancho, app.alto]);
+    GLKit.ponerUniform(gl, app.gpu.u.u_escala, k);
+    GLKit.ponerUniform(gl, app.gpu.u.u_tarjetas, rects);
+    GLKit.ponerUniform(gl, app.gpu.u.u_brillos, brillos);
+    gl.bindVertexArray(app.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Descomenta los dos uniforms y el bucle del shader (<code>for (int i = 0; i &lt; 3; i++) col += brillo(u_tarjetas[i], u_brillos[i]);</code>). En <code>dibujar</code>, un <code>Float32Array(12)</code> con los cuatro números de cada tarjeta, convertidos como en el ejemplo 7.2.5.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Tres <code>M7.Muelle</code>. Los <code>pointerenter</code>/<code>pointerleave</code> de cada tarjeta solo cambian <code>muelle.objetivo</code>; <code>actualizar</code> los avanza con <code>dtReal</code> y copia <code>muelle.x</code> (sin negativos) a un <code>Float32Array(3)</code> para <code>u_brillos</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La cadena completa de la lección en un ejercicio: los eventos del DOM solo cambian objetivos; <code>actualizar</code> avanza tres muelles con el tiempo real; <code>dibujar</code> lee todos los rectángulos al principio del frame, los convierte a px del búfer relativos al canvas con la y hacia arriba, y los manda con dos arrays de uniforms. El muelle ligeramente subamortiguado (amortiguamiento 18 frente a los 26 del crítico con rigidez 170, <a href="../02-animacion/05-fisica-muelles.html">2.5</a>) da un pequeño rebote al encenderse, y como un muelle guarda la velocidad, pasar el puntero rápido por encima de una tarjeta produce un destello breve que se interrumpe con suavidad, sin saltos. El <code>Math.max(0, …)</code> evita un brillo negativo si el muelle rebasa el 0 al apagarse.</p>
+    <p>Mientras la página se desplaza, los brillos siguen a las tarjetas porque los rectángulos se leen en cada frame. Si lo haces muy rápido, notarás el frame de retraso del canvas fijo que medimos; con un brillo difuso como este, apenas se ve.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>El evento guarda lo crudo (<code>clientX</code>, <code>clientY</code>); el frame convierte con su propio <code>getBoundingClientRect()</code> y su <code>canvas.width</code>. Así sobrevive al scroll con el ratón quieto (no llega ningún <code>pointermove</code>), al zoom y a la calidad adaptativa. La proporción al búfer es <code>canvas.width / rect.width</code>, no <code>devicePixelRatio</code>.</li>
+    <li>Suaviza en px CSS con la fórmula exacta de 2.4 y <code>dtReal</code>; coloca el primer valor sin barrido. La velocidad, como derivada suavizada de la posición, en px por segundo.</li>
+    <li>Ondas de clic: buffer circular de N huecos, <code>uniform vec3 u_ondas[N]</code> con <code>uniform3fv</code> y edades calculadas en JavaScript, del mismo reloj que la escena. Un vector de uniforms por elemento; WebGL2 garantiza 224 en el fragment shader.</li>
+    <li>Multitouch: un <code>pointerId</code> por dedo (no reutilizable como índice), un <code>Map</code> a huecos estables, <code>touch-action: none</code>, <code>setPointerCapture</code> y <code>pointercancel</code> tratado como <code>pointerup</code>.</li>
+    <li>Scroll: el evento llega justo antes del rAF con el mismo <code>scrollY</code>; léelo en el frame, suavízalo y no toques GL en manejadores. El canvas fijo va un frame por detrás del scroll del compositor (25 px a 1500 px/s): para efectos pegados a elementos, canvas dentro del contenido.</li>
+    <li>El DOM guía al shader leyendo sus rectángulos al principio del frame (0,4 µs cada uno con el layout limpio) y enviándolos como arrays de uniforms, relativos al canvas y con la y hacia arriba.</li>
+    <li>Teclado: <code>tabindex="0"</code>, foco visible, <code>e.code</code>, un conjunto de teclas leído con <code>dt</code> y vaciado en <code>blur</code>. Movimiento reducido: <code>matchMedia</code> con su <code>change</code>, escala del reloj a 0 y la interacción viva.</li>
+    <li>Accesibilidad: el canvas decorativo lleva <code>aria-hidden="true"</code> y <code>pointer-events: none</code>; el contenido real vive en el DOM; lo significativo, <code>role="img"</code> con descripción; lo interactivo, controles reales y teclado.</li>
+  </ul>
+</div>
+
+<p>Con el estado lleno de entradas del usuario, en <a href="03-transiciones-shader.html">7.3</a> pasamos a animarlo: uniforms de progreso guiados por easings y muelles, transiciones entre imágenes, interrupciones sin saltos y un bucle que solo trabaja mientras algo se mueve.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Pointer_events/Multi-touch_interaction">MDN: Multi-touch interaction</a>, con Pointer Events y varios punteros a la vez.</li>
+  <li><a href="https://developer.chrome.com/blog/scroll-driven-animations">Chrome for Developers: Scroll-driven animations</a>, las animaciones CSS atadas al scroll que corren en el compositor.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion">MDN: prefers-reduced-motion</a>, con ejemplos en CSS y JavaScript.</li>
+  <li><a href="https://www.w3.org/WAI/WCAG22/Understanding/three-flashes-or-below-threshold.html">WCAG 2.2: Three Flashes or Below Threshold</a>, el criterio de los destellos.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m7kit.js"></script>
+</body>
+</html>

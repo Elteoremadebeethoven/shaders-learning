@@ -1,0 +1,1494 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.1 · El contexto WebGL y el canvas — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/contexto">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>El contexto WebGL y el canvas</h1>
+  <p class="resumen">Antes del primer triángulo: qué es exactamente el objeto <code>gl</code>, qué le pides al crearlo, cómo y cuándo llega tu dibujo a la pantalla, cómo mantener el canvas nítido a cualquier tamaño y qué hacer cuando la GPU te quita el contexto.</p>
+  <div class="meta"><span class="chip">⏱ 75 min</span><span class="chip">Requisitos: 4.1, 2.6, 1.5</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Crearás un contexto WebGL2 sabiendo qué hace cada atributo y comprobarás qué te dieron de verdad.</li>
+      <li>Entenderás el modelo de presentación: por qué el búfer se borra tras cada frame y por qué una captura puede salir vacía.</li>
+      <li>Mantendrás el canvas nítido y sin deformar con el patrón <code>ResizeObserver</code> + <code>devicePixelContentBoxSize</code> + <code>gl.viewport</code>.</li>
+      <li>Sabrás sobrevivir a la pérdida de contexto y por qué una página no puede tener más de 16 contextos vivos.</li>
+      <li>Consultarás extensiones, límites y errores (<code>getExtension</code>, <code>getParameter</code>, <code>getError</code>) sabiendo lo que cuesta cada consulta.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué empezar por aquí</h2>
+<p>En el <a href="../04-gpu/01-cpu-vs-gpu.html">módulo 4</a> construiste el modelo mental: la GPU es una máquina de estados a la que la CPU le manda datos y órdenes. En este módulo vas a hablar con esa máquina de verdad, desde JavaScript, con WebGL2. Y la conversación empieza mucho antes de los shaders: empieza con un <code>&lt;canvas&gt;</code> y una llamada a <code>getContext</code>.</p>
+<p>Parece un trámite, pero aquí viven buena parte de los bugs de WebGL en producción: la demo que se ve borrosa en el móvil, la imagen que se estira al girar la tablet, la captura de pantalla que sale transparente, el canvas que se queda en blanco al volver de otra pestaña, la demo que deja de funcionar cuando añades un segundo canvas a la página. Ninguno de ellos tiene nada que ver con los shaders. Todos se entienden con lo que vas a ver en esta lección.</p>
+
+<div class="callout porque">
+  <p>Porque WebGL no tiene «ventana», ni «swap buffers», ni bucle principal: todo eso lo pone el navegador por ti, de forma implícita. Si no sabes qué hace el navegador en tu nombre, sus decisiones te parecerán comportamientos aleatorios.</p>
+</div>
+
+<h2>Un canvas no es nada hasta que le pides un contexto</h2>
+<p>Un elemento <code>&lt;canvas&gt;</code> es un rectángulo del DOM con un mapa de bits dentro. Por sí solo no sabe dibujar. Al llamar a <code>canvas.getContext(tipo)</code> eliges qué clase de mapa de bits va a tener y qué API te da para pintarlo: <code>'2d'</code> (la que viste en <a href="../02-animacion/06-canvas2d.html">2.6</a>), <code>'webgl'</code> (WebGL1), <code>'webgl2'</code> (la de este curso), <code>'bitmaprenderer'</code> o <code>'webgpu'</code>. Este es el programa WebGL2 más pequeño que hace algo visible:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+if (!gl) {
+  throw new Error('Este navegador no puede crear un contexto WebGL2');
+}
+gl.clearColor(0.55, 0.48, 1.0, 1.0);
+gl.clear(gl.COLOR_BUFFER_BIT);
+</script>
+<ol>
+  <li data-l="1">Un elemento del DOM normal: un rectángulo de 300×150 píxeles (su tamaño por defecto), todavía sin contexto.</li>
+  <li data-l="2">La primera llamada a <code>getContext</code> decide <strong>para siempre</strong> el tipo de contexto del canvas. Devuelve un <code>WebGL2RenderingContext</code> o <code>null</code>. Por convención se llama <code>gl</code>.</li>
+  <li data-l="3-5">Comprobar el <code>null</code> no es paranoia: sin WebGL2, con la GPU en la lista negra o con otro tipo de contexto ya creado, eso es lo que obtienes.</li>
+  <li data-l="6"><code>clearColor</code> <strong>no dibuja nada</strong>: guarda un color (RGBA de 0 a 1) en el estado. Primero configuras, luego ordenas (<a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>).</li>
+  <li data-l="7"><code>clear</code> sí actúa: rellena el búfer de color con el color guardado. El argumento es una máscara de bits con los búferes a borrar.</li>
+</ol>
+</div>
+
+<p>Ejecútalo. Además del color, el código imprime algunas cosas sobre el objeto <code>gl</code> que conviene conocer desde el principio:</p>
+
+<div class="js-playground" data-titulo="Hola, contexto" data-altura="180" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+if (!gl) throw new Error('WebGL2 no disponible en este navegador');
+
+gl.clearColor(0.55, 0.48, 1.0, 1.0);   // RGBA de 0 a 1
+gl.clear(gl.COLOR_BUFFER_BIT);
+
+console.log(gl instanceof WebGL2RenderingContext);  // qué objeto es
+console.log(gl.canvas === canvas);                   // el contexto recuerda su canvas
+console.log(gl.COLOR_BUFFER_BIT, '= 0x' + gl.COLOR_BUFFER_BIT.toString(16));
+console.log(WebGL2RenderingContext.COLOR_BUFFER_BIT); // la misma constante, en la "clase"
+console.log(gl.getParameter(gl.VERSION));
+console.log('búfer de dibujo:', gl.drawingBufferWidth, '×', gl.drawingBufferHeight);
+console.log('tamaño en pantalla (px CSS):', canvas.clientWidth, '×', canvas.clientHeight);
+</script>
+</div>
+
+<p>Tres cosas que se deducen de esa salida:</p>
+<ul>
+  <li><strong>Las constantes son números.</strong> <code>gl.COLOR_BUFFER_BIT</code> vale 16384 (0x4000). Todas las «enumeraciones» de WebGL (<code>gl.TRIANGLES</code>, <code>gl.FLOAT</code>, <code>gl.ARRAY_BUFFER</code>…) son enteros de 32 bits (en la especificación, <code>GLenum</code>) copiados tal cual de OpenGL ES. Existen en el objeto <code>gl</code> y también como propiedades estáticas de <code>WebGL2RenderingContext</code>. Cuando un error te diga <code>0x0502</code>, ya sabrás que es un número de estos.</li>
+  <li><strong>La versión dice «OpenGL ES 3.0».</strong> WebGL2 es, casi llamada por llamada, OpenGL ES 3.0 expuesto a JavaScript. Todo lo que aprendas aquí se traslada a OpenGL ES, a OpenGL moderno y, conceptualmente, a WebGPU.</li>
+  <li><strong>Las dos últimas líneas no coinciden.</strong> El búfer donde dibujas mide 300×150, pero en pantalla el canvas ocupa otra cosa. El navegador estira ese búfer para llenar el rectángulo. Con un color liso no se nota; con cualquier otra cosa, sí. Lo arreglaremos en la sección <a href="#tamano-del-bufer-frente-a-tamano-en-pantalla">sobre el tamaño</a>.</li>
+</ul>
+
+<h3>Dónde vive de verdad el estado</h3>
+<p>Cuando escribes <code>gl.clear(...)</code> la GPU no hace nada en ese instante. En Chrome (y de forma parecida en el resto de navegadores) tu llamada recorre este camino:</p>
+
+<svg class="diagrama" viewBox="0 0 760 270" width="760" role="img" aria-label="Camino de una llamada WebGL desde JavaScript hasta la GPU">
+  <defs>
+    <marker id="m51-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="10" y="20" width="150" height="90" rx="10"/>
+  <text x="85" y="48" text-anchor="middle" style="font-weight:700">Tu JavaScript</text>
+  <text x="85" y="70" text-anchor="middle" class="texto-tenue" style="font-size:12px">gl.clear(…)</text>
+  <text x="85" y="90" text-anchor="middle" class="texto-tenue" style="font-size:12px">proceso de la página</text>
+  <rect class="caja" x="190" y="20" width="170" height="90" rx="10"/>
+  <text x="275" y="48" text-anchor="middle" style="font-weight:700">Implementación</text>
+  <text x="275" y="70" text-anchor="middle" class="texto-tenue" style="font-size:12px">WebGL: valida</text>
+  <text x="275" y="90" text-anchor="middle" class="texto-tenue" style="font-size:12px">avisos «WebGL: …»</text>
+  <rect class="caja" x="390" y="20" width="150" height="90" rx="10"/>
+  <text x="465" y="48" text-anchor="middle" style="font-weight:700">Command buffer</text>
+  <text x="465" y="70" text-anchor="middle" class="texto-tenue" style="font-size:12px">cola de órdenes</text>
+  <text x="465" y="90" text-anchor="middle" class="texto-tenue" style="font-size:12px">entre procesos</text>
+  <rect class="caja" x="570" y="20" width="180" height="90" rx="10"/>
+  <text x="660" y="48" text-anchor="middle" style="font-weight:700">Proceso de la GPU</text>
+  <text x="660" y="70" text-anchor="middle" class="texto-tenue" style="font-size:12px">ANGLE traduce a</text>
+  <text x="660" y="90" text-anchor="middle" class="texto-tenue" style="font-size:12px">Metal, D3D11, Vulkan…</text>
+  <path d="M162 65 L186 65" stroke="currentColor" stroke-width="2" marker-end="url(#m51-fl)"/>
+  <path d="M362 65 L386 65" stroke="currentColor" stroke-width="2" marker-end="url(#m51-fl)"/>
+  <path d="M542 65 L566 65" stroke="currentColor" stroke-width="2" marker-end="url(#m51-fl)"/>
+  <rect class="caja" x="570" y="160" width="180" height="60" rx="10"/>
+  <text x="660" y="186" text-anchor="middle" style="font-weight:700">Driver + GPU</text>
+  <text x="660" y="206" text-anchor="middle" class="texto-tenue" style="font-size:12px">ejecuta cuando puede</text>
+  <path d="M660 112 L660 156" stroke="currentColor" stroke-width="2" marker-end="url(#m51-fl)"/>
+  <path d="M566 205 L85 205 L85 114" class="acento" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#m51-fl)"/>
+  <text x="330" y="195" text-anchor="middle" class="texto-tenue" style="font-size:12px">las consultas (getError, readPixels…) esperan la respuesta</text>
+  <text x="330" y="250" text-anchor="middle" class="texto-tenue" style="font-size:12px">clear, drawArrays, bufferData…: solo encolan y vuelven al instante</text>
+</svg>
+
+<p>La mayoría de llamadas <strong>encolan</strong> una orden y vuelven inmediatamente: tu JavaScript sigue corriendo mientras la GPU trabaja por detrás. Unas pocas llamadas necesitan una respuesta del otro lado (¿hubo error?, ¿qué color tiene este píxel?, ¿compiló el shader?) y te obligan a esperar el viaje de ida y vuelta. Esa distinción, <em>encolar</em> frente a <em>esperar</em>, explica casi todo lo que veremos sobre rendimiento en <a href="10-depuracion.html">5.10</a>.</p>
+
+<div class="callout senior" data-titulo="ANGLE">
+  <p>En Chrome, Edge y Safari (y en Firefox sobre Windows), tu WebGL casi nunca llega a la GPU como OpenGL. Una capa llamada <strong>ANGLE</strong> lo traduce a la API nativa del sistema: Metal en macOS, Direct3D 11 en Windows, OpenGL o Vulkan en Linux y Android. Por eso el nombre de la GPU que ves en el <a href="../00-inicio/01-bienvenida.html">playground de la bienvenida</a> es algo como <code>ANGLE (Apple, ANGLE Metal Renderer: Apple M1…)</code>. Consecuencias prácticas: tus shaders GLSL también se traducen (lo verás con <code>WEBGL_debug_shaders</code> en 5.10), algunos errores tienen el texto de ANGLE y no el de tu navegador, y un mismo programa puede comportarse ligeramente distinto en Windows y en Mac porque debajo hay APIs distintas.</p>
+</div>
+
+<h2>getContext('webgl2', atributos): lo que pides y lo que te dan</h2>
+<p><code>getContext</code> acepta un segundo argumento: un objeto con <strong>peticiones</strong> sobre cómo quieres el búfer de dibujo (<em>drawing buffer</em>), la memoria donde WebGL pinta y que luego el navegador muestra. Son peticiones, no órdenes: el navegador puede no concederlas. Estos son todos, con sus valores por defecto (comprobados en Chrome):</p>
+
+<table>
+  <thead><tr><th>Atributo</th><th>Por defecto</th><th>Qué controla</th><th>Cuándo tocarlo</th></tr></thead>
+  <tbody>
+    <tr><td><code>alpha</code></td><td><code>true</code></td><td>El búfer tiene canal alfa y el canvas se mezcla con lo que haya detrás en la página.</td><td><code>false</code> si tu escena es opaca: el alfa que escribas no afectará a cómo se ve (evitas sorpresas de composición, 5.7).</td></tr>
+    <tr><td><code>antialias</code></td><td><code>true</code></td><td>Multisampling (MSAA) del búfer: bordes suaves. Con el valor por defecto, <code>gl.getParameter(gl.SAMPLES)</code> dio 4.</td><td><code>false</code> en pixel art, si todo tu dibujo es un post-proceso a pantalla completa (no aporta nada) o para ahorrar memoria.</td></tr>
+    <tr><td><code>depth</code></td><td><code>true</code></td><td>Búfer de profundidad (aquí de 24 bits).</td><td><code>false</code> en 2D puro. En 3D lo necesitas (5.6).</td></tr>
+    <tr><td><code>stencil</code></td><td><code>false</code></td><td>Búfer de stencil de 8 bits para máscaras.</td><td><code>true</code> si usas stencil (fuera del alcance del curso).</td></tr>
+    <tr><td><code>premultipliedAlpha</code></td><td><code>true</code></td><td>Cómo interpreta el compositor los colores del canvas al mezclarlo con la página.</td><td>Se entiende de verdad en 5.7; con <code>alpha: false</code> da igual.</td></tr>
+    <tr><td><code>preserveDrawingBuffer</code></td><td><code>false</code></td><td>Si el contenido del búfer sobrevive después de mostrarse.</td><td>Casi nunca: lo explicamos en la siguiente sección.</td></tr>
+    <tr><td><code>powerPreference</code></td><td><code>"default"</code></td><td>Pista para elegir GPU en equipos con dos: <code>"high-performance"</code> (la discreta) o <code>"low-power"</code> (la integrada).</td><td>Juegos y demos pesadas: <code>"high-performance"</code>. Es una pista: puede ignorarse.</td></tr>
+    <tr><td><code>failIfMajorPerformanceCaveat</code></td><td><code>false</code></td><td>Devolver <code>null</code> si el contexto iba a ser muy lento (típicamente, render por software).</td><td><code>true</code> si prefieres mostrar una versión sin WebGL antes que una demo a 3 fps.</td></tr>
+    <tr><td><code>desynchronized</code></td><td><code>false</code></td><td>Pide saltarse la sincronización con el compositor para bajar la latencia (a cambio de posibles desgarros, <em>tearing</em>).</td><td>Apps de dibujo con lápiz. En el Chrome de este curso se pidió <code>true</code> y se concedió <code>false</code>.</td></tr>
+  </tbody>
+</table>
+<p>Hay uno más, <code>xrCompatible</code>, para realidad virtual con WebXR, que no usaremos. La regla de oro es la del final de la tabla: <strong>lo que pides no es lo que te dan</strong>. Para saber lo que te dieron está <code>gl.getContextAttributes()</code>.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.1.1 — Lo que pediste frente a lo que obtuviste</h3>
+  <p>Vamos a crear dos contextos en canvas que no están en la página (<code>document.createElement('canvas')</code>: un contexto no necesita que su canvas sea visible) y a preguntarle a cada uno qué atributos tiene de verdad. Después probaremos dos cosas que sorprenden a todo el mundo: pedir un contexto dos veces y mezclar tipos.</p>
+  <div class="js-playground" data-titulo="Inspector de atributos" data-altura="60" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:16px;font:14px monospace;color:#8791a5">Todo ocurre en la consola ↓</p>
+</script>
+<script type="text/x-js">
+function describir(nombre, gl) {
+  const a = gl.getContextAttributes();
+  console.log('— ' + nombre + ' —');
+  console.log('  alpha:', a.alpha, ' antialias:', a.antialias, ' depth:', a.depth, ' stencil:', a.stencil);
+  console.log('  preserveDrawingBuffer:', a.preserveDrawingBuffer, ' powerPreference:', a.powerPreference, ' desynchronized:', a.desynchronized);
+  // Lo que hay de verdad en el búfer por defecto:
+  const bits = ['ALPHA_BITS', 'DEPTH_BITS', 'STENCIL_BITS', 'SAMPLES'].map((k) => k + '=' + gl.getParameter(gl[k]));
+  console.log('  ' + bits.join('  '));
+}
+
+// 1) Sin atributos: los valores por defecto
+const glA = document.createElement('canvas').getContext('webgl2');
+describir('por defecto', glA);
+
+// 2) Pidiendo cosas concretas
+const glB = document.createElement('canvas').getContext('webgl2', {
+  alpha: false, antialias: false, depth: false, stencil: true,
+  preserveDrawingBuffer: true, powerPreference: 'high-performance', desynchronized: true,
+});
+describir('a medida', glB);
+
+// 3) Segunda llamada sobre el MISMO canvas, con otros atributos
+const glA2 = glA.canvas.getContext('webgl2', { alpha: false });
+console.log('¿mismo objeto?', glA2 === glA, '· alpha sigue siendo', glA2.getContextAttributes().alpha);
+
+// 4) Mezclar tipos de contexto en un canvas
+console.log('getContext("2d") en un canvas WebGL2 →', glA.canvas.getContext('2d'));
+console.log('getContext("webgl") en un canvas WebGL2 →', glA.canvas.getContext('webgl'));
+
+// Buena costumbre: liberar los contextos que ya no usas (ver "El límite de contextos")
+glA.getExtension('WEBGL_lose_context').loseContext();
+glB.getExtension('WEBGL_lose_context').loseContext();
+</script>
+  </div>
+  <p>Paso a paso:</p>
+  <ol>
+    <li><strong>Por defecto</strong> obtienes alfa (<code>ALPHA_BITS=8</code>), profundidad de 24 bits, sin stencil y con 4 muestras de MSAA. Es un búfer «gordo»: por cada píxel visible hay cuatro muestras de color y cuatro de profundidad. Si no necesitas profundidad ni antialiasing, estás pagando memoria para nada.</li>
+    <li><strong>A medida</strong>: <code>ALPHA_BITS=0</code>, <code>DEPTH_BITS=0</code>, <code>STENCIL_BITS=8</code>, <code>SAMPLES=0</code>. Te dieron casi todo lo que pediste… salvo <code>desynchronized</code>, que vuelve como <code>false</code>. No es un error: era una petición y el navegador decidió no concederla en esta plataforma.
+      <br>Mira también la línea de <code>powerPreference</code>: dentro de este playground sale <code>low-power</code> en <em>los dos</em> contextos, incluso en el de por defecto. Es una peculiaridad de los iframes aislados (<code>sandbox</code> sin <code>allow-same-origin</code>), donde Chrome degrada esa pista a «bajo consumo»: comprobamos que el mismo código en una página normal devuelve <code>"default"</code> y <code>"high-performance"</code>. Otra prueba de que <code>getContextAttributes()</code> cuenta lo que hay, no lo que pediste.</li>
+    <li><strong>Segunda llamada</strong>: devuelve <em>el mismo objeto</em> y el <code>{ alpha: false }</code> se ignora en silencio. No hay forma de «reconfigurar» un contexto existente.</li>
+    <li><strong>Mezclar tipos</strong>: <code>null</code> en ambos casos. Un canvas con contexto WebGL2 no puede dar un contexto 2D ni uno WebGL1, y al revés tampoco.</li>
+  </ol>
+  <p>Las dos últimas líneas usan una extensión (<code>WEBGL_lose_context</code>) para liberar los contextos en cuanto dejan de servir. Parece un detalle de limpieza; en la sección sobre <a href="#el-limite-de-contextos">el límite de contextos</a> verás que puede salvarte la página.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-atributos-ignorados" data-titulo="Mis atributos de getContext no hacen nada">
+  <p><strong>Síntoma:</strong> pides <code>{ preserveDrawingBuffer: true }</code> o <code>{ alpha: false }</code> y el comportamiento no cambia. No hay ningún error en la consola.</p>
+  <p><strong>Causa:</strong> ese canvas ya tenía un contexto WebGL2. Quizá lo creó una librería, un «test de soporte» que hace <code>canvas.getContext('webgl2')</code> sin atributos, o tu propio código en otro módulo. Toda llamada posterior devuelve el mismo objeto e ignora los atributos nuevos.</p>
+  <p><strong>Solución:</strong> pasa los atributos en la <em>primera</em> llamada. Para comprobar lo que tienes, imprime <code>gl.getContextAttributes()</code>. Si necesitas otra configuración, crea otro canvas. Y los tests de soporte, hazlos siempre sobre un canvas desechable.</p>
+</div>
+
+<div class="callout bestiario" data-id="m5-getcontext-null" data-titulo="getContext('webgl2') devuelve null">
+  <p><strong>Síntoma:</strong> <code>gl</code> es <code>null</code> y la primera llamada revienta con <code>Cannot read properties of null</code>.</p>
+  <p><strong>Causa:</strong> una de estas cuatro. (1) El canvas ya tiene un contexto de otro tipo: <code>'2d'</code>, <code>'webgl'</code>… (2) El navegador no soporta WebGL2 o ha puesto la GPU o el driver en su lista negra. (3) Pediste <code>failIfMajorPerformanceCaveat: true</code> y solo había render por software: lo comprobamos forzando el renderizador por software de Chrome (SwiftShader) y, efectivamente, <code>getContext</code> devolvió <code>null</code>. (4) El navegador ha bloqueado WebGL en esa página tras varios fallos seguidos de la GPU (Chrome lo hace para protegerse).</p>
+  <p><strong>Solución:</strong> un canvas para cada tipo de contexto; comprobar siempre el <code>null</code> y mostrar un mensaje o una alternativa. Para saber el porqué, escucha el evento <code>webglcontextcreationerror</code> <em>antes</em> de llamar a <code>getContext</code>: se dispara durante la propia llamada y su <code>statusMessage</code> trae el motivo detallado.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Una librería de detección de funcionalidades hace <code>canvas.getContext('webgl2')</code> sobre tu canvas para ver si hay soporte. Después, tu código hace <code>canvas.getContext('webgl2', { preserveDrawingBuffer: true })</code>. ¿Qué obtienes?</p>
+  <ul>
+    <li>Un contexto nuevo con <code>preserveDrawingBuffer: true</code>, que sustituye al anterior.<div class="explicacion">No: un canvas tiene como mucho un contexto en toda su vida. No se puede sustituir ni reconfigurar.</div></li>
+    <li><code>null</code>, porque el canvas ya tiene un contexto.<div class="explicacion">Ese <code>null</code> solo aparece al pedir un tipo <em>distinto</em> (por ejemplo <code>'2d'</code>). Pedir el mismo tipo devuelve el contexto existente.</div></li>
+    <li data-correcta>El mismo contexto que creó la librería, con <code>preserveDrawingBuffer: false</code>.<div class="explicacion">Exacto: la segunda llamada devuelve el objeto existente e ignora los atributos. Tu <code>preserveDrawingBuffer</code> no existe, y nada te avisa. Compruébalo con <code>getContextAttributes()</code>.</div></li>
+    <li>Una excepción <code>InvalidStateError</code>.<div class="explicacion">WebGL no lanza aquí: devuelve el contexto existente sin quejarse, que es justo lo que lo hace traicionero.</div></li>
+  </ul>
+</div>
+
+<h2>clearColor y clear, sin misterios</h2>
+<p>Antes de dibujar triángulos (lección <a href="02-primer-triangulo.html">5.2</a>) solo tenemos una forma de pintar: borrar. Merece la pena entenderla bien porque la usarás en cada frame de cada programa.</p>
+<ul>
+  <li><code>gl.clearColor(r, g, b, a)</code> guarda en el estado el color de borrado. Son cuatro <code>float</code>. En WebGL2 el valor se guarda <strong>tal cual</strong>, sin recortar: tras <code>gl.clearColor(2, -1, 0.5, 1)</code>, <code>gl.getParameter(gl.COLOR_CLEAR_VALUE)</code> devuelve <code>[2, -1, 0.5, 1]</code>. El recorte a [0, 1] ocurre al escribir en un búfer de 8 bits por canal: ese <code>clear</code> produjo el píxel <code>(255, 0, 128, 255)</code>.</li>
+  <li><code>gl.clear(máscara)</code> rellena los búferes indicados: <code>gl.COLOR_BUFFER_BIT</code> (0x4000), <code>gl.DEPTH_BUFFER_BIT</code> (0x100) y <code>gl.STENCIL_BUFFER_BIT</code> (0x400), combinables con <code>|</code>. La profundidad se rellena con <code>gl.clearDepth</code> (por defecto 1) y el stencil con <code>gl.clearStencil</code> (por defecto 0).</li>
+  <li><code>clear</code> <strong>respeta</strong> el rectángulo de <em>scissor</em> y las máscaras de escritura (<code>gl.colorMask</code>, <code>gl.depthMask</code>…), pero <strong>ignora</strong> el <code>viewport</code>. Lo comprobamos: con <code>gl.viewport(0, 0, 50, 50)</code>, un <code>clear</code> pintó el canvas entero; con <code>gl.colorMask(true, false, false, true)</code>, solo cambió el canal rojo.</li>
+</ul>
+
+<p>Esa segunda propiedad es un regalo: con el <em>scissor test</em> puedes pintar rectángulos de cualquier color sin escribir un solo shader.</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function rectangulo(gl, x, y, ancho, alto, color) {
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(x, y, ancho, alto);
+  gl.clearColor(color[0], color[1], color[2], color[3]);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.SCISSOR_TEST);
+}
+</script>
+<ol>
+  <li data-l="2">Activa el test de scissor. Desde ese momento, <em>todas</em> las escrituras en el framebuffer (los <code>clear</code> y también los dibujos de 5.2) quedan recortadas a un rectángulo. Por defecto está desactivado.</li>
+  <li data-l="3">El rectángulo, en <strong>píxeles del búfer de dibujo</strong> (no en px CSS) y con el origen <strong>abajo a la izquierda</strong>: <code>y = 0</code> es la fila inferior, como en <code>gl_FragCoord</code>. Al revés que en Canvas 2D y en el DOM.</li>
+  <li data-l="4">El color queda guardado en el estado: si después haces otro <code>clear</code> sin cambiarlo, usará este.</li>
+  <li data-l="5">Solo se borran los píxeles dentro del rectángulo.</li>
+  <li data-l="6">Dejar el estado como lo encontraste evita la clase de bug más típica de una máquina de estados: que una función «contamine» a las que vienen después (<a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>).</li>
+</ol>
+</div>
+
+<div class="callout hack" data-titulo="Rectángulos sin shaders">
+  <p>Scissor + clear es una forma muy barata de rellenar un rectángulo alineado con los ejes y no necesita que escribas ningún shader (por dentro, el driver lo resolverá como un borrado por hardware o dibujando él mismo un rectángulo, según la GPU). Se usa de verdad para cosas como dividir la pantalla en varias vistas, pintar el fondo de un minimapa o depurar («¿llega mi código a este punto? pinto un cuadrado rojo en la esquina»). En esta lección lo usaremos para todas las demos, ya que aún no sabemos dibujar triángulos.</p>
+</div>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.1.1 — El morado sale blanco</h3>
+  <p>Este código quiere pintar el fondo con el morado del curso, <code>#8b7bff</code> = rgb(139, 123, 255), pero sale blanco. Arréglalo sin cambiar el color elegido. Después mira qué imprime <code>getParameter</code> antes y después del arreglo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.1.1" data-altura="160" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+
+// El morado del curso: #8b7bff = rgb(139, 123, 255)
+gl.clearColor(139, 123, 255, 255);
+gl.clear(gl.COLOR_BUFFER_BIT);
+
+console.log('color de borrado guardado:', gl.getParameter(gl.COLOR_CLEAR_VALUE));
+console.log('error:', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+
+// WebGL trabaja con canales de 0 a 1: dividimos por 255
+gl.clearColor(139 / 255, 123 / 255, 255 / 255, 1.0);
+gl.clear(gl.COLOR_BUFFER_BIT);
+
+console.log('color de borrado guardado:', gl.getParameter(gl.COLOR_CLEAR_VALUE));
+console.log('error:', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿En qué rango espera WebGL cada canal de color? ¿Qué pasa con un 139 al escribirlo en un canal de 8 bits?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El error vale 0 (<code>gl.NO_ERROR</code>): la llamada es perfectamente válida. WebGL no puede saber que querías decir «139 de 255».</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los canales van de 0 a 1. <code>clearColor</code> guarda <code>[139, 123, 255, 255]</code> sin quejarse (en WebGL2 no se recorta al guardar), y al escribir en el búfer de 8 bits cada canal se recorta a 1.0: blanco opaco. La corrección es dividir por 255: <code>139/255 ≈ 0.545</code>, que al escribirse vuelve a ser exactamente 139 porque el búfer guarda <code>round(0.545 × 255)</code>.</p>
+    <p>Lo importante es el diagnóstico: <strong>no hubo error</strong>. Muchos fallos de WebGL son así: la llamada es legal, solo que no significa lo que creías. Por eso inspeccionar el estado con <code>getParameter</code> es una herramienta de depuración de primera.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.1.2 — Tres franjas con scissor</h3>
+  <p>Pinta tres franjas horizontales del mismo alto que llenen todo el canvas: <strong>morado arriba</strong> (<code>0.55, 0.48, 1.0</code>), <strong>gris oscuro en el centro</strong> (<code>0.12, 0.13, 0.17</code>) y <strong>turquesa abajo</strong> (<code>0.25, 0.82, 0.91</code>). No debe quedar ninguna fila de píxeles sin pintar ni pintada dos veces, sea cual sea el alto.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.1.2" data-altura="200" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+// El búfer al tamaño real en pantalla (lo explicamos más abajo en la lección)
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+console.log('búfer:', w, '×', h);
+
+function rectangulo(x, y, ancho, alto, r, g, b) {
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(x, y, ancho, alto);
+  gl.clearColor(r, g, b, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+// TODO: tres llamadas a rectangulo()
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+console.log('búfer:', w, '×', h);
+
+function rectangulo(x, y, ancho, alto, r, g, b) {
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(x, y, ancho, alto);
+  gl.clearColor(r, g, b, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+// Cortes redondeados: franjas [0, a), [a, b), [b, h)
+const a = Math.round(h / 3), b = Math.round(2 * h / 3);
+rectangulo(0, 0, w, a, 0.25, 0.82, 0.91);        // abajo (y = 0 es la fila inferior)
+rectangulo(0, a, w, b - a, 0.12, 0.13, 0.17);    // centro
+rectangulo(0, b, w, h - b, 0.55, 0.48, 1.0);     // arriba
+console.log('altos:', a, b - a, h - b, '→ suman', a + (b - a) + (h - b));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Dónde está la fila <code>y = 0</code> en WebGL? La franja de arriba no empieza en <code>y = 0</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si el alto no es múltiplo de 3, <code>h / 3</code> no es entero. En vez de calcular tres altos, calcula dos <em>cortes</em> redondeados y deduce los altos restando.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con el origen abajo, la franja turquesa empieza en <code>y = 0</code> y la morada es la última. Para no dejar huecos, se redondean los <em>cortes</em> (<code>a = round(h/3)</code>, <code>b = round(2h/3)</code>) y los altos salen de restarlos: <code>a</code>, <code>b − a</code> y <code>h − b</code>, que siempre suman exactamente <code>h</code>. Si en cambio redondeas cada alto por separado, con <code>h = 100</code> tendrías 33 + 33 + 33 = 99: una fila sin pintar arriba del todo.</p>
+    <p>Este patrón de «redondear los bordes, no los tamaños» vale para cualquier reparto de píxeles: columnas de una rejilla, vistas de una pantalla partida, tiras de un post-proceso.</p>
+  </details>
+</section>
+
+<h2>El modelo de presentación: cómo llega tu dibujo a la pantalla</h2>
+<p>En OpenGL de escritorio tú decides cuándo mostrar lo que has dibujado (<code>swapBuffers</code>). En WebGL <strong>no existe esa llamada</strong>. El navegador sigue estas reglas implícitas:</p>
+<ol>
+  <li>Dibujas en el <strong>búfer de dibujo</strong> (<em>drawing buffer</em>), normalmente dentro de un callback de <code>requestAnimationFrame</code>.</li>
+  <li>Cuando tu código termina y el navegador genera el siguiente frame de la página (<a href="../02-animacion/01-pipeline-render.html">2.1</a>), mira si el canvas ha cambiado. Si has dibujado algo, entrega el búfer al <strong>compositor</strong>, que lo coloca en la página junto al resto de elementos. Esto es la <strong>presentación</strong>.</li>
+  <li>Tras presentarlo, si <code>preserveDrawingBuffer</code> es <code>false</code> (lo normal), el contenido del búfer de dibujo <strong>se borra</strong>: color a (0, 0, 0, 0), profundidad a 1, stencil a 0.</li>
+  <li>Si en un frame no dibujas nada, no hay presentación nueva: la pantalla sigue mostrando la última imagen entregada.</li>
+</ol>
+
+<svg class="diagrama" viewBox="0 0 760 200" width="760" role="img" aria-label="Línea de tiempo de dibujo, presentación y borrado del búfer">
+  <defs>
+    <marker id="m51-fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <path d="M20 150 L740 150" stroke="currentColor" stroke-width="1.5" marker-end="url(#m51-fl2)"/>
+  <text x="735" y="172" text-anchor="end" class="texto-tenue">tiempo</text>
+  <rect class="caja" x="30" y="40" width="160" height="70" rx="8"/>
+  <text x="110" y="64" text-anchor="middle" style="font-weight:700">frame N: rAF</text>
+  <text x="110" y="86" text-anchor="middle" class="texto-tenue" style="font-size:12px">clear + dibujar</text>
+  <rect class="caja" x="210" y="40" width="160" height="70" rx="8"/>
+  <text x="290" y="64" text-anchor="middle" style="font-weight:700">presentación</text>
+  <text x="290" y="86" text-anchor="middle" class="texto-tenue" style="font-size:12px">búfer → compositor</text>
+  <rect x="390" y="40" width="160" height="70" rx="8" class="acento" stroke-width="2"/>
+  <text x="470" y="64" text-anchor="middle" style="font-weight:700">búfer borrado</text>
+  <text x="470" y="86" text-anchor="middle" class="texto-tenue" style="font-size:12px">a (0,0,0,0) si no preservas</text>
+  <rect class="caja" x="570" y="40" width="160" height="70" rx="8"/>
+  <text x="650" y="64" text-anchor="middle" style="font-weight:700">frame N+1: rAF</text>
+  <text x="650" y="86" text-anchor="middle" class="texto-tenue" style="font-size:12px">empiezas desde cero</text>
+  <path d="M110 112 L110 146" class="tenue" stroke-width="1.5"/>
+  <path d="M290 112 L290 146" class="tenue" stroke-width="1.5"/>
+  <path d="M470 112 L470 146" class="tenue" stroke-width="1.5"/>
+  <path d="M650 112 L650 146" class="tenue" stroke-width="1.5"/>
+  <text x="290" y="28" text-anchor="middle" class="texto-tenue" style="font-size:12px">la pantalla muestra la imagen N hasta la siguiente presentación</text>
+</svg>
+
+<p>Lo comprobamos con experimentos: leyendo un píxel (con <code>readPixels</code>, que verás en 5.8) al principio del frame siguiente, sin <code>preserveDrawingBuffer</code>, se obtiene <code>(0, 0, 0, 0)</code> aunque el frame anterior hubiera pintado todo el canvas de azul. Dentro del mismo callback, justo después de dibujar, se obtiene el azul.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.1.2 — Un pincel que no deja rastro</h3>
+  <p>Dos canvas idénticos. En cada frame, un «pincel» pinta un único cuadrado (con scissor + clear) en una posición que se mueve, <strong>sin borrar el fondo</strong>. La única diferencia es el atributo <code>preserveDrawingBuffer</code>. El fondo a cuadros es CSS: se ve donde el canvas es transparente. Al poco de arrancar, el código hace tres capturas con <code>toDataURL</code> y las muestra debajo.</p>
+  <div class="js-playground" data-titulo="preserveDrawingBuffer en acción" data-altura="330" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<div class="fila">
+  <figure><canvas id="izq"></canvas><figcaption>preserveDrawingBuffer: false</figcaption></figure>
+  <figure><canvas id="der"></canvas><figcaption>preserveDrawingBuffer: true</figcaption></figure>
+</div>
+<div id="capturas"></div>
+</script>
+<script type="text/x-css">
+body { padding: 10px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; }
+.fila { display: flex; gap: 12px; height: 190px; }
+figure { margin: 0; flex: 1; display: flex; flex-direction: column; min-width: 0; }
+canvas { flex: 1; width: 100%; min-height: 0; display: block; border-radius: 6px;
+  background: repeating-conic-gradient(#232838 0 25%, #171b26 0 50%) 0 0 / 20px 20px; }
+figcaption, .cap { font: 12px ui-monospace, monospace; color: #b4bccb; text-align: center; padding-top: 4px; }
+#capturas { display: flex; gap: 12px; }
+#capturas figure { flex: 1; }
+#capturas img { width: 100%; height: 80px; object-fit: fill; border-radius: 4px;
+  background: repeating-conic-gradient(#232838 0 25%, #171b26 0 50%) 0 0 / 14px 14px; }
+</script>
+<script type="text/x-js">
+function preparar(canvas, atributos) {
+  const gl = canvas.getContext('webgl2', atributos);
+  canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);   // búfer = tamaño en pantalla
+  canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+  gl.enable(gl.SCISSOR_TEST);            // todos los clear quedarán recortados
+  return gl;
+}
+const izq = preparar(document.getElementById('izq'), { preserveDrawingBuffer: false });
+const der = preparar(document.getElementById('der'), { preserveDrawingBuffer: true });
+
+// Pinta UN cuadrado en la posición del pincel para el instante t (en segundos)
+function pincel(gl, t) {
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  const lado = Math.round(h * 0.09);
+  const x = (0.5 + 0.42 * Math.cos(t * 1.3)) * w;
+  const y = (0.5 + 0.40 * Math.sin(t * 2.1)) * h;
+  gl.scissor(Math.round(x - lado / 2), Math.round(y - lado / 2), lado, lado);
+  gl.clearColor(0.5 + 0.5 * Math.cos(t), 0.55 + 0.45 * Math.sin(t * 0.7), 1.0, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT);         // no borramos el fondo: solo el cuadrado nuevo
+}
+
+function miniatura(canvas, texto) {
+  const fig = document.createElement('figure');
+  const img = new Image();
+  img.src = canvas.toDataURL();           // PNG del contenido ACTUAL del búfer
+  const cap = document.createElement('div');
+  cap.className = 'cap';
+  cap.textContent = texto;
+  fig.append(img, cap);
+  document.getElementById('capturas').append(fig);
+}
+
+let capturado = false;
+function frame(ms) {
+  const t = ms / 1000;
+  pincel(izq, t);
+  pincel(der, t);
+  if (!capturado && t > 0.6) {
+    capturado = true;
+    miniatura(izq.canvas, 'izq · en el mismo callback');   // justo después de dibujar
+    setTimeout(() => {                                     // otro task: ya se presentó
+      miniatura(izq.canvas, 'izq · desde setTimeout');
+      miniatura(der.canvas, 'der · desde setTimeout');
+    }, 50);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Qué está pasando:</p>
+  <ol>
+    <li><strong>Izquierda</strong>: en cada frame el búfer llega borrado, el pincel pinta un cuadrado, se presenta y se vuelve a borrar. En pantalla solo ves el cuadrado del último frame. Si esperabas un rastro, este comportamiento parece un bug; es el diseño.</li>
+    <li><strong>Derecha</strong>: el búfer se preserva entre frames y los cuadrados se acumulan: un rastro, como en un programa de dibujo.</li>
+    <li><strong>Capturas</strong>: <code>toDataURL</code> fotografía el contenido del búfer <em>en ese instante</em>. Llamado en el mismo callback en el que acabas de dibujar, captura lo que dibujaste (el cuadrado suelto). Llamado desde un <code>setTimeout</code>, el búfer izquierdo ya se presentó y se borró: la captura sale <strong>vacía</strong>, totalmente transparente. El derecho conserva su contenido y se captura bien.</li>
+  </ol>
+  <p>Lo mismo ocurre con <code>canvas.toBlob</code> (lo comprobamos: en el mismo task captura la imagen, tras la presentación devuelve píxeles (0, 0, 0, 0)) y con cualquier cosa que lea el canvas desde fuera: <code>drawImage(canvasWebGL, …)</code> en un canvas 2D, <code>createImageBitmap(canvasWebGL)</code> o <code>texImage2D</code> en otro contexto. Las tres, llamadas tras la presentación, nos dieron píxeles (0, 0, 0, 0).</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-captura-vacia" data-titulo="La captura del canvas sale vacía (o lo dibujado desaparece)">
+  <p><strong>Síntoma:</strong> <code>canvas.toDataURL()</code> o <code>toBlob</code> devuelven una imagen transparente aunque en pantalla se ve el dibujo. Variante: dibujas solo cuando algo cambia (un clic, un trazo) y lo pintado en frames anteriores desaparece.</p>
+  <p><strong>Causa:</strong> con <code>preserveDrawingBuffer: false</code> (el valor por defecto), el navegador borra el búfer de dibujo en cuanto lo presenta. Lo que ves en pantalla es la copia que tiene el compositor, no el búfer.</p>
+  <p><strong>Solución:</strong> para capturas, llama a <code>toDataURL</code>/<code>toBlob</code>/<code>drawImage</code> en el <em>mismo</em> callback en el que dibujas, justo después de las llamadas de dibujo (o vuelve a dibujar antes de capturar). Para acumular, redibuja todo cada frame desde tus datos, o dibuja en un framebuffer propio que nadie borra (5.8). <code>preserveDrawingBuffer: true</code> es el último recurso.</p>
+</div>
+
+<div class="callout senior" data-titulo="¿Por qué borrar es lo normal?">
+  <p>Porque permite al navegador <em>intercambiar</em> búferes en lugar de <em>copiarlos</em>: entrega al compositor el búfer que acabas de pintar y te da otro para el frame siguiente, sin copiar ni un píxel. Si le pides que preserve el contenido, normalmente tiene que copiar el búfer completo cada frame (en un canvas de 2560×1440 son unos 15 MB de lectura y escritura por frame). La especificación de WebGL avisa de que <code>preserveDrawingBuffer: true</code> puede tener un coste de rendimiento importante en algunas plataformas; en las GPU de móvil (y en las de Apple, que también trabajan por teselas), además, obliga a volver a cargar en la memoria de la GPU un contenido que, sin preservar, se podría descartar.</p>
+  <p>Esto explica también por qué en cada frame se empieza con un <code>clear</code> aunque vayas a cubrir todos los píxeles: le dice al driver que el contenido anterior no importa, y en las GPU por teselas un <code>clear</code> al principio sale prácticamente gratis.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Tu programa no tiene bucle: dibuja una escena una sola vez al cargar la página, con <code>preserveDrawingBuffer: false</code>. ¿Qué se ve en pantalla un minuto después?</p>
+  <ul>
+    <li>Nada: el búfer se borró tras la presentación, así que el canvas queda transparente.<div class="explicacion">El borrado afecta al búfer de dibujo, no a la imagen que ya tiene el compositor. Mientras no presentes algo nuevo, se sigue mostrando la última imagen.</div></li>
+    <li data-correcta>La escena, intacta.<div class="explicacion">Correcto. Como no vuelves a dibujar, no hay presentación nueva y el compositor sigue mostrando la última imagen. El búfer sí está borrado: si ahora llamas a <code>toDataURL</code> desde un clic, obtendrás una imagen vacía.</div></li>
+    <li>La escena parpadea: un frame visible, otro borrado.<div class="explicacion">No hay parpadeo: el navegador solo presenta cuando el canvas ha cambiado en ese frame.</div></li>
+    <li>Depende de si el canvas tiene <code>alpha: true</code>.<div class="explicacion">El canal alfa cambia cómo se mezcla el canvas con la página, no si la imagen presentada se conserva.</div></li>
+  </ul>
+</div>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.1.3 — Una captura que funcione</h3>
+  <p>Este programa anima el fondo y, al pulsar el botón (o automáticamente a los dos segundos), intenta guardar una miniatura del canvas… que sale vacía. Arréglalo <strong>sin</strong> activar <code>preserveDrawingBuffer</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.1.3" data-altura="250" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="barra"><button id="capturar">Capturar</button><img id="mini" alt=""></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { width: 100%; flex: 1; min-height: 0; display: block; }
+.barra { display: flex; align-items: center; gap: 12px; padding: 8px; }
+button { font: 13px sans-serif; padding: 6px 12px; }
+#mini { width: 120px; height: 60px; border: 1px solid #3a4256;
+  background: repeating-conic-gradient(#232838 0 25%, #171b26 0 50%) 0 0 / 12px 12px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+function dibujar(t) {
+  gl.clearColor(0.5 + 0.5 * Math.sin(t), 0.3, 0.5 + 0.5 * Math.cos(t * 0.8), 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
+function capturar() {
+  document.getElementById('mini').src = canvas.toDataURL();
+  console.log('captura hecha');
+}
+
+function frame(ms) {
+  dibujar(ms / 1000);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+document.getElementById('capturar').addEventListener('click', capturar);
+setTimeout(capturar, 2000);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+function dibujar(t) {
+  gl.clearColor(0.5 + 0.5 * Math.sin(t), 0.3, 0.5 + 0.5 * Math.cos(t * 0.8), 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
+// En lugar de capturar "ya", pedimos la captura para el próximo frame
+let capturaPendiente = false;
+function capturar() { capturaPendiente = true; }
+
+function frame(ms) {
+  dibujar(ms / 1000);
+  if (capturaPendiente) {                 // mismo callback, justo después de dibujar
+    capturaPendiente = false;
+    document.getElementById('mini').src = canvas.toDataURL();
+    console.log('captura hecha');
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+document.getElementById('capturar').addEventListener('click', capturar);
+setTimeout(capturar, 2000);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿En qué momento se ejecuta el manejador del clic o del <code>setTimeout</code>, respecto al último <code>dibujar</code>? ¿Qué contiene el búfer en ese momento?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>No captures en el manejador: deja una marca («hay una captura pendiente») y que la haga el propio bucle.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El clic y el <code>setTimeout</code> son tasks distintas del callback de <code>requestAnimationFrame</code> (<a href="../01-web/05-event-loop.html">1.5</a>). Cuando se ejecutan, el último frame ya se presentó y el búfer está borrado: <code>toDataURL</code> fotografía un búfer vacío. La solución convierte la captura en una <em>petición</em>: el manejador solo activa una bandera y el bucle, dentro del mismo callback y justo después de <code>dibujar</code>, hace la captura y baja la bandera.</p>
+    <p>Este patrón («encola la acción y ejecútala en el frame») es el mismo que usarás para leer píxeles con <code>readPixels</code> al hacer <em>picking</em> en 5.8. Una alternativa válida sin bucle es volver a llamar a <code>dibujar()</code> dentro de <code>capturar()</code> justo antes de <code>toDataURL</code>.</p>
+  </details>
+</section>
+
+<h2>Tamaño del búfer frente a tamaño en pantalla</h2>
+<p>Un canvas tiene <strong>dos tamaños independientes</strong>, y confundirlos es la causa de medio bestiario:</p>
+<ul>
+  <li>Los atributos <code>canvas.width</code> y <code>canvas.height</code>: el tamaño del <strong>búfer de dibujo</strong> que pides, en píxeles. Si no los tocas: 300×150.</li>
+  <li>El tamaño CSS (<code>width</code>/<code>height</code> en tu hoja de estilos, o lo que decida el layout): cuánto ocupa el canvas <strong>en la página</strong>, en píxeles CSS. Lo lees con <code>canvas.clientWidth</code> y <code>clientHeight</code>.</li>
+</ul>
+<p>Si no coinciden, el navegador escala el búfer para rellenar la caja CSS: si el búfer es más pequeño, todo sale <strong>borroso</strong>; si tiene otra proporción, todo sale <strong>deformado</strong>. Y hay un tercer número en juego, <code>window.devicePixelRatio</code> (DPR), que viste en <a href="../02-animacion/06-canvas2d.html">2.6</a>: cuántos píxeles físicos hay en cada píxel CSS. En una pantalla «retina» suele ser 2; en un móvil, 2 o 3; con el zoom del navegador cambia. Para que cada píxel del búfer caiga exactamente sobre un píxel físico, el búfer tiene que medir <em>tamaño CSS × DPR</em>.</p>
+
+<svg class="diagrama" viewBox="0 0 760 230" width="760" role="img" aria-label="Tamaño CSS del canvas frente a tamaño del búfer de dibujo">
+  <rect class="caja" x="20" y="30" width="200" height="150" rx="6"/>
+  <text x="120" y="22" text-anchor="middle" style="font-weight:700">Caja CSS: 400 × 300 px CSS</text>
+  <text x="120" y="110" text-anchor="middle" class="texto-tenue">lo que ocupa en la página</text>
+  <text x="120" y="200" text-anchor="middle" class="texto-tenue">clientWidth × clientHeight</text>
+  <text x="250" y="110" text-anchor="middle" style="font-size:22px">×2</text>
+  <text x="250" y="130" text-anchor="middle" class="texto-tenue">DPR</text>
+  <rect x="290" y="30" width="200" height="150" rx="6" class="acento" stroke-width="2"/>
+  <g class="tenue" stroke-width="0.6">
+    <path d="M290 67.5 H490 M290 105 H490 M290 142.5 H490 M340 30 V180 M390 30 V180 M440 30 V180"/>
+  </g>
+  <text x="390" y="22" text-anchor="middle" style="font-weight:700">Búfer: 800 × 600 píxeles</text>
+  <text x="390" y="200" text-anchor="middle" class="texto-tenue">canvas.width × canvas.height</text>
+  <rect class="caja" x="540" y="30" width="200" height="150" rx="6"/>
+  <text x="640" y="22" text-anchor="middle" style="font-weight:700">Viewport</text>
+  <text x="640" y="80" text-anchor="middle" class="texto-tenue">gl.viewport(0, 0, 800, 600)</text>
+  <text x="640" y="104" text-anchor="middle" class="texto-tenue">dónde cae el clip space</text>
+  <text x="640" y="128" text-anchor="middle" class="texto-tenue">(−1…1) dentro del búfer</text>
+  <text x="640" y="200" text-anchor="middle" class="texto-tenue">NO se actualiza solo</text>
+</svg>
+
+<h3>drawingBufferWidth: el tamaño que de verdad tienes</h3>
+<p><code>canvas.width</code> es lo que pides; <code>gl.drawingBufferWidth</code> y <code>gl.drawingBufferHeight</code> son lo que te dieron. Casi siempre coinciden, pero no siempre: el navegador limita el tamaño máximo del búfer. En el Chrome con GPU M1 que usamos para comprobar el curso:</p>
+<table>
+  <thead><tr><th>Pedido (<code>canvas.width × height</code>)</th><th>Obtenido (<code>drawingBufferWidth × Height</code>)</th></tr></thead>
+  <tbody>
+    <tr><td>8000 × 8000</td><td>5760 × 5760</td></tr>
+    <tr><td>16384 × 16384</td><td>5760 × 5760</td></tr>
+    <tr><td>20000 × 10000</td><td>7372 × 4500 (¡otra proporción!)</td></tr>
+  </tbody>
+</table>
+<p>Hay un tope de área (unos 33 megapíxeles en esta máquina) además del tope por lado (<code>MAX_TEXTURE_SIZE</code> = 16384 aquí), y en el último caso se aplican los dos: primero se recorta el ancho a 16384 y después se reducen ambos lados hasta caber en el área, así que la proporción no se conserva. Por eso las llamadas que dependen del tamaño real (como <code>gl.viewport</code>) deben usar <code>drawingBufferWidth</code>/<code>Height</code>, no <code>canvas.width</code>. Si quieres verlo en tu equipo (pide unos cientos de MB durante un instante, por eso va con botón):</p>
+
+<div class="js-playground" data-titulo="¿Cuánto búfer te dan?" data-altura="70" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:14px"><button id="probar" style="font:13px sans-serif;padding:6px 12px">Pedir búferes enormes</button></p>
+</script>
+<script type="text/x-js">
+function probar() {
+  const canvas = document.createElement('canvas');
+  // sin MSAA ni profundidad: así la prueba reserva lo mínimo
+  const gl = canvas.getContext('webgl2', { antialias: false, depth: false });
+  for (const [w, h] of [[4096, 4096], [8000, 8000], [20000, 10000]]) {
+    canvas.width = w;
+    canvas.height = h;
+    console.log('pedido', w + '×' + h, '→ obtenido', gl.drawingBufferWidth + '×' + gl.drawingBufferHeight);
+  }
+  canvas.width = canvas.height = 1;                      // devolver la memoria enseguida
+  gl.getExtension('WEBGL_lose_context').loseContext();    // y liberar el contexto
+}
+document.getElementById('probar').addEventListener('click', probar);
+console.log('Pulsa el botón para lanzar la prueba.');
+</script>
+</div>
+
+<h3>Cambiar el tamaño cuesta (y borra)</h3>
+<p>Asignar un valor <em>distinto</em> a <code>canvas.width</code> o <code>canvas.height</code> hace que el navegador libere el búfer y reserve otro: su contenido se pierde (lo comprobamos: tras cambiar el ancho, el píxel pasó de rojo a (0, 0, 0, 0)). En Chrome, asignar el <em>mismo</em> valor no hace nada, pero no te apoyes en eso. La regla: <strong>compara antes de asignar</strong>, y asigna solo si el tamaño cambió.</p>
+
+<h3>El patrón completo: ResizeObserver + devicePixelContentBoxSize</h3>
+<p>¿Cómo sabemos cuánto mide el canvas en píxeles físicos? La tentación es <code>Math.round(canvas.clientWidth * devicePixelRatio)</code>, y funciona casi siempre. Pero tiene dos fallos sutiles: <code>clientWidth</code> es un entero redondeado (un canvas de 33,28 px CSS da <code>clientWidth = 33</code>), y el navegador alinea la caja con la rejilla de píxeles físicos según su posición exacta en la página, así que el tamaño en píxeles físicos puede diferir en uno del cálculo ingenuo. Una línea de un píxel que cae entre dos píxeles físicos se ve borrosa o aparece un muaré.</p>
+<p>La respuesta exacta la da <code>ResizeObserver</code> con la caja <code>device-pixel-content-box</code>: el navegador te dice cuántos píxeles de dispositivo usa para pintar el contenido del elemento. Además te avisa cada vez que cambia, también si solo cambia el DPR (al mover la ventana a otro monitor o al hacer zoom).</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+
+// Tamaño deseado del búfer, en píxeles de dispositivo
+let anchoDeseado = Math.round(canvas.clientWidth * devicePixelRatio);
+let altoDeseado = Math.round(canvas.clientHeight * devicePixelRatio);
+
+const observador = new ResizeObserver((entradas) => {
+  const e = entradas[0];
+  if (e.devicePixelContentBoxSize) {
+    anchoDeseado = e.devicePixelContentBoxSize[0].inlineSize;
+    altoDeseado = e.devicePixelContentBoxSize[0].blockSize;
+  } else {
+    anchoDeseado = Math.round(e.contentBoxSize[0].inlineSize * devicePixelRatio);
+    altoDeseado = Math.round(e.contentBoxSize[0].blockSize * devicePixelRatio);
+  }
+});
+try {
+  observador.observe(canvas, { box: 'device-pixel-content-box' });
+} catch (err) {
+  observador.observe(canvas, { box: 'content-box' });
+}
+
+function ajustarTamaño() {
+  if (canvas.width !== anchoDeseado || canvas.height !== altoDeseado) {
+    canvas.width = anchoDeseado;
+    canvas.height = altoDeseado;
+  }
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+}
+
+function frame() {
+  ajustarTamaño();
+  // ... clear y dibujo ...
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<ol>
+  <li data-l="4-6">Estimación inicial con el cálculo ingenuo, para que el primer frame no salga a 300×150.</li>
+  <li data-l="8">Una entrada por elemento observado; solo observamos el canvas.</li>
+  <li data-l="10-12">El tamaño exacto en píxeles de dispositivo. <code>inlineSize</code> es el ancho y <code>blockSize</code> el alto (en escritura horizontal).</li>
+  <li data-l="13-16">Plan B donde no exista: <code>contentBoxSize</code> da el tamaño CSS <em>con decimales</em>, que multiplicamos por el DPR.</li>
+  <li data-l="18-22">Pedir esa caja lanza una excepción donde no existe: volvemos a la caja de contenido.</li>
+  <li data-l="24-30">Aplicamos el tamaño al empezar cada frame y solo si cambió. El <code>viewport</code> usa el tamaño <em>real</em> del búfer.</li>
+  <li data-l="32-37">El bucle de <a href="../02-animacion/03-raf.html">2.3</a>: primero ajustar, luego dibujar.</li>
+</ol>
+</div>
+
+<p>Tres detalles del código que merecen una frase más. El tamaño llega como array (<code>devicePixelContentBoxSize[0]</code>) porque la especificación prevé elementos partidos en varios fragmentos, como el texto en columnas; un canvas siempre tiene uno. El plan B existe porque no todos los navegadores implementan <code>devicePixelContentBoxSize</code>, y <code>contentBoxSize</code> es mejor que <code>clientWidth</code> porque conserva los decimales (33,28 px en vez de 33). Y el viewport usa <code>drawingBufferWidth</code>, no <code>anchoDeseado</code>, por si el navegador nos dio menos de lo pedido.</p>
+
+<div class="callout senior" data-titulo="¿Por qué no redimensionar dentro del observador?">
+  <p>Por el orden del frame. Lo comprobamos: si en un callback de <code>requestAnimationFrame</code> cambias el tamaño CSS de un elemento, su <code>ResizeObserver</code> se ejecuta <em>en ese mismo frame, después</em> del rAF (tras recalcular el layout y antes de pintar). Si el observador asignara <code>canvas.width</code>, borraría el búfer que tu rAF acaba de dibujar, y ese frame se presentaría vacío: un parpadeo cada vez que cambia el tamaño. Guardar el tamaño en el observador y aplicarlo en el siguiente rAF evita el problema. La excepción: si no tienes bucle y dibujas bajo demanda, redimensiona y vuelve a dibujar dentro del propio observador.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.1.3 — Un canvas nítido a cualquier DPR</h3>
+  <p>Para ver si el búfer coincide píxel a píxel con la pantalla, dibujamos el patrón más exigente que existe: líneas de un píxel separadas por un píxel (verticales a la izquierda, horizontales a la derecha), con scissor + clear. Si el búfer está escalado, aparecen franjas grises, líneas más gruesas que otras o muaré. Cambia el zoom del navegador (<kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>+</kbd>) mientras lo miras: el patrón sigue perfecto, y la línea de abajo te dice por qué.</p>
+  <div class="js-playground" data-titulo="Nitidez píxel a píxel" data-altura="260" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div id="info"></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+#info { font: 12px ui-monospace, monospace; color: #b4bccb; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const info = document.getElementById('info');
+
+let anchoDeseado = Math.round(canvas.clientWidth * devicePixelRatio);
+let altoDeseado = Math.round(canvas.clientHeight * devicePixelRatio);
+const observador = new ResizeObserver((entradas) => {
+  const e = entradas[0];
+  if (e.devicePixelContentBoxSize) {
+    anchoDeseado = e.devicePixelContentBoxSize[0].inlineSize;
+    altoDeseado = e.devicePixelContentBoxSize[0].blockSize;
+  } else {
+    anchoDeseado = Math.round(e.contentBoxSize[0].inlineSize * devicePixelRatio);
+    altoDeseado = Math.round(e.contentBoxSize[0].blockSize * devicePixelRatio);
+  }
+});
+try { observador.observe(canvas, { box: 'device-pixel-content-box' }); }
+catch (err) { observador.observe(canvas, { box: 'content-box' }); }
+
+function ajustarTamaño() {
+  if (canvas.width !== anchoDeseado || canvas.height !== altoDeseado) {
+    canvas.width = anchoDeseado;
+    canvas.height = altoDeseado;
+    return true;
+  }
+  return false;
+}
+
+function dibujar() {
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  gl.viewport(0, 0, w, h);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.clearColor(0.07, 0.08, 0.1, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.clearColor(0.9, 0.9, 0.95, 1);
+  const mitad = Math.floor(w / 2);
+  for (let x = 0; x < mitad; x += 2) {          // líneas verticales de 1 px
+    gl.scissor(x, 0, 1, h);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  for (let y = 0; y < h; y += 2) {              // líneas horizontales de 1 px
+    gl.scissor(mitad, y, w - mitad, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  info.textContent = 'CSS ' + canvas.clientWidth + '×' + canvas.clientHeight +
+    ' · DPR ' + devicePixelRatio + ' · búfer ' + w + '×' + h;
+}
+
+let primera = true;
+function frame() {
+  // Esta escena es estática: solo redibujamos si el tamaño cambió
+  if (ajustarTamaño() || primera) { dibujar(); primera = false; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Dos detalles del código: <code>ajustarTamaño</code> devuelve si hubo cambio, y el bucle solo redibuja entonces, porque la escena es estática y no tiene sentido repetir cientos de <code>clear</code> por frame para obtener la misma imagen (el compositor sigue mostrando la última presentación, como vimos). En una escena animada dibujarías siempre. Y el <code>viewport</code> se fija dentro de <code>dibujar</code> con el tamaño real del búfer, que es lo que toca la siguiente sección.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-canvas-borroso" data-titulo="Todo se ve borroso, pixelado o con muaré">
+  <p><strong>Síntoma:</strong> los bordes se ven blandos, el texto dibujado en WebGL parece desenfocado, las líneas finas tienen grosores irregulares o aparecen franjas de muaré. En pantallas retina o en el móvil es mucho peor.</p>
+  <p><strong>Causa:</strong> el búfer de dibujo es más pequeño que los píxeles físicos que ocupa el canvas: se quedó en 300×150, se calculó con el tamaño CSS sin multiplicar por <code>devicePixelRatio</code>, o se redondeó mal. El navegador lo escala para rellenar la caja.</p>
+  <p><strong>Solución:</strong> el patrón de esta sección: tamaño en píxeles de dispositivo con <code>ResizeObserver</code> (<code>devicePixelContentBoxSize</code>, con plan B), aplicado al principio del frame y solo si cambió. Si el rendimiento no da para DPR 3, limita el DPR a propósito (5.10), pero que sea una decisión, no un accidente.</p>
+</div>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.1.4 — El lienzo borroso</h3>
+  <p>Este programa dibuja un patrón de líneas verticales de un píxel (una sí, una no), pero no ajusta el tamaño del búfer: en lugar de líneas finas de un píxel verás rayas más gruesas, irregulares y con los bordes difuminados (en una pantalla retina, una papilla gris). Añade el ajuste de tamaño para que se vea nítido. Basta con el cálculo ingenuo (<code>clientWidth × devicePixelRatio</code>); si quieres nota, usa el patrón completo.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.1.4" data-altura="220" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+
+function dibujar() {
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  gl.disable(gl.SCISSOR_TEST);
+  gl.clearColor(0.07, 0.08, 0.1, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.clearColor(0.9, 0.9, 0.95, 1);
+  for (let x = 0; x < w; x += 2) {
+    gl.scissor(x, 0, 1, h);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  console.log('búfer:', w, '×', h, '· en pantalla (px CSS):', canvas.clientWidth, '×', canvas.clientHeight);
+}
+dibujar();
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+
+// El búfer debe medir lo mismo que los píxeles físicos que ocupa el canvas
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+function dibujar() {
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  gl.disable(gl.SCISSOR_TEST);
+  gl.clearColor(0.07, 0.08, 0.1, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.clearColor(0.9, 0.9, 0.95, 1);
+  for (let x = 0; x < w; x += 2) {
+    gl.scissor(x, 0, 1, h);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  console.log('búfer:', w, '×', h, '· en pantalla (px CSS):', canvas.clientWidth, '×', canvas.clientHeight);
+}
+dibujar();
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Compara los dos tamaños que imprime la consola. ¿Cuántos píxeles del búfer caen en cada píxel de la pantalla?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Las dos líneas que faltan van justo después de crear el contexto y antes de dibujar. Cuidado con el orden: cambiar el tamaño borra el búfer.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El búfer medía 300×150 y el canvas ocupa, por ejemplo, 760×220 px CSS: cada píxel del búfer se estira sobre unos 2,5 píxeles de pantalla en horizontal, y el filtrado del navegador convierte las líneas blancas y negras alternas en una papilla gris. Asignando <code>canvas.width/height</code> al tamaño CSS × DPR <em>antes</em> de dibujar, cada píxel del búfer cae sobre un píxel físico. El orden importa: si ajustas el tamaño después de dibujar, el cambio borra el dibujo.</p>
+    <p>Fíjate en que no hizo falta tocar el <code>viewport</code>: un <code>clear</code> con scissor no lo usa. En cuanto dibujes triángulos sí hará falta, y es exactamente lo que falla en el siguiente ejercicio.</p>
+  </details>
+</section>
+
+<h2>gl.viewport: dónde cae el clip space</h2>
+<p>En <a href="../04-gpu/02-pipeline-grafico.html">4.2</a> viste que el vertex shader coloca cada vértice en <em>clip space</em> y que, tras la división por <code>w</code>, las coordenadas visibles van de −1 a 1 en x y en y (las <em>coordenadas normalizadas de dispositivo</em>, NDC). El viewport es la última transformación antes de rasterizar: dice en qué rectángulo del búfer, en píxeles, se estira ese cuadrado de −1 a 1.</p>
+$$x_{\text{píxel}} = x_0 + \frac{x_{\text{ndc}} + 1}{2}\,\text{ancho}, \qquad y_{\text{píxel}} = y_0 + \frac{y_{\text{ndc}} + 1}{2}\,\text{alto}$$
+<p>con <code>gl.viewport(x0, y0, ancho, alto)</code>, en píxeles del búfer y origen abajo a la izquierda. Tres hechos que conviene grabarse:</p>
+<ol>
+  <li><strong>Su valor inicial es el tamaño del búfer en el momento de crear el contexto</strong>, normalmente 300×150.</li>
+  <li><strong>No se actualiza al cambiar el tamaño del canvas.</strong> Lo comprobamos: tras pasar el canvas de 300×150 a 640×480, <code>gl.getParameter(gl.VIEWPORT)</code> seguía devolviendo <code>[0, 0, 300, 150]</code>.</li>
+  <li><strong>Afecta al dibujo, no al <code>clear</code></strong> (que usa el scissor). Si divides la pantalla en vistas, necesitas los dos: <code>viewport</code> para colocar el dibujo y <code>scissor</code> para limitar el borrado.</li>
+</ol>
+
+<svg class="diagrama" viewBox="0 0 760 240" width="760" role="img" aria-label="Correspondencia entre coordenadas normalizadas y el rectángulo del viewport">
+  <defs>
+    <marker id="m51-fl3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="40" y="40" width="160" height="160"/>
+  <path d="M120 40 V200 M40 120 H200" class="tenue"/>
+  <text x="120" y="30" text-anchor="middle" style="font-weight:700">NDC</text>
+  <text x="44" y="214" class="texto-tenue">(−1, −1)</text>
+  <text x="196" y="34" text-anchor="end" class="texto-tenue">(1, 1)</text>
+  <path d="M215 120 L300 120" stroke="currentColor" stroke-width="2" marker-end="url(#m51-fl3)"/>
+  <text x="258" y="110" text-anchor="middle" class="texto-tenue">viewport</text>
+  <rect class="caja" x="320" y="30" width="400" height="180"/>
+  <text x="520" y="24" text-anchor="middle" style="font-weight:700">Búfer de dibujo (640 × 480)</text>
+  <rect x="320" y="130" width="188" height="80" class="acento" stroke-width="2"/>
+  <text x="414" y="175" text-anchor="middle" class="texto-tenue">viewport viejo</text>
+  <text x="414" y="193" text-anchor="middle" class="texto-tenue">(0, 0, 300, 150)</text>
+  <text x="324" y="226" class="texto-tenue">(0, 0): abajo a la izquierda</text>
+</svg>
+
+<p>Para el siguiente ejercicio necesitamos dibujar algo que <em>sí</em> use el viewport, es decir, un triángulo con shaders. Como aún no sabemos escribirlo, la pestaña HTML trae una función ya hecha, <code>crearFiguraDePrueba(gl)</code>, que dibuja un triángulo que cubre todo el clip space con un damero y un anillo. No hace falta que la entiendas todavía: en <a href="02-primer-triangulo.html">5.2</a> escribirás tú cada una de sus líneas.</p>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.1.5 — El viewport olvidado</h3>
+  <p>Este programa ajusta el tamaño del búfer en cada frame, pero la figura (que debería llenar todo el canvas) aparece pequeña y aplastada en la esquina inferior izquierda. Arréglalo con una sola línea.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.1.5" data-altura="260" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<script>
+// Figura de prueba: un triángulo que cubre todo el clip space (−1…1), con un
+// damero de 8×8 casillas y un anillo de radio 0.8. La escribirás tú en la lección 5.2.
+function crearFiguraDePrueba(gl) {
+  const fuenteVS = `#version 300 es
+    const vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    out vec2 v_p;
+    void main() { v_p = P[gl_VertexID]; gl_Position = vec4(P[gl_VertexID], 0.0, 1.0); }`;
+  const fuenteFS = `#version 300 es
+    precision highp float;
+    in vec2 v_p;
+    out vec4 color;
+    void main() {
+      vec2 casilla = floor((v_p + 1.0) * 4.0);
+      vec3 c = mix(vec3(0.16, 0.14, 0.32), vec3(0.33, 0.29, 0.62), mod(casilla.x + casilla.y, 2.0));
+      c = mix(c, vec3(0.25, 0.82, 0.91), step(abs(length(v_p) - 0.8), 0.03));
+      color = vec4(c, 1.0);
+    }`;
+  const programa = gl.createProgram();
+  for (const [tipo, fuente] of [[gl.VERTEX_SHADER, fuenteVS], [gl.FRAGMENT_SHADER, fuenteFS]]) {
+    const s = gl.createShader(tipo);
+    gl.shaderSource(s, fuente);
+    gl.compileShader(s);
+    gl.attachShader(programa, s);
+  }
+  gl.linkProgram(programa);
+  const vao = gl.createVertexArray();
+  return function dibujarFigura() {
+    gl.useProgram(programa);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  };
+}
+<\/script>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const dibujarFigura = crearFiguraDePrueba(gl);   // (definida en la pestaña HTML)
+
+function frame() {
+  const w = Math.round(canvas.clientWidth * devicePixelRatio);
+  const h = Math.round(canvas.clientHeight * devicePixelRatio);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  gl.clearColor(0.05, 0.05, 0.07, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  dibujarFigura();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+console.log('viewport:', gl.getParameter(gl.VIEWPORT));
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const dibujarFigura = crearFiguraDePrueba(gl);   // (definida en la pestaña HTML)
+
+function frame() {
+  const w = Math.round(canvas.clientWidth * devicePixelRatio);
+  const h = Math.round(canvas.clientHeight * devicePixelRatio);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  // El viewport NO sigue al canvas: hay que decírselo
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.05, 0.05, 0.07, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  dibujarFigura();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+setTimeout(() => console.log('viewport:', gl.getParameter(gl.VIEWPORT)), 100);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué valor tenía el viewport al crear el contexto? ¿Quién lo cambia después?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>La llamada que falta usa <code>gl.drawingBufferWidth</code> y <code>gl.drawingBufferHeight</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El contexto se creó cuando el canvas medía 300×150, así que el viewport quedó en <code>[0, 0, 300, 150]</code>. Al agrandar el búfer nadie lo actualizó: el clip space se sigue estirando sobre ese rectángulo, anclado abajo a la izquierda. Con <code>gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight)</code> en cada frame, el cuadrado −1…1 cubre el búfer entero.</p>
+    <p>Mira el anillo: con el viewport de 300×150 era una elipse el doble de ancha que de alta; ahora tiene la proporción del canvas. El clip space siempre es un cuadrado de −1 a 1 que se estira sobre el rectángulo del viewport, así que en un canvas no cuadrado los círculos salen deformados. Corregirlo es trabajo de la matriz de proyección, que llega en <a href="06-3d-cubo.html">5.6</a>.</p>
+  </details>
+</section>
+
+<div class="callout bestiario" data-id="m5-viewport-olvidado" data-titulo="Tras redimensionar, el dibujo ocupa una esquina o sale estirado">
+  <p><strong>Síntoma:</strong> al agrandar la ventana (o al crear el contexto antes de dar tamaño al canvas), la escena se ve pequeña en la esquina inferior izquierda. Al encogerla, solo ves la parte de abajo a la izquierda de la escena, como ampliada. Al cambiar solo el ancho, todo sale estirado en un eje.</p>
+  <p><strong>Causa:</strong> <code>gl.viewport</code> conserva el valor que tenía (el tamaño del búfer al crear el contexto, o el último que pusiste). Cambiar <code>canvas.width/height</code> no lo actualiza.</p>
+  <p><strong>Solución:</strong> llama a <code>gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight)</code> cada vez que cambie el tamaño (o, más simple y sin coste apreciable, al principio de cada frame). Si además la escena sale deformada con el viewport correcto, lo que falta es corregir la proporción en la proyección (5.6).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Creas el contexto con el canvas a 300×150 y después pasas el búfer a 600×300 sin llamar a <code>gl.viewport</code>. Dibujas un triángulo que cubría todo el canvas. ¿Dónde aparece?</p>
+  <ul>
+    <li>Cubre todo el canvas, pero borroso.<div class="explicacion">Eso es lo que pasa cuando el <em>búfer</em> es más pequeño que la caja CSS. Aquí el búfer está bien; lo que se quedó pequeño es el viewport.</div></li>
+    <li data-correcta>En el cuarto inferior izquierdo del canvas.<div class="explicacion">Correcto: el viewport sigue siendo (0, 0, 300, 150), la mitad de ancho y de alto del búfer, anclado en el origen de WebGL, que está abajo a la izquierda.</div></li>
+    <li>En el cuarto superior izquierdo.<div class="explicacion">Sería así si el origen estuviera arriba, como en el DOM o en Canvas 2D. En WebGL, <code>y = 0</code> es la fila de abajo.</div></li>
+    <li>Centrado, a la mitad de tamaño.<div class="explicacion">El viewport no se centra solo: su esquina es <code>(x0, y0) = (0, 0)</code>.</div></li>
+  </ul>
+</div>
+
+<h2>La pérdida de contexto</h2>
+<p>Aquí llega lo que casi ningún tutorial cuenta: en cualquier momento, el navegador puede quitarte el contexto WebGL. Todo lo que tenías en la GPU (buffers, texturas, shaders, el estado) desaparece. Ocurre de verdad, por motivos como estos:</p>
+<ul>
+  <li>La GPU se reinicia tras un fallo (un shader que tarda demasiado dispara el perro guardián del sistema operativo) o se actualiza el driver.</li>
+  <li>El proceso de la GPU del navegador se cae y se reinicia.</li>
+  <li>En portátiles con dos GPU, el sistema cambia de una a otra.</li>
+  <li>La página supera el límite de contextos (siguiente sección) o, en móviles, el sistema quita recursos a las pestañas en segundo plano.</li>
+</ul>
+<p>El contexto avisa con dos eventos sobre el canvas:</p>
+<ul>
+  <li><code>webglcontextlost</code>: el contexto ha muerto. <strong>Si quieres que te lo devuelvan, debes llamar a <code>event.preventDefault()</code></strong> en este evento. Si no lo haces, el navegador entiende que no sabes recuperarte y no lo restaurará nunca.</li>
+  <li><code>webglcontextrestored</code>: tienes un contexto nuevo. El objeto <code>gl</code> es el mismo, pero todo lo que contenía ha desaparecido y el estado vuelve a los valores por defecto. Toca recrearlo todo.</li>
+</ul>
+<p>Para probar tu código sin esperar a que falle la GPU existe la extensión <code>WEBGL_lose_context</code>, con dos métodos: <code>loseContext()</code> simula la pérdida y <code>restoreContext()</code> simula la restauración. Esto es lo que medimos al usarla:</p>
+<table>
+  <thead><tr><th>Mientras el contexto está perdido…</th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td><code>gl.isContextLost()</code></td><td><code>true</code> de inmediato, tras <code>loseContext()</code> (el evento llega unos milisegundos después)</td></tr>
+    <tr><td><code>gl.getError()</code></td><td><code>CONTEXT_LOST_WEBGL</code> (0x9242) una sola vez; después, <code>NO_ERROR</code></td></tr>
+    <tr><td><code>gl.getParameter(…)</code>, <code>getExtension</code>, <code>getSupportedExtensions</code>, <code>getContextAttributes</code></td><td><code>null</code></td></tr>
+    <tr><td><code>gl.getAttribLocation(…)</code></td><td>−1</td></tr>
+    <tr><td><code>gl.drawingBufferWidth</code></td><td>0</td></tr>
+    <tr><td><code>gl.isBuffer(bufferViejo)</code></td><td><code>false</code> (y sigue siendo <code>false</code> tras restaurar)</td></tr>
+    <tr><td><code>gl.createBuffer()</code></td><td>un objeto <code>WebGLBuffer</code>… que no sirve para nada</td></tr>
+    <tr><td>dibujar, borrar, subir datos</td><td>no hacen nada, sin error ni aviso</td></tr>
+  </tbody>
+</table>
+<p>Tras restaurar: <code>getContext</code> devuelve el mismo objeto <code>gl</code>, <code>getExtension</code> devuelve los mismos objetos de extensión, y el estado vuelve a los valores por defecto (el <code>clearColor</code> que habías puesto volvió a ser (0, 0, 0, 0)).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.1.4 — Perder y recuperar el contexto a voluntad</h3>
+  <p>El programa separa lo que hay que crear en la GPU (<code>crearRecursos</code>) del bucle de dibujo. A los 1,5 s simula una pérdida y a los 3 s una restauración; los botones te dejan repetirlo. Sigue el registro de la consola.</p>
+  <div class="js-playground" data-titulo="Pérdida y restauración" data-altura="230" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="barra"><button id="perder">loseContext()</button><button id="restaurar">restoreContext()</button></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block;
+  background: repeating-conic-gradient(#232838 0 25%, #171b26 0 50%) 0 0 / 20px 20px; }
+.barra { display: flex; gap: 8px; padding: 8px; }
+button { font: 13px ui-monospace, monospace; padding: 6px 10px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const ext = gl.getExtension('WEBGL_lose_context');    // solo para SIMULAR
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+const t0 = performance.now();
+const log = (m) => console.log(((performance.now() - t0) / 1000).toFixed(2) + ' s  ' + m);
+
+let recursos = null;
+function crearRecursos() {
+  // Todo lo que vive en la GPU se (re)crea aquí: buffers, texturas, programas...
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([1, 2, 3]), gl.STATIC_DRAW);
+  // ...y también el estado que cambiaste respecto a los valores por defecto
+  gl.enable(gl.SCISSOR_TEST);
+  return { buffer };
+}
+
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();                      // "sé recuperarme: devuélvemelo"
+  log('webglcontextlost · isContextLost() = ' + gl.isContextLost());
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  log('webglcontextrestored · ¿vive el buffer viejo? ' + gl.isBuffer(recursos.buffer));
+  recursos = crearRecursos();
+  log('recursos recreados · ¿y el nuevo? ' + gl.isBuffer(recursos.buffer));
+});
+
+recursos = crearRecursos();
+
+function frame(ms) {
+  if (!gl.isContextLost()) {               // perdido: no hay nada que hacer
+    const t = ms / 1000, w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    gl.scissor(0, 0, w, h);
+    gl.clearColor(0.1, 0.1 + 0.08 * Math.sin(t * 3), 0.2, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    const x = Math.round((0.5 + 0.4 * Math.sin(t * 2)) * w);
+    gl.scissor(x - 20, Math.round(h / 2) - 20, 40, 40);
+    gl.clearColor(0.25, 0.82, 0.91, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+document.getElementById('perder').onclick = () => { log('→ loseContext()'); ext.loseContext(); };
+document.getElementById('restaurar').onclick = () => { log('→ restoreContext()'); ext.restoreContext(); };
+setTimeout(() => { log('→ loseContext()'); ext.loseContext(); }, 1500);
+setTimeout(() => { log('→ restoreContext()'); ext.restoreContext(); }, 3000);
+</script>
+  </div>
+  <p>Lo que enseña el registro:</p>
+  <ol>
+    <li>Tras <code>loseContext()</code> el canvas se vuelve transparente (se ve el fondo a cuadros) y <code>isContextLost()</code> ya es <code>true</code>. El evento llega un poco después: es asíncrono.</li>
+    <li>El bucle sigue vivo, pero no dibuja: con el contexto perdido las llamadas no harían nada de todos modos, y comprobar <code>isContextLost()</code> evita trabajo inútil.</li>
+    <li>Al restaurar, el buffer viejo está muerto (<code>isBuffer</code> → <code>false</code>) y el scissor test volvió a estar desactivado. Por eso <code>crearRecursos</code> recrea los objetos <em>y</em> el estado. Si solo recrearas el buffer, el cuadrado turquesa no se vería: sin scissor, el segundo <code>clear</code> pintaría todo el canvas de turquesa.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m5-contexto-perdido" data-titulo="Al volver de otra pestaña (o tras suspender el equipo) el canvas queda en blanco">
+  <p><strong>Síntoma:</strong> la demo funcionaba, cambias de pestaña, suspendes el portátil o abres otra página con mucho WebGL, y al volver el canvas está vacío para siempre. Normalmente sin ningún error en la consola: con el contexto perdido, las llamadas de WebGL no hacen nada y no se quejan.</p>
+  <p><strong>Causa:</strong> el navegador te quitó el contexto y tu código no lo gestiona: no llamó a <code>preventDefault()</code> en <code>webglcontextlost</code> (así que no se restaurará) o no recrea los recursos en <code>webglcontextrestored</code>.</p>
+  <p><strong>Solución:</strong> separa la creación de recursos (buffers, texturas, programas, estado) en una función que puedas volver a llamar; en <code>webglcontextlost</code>, <code>preventDefault()</code> y deja de dibujar; en <code>webglcontextrestored</code>, llama otra vez a esa función. Prueba el camino completo con <code>WEBGL_lose_context</code> antes de publicar.</p>
+</div>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.1.6 — Que sobreviva a la pérdida</h3>
+  <p>Este programa dibuja un cuadrado turquesa sobre fondo oscuro. Al final del código, una simulación pierde el contexto al segundo y lo intenta restaurar a los dos segundos. Tal como está, el canvas se queda vacío para siempre. Arréglalo para que, tras la restauración, vuelva a verse exactamente lo mismo que al principio. La simulación no se toca.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.1.6" data-altura="200" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block;
+  background: repeating-conic-gradient(#232838 0 25%, #171b26 0 50%) 0 0 / 20px 20px; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+// Preparación (una sola vez)
+gl.enable(gl.SCISSOR_TEST);
+const datos = gl.createBuffer();          // (un recurso cualquiera en la GPU)
+
+function frame() {
+  const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+  gl.scissor(0, 0, w, h);
+  gl.clearColor(0.1, 0.1, 0.18, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.scissor(Math.round(w / 2) - 30, Math.round(h / 2) - 30, 60, 60);
+  gl.clearColor(0.25, 0.82, 0.91, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---- Simulación (no la toques) ----
+const ext = gl.getExtension('WEBGL_lose_context');
+canvas.addEventListener('webglcontextlost', (e) => {
+  if (e.defaultPrevented) console.log('pérdida: alguien llamó a preventDefault(), se podrá restaurar');
+  else console.log('pérdida: nadie llamó a preventDefault(), NO se podrá restaurar');
+  window.sePuedeRestaurar = e.defaultPrevented;
+});
+setTimeout(() => ext.loseContext(), 1000);
+setTimeout(() => {
+  if (window.sePuedeRestaurar) { console.log('restaurando...'); ext.restoreContext(); }
+  else console.log('sin restauración posible: el canvas queda vacío');
+}, 2000);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+canvas.width = Math.round(canvas.clientWidth * devicePixelRatio);
+canvas.height = Math.round(canvas.clientHeight * devicePixelRatio);
+
+// Preparación: en una función, para poder repetirla tras una restauración
+let datos = null;
+function crearRecursos() {
+  gl.enable(gl.SCISSOR_TEST);             // el estado también se pierde
+  datos = gl.createBuffer();
+}
+crearRecursos();
+
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();                     // imprescindible para que haya restauración
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  crearRecursos();
+  console.log('contexto restaurado y recursos recreados');
+});
+
+function frame() {
+  if (!gl.isContextLost()) {
+    const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    gl.scissor(0, 0, w, h);
+    gl.clearColor(0.1, 0.1, 0.18, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.scissor(Math.round(w / 2) - 30, Math.round(h / 2) - 30, 60, 60);
+    gl.clearColor(0.25, 0.82, 0.91, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---- Simulación (no la toques) ----
+const ext = gl.getExtension('WEBGL_lose_context');
+canvas.addEventListener('webglcontextlost', (e) => {
+  if (e.defaultPrevented) console.log('pérdida: alguien llamó a preventDefault(), se podrá restaurar');
+  else console.log('pérdida: nadie llamó a preventDefault(), NO se podrá restaurar');
+  window.sePuedeRestaurar = e.defaultPrevented;
+});
+setTimeout(() => ext.loseContext(), 1000);
+setTimeout(() => {
+  if (window.sePuedeRestaurar) { console.log('restaurando...'); ext.restoreContext(); }
+  else console.log('sin restauración posible: el canvas queda vacío');
+}, 2000);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Hay tres fallos. El primero lo dice la consola: sin <code>preventDefault()</code> no hay restauración. Tu escuchador debe registrarse <em>antes</em> que el de la simulación (fíjate en el orden del código).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Cuando por fin se restaure, verás el canvas entero de color turquesa. ¿Qué parte del estado, preparada una sola vez al principio, ha desaparecido?</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>El buffer <code>datos</code> no se usa para dibujar, pero tras la restauración es un objeto muerto. Recréalo junto al estado.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los tres fallos: (1) nadie llama a <code>preventDefault()</code>, así que el navegador (aquí, la simulación, que imita su regla) no restaura; (2) al restaurar, el estado vuelve a los valores por defecto y el scissor test queda desactivado: el segundo <code>clear</code> pinta todo de turquesa; (3) los objetos creados antes de la pérdida están muertos y hay que crearlos de nuevo.</p>
+    <p>La solución mete toda la preparación en <code>crearRecursos()</code> y la llama al principio y en <code>webglcontextrestored</code>. El escuchador de <code>webglcontextlost</code> se registra antes que el de la simulación: los escuchadores de un mismo evento se ejecutan en el orden en que se registraron, y la simulación mira <code>e.defaultPrevented</code>. Además, el bucle comprueba <code>isContextLost()</code> para no trabajar en balde. Cuando tengas programas con shaders y texturas, esta función crecerá, y por eso conviene diseñar la aplicación así desde el principio (lo retomaremos en <a href="../07-integracion/01-arquitectura.html">7.1</a>).</p>
+  </details>
+</section>
+
+<h2>El límite de contextos</h2>
+<p>En la <a href="../00-inicio/01-bienvenida.html">bienvenida</a> se mencionó: Chrome solo permite unos 16 contextos WebGL vivos a la vez. Veamos el detalle, porque es más traicionero de lo que parece. Lo que comprobamos:</p>
+<ul>
+  <li><strong>El límite es de 16 en el hilo principal.</strong> Al crear el 17.º contexto, el navegador pierde a la fuerza uno de los existentes y escribe en la consola <code>WARNING: Too many active WebGL contexts. Oldest context will be lost.</code></li>
+  <li><strong>Lo comparten la página y sus iframes</strong> (al menos los que comparten proceso con ella, como los de estos playgrounds). Creando 20 contextos dentro del iframe de un playground de este curso, murieron el contexto compartido de los editores GLSL de la página <em>y</em> el de otro playground. Da igual de quién sea el contexto: cuenta para todos.</li>
+  <li><strong>«El más antiguo» significa el que lleva más tiempo sin usarse</strong>, no el primero que se creó. Con 16 contextos, usamos el n.º 0 y creamos otro: se perdió el n.º 1, no el n.º 0.</li>
+  <li><strong>No vuelven solos.</strong> Aunque la víctima llame a <code>preventDefault()</code> y después liberes los contextos sobrantes, en nuestras pruebas no se restauró.</li>
+  <li><strong>Liberar a tiempo lo evita.</strong> Creando 50 contextos seguidos y llamando a <code>loseContext()</code> en cada uno al terminar con él, no hubo ningún aviso ni se perdió ningún otro contexto.</li>
+</ul>
+<p>Esto es lo que imprimió la consola al crear 20 contextos en una página que ya tenía dos:</p>
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="Consola (experimento real, Chrome)">
+WARNING: Too many active WebGL contexts. Oldest context will be lost.   ← ×6
+iframe A: mi contexto se perdió
+perdido #0
+perdido #1
+perdido #2
+perdido #3
+0:X 1:X 2:X 3:X 4:ok 5:ok 6:ok 7:ok 8:ok 9:ok 10:ok 11:ok 12:ok 13:ok 14:ok 15:ok 16:ok 17:ok 18:ok 19:ok
+</script>
+<p>No vamos a repetir ese experimento aquí: rompería todas las demos de esta página. Pero hay una forma segura de ver el mecanismo en vivo. Los <em>Web Workers</em> pueden crear contextos WebGL con <code>OffscreenCanvas</code>, y cada worker tiene su propio límite, más pequeño (4 en este Chrome) e independiente del de la página: lo comprobamos con dos workers de 4 contextos cada uno y 16 contextos en la página, todos vivos a la vez. Así que podemos provocar el límite dentro de un worker sin tocar nada más:</p>
+
+<div class="js-playground" data-titulo="El límite, dentro de un worker" data-altura="60" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:16px;font:14px monospace;color:#8791a5">El worker informa por la consola ↓</p>
+</script>
+<script type="text/x-js">
+// Este código se ejecuta DENTRO de un worker (otro hilo, con su propio límite)
+const codigoDelWorker = `
+  const contextos = [];
+  function crear(i) {
+    const lienzo = new OffscreenCanvas(64, 64);
+    lienzo.addEventListener('webglcontextlost', () => postMessage('   ✗ se perdió el #' + i));
+    const gl = lienzo.getContext('webgl2');
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.flush();                                   // "usar" el contexto
+    contextos.push(gl);
+    postMessage('creado el #' + i);
+  }
+  for (let i = 0; i < 4; i++) crear(i);           // 4: justo el límite
+  setTimeout(() => {
+    const gl0 = contextos[0];
+    gl0.clear(gl0.COLOR_BUFFER_BIT);
+    gl0.flush();                                  // el #0 pasa a ser el más reciente
+    postMessage('usado el #0');
+    crear(4);                                     // el 5.º: alguien tiene que morir
+    setTimeout(() => postMessage('estado: ' +
+      contextos.map((g, i) => '#' + i + (g.isContextLost() ? ' perdido' : ' vivo')).join(' · ')), 300);
+  }, 50);
+`;
+const url = URL.createObjectURL(new Blob([codigoDelWorker], { type: 'text/javascript' }));
+const worker = new Worker(url);
+worker.onmessage = (e) => console.log(e.data);
+</script>
+</div>
+
+<p>El quinto contexto provoca una pérdida, y la víctima es el n.º 1: el n.º 0 se salvó porque acababa de usarse. En el hilo principal pasa exactamente lo mismo, con 16 en vez de 4.</p>
+
+<div class="callout bestiario" data-id="m5-demasiados-contextos" data-titulo="Al añadir otro canvas WebGL, una demo deja de dibujar">
+  <p><strong>Síntoma:</strong> una página con muchas demos WebGL (una galería, un tutorial, un panel con varios gráficos) funciona hasta que añades una más; entonces otra, que no has tocado, se queda en blanco. En la consola: <code>WARNING: Too many active WebGL contexts. Oldest context will be lost.</code></p>
+  <p><strong>Causa:</strong> hay más de 16 contextos vivos en el mismo proceso (la página y sus iframes cuentan juntos). El navegador pierde a la fuerza el que lleva más tiempo sin usarse, y no lo devuelve.</p>
+  <p><strong>Solución:</strong> usa menos contextos. Un solo contexto puede dibujar varias vistas con <code>viewport</code> y <code>scissor</code>, o dibujar en uno oculto y copiar el resultado a canvas 2D (así funcionan los editores GLSL de este curso, como se contó en la <a href="../00-inicio/01-bienvenida.html">bienvenida</a>). Libera con <code>getExtension('WEBGL_lose_context').loseContext()</code> los contextos que ya no necesites en lugar de esperar al recolector de basura, y destruye los de las demos que salen de pantalla (los playgrounds de este curso lo hacen).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Una página tiene 16 contextos. El n.º 0 dibuja una animación en cada frame; los otros 15 dibujaron una vez al cargar y no han vuelto a tocarse. Creas un 17.º contexto. ¿Cuál se pierde?</p>
+  <ul>
+    <li>El n.º 0, porque es el primero que se creó.<div class="explicacion">«Oldest» no es «el primero en crearse»: es el que lleva más tiempo sin usarse. El n.º 0 se usa en cada frame, así que es el más reciente.</div></li>
+    <li data-correcta>Uno de los estáticos: el que lleva más tiempo sin usarse (probablemente el n.º 1).<div class="explicacion">Correcto: Chrome elige el contexto usado hace más tiempo. Por eso las demos estáticas, que dibujan una vez y se quedan quietas, son las primeras víctimas… y las más difíciles de detectar, porque parecen estar bien hasta que alguien mira.</div></li>
+    <li>Ninguno: el 17.º devuelve <code>null</code>.<div class="explicacion">El nuevo contexto siempre se crea; lo que se sacrifica es uno de los viejos.</div></li>
+    <li>El 17.º nace perdido.<div class="explicacion">No: el recién creado es el más reciente de todos y es el único seguro de sobrevivir.</div></li>
+  </ul>
+</div>
+
+<h2>Extensiones: getSupportedExtensions y getExtension</h2>
+<p>WebGL2 garantiza un conjunto base de funcionalidad. Lo que va más allá, y depende de la GPU, llega en forma de <strong>extensiones</strong>:</p>
+<ul>
+  <li><code>gl.getSupportedExtensions()</code> devuelve un array con los nombres de las que tu GPU y tu navegador ofrecen.</li>
+  <li><code>gl.getExtension(nombre)</code> devuelve un objeto con las constantes y funciones de la extensión, o <code>null</code> si no existe. Pedirla varias veces devuelve el mismo objeto.</li>
+  <li><strong>Pedirla es lo que la activa.</strong> Algunas extensiones no añaden funciones, sino que cambian lo que está permitido, y ese cambio solo existe <em>después</em> de llamar a <code>getExtension</code>. Por ejemplo, renderizar a una textura de tipo float solo es legal tras <code>gl.getExtension('EXT_color_buffer_float')</code> (5.8), y filtrar linealmente una textura float solo tras <code>gl.getExtension('OES_texture_float_linear')</code> (5.5). Tener la extensión «soportada» no basta: hay que pedirla.</li>
+</ul>
+<p>Muchas extensiones famosas de WebGL1 (<code>OES_vertex_array_object</code>, <code>ANGLE_instanced_arrays</code>, <code>WEBGL_draw_buffers</code>, <code>OES_element_index_uint</code>, <code>OES_texture_float</code>…) no aparecen en la lista de WebGL2 porque ya forman parte del núcleo: VAOs, instancing, varios render targets, índices de 32 bits y texturas float vienen de serie. Estas son las que usaremos en el módulo:</p>
+<table>
+  <thead><tr><th>Extensión</th><th>Para qué</th><th>Dónde</th></tr></thead>
+  <tbody>
+    <tr><td><code>WEBGL_lose_context</code></td><td>Simular pérdida de contexto y liberar contextos a propósito.</td><td>Aquí</td></tr>
+    <tr><td><code>WEBGL_debug_renderer_info</code></td><td>Nombre real de la GPU (algunos navegadores lo simplifican por privacidad).</td><td>0.1, aquí</td></tr>
+    <tr><td><code>OES_texture_float_linear</code></td><td>Filtrado lineal de texturas <code>RGBA32F</code>.</td><td>5.5</td></tr>
+    <tr><td><code>EXT_texture_filter_anisotropic</code></td><td>Filtrado anisótropo.</td><td>5.5</td></tr>
+    <tr><td><code>EXT_color_buffer_float</code></td><td>Renderizar a texturas float.</td><td>5.8</td></tr>
+    <tr><td><code>EXT_disjoint_timer_query_webgl2</code></td><td>Medir tiempos en la GPU (a menudo no disponible).</td><td>5.10</td></tr>
+    <tr><td><code>WEBGL_debug_shaders</code></td><td>Ver el shader que genera ANGLE tras traducir el tuyo.</td><td>5.10</td></tr>
+  </tbody>
+</table>
+
+<h2>getParameter y los límites de tu GPU</h2>
+<p><code>gl.getParameter(nombre)</code> es la navaja suiza para inspeccionar el contexto: el estado actual (<code>gl.VIEWPORT</code>, <code>gl.COLOR_CLEAR_VALUE</code>, <code>gl.ARRAY_BUFFER_BINDING</code>, que devuelve el objeto enlazado o <code>null</code>) y los límites de la implementación. Su tipo de retorno depende de lo que preguntes: números, booleanos, cadenas, objetos WebGL o arrays tipados (<code>Int32Array</code> para <code>VIEWPORT</code>, <code>Float32Array</code> para <code>COLOR_CLEAR_VALUE</code>), y en ese caso cada llamada devuelve una copia nueva. Con un nombre inválido devuelve <code>null</code> y genera el error <code>INVALID_ENUM</code>.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.1.5 — Tu GPU en números</h3>
+  <p>Un inventario de lo que tu equipo puede hacer. Compáralo con la tabla de debajo, medida en el equipo en el que se comprobó el curso, y con el mínimo que la especificación garantiza en cualquier dispositivo con WebGL2.</p>
+  <div class="js-playground" data-titulo="Límites y extensiones" data-altura="50" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:12px 16px;font:14px monospace;color:#8791a5">Consola ↓</p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+const info = gl.getExtension('WEBGL_debug_renderer_info');
+console.log('GPU:', info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+
+const nombres = [
+  'MAX_TEXTURE_SIZE', 'MAX_RENDERBUFFER_SIZE', 'MAX_VIEWPORT_DIMS',
+  'MAX_VERTEX_ATTRIBS', 'MAX_VARYING_VECTORS',
+  'MAX_VERTEX_UNIFORM_VECTORS', 'MAX_FRAGMENT_UNIFORM_VECTORS',
+  'MAX_TEXTURE_IMAGE_UNITS', 'MAX_COMBINED_TEXTURE_IMAGE_UNITS',
+  'MAX_DRAW_BUFFERS', 'MAX_COLOR_ATTACHMENTS', 'MAX_SAMPLES',
+  'ALIASED_POINT_SIZE_RANGE', 'ALIASED_LINE_WIDTH_RANGE', 'MAX_ELEMENT_INDEX',
+];
+for (const n of nombres) console.log(n.padEnd(34, '.'), gl.getParameter(gl[n]));
+
+const ext = gl.getSupportedExtensions();
+console.log('Extensiones (' + ext.length + '):', ext.join(', '));
+gl.getExtension('WEBGL_lose_context').loseContext();   // liberar
+</script>
+  </div>
+  <table>
+    <thead><tr><th>Límite</th><th>Apple M1 (Chrome)</th><th>Mínimo garantizado</th><th>Lo notarás en…</th></tr></thead>
+    <tbody>
+      <tr><td><code>MAX_TEXTURE_SIZE</code></td><td>16384</td><td>2048</td><td>Texturas y FBO grandes (5.5, 5.8)</td></tr>
+      <tr><td><code>MAX_VERTEX_ATTRIBS</code></td><td>16</td><td>16</td><td>Atributos por vértice; una <code>mat4</code> ocupa 4 (5.9)</td></tr>
+      <tr><td><code>MAX_VARYING_VECTORS</code></td><td>30</td><td>15</td><td>Datos del vertex al fragment shader</td></tr>
+      <tr><td><code>MAX_VERTEX_UNIFORM_VECTORS</code></td><td>1024</td><td>256</td><td>Arrays de uniforms (5.4)</td></tr>
+      <tr><td><code>MAX_FRAGMENT_UNIFORM_VECTORS</code></td><td>1024</td><td>224</td><td>Ídem en el fragment shader</td></tr>
+      <tr><td><code>MAX_TEXTURE_IMAGE_UNITS</code></td><td>16</td><td>16</td><td>Texturas a la vez en un fragment shader (5.5)</td></tr>
+      <tr><td><code>MAX_DRAW_BUFFERS</code></td><td>8</td><td>4</td><td>Salidas simultáneas, MRT (5.8)</td></tr>
+      <tr><td><code>MAX_SAMPLES</code></td><td>4</td><td>4</td><td>MSAA</td></tr>
+      <tr><td><code>ALIASED_POINT_SIZE_RANGE</code></td><td>[1, 511]</td><td>máx. ≥ 1</td><td><code>gl_PointSize</code> (5.3)</td></tr>
+      <tr><td><code>ALIASED_LINE_WIDTH_RANGE</code></td><td>[1, 1]</td><td>máx. ≥ 1</td><td><code>gl.lineWidth</code> no hace nada (5.3)</td></tr>
+      <tr><td><code>MAX_ELEMENT_INDEX</code></td><td>4294967294</td><td>2<sup>24</sup> − 1</td><td>Índices de 32 bits (5.3)</td></tr>
+    </tbody>
+  </table>
+  <p>La lección de la tabla está en la tercera columna: si tu aplicación usa más de lo garantizado, en algún dispositivo no funcionará. Consulta los límites al arrancar y adapta (o avisa) en vez de suponer. Y fíjate en <code>ALIASED_LINE_WIDTH_RANGE</code>: <code>[1, 1]</code> significa que las líneas siempre miden un píxel, pidas lo que pidas. Es uno de los comportamientos raros de <a href="03-buffers-atributos.html">5.3</a>.</p>
+</section>
+
+<div class="callout senior" data-titulo="¿Cuánto cuesta preguntar?">
+  <p>La mayor parte de <code>getParameter</code> se responde sin salir del proceso de la página, porque la implementación guarda una copia del estado: 2000 llamadas a <code>getParameter(gl.VIEWPORT)</code> tardaron 1,2 ms en total (las que devuelven un array tipado, como <code>VIEWPORT</code>, crean uno nuevo en cada llamada; con valores simples, como <code>CURRENT_PROGRAM</code> o <code>MAX_TEXTURE_SIZE</code>, medimos 0,1 µs por llamada). Pero la copia no lo cubre todo: <code>getParameter(gl.COLOR_CLEAR_VALUE)</code> costó 36 µs por llamada, lo mismo que un <code>getError</code>, porque esa pregunta sí viaja al proceso de la GPU. Y hay consultas que nunca se resuelven en local: <code>getError</code>, <code>readPixels</code> o <code>getShaderParameter</code> siempre preguntan al proceso de la GPU y esperan la respuesta, como muestra el diagrama del principio. Consultar los límites una vez al arrancar es gratis; hacerlo en el bucle de dibujo, no siempre.</p>
+</div>
+
+<h2>getError: errores que se quedan pegados</h2>
+<p>Cuando una llamada de WebGL no se puede ejecutar (un argumento fuera de rango, un enum que no existe, un estado incompatible), <strong>no lanza una excepción</strong>. En su lugar la llamada no hace nada y se activa un indicador de error. Para leerlo está <code>gl.getError()</code>, que devuelve uno de estos códigos:</p>
+<table>
+  <thead><tr><th>Código</th><th>Valor</th><th>Significa</th></tr></thead>
+  <tbody>
+    <tr><td><code>NO_ERROR</code></td><td>0</td><td>No hay errores pendientes.</td></tr>
+    <tr><td><code>INVALID_ENUM</code></td><td>0x0500</td><td>Un argumento enum no válido para esa función (<code>gl.enable(12345)</code>).</td></tr>
+    <tr><td><code>INVALID_VALUE</code></td><td>0x0501</td><td>Un número fuera de rango (<code>gl.viewport(0, 0, -1, -1)</code>).</td></tr>
+    <tr><td><code>INVALID_OPERATION</code></td><td>0x0502</td><td>La llamada no tiene sentido en el estado actual (dibujar sin programa, subir datos sin buffer enlazado). El más frecuente, y el más difícil de interpretar.</td></tr>
+    <tr><td><code>INVALID_FRAMEBUFFER_OPERATION</code></td><td>0x0506</td><td>Dibujar en un framebuffer incompleto (5.8).</td></tr>
+    <tr><td><code>OUT_OF_MEMORY</code></td><td>0x0505</td><td>No hay memoria. El estado queda indefinido.</td></tr>
+    <tr><td><code>CONTEXT_LOST_WEBGL</code></td><td>0x9242</td><td>El contexto se perdió (se devuelve una vez).</td></tr>
+  </tbody>
+</table>
+<p>Lo importante es cómo funcionan: no son una cola de mensajes, sino <strong>indicadores</strong> (flags). Cada tipo de error tiene el suyo; una vez activado, se queda activado (pegajoso) hasta que <code>getError</code> lo lee y lo apaga. Si el mismo error ocurre diez veces antes de que preguntes, lo verás una vez. Y si hay varios activos, cada llamada a <code>getError</code> devuelve uno, en un orden que no tiene por qué ser el cronológico.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.1.6 — Leer los errores pegajosos</h3>
+  <p>Provocamos cuatro errores seguidos y después los leemos. No lo ejecutamos en vivo porque llenaría la consola del navegador de avisos, pero esta es la salida real del experimento en Chrome:</p>
+  <div class="anotado" data-lang="js">
+<script type="text/plain">
+const gl = document.createElement('canvas').getContext('webgl2');
+gl.enable(12345);                         // INVALID_ENUM
+gl.enable(12345);                         // INVALID_ENUM, otra vez
+gl.viewport(0, 0, -1, -1);                // INVALID_VALUE
+gl.bindBuffer(gl.ARRAY_BUFFER, null);
+gl.bufferData(gl.ARRAY_BUFFER, 4, gl.STATIC_DRAW);  // INVALID_OPERATION
+
+const errores = [];
+let e;
+while ((e = gl.getError()) !== gl.NO_ERROR) {
+  errores.push('0x' + e.toString(16));
+}
+console.log(errores);   // → ["0x500", "0x502", "0x501"]
+</script>
+<ol>
+  <li data-l="2-3">Dos veces el mismo error: el indicador de <code>INVALID_ENUM</code> se activa con el primero y el segundo no añade nada.</li>
+  <li data-l="4">Anchura negativa: <code>INVALID_VALUE</code>.</li>
+  <li data-l="5-6">Subir datos sin buffer enlazado en <code>ARRAY_BUFFER</code>: <code>INVALID_OPERATION</code>. (Enlazar un buffer es el patrón «enlazar para editar» de <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>; en WebGL lo usarás de verdad en 5.2.)</li>
+  <li data-l="8-12">El bucle correcto para leer errores: llamar a <code>getError</code> hasta que devuelva <code>NO_ERROR</code>, porque cada llamada devuelve (y apaga) un solo indicador.</li>
+  <li data-l="13">Tres errores, no cuatro (el repetido se fundió), y en orden ENUM, OPERATION, VALUE, distinto del orden en que ocurrieron. En Chrome, los errores que detecta la propia implementación WebGL al validar los argumentos y los que detecta el proceso de la GPU se guardan en sitios distintos; <code>getError</code> vacía primero los primeros.</li>
+</ol>
+  </div>
+  <p>La consola del navegador (no la del playground) mostró además un aviso por cada error, en el momento en que ocurrió:</p>
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="Consola del navegador (F12)">
+WebGL: INVALID_ENUM: enable: invalid capability
+WebGL: INVALID_ENUM: enable: invalid capability
+GL_INVALID_VALUE : glViewport: negative width/height
+WebGL: INVALID_OPERATION: bufferData: no buffer
+</script>
+  <p>Fíjate en los dos formatos: los que empiezan por <code>WebGL:</code> los genera la implementación al validar; el de <code>GL_INVALID_VALUE : glViewport</code> viene del proceso de la GPU. Estos avisos son tu primera herramienta de depuración, y solo aparecen en las DevTools: <strong>la consola de los playgrounds de este curso no los muestra</strong>, solo lo que imprime tu código. Por eso en los ejercicios usaremos <code>getError</code>.</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-geterror-pegajoso" data-titulo="getError acusa a una línea inocente">
+  <p><strong>Síntoma:</strong> pones un <code>getError()</code> después de una llamada sospechosa, devuelve un error, revisas la llamada mil veces y es correcta.</p>
+  <p><strong>Causa:</strong> el error es de una llamada anterior. Los indicadores se quedan activados hasta que alguien los lee, así que <code>getError</code> te dice «desde la última vez que preguntaste ha habido un error de este tipo», no «esta línea ha fallado».</p>
+  <p><strong>Solución:</strong> vacía los errores (el bucle hasta <code>NO_ERROR</code>) justo <em>antes</em> del bloque que investigas y vuelve a preguntar justo después. En 5.10 automatizaremos esto envolviendo el contexto para comprobar cada llamada en modo depuración.</p>
+</div>
+
+<h3>El precio de getError</h3>
+<p><code>getError</code> es una de esas consultas que esperan respuesta del proceso de la GPU. Este playground mide cuánto cuesta, comparándolo con una llamada que solo cambia estado:</p>
+
+<div class="js-playground" data-titulo="¿Cuánto cuesta getError?" data-altura="50" data-apilado data-fondo="oscuro">
+<script type="text/x-html">
+<p style="margin:0;padding:12px 16px;font:14px monospace;color:#8791a5">Consola ↓</p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+const N = 2000;
+
+let t = performance.now();
+for (let i = 0; i < N; i++) gl.clearColor(i / N, 0, 0, 1);
+const msEstado = performance.now() - t;
+
+t = performance.now();
+for (let i = 0; i < N; i++) gl.getError();
+const msError = performance.now() - t;
+
+console.log(N + ' × clearColor:', msEstado.toFixed(2), 'ms');
+console.log(N + ' × getError:  ', msError.toFixed(2), 'ms  →', (msError / N * 1000).toFixed(1), 'µs por llamada');
+console.log('Un frame a 60 fps dura 16,7 ms: con ' + Math.round(16.7 / (msError / N)) + ' getError se acabaría el frame.');
+gl.getExtension('WEBGL_lose_context').loseContext();
+</script>
+</div>
+<p>En el equipo de pruebas, 2000 llamadas a <code>clearColor</code> tardaron 0,1 ms y 2000 llamadas a <code>getError</code>, unos 74 ms: cerca de 37 µs cada una (en otras ejecuciones, y en la tabla de <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>, entre 30 y 60 µs, según lo ocupado que esté el equipo). Es un viaje de ida y vuelta entre procesos, y además obliga a procesar todas las órdenes pendientes. Poner un <code>getError</code> después de cada llamada en producción puede comerse el frame entero. Úsalo para depurar y quítalo (o desactívalo) después.</p>
+
+<div class="quiz">
+  <p class="pregunta">Llamas a <code>gl.viewport(0, 0, -1, -1)</code> tres veces seguidas y después a <code>gl.getError()</code> en un bucle hasta <code>NO_ERROR</code>. ¿Cuántas veces sale <code>INVALID_VALUE</code>?</p>
+  <ul>
+    <li>Tres, una por llamada fallida.<div class="explicacion">Eso sería una cola de errores. WebGL usa indicadores: uno por tipo de error.</div></li>
+    <li data-correcta>Una.<div class="explicacion">Correcto: el indicador de <code>INVALID_VALUE</code> se activó con la primera llamada; las otras dos lo encontraron ya activado. <code>getError</code> lo devuelve una vez y lo apaga.</div></li>
+    <li>Ninguna, porque WebGL corrige los valores negativos a cero.<div class="explicacion">WebGL no corrige argumentos inválidos: ignora la llamada y activa el error.</div></li>
+    <li>Ninguna, porque el error se lanzó como excepción.<div class="explicacion">Los errores de WebGL no lanzan excepciones (salvo algunos casos de tipos de JavaScript incorrectos, que no son errores de GL).</div></li>
+  </ul>
+</div>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li><code>canvas.getContext('webgl2', atributos)</code>: la primera llamada decide el tipo de contexto y sus atributos para siempre. Las siguientes devuelven el mismo objeto e ignoran los atributos; pedir otro tipo devuelve <code>null</code>. Lo que te dieron se ve con <code>getContextAttributes()</code>.</li>
+    <li>Las llamadas encolan órdenes que viajan a otro proceso y a ANGLE; solo las consultas (<code>getError</code>, <code>readPixels</code>…) esperan respuesta, y cuestan caro.</li>
+    <li><code>clearColor</code> guarda estado; <code>clear</code> borra respetando scissor y máscaras, pero no el viewport. Scissor + clear pinta rectángulos sin shaders.</li>
+    <li>No hay <code>swapBuffers</code>: el navegador presenta el búfer cuando has dibujado y, sin <code>preserveDrawingBuffer</code>, lo borra después. Captura en el mismo callback en que dibujas.</li>
+    <li>Tamaño del búfer ≠ tamaño CSS. Búfer = píxeles de dispositivo (<code>devicePixelContentBoxSize</code>), aplicado al empezar el frame y solo si cambia; el tamaño real es <code>drawingBufferWidth/Height</code>.</li>
+    <li><code>gl.viewport</code> no sigue al canvas: actualízalo tú.</li>
+    <li>El contexto se puede perder: <code>preventDefault()</code> en <code>webglcontextlost</code> y recrear recursos y estado en <code>webglcontextrestored</code>. Pruébalo con <code>WEBGL_lose_context</code>.</li>
+    <li>Máximo 16 contextos vivos por proceso (página e iframes juntos); se pierde el menos usado y no vuelve. Reutiliza contextos y libera los que sobran.</li>
+    <li>Las extensiones se activan al pedirlas con <code>getExtension</code>. Los límites se consultan con <code>getParameter</code>; no supongas más que el mínimo garantizado.</li>
+    <li><code>getError</code> lee indicadores pegajosos, no una cola: vacíalos antes de investigar. Y no lo dejes en el bucle de producción.</li>
+  </ul>
+</div>
+
+<p>En la siguiente lección, <a href="02-primer-triangulo.html">5.2</a>, por fin dibujamos: un triángulo con cada llamada explicada argumento a argumento, y después lo rompemos de once maneras distintas para aprender a diagnosticar una pantalla negra.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/es/docs/Web/API/HTMLCanvasElement/getContext">MDN: <code>HTMLCanvasElement.getContext()</code></a>, con la lista completa de atributos.</li>
+  <li><a href="https://registry.khronos.org/webgl/specs/latest/1.0/#2.2">Especificación de WebGL, §2.2 «The Drawing Buffer»</a>: las reglas exactas de presentación y borrado (WebGL2 las hereda).</li>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-resizing-the-canvas.html">WebGL2 Fundamentals: Resizing the Canvas</a>, sobre el patrón de redimensionado y <code>devicePixelContentBoxSize</code>.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices">MDN: WebGL best practices</a>, un buen repaso de qué es caro y qué no.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

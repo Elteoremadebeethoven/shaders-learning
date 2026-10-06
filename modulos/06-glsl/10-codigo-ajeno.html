@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6.10 · Leer código ajeno: Shadertoy y GLSL 1.00 — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/b-m6.css">
+</head>
+<body data-leccion="06-glsl/codigo-ajeno">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
+  <h1>Leer código ajeno: Shadertoy y GLSL 1.00</h1>
+  <p class="resumen">Casi todo el GLSL que encontrarás en internet está escrito en otro dialecto: con las convenciones de Shadertoy, en GLSL ES 1.00 (el de WebGL1), con las de The Book of Shaders, o comprimido hasta lo ilegible. Esta lección te da el diccionario completo para leerlo, ejecutarlo y traducirlo, con cada diferencia comprobada en el navegador, y termina con lo que no es técnico pero importa igual: las licencias.</p>
+  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 4.5, 5.2, 5.4, 6.1, 6.3</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Leerás un shader de Shadertoy sabiendo qué es cada entrada (<code>mainImage</code>, <code>iResolution</code>, <code>iTime</code>, <code>iMouse</code> y su semántica de signos, <code>iChannel0..3</code>).</li>
+      <li>Lo traducirás a los editores del curso y a WebGL crudo, con su cabecera y su <code>main</code>.</li>
+      <li>Conocerás todas las diferencias entre GLSL ES 1.00 y 3.00 que rompen una traducción, y portarás un shader de una versión a otra paso a paso.</li>
+      <li>Descifrarás código denso: macros, idiomas habituales y código «golfeado», incluida la rotación que gira al revés.</li>
+      <li>Sabrás qué licencia tiene por defecto el código de Shadertoy y qué implica reutilizarlo.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El problema: el GLSL de internet no habla tu dialecto</h2>
+<p>En este curso has escrito GLSL ES 3.00 con unas convenciones concretas: <code>#version 300 es</code> en la primera línea, <code>out vec4 fragColor</code>, uniforms <code>u_time</code>, <code>u_resolution</code>, <code>u_mouse</code>. Pero cuando busques cómo se hace un efecto, lo que encontrarás será, sobre todo, esto:</p>
+<ul>
+  <li><strong>Shadertoy</strong>: la mayor colección pública de fragment shaders. Todos siguen una plantilla con su propia función de entrada y sus propios uniforms.</li>
+  <li><strong>GLSL ES 1.00</strong>: el lenguaje de WebGL1. Tutoriales, respuestas de foros, librerías antiguas y el propio <em>The Book of Shaders</em> están escritos en él.</li>
+  <li><strong>Código denso o «golfeado»</strong>: shaders escritos para ocupar lo mínimo, con macros y trucos que no se entienden a primera vista.</li>
+</ul>
+<p>Traducir no es difícil, pero tiene trampas concretas, y cada una produce un error de compilación críptico o, peor, un shader que compila y se comporta distinto. Todas las que aparecen en esta lección las hemos provocado en Chrome sobre ANGLE; los mensajes de error que ves son los reales.</p>
+
+<h2>Anatomía de un shader de Shadertoy</h2>
+<p>Cuando creas un shader nuevo en Shadertoy, la web te da esta plantilla:</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+    // Normalized pixel coordinates (from 0 to 1)
+    vec2 uv = fragCoord/iResolution.xy;
+
+    // Time varying pixel color
+    vec3 col = 0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4));
+
+    // Output to screen
+    fragColor = vec4(col,1.0);
+}
+</script>
+<ol>
+  <li data-l="1">No hay <code>main</code>: Shadertoy escribe su propio <code>main</code> (que no ves) y desde él llama a tu <code>mainImage</code>. Recibe la coordenada del píxel, <code>fragCoord</code>, y devuelve el color en <code>fragColor</code>, un parámetro <code>out</code>. <code>fragCoord</code> es exactamente <code>gl_FragCoord.xy</code>: en píxeles, con los centros en .5.</li>
+  <li data-l="4"><code>iResolution</code> es un <code>vec3</code>, no un <code>vec2</code>: x e y son el tamaño en píxeles y z es la proporción del píxel (ancho/alto de un píxel), que en la práctica vale 1. Por eso siempre se usa <code>iResolution.xy</code>.</li>
+  <li data-l="7"><code>iTime</code>: los segundos desde que empezó la reproducción. La expresión es la paleta de coseno de <a href="04-color.html">6.4</a>: cada canal oscila con una fase distinta (0, 2 y 4 radianes). <code>vec3(0,2,4)</code> con enteros es válido: el constructor convierte.</li>
+  <li data-l="10">El alfa se escribe, pero Shadertoy lo ignora en la imagen final.</li>
+</ol>
+</div>
+
+<p>Estas son las entradas que Shadertoy declara por ti (el nombre de cada una empieza por <code>i</code>, de <em>input</em>):</p>
+<table class="b-comparar">
+  <thead><tr><th>Entrada</th><th>Tipo</th><th>Qué es</th><th>En los editores del curso</th></tr></thead>
+  <tbody>
+    <tr><td><code>iResolution</code></td><td><code>vec3</code></td><td>tamaño del lienzo en píxeles; z = proporción del píxel (1)</td><td><code>u_resolution</code> (<code>vec2</code>)</td></tr>
+    <tr><td><code>iTime</code></td><td><code>float</code></td><td>segundos de reproducción</td><td><code>u_time</code></td></tr>
+    <tr><td><code>iTimeDelta</code></td><td><code>float</code></td><td>duración del último frame, en segundos</td><td>(no hay; en modo shadertoy, sí)</td></tr>
+    <tr><td><code>iFrame</code></td><td><code>int</code></td><td>número de frame</td><td><code>u_frame</code></td></tr>
+    <tr><td><code>iMouse</code></td><td><code>vec4</code></td><td>ratón, con una semántica de signos propia (abajo)</td><td><code>u_mouse</code> (distinta: sigue al puntero)</td></tr>
+    <tr><td><code>iChannel0</code>…<code>3</code></td><td><code>sampler2D</code> (u otro)</td><td>entradas: texturas, vídeo, otros buffers, el teclado, sonido</td><td><code>u_tex0</code>…<code>3</code> con <code>data-texturas</code></td></tr>
+    <tr><td><code>iChannelResolution[4]</code></td><td><code>vec3</code></td><td>tamaño de cada canal</td><td>en modo shadertoy, sí; fuera de él, usa <code>textureSize(u_tex0, 0)</code></td></tr>
+    <tr><td><code>iDate</code></td><td><code>vec4</code></td><td>año, mes (¡empieza en 0, como en JavaScript!), día y segundos del día</td><td>solo en modo shadertoy</td></tr>
+    <tr><td><code>iFrameRate</code>, <code>iChannelTime[4]</code>, <code>iSampleRate</code></td><td><code>float</code></td><td>frames por segundo, tiempo de reproducción de cada canal, frecuencia de muestreo del sonido</td><td>solo en modo shadertoy (<code>iChannelTime</code> = <code>iTime</code> en los cuatro canales; <code>iSampleRate</code> = 44100)</td></tr>
+  </tbody>
+</table>
+
+<h3>La semántica de iMouse</h3>
+<p><code>iMouse</code> es la entrada que más confunde, porque no es «la posición del ratón». Según la documentación de la propia web, y lo confirman los shaders de prueba que circulan en ella:</p>
+<ul>
+  <li><code>iMouse.xy</code>: la posición del ratón <strong>mientras el botón está pulsado</strong> (o arrastrando). Si sueltas, conserva la última. Si nunca has pulsado, vale (0, 0). Son píxeles <strong>enteros</strong>, no centros de píxel (no terminan en .5).</li>
+  <li><code>abs(iMouse.zw)</code>: la posición donde empezó el último clic.</li>
+  <li>El <strong>signo de <code>iMouse.z</code></strong>: positivo mientras el botón está pulsado; negativo cuando se ha soltado.</li>
+  <li>El <strong>signo de <code>iMouse.w</code></strong>: positivo solo en el frame en que se produce el clic; negativo después.</li>
+</ul>
+<p>Por eso el código de Shadertoy está lleno de <code>if (iMouse.z &gt; 0.0)</code> («si se está arrastrando») y de valores por defecto para cuando el ratón está en (0, 0). Un detalle de hacker: un clic en la columna 0 o en la fila 0 no puede codificar su signo, porque −0 y 0 son iguales para cualquier comparación.</p>
+
+<p>Los editores del curso con <code>data-modo="shadertoy"</code> reproducen esta semántica tal cual. Compruébalo en este: el disco blanco está en <code>iMouse.xy</code>, el anillo naranja en <code>abs(iMouse.zw)</code>, el fondo se vuelve azul mientras <code>iMouse.z &gt; 0</code> y el lienzo destella en rosa en el único frame en que <code>iMouse.w &gt; 0</code>. Antes del primer clic, el disco está en la esquina inferior izquierda, en (0, 0). Pasa el ratón sin pulsar: no se mueve nada. Arrastra: el disco te sigue y el anillo se queda donde empezaste. Suelta: el fondo se apaga, pero disco y anillo se quedan.</p>
+<div class="glsl-playground" data-titulo="iMouse, visualizado (modo shadertoy)" data-altura="260" data-modo="shadertoy" data-editor="oculto">
+<script type="x-shader/x-fragment">
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec3 col = iMouse.z > 0.0 ? vec3(0.1, 0.15, 0.3) : vec3(0.05);   // fondo: ¿pulsado?
+    if (iMouse.w > 0.0) col = vec3(1.0, 0.3, 0.6);                     // destello: frame del clic
+    float d1 = length(fragCoord - iMouse.xy);                          // disco: posición arrastrada
+    float d2 = length(fragCoord - abs(iMouse.zw));                     // anillo: dónde empezó el clic
+    col = mix(col, vec3(1.0), 1.0 - smoothstep(10.0, 12.0, d1));                 // disco en xy
+    col = mix(col, vec3(1.0, 0.6, 0.2), 1.0 - smoothstep(1.0, 3.0, abs(d2 - 18.0))); // anillo en |zw|
+    fragColor = vec4(col, 1.0);
+}
+</script>
+</div>
+<p>El destello dura un solo frame (1/60 s): si lo ves, es que el editor manda <code>w</code> positivo justo en el frame siguiente al clic y negativo en los demás. Lo comprobamos simulando clics y arrastres en Chrome y registrando el valor de <code>iMouse</code> que recibe cada frame: exactamente un frame con <code>w &gt; 0</code> por clic. El ejercicio 6.10.4 te pide programar esa misma lógica en un reproductor en WebGL crudo.</p>
+
+<div class="callout cuidado" data-titulo="Lo que el modo shadertoy de los editores no tiene">
+  <p>Ejecuta código de Shadertoy de una sola pasada tal cual, con todas las entradas de la tabla. No tiene varias pasadas (los <em>buffers</em> A–D de Shadertoy, que leen su propio resultado del frame anterior), ni teclado, sonido, vídeo o <em>cubemaps</em> en los canales: <code>iChannel0..3</code> son siempre las texturas 2D de <code>data-texturas</code>. Un shader que dependa de esas entradas compila, pero no se verá igual.</p>
+</div>
+
+<h3>Lo que Shadertoy añade por delante y por detrás</h3>
+<p>Tu código de Shadertoy no es un shader completo: le faltan la versión, la precisión, las declaraciones de los <code>i…</code> y el <code>main</code>. La web los añade antes de compilar. Los editores del curso hacen lo mismo en modo shadertoy, y esta es exactamente su envoltura:</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Lo que el modo shadertoy del editor pone antes y después de tu código">
+#version 300 es
+precision highp float;
+uniform vec3 iResolution;
+uniform float iTime;
+uniform float iTimeDelta;
+uniform int iFrame;
+uniform float iFrameRate;
+uniform vec4 iMouse;
+uniform vec4 iDate;
+uniform float iSampleRate;
+uniform vec3 iChannelResolution[4];
+uniform float iChannelTime[4];
+uniform sampler2D iChannel0;
+uniform sampler2D iChannel1;
+uniform sampler2D iChannel2;
+uniform sampler2D iChannel3;
+out vec4 _fragColor_;
+
+// … aquí va tu código, con su mainImage …
+
+void main() { vec4 c = vec4(0.0, 0.0, 0.0, 1.0); mainImage(c, gl_FragCoord.xy); _fragColor_ = vec4(c.rgb, 1.0); }
+</script>
+<p>Dos consecuencias. Los errores del compilador llegan con números de línea desplazados (el editor resta las 17 líneas de la cabecera para señalarte la línea correcta de tu código). Y el alfa se fuerza a 1, como en Shadertoy.</p>
+
+<div class="callout senior" data-titulo="fragColor += … en un parámetro out">
+  <p>En código compacto verás <code>fragColor += algo;</code> o <code>O -= O;</code> sin haber inicializado <code>fragColor</code>. Pero un parámetro <code>out</code> <strong>no recibe</strong> el valor de quien llama: dentro de la función empieza sin definir, da igual lo que valiera fuera (el bicho de <a href="01-lenguaje.html#m6a-out-a-cero">la función que olvida el valor</a> de 6.1). Lo comprobamos con la envoltura de arriba cambiando el <code>vec4(0.0, 0.0, 0.0, 1.0)</code> inicial por <code>vec4(7.0)</code>: dentro de <code>mainImage</code>, <code>fragColor</code> seguía valiendo 0, porque ANGLE (la capa que traduce el WebGL de Chrome) inicializa a cero las variables sin inicializar, por seguridad. En WebGL, por tanto, esos shaders funcionan; en OpenGL de escritorio o en otro motor, leer un <code>out</code> sin escribirlo antes es indefinido y puede dar basura. Si portas código de Shadertoy a otro sitio, añade <code>fragColor = vec4(0.0);</code> al principio.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.10.1 — Un shader de Shadertoy, ejecutado tal cual</h3>
+  <p>Este es un shader escrito con las convenciones de Shadertoy: un túnel texturizado que gira, cuyo centro se desplaza al arrastrar con el ratón. El editor está en modo shadertoy, así que el código se ejecuta sin tocar una coma, y <code>iChannel0</code> recibe la textura <code>ladrillos</code>.</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.10.1 — Túnel (código de Shadertoy)" data-altura="320" data-modo="shadertoy" data-texturas="ladrillos">
+<script type="x-shader/x-fragment">
+#define R iResolution
+#define T iTime
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord)
+{
+    vec2 p = (2.0 * fragCoord - R.xy) / R.y;
+    // Mientras arrastras, el centro del túnel sigue al ratón
+    vec2 m = iMouse.z > 0.0 ? (2.0 * iMouse.xy - R.xy) / R.y : vec2(0.0);
+    p -= m * 0.5;
+    p *= rot(T * 0.3);
+
+    float r = length(p);
+    float a = atan(p.y, p.x);
+    vec2 uv = vec2(a / 6.2831853 * 3.0, 0.4 / r + T * 0.25);   // coordenadas del túnel
+    vec3 col = texture(iChannel0, uv).rgb;
+    col *= smoothstep(0.0, 0.6, r);                            // oscurecer el fondo del túnel
+    fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>Las macros.</strong> <code>#define R iResolution</code> y <code>#define T iTime</code> no crean variables: el preprocesador sustituye el texto <code>R</code> por <code>iResolution</code> antes de compilar. Es la forma habitual de acortar el código en Shadertoy.</li>
+    <li><strong>Las coordenadas</strong> centradas y con el aspecto corregido de siempre: <code>(2.0 * fragCoord - R.xy) / R.y</code>, con y de −1 a 1.</li>
+    <li><strong>El ratón</strong>: solo si <code>iMouse.z &gt; 0.0</code>, es decir, mientras se arrastra. En Shadertoy, sin pulsar, el túnel vuelve al centro. (En este editor también: su modo shadertoy reproduce la semántica de <code>iMouse</code>.)</li>
+    <li><strong>La rotación</strong>: <code>p *= rot(T * 0.3)</code>. Ojo con el orden: <code>p * M</code> no es lo mismo que <code>M * p</code>. Lo verás en la sección de código denso.</li>
+    <li><strong>El túnel</strong>: coordenadas polares (<a href="../03-matematicas/03-trigonometria.html">3.3</a>). El ángulo, repetido 3 veces por vuelta, es la coordenada horizontal de la textura; <code>0.4 / r</code> es la profundidad (el centro, r → 0, está infinitamente lejos) y el tiempo la hace avanzar. Si miras con atención, en la costura del <code>atan</code> (una semirrecta que sale del centro y gira con el túnel, porque la rotación se aplica antes del <code>atan</code>) aparece una línea fina y discontinua: es el bicho de las costuras de mipmap de <a href="08-texturas-efectos.html">6.8</a>, habitual en los túneles de Shadertoy.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m6b-st-imouse" data-titulo="El efecto de ratón de un shader de Shadertoy no responde, o empieza en una esquina">
+  <p><strong>Síntoma:</strong> portas un shader de Shadertoy y el efecto del ratón no hace nada al mover el puntero, solo al arrastrar; o, al cargar, todo aparece desplazado hacia la esquina inferior izquierda; o una acción que debía ocurrir «al hacer clic» ocurre continuamente o nunca.</p>
+  <p><strong>Causa:</strong> la semántica de <code>iMouse</code>: <code>xy</code> solo cambia mientras el botón está pulsado y vale (0, 0) hasta el primer clic (la esquina inferior izquierda); <code>zw</code> es la posición del clic, y sus signos codifican «pulsado» (z) y «frame del clic» (w). Si en tu motor mandas la posición del puntero sin más, o tus signos no siguen la convención, el shader se comporta distinto.</p>
+  <p><strong>Solución:</strong> implementa la semántica completa en JavaScript (es el ejercicio 6.10.4) o adapta el shader: si quieres que reaccione al pasar el ratón, usa la posición directamente y elimina las comprobaciones de signo; y dale un valor por defecto razonable para cuando <code>iMouse.xy</code> es (0, 0).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">En Shadertoy, en un frame concreto, <code>iMouse = vec4(310.0, 145.0, -200.0, -120.0)</code>. ¿Qué está pasando?</p>
+  <ul>
+    <li data-correcta>El botón está suelto; el último arrastre terminó en (310, 145) y el último clic empezó en (200, 120).<div class="explicacion">Correcto. z &lt; 0: no pulsado. w &lt; 0: no es el frame del clic. <code>abs(zw)</code> = (200, 120) es donde empezó el último clic, y xy = (310, 145) la última posición mientras el botón estaba pulsado. Dónde está el ratón ahora mismo, Shadertoy no te lo dice.</div></li>
+    <li>El ratón está en (310, 145) y el botón está pulsado.<div class="explicacion">El signo negativo de z indica que el botón <em>no</em> está pulsado. Y xy no es necesariamente la posición actual del ratón: solo se actualiza mientras se arrastra.</div></li>
+    <li>El ratón está fuera del lienzo, por eso hay valores negativos.<div class="explicacion">Los valores negativos no son coordenadas fuera del lienzo: son el convenio de signos de Shadertoy para codificar el estado del botón en los mismos números que la posición del clic.</div></li>
+  </ul>
+</div>
+
+<h2>De Shadertoy a los editores del curso</h2>
+<p>Traducir un shader de Shadertoy a nuestro formato (el de todos los editores del curso, y el de tus propias aplicaciones en WebGL2) es una lista corta de sustituciones:</p>
+<table class="b-comparar">
+  <thead><tr><th>Shadertoy</th><th>Nuestro formato</th><th>Cuidado con</th></tr></thead>
+  <tbody>
+    <tr><td>(nada)</td><td><code>#version 300 es</code> + <code>precision highp float;</code></td><td>en la primera línea, sin nada antes (<a href="../05-webgl/02-primer-triangulo.html">5.2</a>)</td></tr>
+    <tr><td><code>void mainImage(out vec4 fragColor, in vec2 fragCoord)</code></td><td><code>out vec4 fragColor;</code> global + <code>void main()</code></td><td><code>fragCoord</code> → <code>gl_FragCoord.xy</code></td></tr>
+    <tr><td><code>iResolution.xy</code></td><td><code>u_resolution</code></td><td>si el código usa <code>iResolution.z</code>, vale 1</td></tr>
+    <tr><td><code>iTime</code>, <code>iFrame</code></td><td><code>u_time</code>, <code>u_frame</code></td><td>declara solo los que uses</td></tr>
+    <tr><td><code>iMouse</code></td><td><code>u_mouse</code> (<code>vec4</code>: <code>.z</code> = 1 si está pulsado)</td><td>semántica distinta: revisa cada uso</td></tr>
+    <tr><td><code>iChannel0</code></td><td><code>u_tex0</code> + <code>data-texturas</code></td><td>modo de repetición y mipmaps (en Shadertoy, cada canal los configura)</td></tr>
+  </tbody>
+</table>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.10.2 — El túnel, traducido</h3>
+  <p>El mismo túnel del ejemplo anterior, en un editor normal (sin <code>data-modo</code>). Compara los dos códigos línea a línea: la lógica es idéntica, solo cambian las entradas y la estructura.</p>
+  <div class="glsl-playground" data-titulo="Ejemplo 6.10.2 — Túnel (nuestro formato)" data-altura="320" data-texturas="ladrillos">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;     // era iResolution.xy
+uniform float u_time;          // era iTime
+uniform vec4 u_mouse;          // era iMouse (aquí .z = 1.0 mientras está pulsado)
+uniform sampler2D u_tex0;      // era iChannel0
+out vec4 fragColor;            // era el parámetro out de mainImage
+
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;   // fragCoord → gl_FragCoord.xy
+  vec2 m = u_mouse.z > 0.0 ? (2.0 * u_mouse.xy - u_resolution) / u_resolution.y : vec2(0.0);
+  p -= m * 0.5;
+  p *= rot(u_time * 0.3);
+
+  float r = length(p);
+  float a = atan(p.y, p.x);
+  vec2 uv = vec2(a / 6.2831853 * 3.0, 0.4 / r + u_time * 0.25);
+  vec3 col = texture(u_tex0, uv).rgb;
+  col *= smoothstep(0.0, 0.6, r);
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <ol>
+    <li><strong>La cabecera</strong> la escribes tú: versión, precisión, un uniform por cada entrada que el código usa, y la salida <code>out vec4 fragColor</code> como variable global (en Shadertoy era un parámetro).</li>
+    <li><strong>Las macros</strong> desaparecen: con nombres descriptivos (<code>u_resolution</code>, <code>u_time</code>) ya no hacen falta. Si prefieres conservarlas para tocar lo mínimo, <code>#define R u_resolution</code> también funciona, pero entonces <code>R.xy</code> sigue siendo válido y <code>R.z</code> no.</li>
+    <li><strong><code>mainImage</code> se convierte en <code>main</code></strong>, y cada <code>fragCoord</code> en <code>gl_FragCoord.xy</code>.</li>
+    <li><strong>El ratón</strong>: aquí <code>u_mouse</code> se declara como <code>vec4</code> para que el editor rellene <code>.z</code> con 1 mientras pulsas, y la condición <code>&gt; 0.0</code> sigue funcionando. En tu propia aplicación, <code>u_mouse</code> valdrá lo que tu JavaScript le mande.</li>
+  </ol>
+</section>
+
+<h2>De Shadertoy a WebGL crudo</h2>
+<p>Fuera del curso no hay editores: para ejecutar un shader de Shadertoy en tu página tienes que escribir tú lo que hace la web. Con lo que aprendiste en el módulo 5 son unas 80 líneas (contando el shader de ejemplo y los comentarios): un triángulo de pantalla completa sin buffers (el truco de <code>gl_VertexID</code> de <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>), la cabecera y el <code>main</code> de la envoltura, los uniforms <code>i…</code> actualizados en cada frame y una textura para <code>iChannel0</code>.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.10.3 — Tu propio Shadertoy en unas 80 líneas</h3>
+  <div class="js-playground" data-titulo="Ejemplo 6.10.3 — Un reproductor de Shadertoy" data-altura="300" data-incluir="texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+html, body { margin: 0; height: 100%; background: #0e1014; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });   // como Shadertoy: sin transparencia
+
+// 1) El código de Shadertoy, tal cual se copia de la web
+const codigoShadertoy = `
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 uv = fragCoord / iResolution.xy;
+  vec3 col = texture(iChannel0, uv).rgb;
+  vec2 m = iMouse.xy / iResolution.xy;
+  float d = length((uv - m) * vec2(iResolution.x / iResolution.y, 1.0));
+  col = mix(col, 0.5 + 0.5 * cos(iTime + uv.xyx + vec3(0, 2, 4)), 1.0 - smoothstep(0.2, 0.25, d));
+  fragColor = vec4(col, 1.0);
+}`;
+
+// 2) La cabecera y el main que añade la web
+const cabecera = `#version 300 es
+precision highp float;
+uniform vec3 iResolution;
+uniform float iTime;
+uniform float iTimeDelta;
+uniform int iFrame;
+uniform vec4 iMouse;
+uniform sampler2D iChannel0;
+out vec4 salida;
+`;
+const pie = `
+void main() {
+  vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
+  mainImage(c, gl_FragCoord.xy);
+  salida = vec4(c.rgb, 1.0);
+}`;
+
+// 3) Un triángulo de pantalla completa sin ningún buffer (4.5)
+const vs = `#version 300 es
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);   // (0,0) (2,0) (0,2)
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);               // (-1,-1) (3,-1) (-1,3)
+}`;
+
+function compilar(tipo, fuente) {
+  const s = gl.createShader(tipo);
+  gl.shaderSource(s, fuente);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compilar(gl.VERTEX_SHADER, vs));
+gl.attachShader(prog, compilar(gl.FRAGMENT_SHADER, cabecera + codigoShadertoy + pie));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const u = {};
+['iResolution', 'iTime', 'iTimeDelta', 'iFrame', 'iMouse', 'iChannel0'].forEach((n) => (u[n] = gl.getUniformLocation(prog, n)));
+
+// 4) iChannel0: una textura generada por código, en la unidad 0
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);                // v = 0 abajo, como en Shadertoy
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, Texturas.crear('paisaje', 512));
+gl.generateMipmap(gl.TEXTURE_2D);
+gl.uniform1i(u.iChannel0, 0);
+
+// 5) Ratón simplificado: xy sigue al puntero; z > 0 mientras está pulsado
+let raton = null, pulsado = false;           // null: aún no se ha movido (usaremos el centro)
+function posicion(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * canvas.width / r.width, (r.bottom - e.clientY) * canvas.height / r.height];
+}
+canvas.addEventListener('pointermove', (e) => { raton = posicion(e); });
+canvas.addEventListener('pointerdown', (e) => { raton = posicion(e); pulsado = true; });
+canvas.addEventListener('pointerup', () => { pulsado = false; });
+
+// 6) El bucle: tamaño, uniforms y un triángulo
+let previo = -1, t = 0, frame = 0;
+function paso(ms) {
+  const dt = previo < 0 ? 0 : Math.min(0.1, (ms - previo) / 1000);
+  previo = ms; t += dt;
+  const w = Math.round(canvas.clientWidth * devicePixelRatio), h = Math.round(canvas.clientHeight * devicePixelRatio);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; gl.viewport(0, 0, w, h); }
+  gl.uniform3f(u.iResolution, w, h, 1.0);
+  gl.uniform1f(u.iTime, t);
+  gl.uniform1f(u.iTimeDelta, dt);
+  gl.uniform1i(u.iFrame, frame++);
+  const m = raton || [w / 2, h / 2];
+  gl.uniform4f(u.iMouse, m[0], m[1], pulsado ? m[0] : -m[0], pulsado ? m[1] : -m[1]);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(paso);
+}
+requestAnimationFrame(paso);
+console.log('Mueve el ratón por el lienzo: la lente de colores lo sigue.');
+</script>
+  </div>
+  <ol>
+    <li><strong><code>alpha: false</code></strong> en <code>getContext</code>: el lienzo es opaco, como en Shadertoy. Con el valor por defecto (<code>alpha: true</code>), un shader que escribiera alfa menor que 1 dejaría ver la página a través del lienzo (mira el bicho de abajo).</li>
+    <li><strong>El código de Shadertoy es un texto</strong> que se pega entre la cabecera y el pie. Por eso los números de línea de los errores del compilador están desplazados tantas líneas como tenga la cabecera.</li>
+    <li><strong>El triángulo sin buffers</strong>: con <code>gl_VertexID</code> igual a 0, 1 y 2, las operaciones de bits dan los vértices (0, 0), (2, 0) y (0, 2), que tras <code>* 2 - 1</code> son (−1, −1), (3, −1) y (−1, 3): un triángulo que cubre toda la pantalla. No hay VBO ni atributos; en WebGL2 se puede dibujar así.</li>
+    <li><strong>La textura</strong> se sube con <code>UNPACK_FLIP_Y_WEBGL</code>, para que v = 0 sea la fila de abajo, como en Shadertoy. Si la quitas, la imagen sale boca abajo (el bicho de <a href="../05-webgl/05-texturas.html">5.5</a>).</li>
+    <li><strong>El ratón</strong> está simplificado para no alargar el ejemplo: <code>xy</code> sigue al puntero aunque no pulses y <code>zw</code> es la posición actual con signo positivo mientras pulsas. La semántica real de Shadertoy (la que usan los editores del curso en modo shadertoy) es el ejercicio 6.10.4.</li>
+    <li><strong>El bucle</strong>: tiempo en segundos con dt limitado a 0,1 s (<a href="../02-animacion/03-raf.html">2.3</a>), tamaño del lienzo ajustado al del elemento por el DPR (<a href="../05-webgl/01-contexto.html">5.1</a>) y los uniforms. <code>iResolution</code> se manda en píxeles del búfer de dibujo, no en píxeles CSS: los mismos en los que se mide <code>gl_FragCoord</code>.</li>
+  </ol>
+</section>
+
+<div class="callout bestiario" data-id="m6b-st-transparente" data-titulo="Al pasar un shader de Shadertoy a mi página se ve transparente o lavado">
+  <p><strong>Síntoma:</strong> el shader funciona en Shadertoy, pero en tu página se ve el fondo a través de él, los colores salen lavados o partes de la imagen desaparecen sobre fondos claros.</p>
+  <p><strong>Causa:</strong> Shadertoy ignora el alfa de la imagen final, y mucho código escribe en él cualquier cosa (0, o un valor intermedio). Tu canvas WebGL, por defecto, tiene canal alfa y el navegador lo compone con la página usando ese alfa (con alfa premultiplicado, <a href="../05-webgl/07-blending.html">5.7</a>).</p>
+  <p><strong>Solución:</strong> pide el contexto con <code>{ alpha: false }</code>, o fuerza el alfa a 1 en la envoltura (<code>salida = vec4(c.rgb, 1.0)</code>), como hacen Shadertoy y los editores del curso.</p>
+</div>
+
+<h2>GLSL ES 1.00 frente a 3.00</h2>
+<p>WebGL1 usa GLSL ES 1.00; WebGL2 acepta los dos. En un contexto WebGL2, un shader sin <code>#version 300 es</code> en la primera línea se compila como GLSL ES 1.00, y los editores del curso aprovechan eso: si el código no empieza por <code>#version 300 es</code>, lo compilan como 1.00 (con un vertex shader 1.00 que declara <code>varying vec2 v_uv</code>). Así puedes ejecutar código antiguo sin tocarlo:</p>
+
+<div class="glsl-playground" data-titulo="Un shader en GLSL ES 1.00, tal cual" data-altura="260">
+<script type="x-shader/x-fragment">
+// Sin #version: GLSL ES 1.00 (WebGL1)
+precision mediump float;
+
+uniform vec2 u_resolution;
+uniform float u_time;
+varying vec2 v_uv;                  // 1.00: varying, no in
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float anillos = 0.5 + 0.5 * sin(length(p) * 20.0 - u_time * 3.0);
+  vec3 color = vec3(v_uv, 0.5) * anillos;
+  gl_FragColor = vec4(color, 1.0);  // 1.00: la salida es gl_FragColor
+}
+</script>
+</div>
+
+<p>Estas son las diferencias que hemos comprobado una a una en Chrome (ANGLE sobre Metal), compilando el mismo código como 1.00 y como 3.00. Los mensajes entre comillas son los errores reales:</p>
+<table class="b-comparar">
+  <thead><tr><th>Aspecto</th><th>GLSL ES 1.00 (WebGL1)</th><th>GLSL ES 3.00 (WebGL2)</th></tr></thead>
+  <tbody>
+    <tr><td>Versión</td><td>sin directiva (o <code>#version 100</code>)</td><td><code>#version 300 es</code> en la primera línea</td></tr>
+    <tr><td>Entradas del vertex shader</td><td><code>attribute</code></td><td><code>in</code> (<code>attribute</code> es palabra reservada)</td></tr>
+    <tr><td>Varyings</td><td><code>varying</code> en los dos shaders</td><td><code>out</code> en el vertex, <code>in</code> en el fragment. <code>varying</code> da «Illegal use of reserved word»</td></tr>
+    <tr><td>Salida del fragment</td><td><code>gl_FragColor</code> (o <code>gl_FragData[0]</code>)</td><td><code>out vec4 nombre;</code> declarada por ti. <code>gl_FragColor</code> da «undeclared identifier»</td></tr>
+    <tr><td>Leer texturas</td><td><code>texture2D</code>, <code>textureCube</code></td><td><code>texture</code> (sobrecargada). <code>texture2D</code> da «no matching overloaded function found»</td></tr>
+    <tr><td><code>textureSize</code>, <code>texelFetch</code>, <code>textureLod</code> en el fragment</td><td>no existen</td><td>sí</td></tr>
+    <tr><td>Enteros sin signo</td><td>no hay <code>uint</code> («undeclared identifier»)</td><td><code>uint</code>, <code>uvec2</code>…</td></tr>
+    <tr><td>Operadores de bits y <code>%</code></td><td>no («bit-wise operator supported in GLSL ES 3.00 and above only»; con <code>%</code>, «integer modulus operator supported in GLSL ES 3.00 and above only»)</td><td><code>&amp; | ^ ~ &lt;&lt; &gt;&gt; %</code> sobre enteros</td></tr>
+    <tr><td>Bucles</td><td>solo <code>for</code> con límite constante y sin modificar el índice en el cuerpo; <code>while</code> da «This type of loop is not allowed»</td><td>cualquier <code>for</code>, <code>while</code>, <code>do-while</code></td></tr>
+    <tr><td>Índices de arrays y vectores</td><td>solo constantes o el índice del bucle («Index expression can only contain const or loop symbols»), también para uniforms</td><td>cualquier expresión entera</td></tr>
+    <tr><td>Arrays con constructor, <code>switch</code></td><td>no</td><td>sí: <code>float a[3] = float[3](…)</code>, <code>switch</code></td></tr>
+    <tr><td>Funciones nuevas</td><td>no hay <code>round</code>, <code>trunc</code>, <code>tanh</code>, <code>inverse</code>, <code>floatBitsToUint</code>…</td><td>sí</td></tr>
+    <tr><td>Derivadas (<code>dFdx</code>, <code>fwidth</code>)</td><td>solo con la extensión <code>GL_OES_standard_derivatives</code> (mira el bicho)</td><td>siempre disponibles</td></tr>
+    <tr><td>Precisión por defecto del fragment</td><td>ninguna para <code>float</code>: hay que declararla (lo típico, <code>mediump</code>)</td><td>igual: ninguna; se declara (en el curso, <code>highp</code>)</td></tr>
+    <tr><td>Palabras reservadas nuevas</td><td><code>sample</code>, <code>patch</code>… se pueden usar como nombres</td><td>reservadas: <code>float sample;</code> da «Illegal use of reserved word»</td></tr>
+    <tr><td><code>__VERSION__</code></td><td>100</td><td>300</td></tr>
+  </tbody>
+</table>
+
+<div class="callout bestiario" data-id="m6b-100-bucle" data-titulo="«Loop index cannot be compared with non-constant expression»">
+  <p><strong>Síntoma:</strong> un shader de WebGL1 (o un shader sin <code>#version</code>) no compila por un bucle como <code>for (int i = 0; i &lt; u_pasos; i++)</code>, aunque el mismo bucle funciona en un shader 3.00.</p>
+  <p><strong>Causa:</strong> el Apéndice A de la especificación de GLSL ES 1.00 limita los bucles a lo que el hardware de 2009 podía desenrollar: un <code>for</code> con índice inicializado a una constante, comparado con una expresión constante e incrementado por una constante, sin modificarlo dentro. WebGL obliga a cumplirlo (también con shaders 1.00 en un contexto WebGL2: lo comprobamos). Modificar el índice dentro del cuerpo da otro error («Loop index cannot be statically assigned to within the body of the loop»).</p>
+  <p><strong>Solución:</strong> en 1.00, un límite constante con salida anticipada: <code>for (int i = 0; i &lt; 64; i++) { if (i &gt;= u_pasos) break; … }</code>, el patrón que usa este módulo desde 6.6. O porta el shader a 3.00, donde los bucles no tienen esa restricción.</p>
+</div>
+
+<div class="callout bestiario" data-id="m6b-100-derivadas" data-titulo="«'fwidth' : no matching overloaded function found»">
+  <p><strong>Síntoma:</strong> un shader antiguo que usa <code>fwidth</code>, <code>dFdx</code> o <code>dFdy</code> (típico para antialiasing) no compila; o compila en una página y no en otra.</p>
+  <p><strong>Causa:</strong> en GLSL ES 1.00 las derivadas son una extensión, <code>GL_OES_standard_derivatives</code>. En WebGL1 hacen falta dos cosas a la vez: pedirla desde JavaScript con <code>gl.getExtension('OES_standard_derivatives')</code> y activarla en el shader con <code>#extension GL_OES_standard_derivatives : enable</code>. Solo con la directiva, el compilador avisa «extension is not supported»; solo con <code>getExtension</code>, da «extension is disabled». Y en un contexto WebGL2 (como el de los editores del curso), un shader 1.00 no puede usarla: la extensión no se ofrece en WebGL2, porque allí las derivadas son parte del lenguaje 3.00. Todo comprobado en Chrome.</p>
+  <p><strong>Solución:</strong> porta el shader a GLSL ES 3.00 (las derivadas vienen de serie; si dejas la directiva <code>#extension</code>, solo produce un aviso). En WebGL1, llama a <code>getExtension</code> antes de compilar y pon la directiva al principio del shader.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un shader sin <code>#version</code> contiene <code>int resto = n % 2;</code> y no compila. ¿Cuál es la traducción correcta en GLSL ES 1.00?</p>
+  <ul>
+    <li><code>int resto = n &amp; 1;</code><div class="explicacion">Los operadores de bits tampoco existen en 1.00: el error sería «bit-wise operator supported in GLSL ES 3.00 and above only».</div></li>
+    <li><code>int resto = n - (n / 2) * 2.0;</code><div class="explicacion">No compila: en GLSL ES 1.00 no hay conversiones implícitas, y <code>(n / 2) * 2.0</code> mezcla un <code>int</code> con un <code>float</code> («wrong operand types»). Con <code>* 2</code> (entero) sí compilaría y daría el resto para n no negativo, porque la división entera trunca; pero con n negativo el resultado no es fiable: en la práctica (medido en el M1) la división entera trunca hacia cero (−7 / 2 dio −3) y el resto tiene el signo de n, distinto del de <code>mod</code>, y la especificación de GLSL ES 3.00 deja indefinido el redondeo de la división entera con operandos negativos (ver «La división entera» en <a href="01-lenguaje.html#division-entera">6.1</a>). No dependas de ello.</div></li>
+    <li data-correcta><code>float resto = mod(float(n), 2.0);</code><div class="explicacion">Correcto. En 1.00 el resto se calcula con la función <code>mod</code>, que trabaja con floats (la alternativa con enteros, <code>n - (n / 2) * 2</code>, solo es fiable para n no negativo). Con divisor 2 es exacto (dividir por una potencia de 2 no redondea, y los enteros son exactos en float hasta 2²⁴); con divisores como 7, <code>mod</code> puede devolver el divisor en lugar de 0, como viste en <a href="05-patrones.html">6.5</a> y <a href="06-ruido.html">6.6</a>. Y recuerda que <code>mod</code> de GLSL no es el <code>%</code> de JavaScript con negativos (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>).</div></li>
+  </ul>
+</div>
+
+<h2>The Book of Shaders</h2>
+<p><em>The Book of Shaders</em>, de Patricio Gonzalez Vivo y Jen Lowe, es el tutorial introductorio de fragment shaders más leído, con editores en vivo. Sus convenciones son casi las nuestras, en GLSL ES 1.00:</p>
+<ul>
+  <li>Uniforms <code>u_resolution</code> (<code>vec2</code>), <code>u_time</code> y <code>u_mouse</code> (<code>vec2</code>, en píxeles): los mismos nombres que usa este curso.</li>
+  <li>Salida en <code>gl_FragColor</code>.</li>
+  <li>Esta cabecera, que verás en muchísimos shaders de la época:</li>
+</ul>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="La cabecera típica de un shader de WebGL1">
+#ifdef GL_ES
+precision mediump float;
+#endif
+</script>
+<p><code>GL_ES</code> es una macro que el compilador define cuando el lenguaje es GLSL ES (en WebGL siempre; lo comprobamos: vale 1), y no en el GLSL de escritorio, donde la declaración de precisión no existía en versiones antiguas. El <code>#ifdef</code> permitía compilar el mismo shader en un móvil y en un ordenador de sobremesa. En WebGL es siempre verdadero: puedes leerlo como un simple <code>precision mediump float;</code>. Recuerda de <a href="../03-matematicas/07-precision.html">3.7</a> que <code>mediump</code> es float32 en la mayoría de escritorios pero float16 en muchos móviles: al portar, cámbialo por <code>highp</code>.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 6.10.4 — Portar un shader de WebGL1 a GLSL ES 3.00</h3>
+  <p>Un shader escrito al estilo de la época: cabecera con <code>#ifdef GL_ES</code>, un bucle, una textura con <code>texture2D</code> y la salida en <code>gl_FragColor</code>. Primero se ejecuta tal cual (el editor lo compila como 1.00); después, la versión portada.</p>
+  <div class="b-dos">
+  <div class="glsl-playground" data-titulo="GLSL ES 1.00" data-altura="220" data-texturas="paisaje" data-editor="oculto">
+<script type="x-shader/x-fragment">
+#ifdef GL_ES
+precision mediump float;
+#endif
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+
+void main() {
+  vec2 st = gl_FragCoord.xy / u_resolution.xy;
+  vec3 color = vec3(0.0);
+  // Cinco copias de la imagen, desplazadas, promediadas
+  for (int i = 0; i < 5; i++) {
+    float k = float(i) - 2.0;
+    vec2 d = vec2(sin(u_time + k), cos(u_time * 1.3 + k)) * 0.01 * k;
+    color += texture2D(u_tex0, st + d).rgb;
+  }
+  gl_FragColor = vec4(color / 5.0, 1.0);
+}
+</script>
+  </div>
+  <div class="glsl-playground" data-titulo="GLSL ES 3.00" data-altura="220" data-texturas="paisaje" data-editor="oculto">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+out vec4 fragColor;
+
+void main() {
+  vec2 st = gl_FragCoord.xy / u_resolution.xy;
+  vec3 color = vec3(0.0);
+  // Cinco copias de la imagen, desplazadas, promediadas
+  for (int i = 0; i < 5; i++) {
+    float k = float(i) - 2.0;
+    vec2 d = vec2(sin(u_time + k), cos(u_time * 1.3 + k)) * 0.01 * k;
+    color += texture(u_tex0, st + d).rgb;
+  }
+  fragColor = vec4(color / 5.0, 1.0);
+}
+</script>
+  </div>
+  </div>
+  <p>Pulsa «Ver código» en los dos. Los cambios, uno por uno:</p>
+  <ol>
+    <li><code>#version 300 es</code> en la <strong>primera línea</strong>. Sin ella, todo lo demás se interpreta como 1.00 y los <code>out</code> fallan.</li>
+    <li>La cabecera <code>#ifdef GL_ES … #endif</code> se sustituye por <code>precision highp float;</code>: en 3.00 siempre es GLSL ES, y <code>highp</code> evita los problemas del float16 en móviles.</li>
+    <li>Se declara la salida: <code>out vec4 fragColor;</code>, y cada <code>gl_FragColor</code> pasa a ser <code>fragColor</code>.</li>
+    <li><code>texture2D</code> pasa a ser <code>texture</code>.</li>
+    <li>El bucle no cambia: ya cumplía las restricciones de 1.00, y en 3.00 no hay restricciones. Tampoco cambian los uniforms.</li>
+  </ol>
+  <p>El resultado es idéntico (en el M1, donde <code>mediump</code> es float32; en un móvil con float16, la versión 3.00 con <code>highp</code> sería la más fiel al original de escritorio).</p>
+</section>
+
+<h2>Portar de 1.00 a 3.00: la lista completa</h2>
+<ol class="b-pasos">
+  <li>Añade <code>#version 300 es</code> como primera línea, sin nada antes (ni una línea en blanco ni un comentario: <a href="../05-webgl/02-primer-triangulo.html">5.2</a>).</li>
+  <li>Cambia <code>#ifdef GL_ES precision mediump float; #endif</code> por <code>precision highp float;</code>.</li>
+  <li>En el vertex shader: <code>attribute</code> → <code>in</code>; <code>varying</code> → <code>out</code>. En el fragment: <code>varying</code> → <code>in</code>. Los nombres deben coincidir entre los dos shaders, como siempre.</li>
+  <li>Declara <code>out vec4 fragColor;</code> y sustituye <code>gl_FragColor</code>. Si el shader usaba <code>gl_FragData[n]</code>, declara una salida por índice con <code>layout(location = n)</code>.</li>
+  <li><code>texture2D</code>, <code>textureCube</code>, <code>texture2DProj</code>… → <code>texture</code>, <code>textureProj</code>. Las versiones <code>…Lod</code> de extensiones (<code>texture2DLodEXT</code>) → <code>textureLod</code>.</li>
+  <li><strong>Renombra</strong> cualquier variable o uniform que se llame como una palabra reservada o una función de 3.00: <code>texture</code>, <code>sample</code>, <code>patch</code>… (mira el bicho).</li>
+  <li>Elimina las directivas <code>#extension</code> de funcionalidad que ahora es estándar (<code>GL_OES_standard_derivatives</code>, <code>GL_EXT_shader_texture_lod</code>, <code>GL_EXT_frag_depth</code>, <code>GL_EXT_draw_buffers</code>) y cambia sus funciones: <code>gl_FragDepthEXT</code> → <code>gl_FragDepth</code>.</li>
+  <li>Opcional pero recomendable: sustituye los trucos que 1.00 obligaba a usar (bucles con límite constante y <code>break</code>, <code>mod(float(i), 2.0)</code> en lugar de <code>i % 2</code>) solo si mejoran la lectura. No son errores en 3.00.</li>
+</ol>
+
+<div class="callout bestiario" data-id="m6b-textura-nombre" data-titulo="«'texture' : function name expected» al portar un shader antiguo">
+  <p><strong>Síntoma:</strong> al portar a 3.00 un shader que tenía <code>uniform sampler2D texture;</code> y cambiar <code>texture2D(texture, uv)</code> por <code>texture(texture, uv)</code>, el compilador responde «'texture' : function name expected». Otro parecido: <code>float sample = …;</code> da «Illegal use of reserved word».</p>
+  <p><strong>Causa:</strong> en GLSL ES 1.00, <code>texture</code> no era nada especial y muchos tutoriales antiguos lo usaban como nombre del sampler. En 3.00 es el nombre de la función de lectura, y una variable con ese nombre la oculta: en <code>texture(texture, uv)</code>, el primer <code>texture</code> ya es la variable, no la función. Lo curioso es que declarar <code>uniform sampler2D texture;</code> en 3.00 compila sin error (lo comprobamos): el fallo aparece al llamar a la función. <code>sample</code> y <code>patch</code>, en cambio, son palabras reservadas en 3.00 y no se pueden usar ni para declarar.</p>
+  <p><strong>Solución:</strong> renombra: <code>uniform sampler2D u_textura;</code>. En general, cualquier nombre que coincida con una función o palabra de 3.00 es sospechoso al portar.</p>
+</div>
+
+<h2>Leer código denso</h2>
+<p>El código de Shadertoy tiende a ser compacto, y una parte está escrita a propósito para ocupar lo mínimo: hay toda una afición a escribir shaders completos en el espacio de un tuit. Leerlo es cuestión de reconocer unos pocos idiomas.</p>
+
+<h3>Macros</h3>
+<p><code>#define</code> sustituye texto antes de compilar, sin entender nada de GLSL (el preprocesador de <a href="01-lenguaje.html">6.1</a>). Tres usos habituales y la trampa que ya conoces:</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="Macros típicas de Shadertoy">
+#define R iResolution                  // abreviar una entrada
+#define PI 3.14159265                  // constantes (mejor: const float PI = 3.14159265;)
+#define rot(a) mat2(cos(a), -sin(a), sin(a), cos(a))   // "funciones" con argumentos
+#define SQ(x) x * x                    // la trampa: SQ(a + b) se expande a  a + b * a + b
+</script>
+<p>La última es el bicho de <a href="01-lenguaje.html#m6a-macro-parentesis">la macro sin paréntesis</a> de 6.1: <code>SQ(a + b)</code> se convierte en <code>a + b * a + b</code>. En código de Shadertoy lo encontrarás a menudo, porque en código golfeado cada paréntesis cuenta; cuando una macro dé resultados absurdos con argumentos compuestos, expándela a mano. La macro <code>rot(a)</code> de la tercera línea, en cambio, es segura: el argumento aparece dentro de <code>cos()</code> y <code>sin()</code>, que ya lo rodean de paréntesis.</p>
+
+<h3>La rotación que gira al revés</h3>
+<p>El idioma más repetido de Shadertoy es <code>p *= rot(a);</code> con <code>rot(a) = mat2(cos(a), -sin(a), sin(a), cos(a))</code>. Tiene una sutileza que merece un apartado propio. Recuerda de <a href="../03-matematicas/05-matrices.html">3.5</a> que el constructor <code>mat2</code> se rellena <strong>por columnas</strong>: esa matriz tiene columnas (cos, −sin) y (sin, cos), es decir, es</p>
+$$M = \begin{pmatrix} \cos a & \sin a \\ -\sin a & \cos a \end{pmatrix}$$
+<p>que es la rotación de <strong>−a</strong>, no la de a. Y <code>p *= M</code> significa <code>p = p * M</code>: un vector fila multiplicado por la matriz, que equivale a multiplicar por la traspuesta, $\vec p\,M = M^T \vec p$ (la regla de <a href="01-lenguaje.html">6.1</a>: <code>v * M</code> multiplica por la traspuesta). La traspuesta de la rotación de −a es la rotación de +a. Las dos «inversiones» se cancelan: <code>p *= rot(a)</code> gira p el ángulo a en sentido antihorario, que es lo que quería el autor. Pero si copias <code>rot</code> y lo usas como <code>rot(a) * p</code>, que es lo natural en el resto del curso, girarás al revés.</p>
+
+<div class="glsl-playground" data-titulo="p * M frente a M * p" data-altura="260" data-texturas="letraF">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_tex0;
+out vec4 fragColor;
+
+#define rot(a) mat2(cos(a), -sin(a), sin(a), cos(a))
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float a = 0.6;                              // un ángulo fijo, positivo
+  vec2 q;
+  if (p.x < 0.0) {                            // izquierda:  p * M  (el idioma de Shadertoy)
+    q = (p - vec2(-0.85, 0.0)) * rot(a);
+  } else {                                    // derecha:    M * p
+    q = rot(a) * (p - vec2(0.85, 0.0));
+  }
+  // Leer la F en las coordenadas giradas: la F se ve girada en sentido contrario
+  vec3 color = texture(u_tex0, q * 0.9 + 0.5).rgb;
+  if (abs(p.x) < 0.005) color = vec3(1.0);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+<p>Las dos mitades usan la misma macro y el mismo ángulo; solo cambia el orden de la multiplicación, y las dos F quedan giradas en sentidos opuestos. (Y recuerda la regla de 6.8: como giramos las coordenadas con las que se lee, la F se ve girada al revés que las coordenadas.) Al copiar una rotación, fíjate siempre en dos cosas: cómo está construida la matriz y en qué orden se multiplica.</p>
+
+<div class="callout nota" id="m6b-rot-al-reves">
+  <p><strong>Si al copiar una rotación de otro shader todo gira al revés</strong> (o una cámara orbital va al revés que el ratón), casi siempre es el comportamiento raro <a href="../03-matematicas/05-matrices.html#m3-matriz-traspuesta">«El objeto gira al revés y no se traslada (o se deforma)»</a> de 3.5 disfrazado de idioma de Shadertoy: el original la usaba como <code>p *= rot(a)</code> (vector fila, <code>p * M</code>, que multiplica por la traspuesta) con <code>mat2(c, -s, s, c)</code>, que por columnas es la rotación de −a; las dos inversiones se cancelan, y si tú escribes <code>rot(a) * p</code> solo queda una. Arréglalo conservando el orden del original, cambiando el signo del ángulo o construyendo la matriz como en el curso (<code>mat2(c, s, -s, c)</code> para <code>M * p</code>), y comprueba siempre con un caso conocido: un ángulo positivo pequeño debe girar en sentido antihorario. Si el giro va al revés en tu propio código, sin haber copiado nada, mira la otra causa: transformar las coordenadas aplica a la forma la inversa (<a href="../03-matematicas/05-matrices.html#m3-rotacion-inversa-shader">«En el shader todo se mueve al revés»</a>, 3.5).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Con <code>M = mat2(cos(a), sin(a), -sin(a), cos(a))</code> (la rotación de +a por columnas), ¿qué hace <code>p * M</code>?</p>
+  <ul>
+    <li>Gira p el ángulo a en sentido antihorario, igual que <code>M * p</code>.<div class="explicacion">Solo sería igual si M fuera simétrica. Para una rotación, <code>p * M</code> es <code>transpose(M) * p</code>, y la traspuesta de una rotación es su inversa.</div></li>
+    <li data-correcta>Gira p el ángulo a en sentido horario (la rotación de −a).<div class="explicacion">Correcto. $\vec p\,M = M^T\vec p$, y $M^T = M^{-1}$ para una rotación: la rotación de −a. Por eso el idioma de Shadertoy construye la matriz «al revés» (<code>mat2(c, -s, s, c)</code>) y multiplica por la derecha: dos inversiones que se cancelan.</div></li>
+    <li>No compila: GLSL no permite multiplicar un vector por la izquierda de una matriz.<div class="explicacion">Sí lo permite: <code>vec2 * mat2</code> trata el vector como fila y da otro <code>vec2</code>. Es precisamente la operación que usa el idioma <code>p *= rot(a)</code>.</div></li>
+  </ul>
+</div>
+
+<h3>Otros idiomas que conviene reconocer</h3>
+<table class="b-comparar">
+  <thead><tr><th>Verás</th><th>Significa</th></tr></thead>
+  <tbody>
+    <tr><td><code>void mainImage(out vec4 O, vec2 U)</code></td><td>los parámetros renombrados a una letra: O = color de salida, U = coordenada del píxel</td></tr>
+    <tr><td><code>(U + U - R.xy) / R.y</code></td><td>las coordenadas centradas <code>(2.0 * U - R.xy) / R.y</code>, con una multiplicación menos</td></tr>
+    <tr><td><code>O -= O;</code> o <code>O *= 0.;</code></td><td>poner el color a 0 (en un <code>out</code> sin inicializar; mira el senior de arriba)</td></tr>
+    <tr><td><code>.5 + .5 * cos(6.28 * (t + vec3(0, .33, .67)))</code></td><td>la paleta de coseno (<a href="04-color.html">6.4</a>): tres canales desfasados</td></tr>
+    <tr><td><code>mat2(cos(a + vec4(0, 33, 11, 0)))</code></td><td>una rotación en una línea: 33 ≈ 10,5π y 11 ≈ 3,5π, así que <code>cos(a + 33) ≈ −sin(a)</code> y <code>cos(a + 11) ≈ sin(a)</code>. Aproximada: calculamos un error de hasta 0,013 en los términos del seno y columnas no del todo perpendiculares (producto punto de hasta 0,009)</td></tr>
+    <tr><td><code>smoothstep(3. / R.y, 0., d)</code></td><td>un borde antialiasado de unos 3 píxeles para una SDF d medida en unidades de altura (<a href="03-formas-sdf.html">6.3</a>). Los bordes invertidos (el mayor primero) son indefinidos según la especificación: casi siempre funcionan, pero si los tres argumentos son constantes, ANGLE lo evalúa al compilar y devuelve 0 (<a href="../03-matematicas/04-funciones-forma.html#m3-smoothstep-invertido">3.4</a>). Al traducir, escríbelo como <code>1.0 - smoothstep(0., 3. / R.y, d)</code></td></tr>
+    <tr><td><code>for (float i = 0.; i &lt; 1.; i += .1)</code></td><td>un bucle con contador float (válido incluso en 1.00). ¿Cuántas vueltas da? En la GPU, 10: en float32, diez sumas de 0,1 dan 1,0000001, que ya no es menor que 1. El mismo bucle en JavaScript (float64) da 11, porque allí la suma queda en 0,9999999999999999. Lo comprobamos en los dos. Mejor contar con enteros</td></tr>
+    <tr><td><code>fract(p) - .5</code> y <code>floor(p)</code></td><td>posición dentro de la celda (centrada) y número de celda: los patrones de <a href="05-patrones.html">6.5</a></td></tr>
+    <tr><td><code>length(p) - r</code>, <code>max(abs(p.x), abs(p.y)) - s</code></td><td>SDF de un círculo y de un cuadrado (6.3)</td></tr>
+  </tbody>
+</table>
+
+<div class="callout senior" data-titulo="El mismo código, otro resultado">
+  <p>Un shader de Shadertoy que se ve perfecto en la pantalla de su autor puede verse distinto en la tuya aunque lo copies sin tocar una coma. Tres causas típicas, todas vistas en el módulo: (1) <strong>hashes y funciones con precisión sin garantizar</strong>, como el hash del seno, cuyo resultado cambia entre GPU e incluso dentro de la misma según el <em>fast math</em> (un <code>isnan</code> en cualquier otra parte del shader lo cambia, <a href="../03-matematicas/07-precision.html#m3-isnan-heisenbug">3.7</a>; y fuera de los editores del curso, ese efecto depende además de la caché del navegador, <a href="06-ruido.html#m6b-hash-fastmath">6.6</a>); (2) <strong>comportamientos indefinidos</strong> de los que el autor dependía sin saberlo: <code>pow</code> con base negativa, <code>smoothstep</code> con los bordes invertidos, un <code>out</code> leído antes de escribirlo, índices fuera de rango (<a href="01-lenguaje.html">6.1</a>); y (3) <strong>precisión</strong>: el código de WebGL1 declara <code>mediump</code>, que en muchos móviles es float16, y la especificación permite que <code>mediump int</code> tenga solo 16 bits (en nuestro M1, <code>getShaderPrecisionFormat</code> devuelve 32 bits para todos los enteros y floats). Si portas un shader para un producto, revísalo con esa lista delante, y pruébalo en un móvil.</p>
+</div>
+
+<h2>Licencias: el código ajeno tiene dueño</h2>
+<p>Que un shader esté publicado no significa que puedas usarlo como quieras. Lo que dice Shadertoy en sus términos de uso: si el código de un shader no empieza con un comentario que declare otra licencia, se publica bajo la licencia <strong>Creative Commons Atribución-NoComercial-CompartirIgual 3.0 sin adaptar</strong> (CC BY-NC-SA 3.0). Tres condiciones:</p>
+<ul>
+  <li><strong>Atribución (BY)</strong>: si lo usas o lo modificas, debes citar al autor original (y enlazar a la obra y a la licencia).</li>
+  <li><strong>No comercial (NC)</strong>: no puedes usarlo en algo con fines comerciales (un producto, la web de un cliente, un juego que se vende) sin permiso explícito del autor.</li>
+  <li><strong>Compartir igual (SA)</strong>: si publicas una obra derivada, debe llevar la misma licencia.</li>
+</ul>
+<p>Muchos autores eligen otra licencia y lo dicen en la primera línea del código: el hash de Hoskins que usaste en <a href="06-ruido.html">6.6</a> es MIT (puedes usarlo en cualquier proyecto, conservando el aviso de copyright), y bastantes shaders de Iñigo Quilez llevan también la licencia MIT en su cabecera (él distingue en su web entre los fragmentos técnicos, que publica con MIT para que se reutilicen, y sus piezas artísticas, cuyos derechos se reserva). La regla práctica: <strong>lee la cabecera</strong> antes de copiar. Si no dice nada y es de Shadertoy, es CC BY-NC-SA: para aprender y experimentar, estupendo; para un proyecto comercial, pide permiso o reescríbelo desde la técnica. Las técnicas (el sphere tracing, el fbm, un SDF) no tienen dueño; una implementación concreta, sí. Los shaders de estas lecciones están escritos para el curso aplicando técnicas publicadas, y citan a sus autores; los fragmentos de terceros que se usan tal cual (como el hash de Hoskins) conservan su licencia.</p>
+
+<div class="callout nota">
+  <p>Esto es una orientación técnica, no asesoramiento legal. Para un uso comercial con dudas, consulta la licencia completa y, si hace falta, al autor.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 6.10.1 — Traduce un Shadertoy</h3>
+  <p>El primer editor ejecuta en modo shadertoy un pequeño shader: círculos concéntricos que laten, desplazados según el ratón mientras arrastras. Tradúcelo en el segundo editor (normal, sin modo shadertoy) para que se vea igual. El segundo ya tiene la cabecera a medias.</p>
+  <div class="glsl-playground" data-titulo="Original (modo shadertoy)" data-altura="220" data-modo="shadertoy" data-editor="oculto">
+<script type="x-shader/x-fragment">
+void mainImage(out vec4 O, vec2 U)
+{
+    vec2 R = iResolution.xy;
+    vec2 p = (U + U - R) / R.y;
+    if (iMouse.z > 0.) p -= (iMouse.xy + iMouse.xy - R) / R.y;
+    float d = length(p);
+    float anillos = smoothstep(.4, .5, abs(fract(d * 4. - iTime) - .5) * 2.);
+    O = vec4(mix(vec3(.1, .1, .2), vec3(.3, .8, .9), anillos) * exp(-d), 1);
+}
+</script>
+  </div>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.10.1" data-altura="220">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+out vec4 fragColor;
+// TODO: uniforms y main()
+
+void main() {
+  fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec4 u_mouse;          // vec4: .z = 1.0 mientras está pulsado
+out vec4 fragColor;
+
+void main() {
+  vec2 R = u_resolution;
+  vec2 p = (2.0 * gl_FragCoord.xy - R) / R.y;
+  if (u_mouse.z > 0.0) p -= (2.0 * u_mouse.xy - R) / R.y;
+  float d = length(p);
+  float anillos = smoothstep(0.4, 0.5, abs(fract(d * 4.0 - u_time) - 0.5) * 2.0);
+  fragColor = vec4(mix(vec3(0.1, 0.1, 0.2), vec3(0.3, 0.8, 0.9), anillos) * exp(-d), 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Pulsa «Ver código» en el original. <code>O</code> es el color de salida y <code>U</code> la coordenada del píxel: en nuestro formato, <code>fragColor</code> y <code>gl_FragCoord.xy</code>. <code>iResolution.xy</code> → <code>u_resolution</code>, <code>iTime</code> → <code>u_time</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para el ratón, declara <code>uniform vec4 u_mouse;</code>: con <code>vec4</code>, el editor pone <code>.z = 1.0</code> mientras pulsas, así que <code>u_mouse.z &gt; 0.0</code> funciona como <code>iMouse.z &gt; 0.</code>. Y <code>vec4(…, 1)</code> con un entero es válido: el constructor convierte.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La traducción es mecánica: <code>mainImage</code> desaparece y su cuerpo va a <code>main</code>; <code>O</code> → <code>fragColor</code>; <code>U</code> → <code>gl_FragCoord.xy</code>; <code>iResolution.xy</code> → <code>u_resolution</code>; <code>iTime</code> → <code>u_time</code>; <code>iMouse</code> → <code>u_mouse</code> declarado como <code>vec4</code>. <code>U + U</code> es <code>2.0 * U</code>, y los literales como <code>.4</code> o <code>4.</code> son floats válidos en GLSL (0.4 y 4.0), aunque en el curso los escribimos completos por legibilidad.</p>
+    <p>Hay una diferencia de comportamiento que no es de traducción: en Shadertoy, al soltar el ratón, <code>iMouse.z</code> pasa a ser negativo y los anillos vuelven al centro; en el editor del curso, también, porque <code>u_mouse.z</code> vuelve a 0. Pero si este shader usara <code>iMouse.xy</code> sin comprobar el signo, en Shadertoy seguiría la última posición de arrastre y aquí seguiría al puntero: el bicho de <code>iMouse</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.10.2 — Porta un shader de WebGL1</h3>
+  <p>Este shader de estilo WebGL1 compila y funciona (el editor lo trata como 1.00). Pórtalo a GLSL ES 3.00: añade <code>#version 300 es</code> en la primera línea y corrige todos los errores que aparezcan hasta que compile y se vea exactamente igual. Hay al menos cinco cambios que hacer, uno de ellos traicionero.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.10.2" data-altura="280" data-texturas="paisaje">
+<script type="x-shader/x-fragment">
+#ifdef GL_ES
+precision mediump float;
+#endif
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D texture;     // (nadie le asigna unidad: vale 0, la unidad de u_tex0)
+varying vec2 v_uv;
+
+void main() {
+  vec2 uv = v_uv;
+  // Ondas horizontales y un desenfoque de 4 muestras
+  uv.x += 0.01 * sin(uv.y * 40.0 + u_time * 2.0);
+  vec4 suma = vec4(0.0);
+  for (int i = 0; i < 4; i++) {
+    float k = float(i) / 4.0;
+    suma += texture2D(texture, uv + vec2(0.0, k * 0.01));
+  }
+  float franjas = mod(floor(gl_FragCoord.y / 2.0), 2.0);   // líneas de barrido
+  gl_FragColor = vec4(suma.rgb / 4.0 * (0.85 + 0.15 * franjas), 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform sampler2D u_textura;   // renombrado: 'texture' es la función de lectura en 3.00
+in vec2 v_uv;                  // varying → in
+out vec4 fragColor;            // gl_FragColor → salida declarada
+
+void main() {
+  vec2 uv = v_uv;
+  uv.x += 0.01 * sin(uv.y * 40.0 + u_time * 2.0);
+  vec4 suma = vec4(0.0);
+  for (int i = 0; i < 4; i++) {
+    float k = float(i) / 4.0;
+    suma += texture(u_textura, uv + vec2(0.0, k * 0.01));   // texture2D → texture
+  }
+  float franjas = mod(floor(gl_FragCoord.y / 2.0), 2.0);
+  fragColor = vec4(suma.rgb / 4.0 * (0.85 + 0.15 * franjas), 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Tras añadir <code>#version 300 es</code>, el compilador se queja primero de <code>varying</code> («Illegal use of reserved word») y de <code>gl_FragColor</code> («undeclared identifier»). Recorre la tabla de diferencias: cabecera de precisión, <code>varying</code> → <code>in</code>, salida declarada, <code>texture2D</code> → <code>texture</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si al cambiar <code>texture2D(texture, …)</code> por <code>texture(texture, …)</code> aparece «'texture' : function name expected», no es un error de sintaxis: el uniform se llama igual que la función. Renómbralo. ¿Seguirá leyendo la textura correcta con otro nombre? Piensa en qué unidad de textura tiene asignada.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los cambios: (1) <code>#version 300 es</code> en la primera línea; (2) <code>#ifdef GL_ES precision mediump float; #endif</code> → <code>precision highp float;</code>; (3) <code>varying vec2 v_uv</code> → <code>in vec2 v_uv</code> (el editor usa un vertex shader 3.00 que declara <code>out vec2 v_uv</code> cuando tu código empieza por <code>#version 300 es</code>); (4) <code>out vec4 fragColor;</code> y <code>gl_FragColor</code> → <code>fragColor</code>; (5) <code>texture2D</code> → <code>texture</code>; y el traicionero, (6) renombrar el uniform <code>texture</code>, que en 3.00 oculta a la función.</p>
+    <p>¿Por qué el shader lee la textura correcta con cualquier nombre? El editor solo asigna unidades a los uniforms que se llaman <code>u_tex0</code>…<code>u_tex3</code>. Un sampler al que nadie asigna nada vale 0, como cualquier uniform sin asignar (<a href="../04-gpu/05-uniforms-varyings.html">4.5</a>), y la unidad 0 es precisamente la que tiene la primera textura de <code>data-texturas</code>. Funciona por casualidad; en tu propio código, asígnale la unidad con <code>gl.uniform1i</code> aunque sea la 0. El resto (el bucle con límite constante, <code>mod</code> en lugar de <code>%</code>) es válido en 3.00 y no hace falta tocarlo.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 6.10.3 — Desgolfea un shader</h3>
+  <p>Este shader de estilo «golf» (en modo shadertoy) dibuja una estructura giratoria de círculos. Reescríbelo en el segundo editor, en nuestro formato y <strong>legible</strong>: nombres descriptivos, una operación por línea, sin macros, con comentarios que expliquen qué hace cada parte. Debe verse prácticamente igual (la rotación aproximada del original desplaza los anillos alrededor de un píxel; la solución explica por qué).</p>
+  <div class="glsl-playground" data-titulo="Original golfeado (modo shadertoy)" data-altura="240" data-modo="shadertoy">
+<script type="x-shader/x-fragment">
+#define r(a) mat2(cos(a+vec4(0,33,11,0)))
+void mainImage(out vec4 O,vec2 U){vec2 R=iResolution.xy,p=(U+U-R)/R.y;O-=O;for(float i=0.;i<6.;i++){p*=r(iTime*.2);vec2 q=p-vec2(.5,0);O+=smoothstep(.02,0.,abs(length(q)-.2))*(.5+.5*cos(i+vec4(0,2,4,0)));p*=1.3;}}
+</script>
+  </div>
+  <div class="glsl-playground" data-titulo="Ejercicio 6.10.3" data-altura="240">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+void main() {
+  // TODO: la versión legible
+  fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+
+// Rotación de ángulo a para usar como p * M (el idioma de Shadertoy): gira +a.
+// El original la aproximaba con cos(a + vec4(0, 33, 11, 0)).
+mat2 rotacion(float a) {
+  float c = cos(a), s = sin(a);
+  return mat2(c, -s, s, c);
+}
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;   // centrado, y de -1 a 1
+  vec3 color = vec3(0.0);                                             // "O -= O"
+  for (int i = 0; i < 6; i++) {
+    float capa = float(i);
+    p = p * rotacion(u_time * 0.2);           // cada capa gira un poco más que la anterior
+    vec2 q = p - vec2(0.5, 0.0);              // un círculo desplazado del centro
+    float anillo = 1.0 - smoothstep(0.0, 0.02, abs(length(q) - 0.2));   // circunferencia de radio 0.2 (bordes en orden)
+    vec3 tono = 0.5 + 0.5 * cos(capa + vec3(0.0, 2.0, 4.0));      // un color distinto por capa
+    color += anillo * tono;
+    p *= 1.3;                                  // la siguiente capa, más pequeña en pantalla
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Separa primero las sentencias (cada <code>;</code> es un final de línea) y sustituye la macro <code>r(a)</code> por una función de rotación. Recuerda que <code>p*=r(…)</code> es <code>p = p * M</code>: conserva ese orden o la estructura girará al revés.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>O-=O</code> pone el color a 0. <code>O+=smoothstep(…)*(…)</code> acumula en las cuatro componentes; en nuestro formato puedes acumular un <code>vec3</code> y poner el alfa a 1 al final. <code>p*=1.3</code> hace que, en la siguiente vuelta, todo se vea más pequeño: coordenadas mayores equivalen a una figura menor.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Línea a línea: <code>R</code> y <code>p</code> son la resolución y las coordenadas centradas; <code>O-=O</code> inicializa el color; el bucle de 6 capas aplica en cada vuelta una rotación de <code>iTime * 0.2</code> <em>acumulada</em> (la capa k ha girado k + 1 veces ese ángulo), desplaza el centro del círculo a (0,5; 0), dibuja una circunferencia antialiasada de radio 0,2 (el original usa los bordes invertidos de <code>smoothstep</code>; la versión legible los escribe en orden con <code>1.0 - smoothstep(0.0, 0.02, …)</code>, que da lo mismo sin comportamiento indefinido), la tiñe con la paleta de coseno según el número de capa y escala las coordenadas por 1,3 para que la siguiente capa sea más pequeña.</p>
+    <p>La macro <code>r(a)</code> es el idioma de la rotación en una línea: <code>mat2(cos(a + vec4(0, 33, 11, 0)))</code> construye un <code>mat2</code> a partir de un <code>vec4</code> (por columnas: cos a, cos(a + 33), cos(a + 11), cos a) ≈ (cos, −sin, sin, cos). La versión legible usa senos y cosenos exactos, así que la imagen difiere un poco de la del original: la aproximación del original tiene un error de hasta 0,013 en la matriz, y ese error se acumula capa a capa (las coordenadas se multiplican por 1,3 en cada vuelta). Lo medimos: entre el 1 y el 2&nbsp;% de los píxeles difieren (los bordes de los anillos, que se desplazan del orden de un píxel). Si sustituyes la macro del original por la rotación exacta, la diferencia es cero: la solución y el original producen entonces exactamente la misma imagen. Y la acumulación en <code>vec4</code> del original también suma al alfa, que se ignora: por eso aquí basta un <code>vec3</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 6.10.4 — La semántica completa de iMouse</h3>
+  <p>El reproductor de Shadertoy de abajo usa el ratón simplificado del ejemplo 6.10.3. Cambia el manejo de eventos para que <code>iMouse</code> siga la semántica real de Shadertoy: <code>xy</code> se actualiza solo mientras el botón está pulsado (y vale 0, 0 hasta el primer clic), <code>zw</code> guarda la posición donde empezó el clic, <code>z</code> es positivo mientras está pulsado y <code>w</code> es positivo <strong>solo en el primer frame</strong> tras el clic. El shader de prueba lo muestra: disco blanco en <code>xy</code>, anillo naranja en <code>abs(zw)</code>, fondo azulado mientras <code>z &gt; 0</code> y un destello rosa en el frame del clic.</p>
+  <div class="js-playground" data-titulo="Ejercicio 6.10.4 — iMouse de verdad" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+html, body { margin: 0; height: 100%; background: #0e1014; }
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+
+const codigoShadertoy = `
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec3 col = iMouse.z > 0.0 ? vec3(0.1, 0.15, 0.3) : vec3(0.05);   // fondo: ¿pulsado?
+  if (iMouse.w > 0.0) col = vec3(1.0, 0.3, 0.6);                     // destello: frame del clic
+  float d1 = length(fragCoord - iMouse.xy);
+  float d2 = length(fragCoord - abs(iMouse.zw));
+  col = mix(col, vec3(1.0), 1.0 - smoothstep(10.0, 12.0, d1));                  // disco en xy
+  col = mix(col, vec3(1.0, 0.6, 0.1), 1.0 - smoothstep(1.0, 3.0, abs(d2 - 18.0)));  // anillo en |zw|
+  fragColor = vec4(col, 1.0);
+}`;
+const cabecera = `#version 300 es
+precision highp float;
+uniform vec3 iResolution;
+uniform float iTime;
+uniform vec4 iMouse;
+out vec4 salida;
+`;
+const pie = `
+void main() { vec4 c = vec4(0.0, 0.0, 0.0, 1.0); mainImage(c, gl_FragCoord.xy); salida = vec4(c.rgb, 1.0); }`;
+const vs = `#version 300 es
+void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+function compilar(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compilar(gl.VERTEX_SHADER, vs));
+gl.attachShader(prog, compilar(gl.FRAGMENT_SHADER, cabecera + codigoShadertoy + pie));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+const uRes = gl.getUniformLocation(prog, 'iResolution');
+const uTime = gl.getUniformLocation(prog, 'iTime');
+const uMouse = gl.getUniformLocation(prog, 'iMouse');
+
+function posicion(e) {
+  const r = canvas.getBoundingClientRect();
+  return [Math.floor((e.clientX - r.left) * canvas.width / r.width),
+          Math.floor((r.bottom - e.clientY) * canvas.height / r.height)];
+}
+
+// TODO: la semántica de Shadertoy. Ahora mismo: xy sigue al puntero, zw = xy con signo de "pulsado".
+let x = 0, y = 0, pulsado = false;
+canvas.addEventListener('pointermove', (e) => { [x, y] = posicion(e); });
+canvas.addEventListener('pointerdown', (e) => { [x, y] = posicion(e); pulsado = true; });
+canvas.addEventListener('pointerup', () => { pulsado = false; });
+function valorIMouse() {
+  return [x, y, pulsado ? x : -x, pulsado ? y : -y];
+}
+
+let t0 = performance.now();
+function paso() {
+  const w = Math.round(canvas.clientWidth * devicePixelRatio), h = Math.round(canvas.clientHeight * devicePixelRatio);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; gl.viewport(0, 0, w, h); }
+  gl.uniform3f(uRes, w, h, 1.0);
+  gl.uniform1f(uTime, (performance.now() - t0) / 1000);
+  gl.uniform4f(uMouse, ...valorIMouse());
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(paso);
+}
+requestAnimationFrame(paso);
+console.log('Haz clic y arrastra por el lienzo.');
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false });
+
+const codigoShadertoy = `
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec3 col = iMouse.z > 0.0 ? vec3(0.1, 0.15, 0.3) : vec3(0.05);   // fondo: ¿pulsado?
+  if (iMouse.w > 0.0) col = vec3(1.0, 0.3, 0.6);                     // destello: frame del clic
+  float d1 = length(fragCoord - iMouse.xy);
+  float d2 = length(fragCoord - abs(iMouse.zw));
+  col = mix(col, vec3(1.0), 1.0 - smoothstep(10.0, 12.0, d1));                  // disco en xy
+  col = mix(col, vec3(1.0, 0.6, 0.1), 1.0 - smoothstep(1.0, 3.0, abs(d2 - 18.0)));  // anillo en |zw|
+  fragColor = vec4(col, 1.0);
+}`;
+const cabecera = `#version 300 es
+precision highp float;
+uniform vec3 iResolution;
+uniform float iTime;
+uniform vec4 iMouse;
+out vec4 salida;
+`;
+const pie = `
+void main() { vec4 c = vec4(0.0, 0.0, 0.0, 1.0); mainImage(c, gl_FragCoord.xy); salida = vec4(c.rgb, 1.0); }`;
+const vs = `#version 300 es
+void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+function compilar(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compilar(gl.VERTEX_SHADER, vs));
+gl.attachShader(prog, compilar(gl.FRAGMENT_SHADER, cabecera + codigoShadertoy + pie));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+const uRes = gl.getUniformLocation(prog, 'iResolution');
+const uTime = gl.getUniformLocation(prog, 'iTime');
+const uMouse = gl.getUniformLocation(prog, 'iMouse');
+
+function posicion(e) {
+  const r = canvas.getBoundingClientRect();
+  return [Math.floor((e.clientX - r.left) * canvas.width / r.width),
+          Math.floor((r.bottom - e.clientY) * canvas.height / r.height)];
+}
+
+// La semántica de Shadertoy
+const raton = {
+  x: 0, y: 0,            // última posición con el botón pulsado (0, 0 hasta el primer clic)
+  cx: 0, cy: 0,          // dónde empezó el último clic
+  pulsado: false,
+  clic: false,           // true solo hasta que se dibuje un frame
+};
+canvas.addEventListener('pointerdown', (e) => {
+  [raton.x, raton.y] = posicion(e);
+  raton.cx = raton.x; raton.cy = raton.y;
+  raton.pulsado = true;
+  raton.clic = true;
+  canvas.setPointerCapture(e.pointerId);    // seguir recibiendo pointermove fuera del lienzo
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (raton.pulsado) [raton.x, raton.y] = posicion(e);   // xy solo cambia arrastrando
+});
+canvas.addEventListener('pointerup', () => { raton.pulsado = false; });
+function valorIMouse() {
+  const v = [raton.x, raton.y, raton.pulsado ? raton.cx : -raton.cx, raton.clic ? raton.cy : -raton.cy];
+  raton.clic = false;    // w solo es positivo en un frame
+  return v;
+}
+
+let t0 = performance.now();
+function paso() {
+  const w = Math.round(canvas.clientWidth * devicePixelRatio), h = Math.round(canvas.clientHeight * devicePixelRatio);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; gl.viewport(0, 0, w, h); }
+  gl.uniform3f(uRes, w, h, 1.0);
+  gl.uniform1f(uTime, (performance.now() - t0) / 1000);
+  gl.uniform4f(uMouse, ...valorIMouse());
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(paso);
+}
+requestAnimationFrame(paso);
+console.log('Haz clic y arrastra por el lienzo.');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Necesitas guardar por separado la posición de arrastre (x, y) y la posición del clic (cx, cy). En <code>pointerdown</code> se actualizan las dos; en <code>pointermove</code>, solo x e y, y solo si el botón está pulsado.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para <code>w</code>, una bandera <code>clic</code> que se pone a true en <code>pointerdown</code> y a false justo después de mandar el uniform en el frame siguiente. Así, <code>w</code> es positivo exactamente en un frame. Y <code>setPointerCapture</code> hace que el arrastre continúe aunque el puntero salga del lienzo.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La clave es que <code>iMouse</code> no es «el ratón», sino un pequeño registro de la interacción: dónde fue la última posición arrastrando (xy), dónde empezó el último clic (|zw|), si el botón sigue pulsado (signo de z) y si este es el frame del clic (signo de w). Con cuatro variables y tres eventos se reproduce exactamente. El detalle de <code>w</code> es el más fino: el evento <code>pointerdown</code> ocurre entre dos frames, así que no basta con un booleano «pulsado»; hace falta una bandera que se consuma al dibujar el frame siguiente, y por eso <code>valorIMouse</code> la pone a false después de leerla.</p>
+    <p>Dos detalles de hacker: las posiciones se redondean con <code>Math.floor</code> (Shadertoy da píxeles enteros, no centros de píxel), y un clic en la fila o columna 0 no puede codificar su signo, porque −0 y 0 son iguales en cualquier comparación. Shadertoy tiene la misma limitación. Con esta versión, los shaders de Shadertoy que usan el clic para colocar cosas o para disparar eventos se comportan igual que en la web.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><strong>Shadertoy</strong>: tu código es <code>mainImage(out vec4 fragColor, in vec2 fragCoord)</code>, y la web añade la cabecera (versión, precisión, uniforms <code>i…</code>) y un <code>main</code> que la llama. <code>fragCoord</code> = <code>gl_FragCoord.xy</code>; <code>iResolution</code> es un <code>vec3</code>; el alfa final se ignora.</li>
+    <li><strong><code>iMouse</code></strong>: xy = posición mientras se arrastra (0, 0 al principio); |zw| = posición del clic; z &gt; 0 = pulsado; w &gt; 0 = frame del clic. El modo shadertoy de los editores del curso lo reproduce igual.</li>
+    <li>Traducir a nuestro formato: cabecera propia, <code>out vec4 fragColor</code> global, <code>main</code>, y cada <code>i…</code> por su <code>u_…</code>. A WebGL crudo: triángulo sin buffers, cabecera + código + pie, uniforms por frame, <code>alpha: false</code>.</li>
+    <li><strong>1.00 → 3.00</strong>: <code>#version 300 es</code>; <code>attribute</code>/<code>varying</code> → <code>in</code>/<code>out</code>; <code>gl_FragColor</code> → salida declarada; <code>texture2D</code> → <code>texture</code>; renombrar <code>texture</code>, <code>sample</code>…; fuera las extensiones que son estándar. En 1.00 no hay <code>uint</code>, bits, <code>%</code>, <code>switch</code>, arrays con constructor, índices dinámicos ni bucles con límite variable; las derivadas son extensión (e imposibles en un shader 1.00 dentro de WebGL2).</li>
+    <li><strong>The Book of Shaders</strong>: como el curso (<code>u_resolution</code>, <code>u_time</code>, <code>u_mouse</code>) pero en 1.00, con <code>#ifdef GL_ES precision mediump float; #endif</code>.</li>
+    <li>Código denso: las macros pegan texto (paréntesis siempre); <code>p *= rot(a)</code> es <code>p * M</code>, que usa la traspuesta: copiar la rotación y multiplicar al revés invierte el giro.</li>
+    <li>Licencias: en Shadertoy, sin otra indicación, CC BY-NC-SA 3.0 (atribución, no comercial, compartir igual). Lee la cabecera antes de reutilizar; las técnicas son libres, las implementaciones no.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li>Khronos, <a href="https://registry.khronos.org/OpenGL/specs/es/2.0/GLSL_ES_Specification_1.00.pdf">The OpenGL ES Shading Language 1.00</a> (con su Apéndice A de limitaciones) y <a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">3.00</a>: las especificaciones, para resolver cualquier duda de la tabla.</li>
+  <li>WebGL2 Fundamentals, <a href="https://webgl2fundamentals.org/webgl/lessons/webgl1-to-webgl2.html">WebGL2 from WebGL1</a>: las diferencias de API y de GLSL al migrar.</li>
+  <li><a href="https://shadertoyunofficial.wordpress.com/">Shadertoy unofficial</a>: un blog con los detalles de Shadertoy que la web no documenta (entradas, multipasada, trucos y errores típicos).</li>
+  <li><a href="https://thebookofshaders.com/">The Book of Shaders</a>: el tutorial clásico, ahora que sabes leer su dialecto.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

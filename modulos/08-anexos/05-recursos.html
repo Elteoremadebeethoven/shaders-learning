@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A.5 · Recursos para seguir — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/anexos.css">
+</head>
+<body data-leccion="08-anexos/recursos">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Anexos · Referencia</p>
+  <h1>Recursos para seguir</h1>
+  <p class="resumen">Una selección comentada, no una lista infinita: las especificaciones que zanjan las dudas, los tutoriales y libros que merecen tu tiempo, las herramientas para depurar, las comunidades donde preguntar y un plan de estudio para después del curso. De cada recurso, qué es y cuándo usarlo.</p>
+  <div class="meta"><span class="chip">Referencia</span><span class="chip">Enlaces comprobados en septiembre de 2026</span></div>
+  <div class="objetivos">
+    <h4>Cómo usar esta página</h4>
+    <ul>
+      <li>Casi todo está en inglés; cuando hay versión en español, se dice.</li>
+      <li>Si la duda es qué hace exactamente una llamada o una función, ve a las <a href="#referencias-la-fuente-de-verdad">referencias</a>: los tutoriales resumen, las especificaciones deciden.</li>
+      <li>Para seguir aprendiendo, el <a href="#plan-de-estudio-despues-del-curso">plan de estudio</a> propone qué estudiar y en qué orden.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Referencias: la fuente de verdad</h2>
+<p>Cuando un tutorial y tu navegador no coinciden, manda la especificación. No se leen de corrido: se consultan, buscando la palabra exacta (<code>undefined</code>, el nombre de la función, el del error). Las dos chuletas de este curso (<a href="02-chuleta-glsl.html">A.2</a> y <a href="03-chuleta-webgl.html">A.3</a>) resumen lo que dicen y lo que hace Chrome de verdad.</p>
+<div class="ax-recursos no-toc">
+  <article class="ax-recurso">
+    <span class="ax-tipo">Especificación · PDF</span>
+    <h3><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">The OpenGL ES Shading Language 3.00</a></h3>
+    <p>La definición del GLSL de WebGL2: tipos, conversiones, precisión (sección 4.5), operadores (5), variables del sistema (7) y todas las funciones built-in, con sus casos indefinidos (8).</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> ante cualquier «¿esto está garantizado?». Busca «undefined» en la sección de la función.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Especificación · web</span>
+    <h3><a href="https://registry.khronos.org/webgl/specs/latest/2.0/">WebGL 2.0 Specification</a></h3>
+    <p>La interfaz de <code>WebGL2RenderingContext</code> y, sobre todo, el apartado «Differences Between WebGL and OpenGL ES 3.0»: lo que la web prohíbe, valida o garantiza (tipos de buffer, rangos de índices, bucles de realimentación, <code>texelFetch</code> fuera de rango a cero…).</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> cuando algo da error en WebGL y no en OpenGL nativo, o al revés. Se lee junto a la de <a href="https://registry.khronos.org/webgl/specs/latest/1.0/">WebGL 1.0</a>, de la que hereda muchas reglas.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Especificación · PDF</span>
+    <h3><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf">OpenGL ES 3.0.6</a></h3>
+    <p>La semántica de cada llamada que WebGL2 expone. Su sección 6.2 tiene las tablas de estado: cada variable, su valor inicial y con qué se consulta. Es la base de «¿Quién guarda qué estado?» de <a href="03-chuleta-webgl.html#quien-guarda-que-estado">A.3</a>.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para saber qué estado toca una llamada, las reglas de completitud de texturas y framebuffers o los valores iniciales.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Referencia · web</span>
+    <h3><a href="https://registry.khronos.org/OpenGL-Refpages/es3.0/">Páginas de referencia de OpenGL ES 3.0</a></h3>
+    <p>Una página por función de la API y por función o variable de GLSL: parámetros, descripción, errores que genera y consultas relacionadas.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> consulta rápida de una llamada concreta, sin abrir el PDF.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Documentación · web</span>
+    <h3><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext">MDN: WebGL2RenderingContext</a></h3>
+    <p>Cada método visto desde la web, con ejemplos en JavaScript y la tabla de compatibilidad de navegadores. En la misma sección, <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices">WebGL best practices</a>: qué es caro, qué bloquea y qué conviene evitar. La página principal de la <a href="https://developer.mozilla.org/es/docs/Web/API/WebGL_API">API WebGL tiene versión en español</a>.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> el día a día: firmas, sobrecargas de <code>texImage2D</code>, compatibilidad.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Registro · web</span>
+    <h3><a href="https://registry.khronos.org/webgl/extensions/">WebGL Extension Registry</a></h3>
+    <p>La especificación de cada extensión de WebGL: qué funciones y constantes añade, qué cambia (formatos renderizables, filtrado…) y si se activa sola al activar otra.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> antes de depender de una extensión. <a href="03-chuleta-webgl.html#extensiones-utiles">A.3</a> resume las útiles.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Chuleta oficial · PDF</span>
+    <h3><a href="https://www.khronos.org/files/webgl20-reference-guide.pdf">WebGL 2.0 Reference Guide</a></h3>
+    <p>La tarjeta de referencia rápida de Khronos: la API y GLSL ES 3.00 en unas pocas páginas densas.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para imprimirla y tenerla junto al teclado.</p>
+  </article>
+</div>
+
+<h2>Tutoriales y artículos</h2>
+<div class="ax-recursos no-toc">
+  <article class="ax-recurso">
+    <span class="ax-tipo">Tutorial · web</span>
+    <h3><a href="https://webgl2fundamentals.org/">WebGL2 Fundamentals</a></h3>
+    <p>El tutorial de referencia de WebGL2, de Gregg Tavares, siempre con la API cruda: del primer triángulo a las texturas, el render a textura, las sombras, el skinning, el picking, el texto y el instancing. Tiene artículos que casi nadie más escribe, como <a href="https://webgl2fundamentals.org/webgl/lessons/webgl-cross-platform-issues.html">los problemas entre plataformas</a> y <a href="https://webgl2fundamentals.org/webgl/lessons/webgl-anti-patterns.html">los antipatrones</a>.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> como segunda explicación de cualquier lección del módulo 5, y para lo que el curso deja fuera (por ejemplo, <a href="https://webgl2fundamentals.org/webgl/lessons/webgl-shadows.html">las sombras</a>).</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Visualización interactiva · web</span>
+    <h3><a href="https://webgl2fundamentals.org/webgl/lessons/resources/webgl-state-diagram.html">WebGL2 State Diagram</a></h3>
+    <p>Del mismo sitio: ejecuta un programa de ejemplo línea a línea y dibuja qué parte del estado cambia cada llamada: el estado global, las unidades de textura, el VAO con sus atributos, los programas, los buffers, las texturas y los framebuffers. Hay once programas de ejemplo para elegir, de un triángulo al render a textura, los samplers o el transform feedback. No muestra todo el estado, pero sí lo importante.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> junto a <a href="03-chuleta-webgl.html#quien-guarda-que-estado">«¿Quién guarda qué estado?»</a> de A.3: es la misma idea, en movimiento.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Libro interactivo · web · en parte en español</span>
+    <h3><a href="https://thebookofshaders.com/?lan=es">The Book of Shaders</a></h3>
+    <p>Patricio González Vivo y Jen Lowe: fragment shaders desde cero, con editores en vivo: funciones de forma, color, formas, matrices, patrones, aleatoriedad, ruido y fbm. La traducción al español llega hasta el capítulo de color; desde el de formas, el texto está en inglés. Varios capítulos anunciados (fractales, simulación, 3D) siguen sin escribir.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> después de <a href="../03-matematicas/04-funciones-forma.html">3.4</a> y del módulo 6, para practicar la parte creativa. Su código es GLSL ES 1.00 (<code>gl_FragColor</code>, <code>u_time</code>): <a href="../06-glsl/10-codigo-ajeno.html#the-book-of-shaders">6.10</a> explica cómo portarlo.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Artículos · web</span>
+    <h3><a href="https://iquilezles.org/articles/">Artículos de Iñigo Quilez</a></h3>
+    <p>Uno de los creadores de Shadertoy explica sus técnicas con código y derivaciones: las colecciones de distancias con signo en <a href="https://iquilezles.org/articles/distfunctions2d/">2D</a> y <a href="https://iquilezles.org/articles/distfunctions/">3D</a>, <a href="https://iquilezles.org/articles/functions/">funciones de remapeo</a>, ruido, raymarching, iluminación y paletas de color. Su <a href="https://graphtoy.com/">Graphtoy</a> dibuja funciones escritas con las de GLSL (<code>fract</code>, <code>smoothstep</code>, <code>mix</code>…) y una variable de tiempo.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> siempre que necesites una SDF o una función de forma (<a href="../03-matematicas/04-funciones-forma.html">3.4</a>, <a href="../06-glsl/03-formas-sdf.html">6.3</a>, <a href="../06-glsl/09-raymarching.html">6.9</a>). Es la referencia que citan todos.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Comunidad y editor · web</span>
+    <h3><a href="https://www.shadertoy.com/">Shadertoy</a></h3>
+    <p>Miles de fragment shaders con el código a la vista y un editor en vivo. Cada shader es una función <code>mainImage</code> con <code>iTime</code>, <code>iResolution</code> y compañía, con varias pasadas de búfer si hace falta.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para inspirarte y para practicar la lectura de código ajeno (<a href="../06-glsl/10-codigo-ajeno.html#anatomia-de-un-shader-de-shadertoy">6.10</a>). Cuidado al copiar: mucho código depende de comportamientos indefinidos que en otra GPU dan otro resultado.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Artículo · web</span>
+    <h3><a href="https://jamie-wong.com/2016/07/15/ray-marching-signed-distance-functions/">Ray Marching and Signed Distance Functions</a></h3>
+    <p>Jamie Wong: una introducción muy clara al raymarching de SDF: el bucle, las normales con el gradiente de la distancia, la luz de Phong, la cámara y las operaciones de unión, intersección y diferencia, con los ejemplos en Shadertoy.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> justo después de <a href="../06-glsl/09-raymarching.html">6.9</a>, como segunda explicación.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Artículo clásico · web</span>
+    <h3><a href="https://gafferongames.com/post/fix_your_timestep/">Fix Your Timestep!</a></h3>
+    <p>Glenn Fiedler: por qué integrar la física con un <code>dt</code> variable da resultados distintos en cada máquina, y la solución del paso fijo con acumulador e interpolación entre estados. El artículo anterior de la serie, <a href="https://gafferongames.com/post/integration_basics/">Integration Basics</a>, compara Euler explícito, Euler semi-implícito y RK4.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> al repasar <a href="../02-animacion/03-raf.html#paso-fijo-con-acumulador">2.3</a> y <a href="../02-animacion/05-fisica-muelles.html#tres-integradores">2.5</a>, o cuando una simulación se comporte distinto a 60 y a 120 Hz.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Tutorial · web</span>
+    <h3><a href="https://learnopengl.com/">Learn OpenGL</a></h3>
+    <p>Joey de Vries: el tutorial más completo de OpenGL moderno. Está escrito para OpenGL de escritorio en C++, pero la API es casi la de WebGL2, y sus capítulos de iluminación, mapas de normales, sombras, HDR, bloom y PBR están entre lo mejor que hay.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para las técnicas del plan de estudio. Al traducir, recuerda que su GLSL es de escritorio (<code>#version 330 core</code>).</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Vídeos · web</span>
+    <h3><a href="https://www.3blue1brown.com/topics/linear-algebra">Essence of linear algebra</a></h3>
+    <p>Grant Sanderson (3Blue1Brown): vectores y matrices vistos como transformaciones del espacio, todo animado: combinaciones lineales, matrices como transformaciones, composición, determinante, producto punto y producto cruz.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> con el módulo 3 (<a href="../03-matematicas/01-vectores.html">3.1</a>, <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>, <a href="../03-matematicas/05-matrices.html">3.5</a>), si las matrices siguen pareciéndote tablas de números.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Chuleta visual · web</span>
+    <h3><a href="https://easings.net/">Easing Functions Cheat Sheet</a></h3>
+    <p>Las curvas de easing clásicas dibujadas, cada una con su código CSS (una <code>cubic-bezier</code>, o <code>@keyframes</code> cuando no cabe en una) y su fórmula en TypeScript.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> al elegir la curva de una animación (<a href="../02-animacion/04-interpolacion-easing.html#easing-la-forma-del-progreso">2.4</a>).</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Guía · web</span>
+    <h3><a href="https://floating-point-gui.de/">The Floating-Point Guide</a></h3>
+    <p>Una introducción breve y clara a la coma flotante y sus sorpresas. Para el fondo matemático, el clásico de David Goldberg, <a href="https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html">What Every Computer Scientist Should Know About Floating-Point Arithmetic</a>.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> después de <a href="../03-matematicas/07-precision.html">3.7</a>, si quieres ir más allá.</p>
+  </article>
+</div>
+
+<h2>Libros</h2>
+<div class="ax-recursos no-toc">
+  <article class="ax-recurso">
+    <span class="ax-tipo">Libro · papel</span>
+    <h3><a href="https://www.realtimerendering.com/">Real-Time Rendering</a></h3>
+    <p>Tomas Akenine-Möller, Eric Haines, Naty Hoffman y otros (4.ª edición, 2018). La obra de referencia del render en tiempo real: el pipeline, las transformaciones, el sombreado, las texturas, las sombras, PBR, el antialiasing y las estructuras de aceleración, con miles de referencias. Su web es la página de recursos del libro.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para entender una técnica a fondo. Es de consulta, no para leer de corrido.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Libro · web gratis y papel</span>
+    <h3><a href="https://natureofcode.com/">The Nature of Code</a></h3>
+    <p>Daniel Shiffman: vectores, fuerzas, osciladores, muelles, sistemas de partículas y agentes autónomos, con ejemplos en p5.js. El libro entero se lee gratis en su web.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para profundizar en la animación y la física del módulo 2, y antes de las partículas de <a href="../07-integracion/05-particulas-gpu.html">7.5</a>.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Libro · web gratis</span>
+    <h3><a href="https://www.pbr-book.org/">Physically Based Rendering</a></h3>
+    <p>Matt Pharr, Wenzel Jakob y Greg Humphreys: la teoría completa del render físicamente correcto, explicada mientras se construye un trazador de rayos. La 3.ª y la 4.ª edición se leen gratis en la web.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> si la luz te interesa de verdad. Es trazado de rayos, no tiempo real, pero explica el porqué de todo lo que PBR aproxima.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Libros · web gratis</span>
+    <h3><a href="https://developer.nvidia.com/gpugems/gpugems/foreword">GPU Gems</a></h3>
+    <p>La colección de NVIDIA (tres volúmenes, 2004–2007) de técnicas explicadas por quienes las usaron en juegos y películas: agua, pelo, sombras, post-proceso, simulación en la GPU. Los tres están enteros en la web; <a href="https://developer.nvidia.com/gpugems/gpugems3/foreword">el tercero</a> es el más reciente.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> cuando busques cómo se hizo un efecto clásico. Parte de la API ha envejecido; las ideas, no.</p>
+  </article>
+</div>
+
+<h2>Herramientas</h2>
+<div class="ax-recursos no-toc">
+  <article class="ax-recurso">
+    <span class="ax-tipo">Depurador · extensión y script</span>
+    <h3><a href="https://spector.babylonjs.com/">Spector.js</a></h3>
+    <p>Captura un frame de WebGL y lo muestra llamada por llamada: el estado del contexto en cada una, los shaders y uniforms de cada dibujo y la imagen que va quedando en el framebuffer. Es una extensión para Chrome y Firefox, o un script para incluir en tu página. Código en <a href="https://github.com/BabylonJS/Spector.js">GitHub</a>.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> cuando la pantalla negra no cede a la lista de <a href="../05-webgl/10-depuracion.html#la-pantalla-negra-con-metodo">5.10</a>, y para ver qué llamadas hace de verdad una librería como Three.js.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Biblioteca de depuración</span>
+    <h3><a href="https://greggman.github.io/webgl-lint/">webgl-lint</a></h3>
+    <p>Un script que envuelve <code>getContext</code> (cárgalo antes de crear el contexto): llama a <code>getError</code> tras cada función y lanza una excepción que explica el fallo: argumentos <code>undefined</code> o <code>NaN</code>, uniforms sin asignar, atributos fuera de rango, shaders que no compilan, qué textura y qué adjunto forman un bucle de realimentación. Por defecto deja de comprobar tras 1000 dibujos (<code>maxDrawCalls</code>).</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> en desarrollo, siempre (<a href="../05-webgl/10-depuracion.html#geterror-con-metodo">5.10</a>). Quítalo en producción.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Biblioteca de depuración</span>
+    <h3><a href="https://github.com/greggman/webgl-memory">webgl-memory</a></h3>
+    <p>Del mismo autor: se carga antes de iniciar WebGL y te dice cuánta memoria ocupan tus buffers, texturas, renderbuffers y el canvas, y qué objetos siguen vivos. Es una estimación: cada GPU añade relleno y alineaciones que no se ven desde JavaScript.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> cuando sospeches una fuga (<a href="../05-webgl/10-depuracion.html#fugas-de-memoria">5.10</a>).</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Navegador</span>
+    <h3><a href="https://developer.chrome.com/docs/devtools/performance">DevTools de Chrome</a></h3>
+    <p>La consola muestra los avisos de WebGL con el texto exacto del error; el panel Performance, cuánto dura cada frame y la actividad de la GPU. Escribe <code>chrome://gpu</code> en la barra de direcciones para ver si WebGL va acelerado por hardware y qué renderizador usa ANGLE (en un Mac, Metal).</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> siempre que algo vaya lento o no se vea (<a href="../01-web/07-herramientas.html#performance-en-que-se-va-cada-frame">1.7</a>, <a href="../05-webgl/10-depuracion.html#me-frena-la-cpu-o-la-gpu">5.10</a>).</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Diagnóstico · web</span>
+    <h3><a href="https://webglreport.com/?v=2">WebGL Report</a></h3>
+    <p>Los límites, la precisión de los shaders y las extensiones del dispositivo en el que lo abras.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> cuando algo falla solo en un móvil o en un portátil concreto: ábrelo allí y compara con los <a href="02-chuleta-glsl.html#limites-minimos-garantizados">mínimos garantizados</a>.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Estadísticas · web</span>
+    <h3><a href="https://web3dsurvey.com/">Web3D Survey</a></h3>
+    <p>Qué porcentaje de dispositivos reales soporta cada extensión, formato y límite de WebGL, WebGL2 y WebGPU.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> antes de decidir si puedes depender de una extensión o de un límite mayor que el mínimo garantizado.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Validador · línea de órdenes</span>
+    <h3><a href="https://github.com/KhronosGroup/glslang">glslang</a></h3>
+    <p>El compilador de referencia de Khronos. Su programa <code>glslangValidator</code> valida GLSL ES 3.00 fuera del navegador, y es lo que usan por dentro varias extensiones de editor.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para validar shaders en tu editor o en una integración continua.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Extensiones de VS Code</span>
+    <h3>GLSL en tu editor</h3>
+    <p><a href="https://marketplace.visualstudio.com/items?itemName=raczzalan.webgl-glsl-editor">WebGL GLSL Editor</a>: la más completa y pensada para WebGL: GLSL ES 1.00 y 3.00, resaltado, autocompletado, ayuda con las firmas, documentación de las built-in, formato y errores mientras escribes (con glslang). <a href="https://marketplace.visualstudio.com/items?itemName=dtoplak.vscode-glsllint">GLSL Lint</a>: solo marca errores; necesita <code>glslangValidator</code> instalado y la siguiente extensión. <a href="https://marketplace.visualstudio.com/items?itemName=slevesque.shader">Shader languages support</a>: resaltado de GLSL, HLSL y Cg; sin cambios desde 2021.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> en cuanto escribas shaders en archivos propios en lugar de en los editores del curso.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Programas de escritorio</span>
+    <h3>Editores de shaders fuera del navegador</h3>
+    <p><a href="https://hexler.net/kodelife">KodeLife</a>: editor en vivo que recompila mientras escribes, para macOS, Windows y Linux. <a href="https://github.com/dfranx/SHADERed">SHADERed</a>: un IDE de shaders con depurador: pausas, eliges un píxel y recorres su shader paso a paso; su última versión es de 2021. <a href="https://github.com/patriciogonzalezvivo/glslViewer">glslViewer</a>: de Patricio González Vivo, sin interfaz: abre un <code>.frag</code> desde la terminal y lo recarga al guardar; con él se ejecutan fuera del navegador los ejemplos de The Book of Shaders.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> cuando quieras iterar en un shader grande con tu propio editor, o depurar un píxel concreto.</p>
+  </article>
+</div>
+
+<h2>Comunidades</h2>
+<div class="ax-recursos no-toc">
+  <article class="ax-recurso">
+    <span class="ax-tipo">Foro</span>
+    <h3><a href="https://discourse.threejs.org/">Foro de Three.js</a></h3>
+    <p>El foro oficial de Three.js; también se responden dudas de shaders y de WebGL en general.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> cuando te atasques con Three.js o con un shader dentro de él. Adjunta un ejemplo mínimo que reproduzca el problema.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Comunidad · Discord</span>
+    <h3><a href="https://graphics-programming.org/">Graphics Programming</a></h3>
+    <p>La web de la comunidad Graphics Programming de Discord: el enlace para entrar al servidor, un blog con artículos y guías de sus miembros y una lista de proyectos de la comunidad.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para preguntas de gráficos que no dependen de una librería concreta, y para ver en qué trabaja la gente.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Foro · Reddit</span>
+    <h3><a href="https://www.reddit.com/r/GraphicsProgramming/">r/GraphicsProgramming</a></h3>
+    <p>Artículos, proyectos personales y preguntas de programación gráfica.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para estar al día y descubrir artículos.</p>
+  </article>
+  <article class="ax-recurso">
+    <span class="ax-tipo">Comunidad</span>
+    <h3><a href="https://www.shadertoy.com/">Shadertoy</a>, otra vez</h3>
+    <p>Cada shader tiene comentarios, y sus autores suelen explicar las técnicas. Buscar una técnica por su nombre (<em>raymarching</em>, <em>sdf</em>, <em>noise</em>) es una forma rápida de ver diez soluciones al mismo problema.</p>
+    <p class="ax-cuando"><strong>Cuándo:</strong> para aprender leyendo, y para publicar tus experimentos.</p>
+  </article>
+</div>
+
+<h2>Plan de estudio después del curso</h2>
+<p>El curso te deja una base firme: sabes qué hace cada llamada y cada línea de GLSL. Lo que viene son técnicas y herramientas construidas encima. El orden va de lo que más reutiliza lo aprendido a lo que más cambia, y cada paso se apoya en el anterior. La lección <a href="../07-integracion/07-siguientes-pasos.html">7.7</a> tiende el puente hacia Three.js y WebGPU.</p>
+<ol class="ax-plan">
+  <li>
+    <h3>Three.js, mirando por dentro</h3>
+    <p>Una librería que automatiza lo que ya sabes hacer a mano: escena, cámaras, mallas, materiales, luces, cargadores de modelos. Lo valioso para ti es poder bajar de nivel: <code>ShaderMaterial</code> y <code>RawShaderMaterial</code> para escribir tus propios shaders, y Spector.js para ver qué llamadas de WebGL hace cada objeto.</p>
+    <p><strong>Recursos:</strong> el <a href="https://threejs.org/manual/">manual</a> y la <a href="https://threejs.org/docs/">documentación</a> oficiales, el <a href="https://github.com/mrdoob/three.js">código fuente</a> (sus shaders están en <code>src/renderers/shaders</code>) y el <a href="https://discourse.threejs.org/">foro</a>.</p>
+  </li>
+  <li>
+    <h3>Post-proceso a fondo</h3>
+    <p>La continuación directa del <a href="../05-webgl/08-framebuffers.html#post-proceso-la-escena-como-textura">post-proceso de 5.8</a>: cadenas de pasadas en <a href="../05-webgl/08-framebuffers.html#destinos-float">destinos float</a> (HDR, con <code>EXT_color_buffer_float</code>), <a href="../06-glsl/04-color.html#mas-alla-de-1-tone-mapping">tone mapping</a>, bloom, antialiasing en pantalla (FXAA) y corrección de color. Es donde más rinde lo que sabes de texturas y framebuffers.</p>
+    <p><strong>Recursos:</strong> Learn OpenGL, <a href="https://learnopengl.com/Advanced-Lighting/HDR">HDR</a> y <a href="https://learnopengl.com/Advanced-Lighting/Bloom">Bloom</a>; la biblioteca <a href="https://github.com/pmndrs/postprocessing">postprocessing</a> para Three.js, para leer cómo organiza las pasadas.</p>
+  </li>
+  <li>
+    <h3>Iluminación clásica y mapas de normales</h3>
+    <p>De la difusa de <a href="../05-webgl/06-3d-cubo.html#luz-el-modelo-de-lambert">Lambert (5.6)</a> al especular de Blinn-Phong, las luces puntuales con atenuación y los mapas de normales, que dan detalle a una superficie plana sin añadir geometría.</p>
+    <p><strong>Recursos:</strong> Learn OpenGL, <a href="https://learnopengl.com/Lighting/Basic-Lighting">Basic Lighting</a> y <a href="https://learnopengl.com/Advanced-Lighting/Normal-Mapping">Normal Mapping</a>.</p>
+  </li>
+  <li>
+    <h3>Sombras</h3>
+    <p>Shadow mapping: se renderiza la profundidad vista desde la luz a una textura y, al dibujar desde la cámara, se compara con ella. Junta todo el módulo 5: un framebuffer con adjunto de profundidad, las matrices de una segunda cámara y <code>sampler2DShadow</code>, con sus trampas de precisión (el acné de sombra es pariente del z-fighting de <a href="../05-webgl/06-3d-cubo.html#el-bufer-de-profundidad">5.6</a>).</p>
+    <p><strong>Recursos:</strong> Learn OpenGL, <a href="https://learnopengl.com/Advanced-Lighting/Shadows/Shadow-Mapping">Shadow Mapping</a>; WebGL2 Fundamentals, <a href="https://webgl2fundamentals.org/webgl/lessons/webgl-shadows.html">Shadows</a>, ya en WebGL2.</p>
+  </li>
+  <li>
+    <h3>Render físicamente basado (PBR)</h3>
+    <p>Materiales descritos por su rugosidad y su metalicidad, con la energía conservada: el modelo estándar de los motores actuales. Pide la iluminación clásica y el HDR del post-proceso, y mucho cuidado con el <a href="../06-glsl/04-color.html#el-0-5-que-no-es-la-mitad-srgb">espacio de color (6.4)</a>.</p>
+    <p><strong>Recursos:</strong> Learn OpenGL, <a href="https://learnopengl.com/PBR/Theory">PBR Theory</a> y siguientes; <a href="https://google.github.io/filament/Filament.md.html">Physically Based Rendering in Filament</a> (Google), la explicación completa y rigurosa de un motor PBR real.</p>
+  </li>
+  <li>
+    <h3>WebGPU y WGSL</h3>
+    <p>La API moderna de la web. Los conceptos son los mismos (buffers, texturas, shaders, pasadas), pero la máquina de estados global desaparece: el formato de los vértices, los shaders, el blending y la profundidad se congelan en un pipeline inmutable; los recursos se agrupan en bind groups, y los comandos se graban antes de enviarlos. Lo que en <a href="03-chuleta-webgl.html#quien-guarda-que-estado">A.3</a> aparece repartido entre contexto, VAO y programa, en WebGPU se declara de una vez.</p>
+    <p><strong>Recursos:</strong> <a href="https://webgpufundamentals.org/webgpu/lessons/es/">WebGPU Fundamentals</a>, del mismo autor que WebGL2 Fundamentals y con muchas lecciones traducidas al español; el codelab de Google <a href="https://codelabs.developers.google.com/your-first-webgpu-app?hl=es">Tu primera app de WebGPU</a>, también en español, que construye el juego de la vida con render y compute; la <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API">documentación de MDN</a> y las especificaciones de <a href="https://www.w3.org/TR/webgpu/">WebGPU</a> y <a href="https://www.w3.org/TR/WGSL/">WGSL</a>.</p>
+  </li>
+  <li>
+    <h3>Compute shaders</h3>
+    <p>Programas de GPU que no dibujan: simulaciones de partículas y fluidos, desenfoques, cálculos sobre imágenes, con memoria compartida entre los hilos de un grupo. En la web solo existen en WebGPU, y son la evolución natural del ping-pong de framebuffers y del transform feedback (<a href="../07-integracion/05-particulas-gpu.html">7.5</a>).</p>
+    <p><strong>Recursos:</strong> WebGPU Fundamentals, <a href="https://webgpufundamentals.org/webgpu/lessons/es/webgpu-compute-shaders.html">Conceptos básicos de Compute Shader</a> y los artículos que le siguen, en español.</p>
+  </li>
+</ol>
+<div class="callout senior">
+  <p>En cada paso, haz lo mismo que en el curso: escribe primero la versión mínima con la API cruda, rómpela a propósito y mide antes de optimizar. Las librerías aceleran el trabajo, pero el día que algo falle te salvará saber qué llamada toca qué estado y qué hace cada línea del shader.</p>
+</div>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Dudas de «qué hace exactamente»: las especificaciones de GLSL ES 3.00, WebGL 2.0 y OpenGL ES 3.0, y las chuletas A.2 y A.3.</li>
+    <li>Aprender técnicas: WebGL2 Fundamentals, The Book of Shaders, Iñigo Quilez y Learn OpenGL; de fondo, Real-Time Rendering.</li>
+    <li>Depurar: la consola y el panel Performance de las DevTools, Spector.js, webgl-lint, y WebGL Report en el dispositivo que falla.</li>
+    <li>Después del curso: Three.js por dentro → post-proceso → iluminación → sombras → PBR → WebGPU → compute.</li>
+  </ul>
+</div>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/anexos.js"></script>
+</body>
+</html>

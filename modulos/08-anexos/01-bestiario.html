@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A.1 · Bestiario de comportamientos raros — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/anexos.css">
+</head>
+<body data-leccion="08-anexos/bestiario">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Anexos · Referencia</p>
+  <h1>Bestiario de comportamientos raros</h1>
+  <p class="resumen">Todos los comportamientos desconcertantes del curso en un solo sitio, cada uno con su síntoma, su causa y su solución. Empieza por lo que ves: el diagnóstico rápido te lleva a las causas probables, y cada caso enlaza a la lección donde se explica y, casi siempre, se puede provocar en vivo.</p>
+  <div class="meta"><span class="chip">Referencia</span><span class="chip"><span data-ax-total>Todos los</span> casos del curso</span></div>
+  <div class="objetivos">
+    <h4>Cómo usar esta página</h4>
+    <ul>
+      <li>Si sabes qué ves pero no por qué, empieza por el <a href="#diagnostico-rapido-por-sintoma">diagnóstico rápido por síntoma</a>.</li>
+      <li>Si la consola muestra un mensaje, cópialo en el <a href="#todos-los-casos">filtro de casos</a>: muchos casos citan el texto exacto que escribe Chrome.</li>
+      <li>Cada caso enlaza a su lección, donde está explicado con más contexto y, casi siempre, en un playground que lo reproduce.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Cómo diagnosticar un comportamiento raro</h2>
+<p>Un comportamiento raro no es magia: es la máquina haciendo exactamente lo que le pediste, que no era lo que querías. Cada caso de este bestiario tiene tres partes: el <strong>síntoma</strong> (lo que ves), la <strong>causa</strong> (lo que de verdad pasa) y la <strong>solución</strong>. Para llegar de lo primero a lo segundo, un método que funciona casi siempre:</p>
+<ol class="ax-pasos">
+  <li><strong>Describe el síntoma con precisión.</strong> No «no funciona», sino «el cubo se ve, pero negro», «solo en el móvil», «tras una hora», «a 120 Hz va el doble de rápido». Cada detalle descarta causas; el diagnóstico rápido de abajo está ordenado así.</li>
+  <li><strong>Lee la consola antes de tocar nada.</strong> WebGL no lanza excepciones: escribe avisos como <code>INVALID_OPERATION</code> con una explicación, y <code>gl.getError()</code> acumula los errores hasta que alguien los lee (<a href="../05-webgl/01-contexto.html#geterror-errores-que-se-quedan-pegados">5.1</a>). Si hay mensaje, búscalo en el filtro de casos.</li>
+  <li><strong>Reduce el problema.</strong> Quita piezas hasta que el fallo desaparezca: la última que quitaste es la sospechosa. Para la pantalla negra hay una lista sistemática en <a href="../05-webgl/10-depuracion.html#la-pantalla-negra-con-metodo">5.10</a>.</li>
+  <li><strong>Haz visible lo invisible.</strong> Pinta los valores intermedios como color (<a href="../06-glsl/02-pensar-en-paralelo.html#depurar-con-color">6.2</a>, <a href="../05-webgl/10-depuracion.html#ver-lo-que-calcula-la-gpu">5.10</a>), lee píxeles con <code>readPixels</code>, pausa con un breakpoint (<a href="../01-web/07-herramientas.html#sources-pausar-el-tiempo">1.7</a>) o captura el frame con Spector.js.</li>
+  <li><strong>Sospecha de lo indefinido y de la precisión</strong> si el fallo depende del equipo, del navegador o del tiempo: <code>pow</code> con base negativa, <code>mediump</code> en el móvil, floats que crecen (<a href="../03-matematicas/07-precision.html#cuatro-bugs-un-solo-culpable">3.7</a>, <a href="02-chuleta-glsl.html#lo-indefinido-lista-de-comprobacion">A.2</a>).</li>
+</ol>
+
+<h2>Diagnóstico rápido por síntoma</h2>
+<p>Busca lo que ves. Cada síntoma lista sus causas probables, de la más frecuente a la menos, con enlace al caso completo (más abajo, en esta misma página) y el número de la lección que lo explica.</p>
+<nav class="ax-indice-sintomas" aria-label="Síntomas">
+  <a href="#s-pantalla-negra">Pantalla negra</a>
+  <a href="#s-canvas-vacio">El canvas se vacía</a>
+  <a href="#s-textura">Textura negra</a>
+  <a href="#s-reves">Boca abajo o al revés</a>
+  <a href="#s-borroso">Borroso</a>
+  <a href="#s-estirado">Estirado o en una esquina</a>
+  <a href="#s-parpadeo">Parpadeo</a>
+  <a href="#s-colores">Colores lavados</a>
+  <a href="#s-nan">Píxeles negros (NaN)</a>
+  <a href="#s-velocidad">Otra velocidad</a>
+  <a href="#s-saltos">Saltos</a>
+  <a href="#s-rendimiento">Tirones y lentitud</a>
+  <a href="#s-otro-equipo">Solo en otro equipo</a>
+  <a href="#s-geometria">Geometría rota</a>
+  <a href="#s-luz">Iluminación</a>
+  <a href="#s-costuras">Costuras y cortes</a>
+  <a href="#s-angulos">Ángulos y ratón</a>
+  <a href="#s-webgl">Mensajes de WebGL</a>
+  <a href="#s-compilador">El shader no compila</a>
+  <a href="#s-desaparece">Desaparece sin error</a>
+  <a href="#s-css-anim">Animaciones CSS</a>
+  <a href="#s-entrada">Ratón, dedo, teclado</a>
+  <a href="#s-html-css">HTML y CSS</a>
+  <a href="#s-js">JavaScript</a>
+  <a href="#s-archivos">Archivos y caché</a>
+</nav>
+
+<div class="ax-sintomas no-toc">
+
+  <section class="ax-sintoma" id="s-pantalla-negra">
+    <h3>Pantalla negra: el objeto no aparece</h3>
+    <p>Se ve el color del <code>clear</code>, pero no lo que dibujas. Primero, la <a href="../05-webgl/10-depuracion.html#la-pantalla-negra-con-metodo">lista de 5.10</a>. Con la consola limpia:</p>
+    <ul>
+      <li><a href="#m5-pantalla-negra-sin-error">Un dibujo legal que no produce píxeles</a>: atributo sin activar, <code>count</code> menor que 3, vértices fuera del clip space</li>
+      <li><a href="#m5-bufferdata-array-normal"><code>bufferData</code> con un <code>Array</code> normal</a>: un buffer de 0 bytes</li>
+      <li><a href="#m5-atributo-menos-uno"><code>getAttribLocation</code> devuelve −1</a>: nombre mal escrito o atributo eliminado por no usarse</li>
+      <li><a href="#m4-uniform-silencioso">La location del uniform es <code>null</code></a>: la matriz se queda a ceros</li>
+      <li><a href="#m5-cara-invisible">Winding al revés con el culling activado</a></li>
+      <li><a href="#m4-dividir-por-w">El vertex shader divide por <code>w</code> él mismo</a> y un vértice queda detrás de la cámara</li>
+      <li><a href="#m5-mat4-columnas">Una <code>mat4</code> por instancia con solo su primera columna configurada</a></li>
+      <li><a href="#m6a-division-entera">Una división entera en el shader</a> deja todo a 0</li>
+      <li><a href="#m3-lookat-degenerado">La cámara mira justo hacia arriba o hacia abajo</a> (<code>lookAt</code> degenerado)</li>
+      <li><a href="#m6b-rm-nada">Un raymarcher que solo pinta el fondo</a>: rayo hacia atrás o cámara dentro de un objeto</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-canvas-vacio">
+    <h3>El canvas se queda vacío o deja de dibujar</h3>
+    <ul>
+      <li><a href="#m5-contexto-perdido">El contexto se perdió</a> (pestaña en segundo plano, suspensión) y no se gestiona</li>
+      <li><a href="#m5-demasiados-contextos">Hay más de 16 contextos WebGL vivos</a> y el navegador elimina el más antiguo</li>
+      <li><a href="#m7-locations-viejas">Tras recuperar el contexto se usan locations u objetos del contexto anterior</a></li>
+      <li><a href="#m5-captura-vacia">Sin <code>preserveDrawingBuffer</code></a>, el búfer se borra al presentarse: capturas vacías y dibujos que desaparecen</li>
+      <li><a href="#m5-getcontext-null"><code>getContext('webgl2')</code> devuelve <code>null</code></a></li>
+      <li><a href="#m1-getcontext-null">El canvas es <code>null</code></a>: el script corrió antes que el parser, o el id no coincide</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-textura">
+    <h3>La textura sale negra, torcida o no se carga</h3>
+    <ul>
+      <li><a href="#m5-textura-negra">La textura está incompleta</a>: filtro con mipmaps sin mipmaps, float filtrada sin extensión…</li>
+      <li><a href="#m5-sampler-unidad">Dos samplers leen la misma unidad de textura</a> (los dos valen 0)</li>
+      <li><a href="#m5-imagen-securityerror">La imagen es de otro origen</a>, o <a href="#m1-textura-file">la página está abierta con <code>file://</code></a></li>
+      <li><a href="#m5-unpack-alignment">Filas que no son múltiplo de 4 bytes con <code>UNPACK_ALIGNMENT = 4</code></a>: la imagen sale en diagonal</li>
+      <li><a href="#m5-objeto-borrado">Se sigue usando una textura borrada</a></li>
+      <li><a href="#m4-bind-para-editar">Se editó otra textura</a> porque había otra enlazada en esa unidad</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-reves">
+    <h3>Boca abajo, reflejado o moviéndose al revés</h3>
+    <ul>
+      <li><a href="#m5-textura-volteada">La textura sale boca abajo</a> (y con <code>ImageBitmap</code>, <code>UNPACK_FLIP_Y_WEBGL</code> no hace nada)</li>
+      <li><a href="#m4-imagen-boca-abajo">La imagen leída con <code>readPixels</code> sale boca abajo</a></li>
+      <li><a href="#m1-raton-invertido">El ratón va al revés en vertical en el shader</a>: el DOM crece hacia abajo y <code>gl_FragCoord</code> hacia arriba (<a href="#m3-raton-y-invertida">variante</a>)</li>
+      <li><a href="#m3-rotacion-inversa-shader">En el shader todo se mueve al revés</a>: transformas las coordenadas, no el dibujo</li>
+      <li><a href="#m6b-distorsion-invertida">La lupa encoge en vez de ampliar</a></li>
+      <li><a href="#m3-matriz-traspuesta">La matriz está traspuesta</a>: gira al revés y no traslada</li>
+      <li><a href="#m3-rotacion-inversa-shader">Una rotación copiada de otro shader gira al revés</a></li>
+      <li><a href="#m3-winding-pantalla">Izquierda y derecha salen al revés en Canvas 2D</a></li>
+      <li><a href="#m6b-rueda-atras">Algo que gira rápido parece ir hacia atrás</a> (aliasing temporal)</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-borroso">
+    <h3>Borroso, pixelado o dentado</h3>
+    <ul>
+      <li><a href="#m5-canvas-borroso">El búfer de dibujo es más pequeño que los píxeles físicos</a>: falta <code>devicePixelRatio</code></li>
+      <li><a href="#m1-circulo-ovalado">El canvas conserva su búfer de 300 × 150</a> y el navegador lo estira</li>
+      <li><a href="#m5-fbo-tamano">El framebuffer del post-proceso es más pequeño que el canvas</a></li>
+      <li><a href="#m2-linea-medio-pixel">Una línea de 1 px centrada en un entero</a> ocupa dos columnas al 50 %</li>
+      <li><a href="#m6a-borde-fijo">El borde suave está en unidades de la escena, no en píxeles</a></li>
+      <li><a href="#m6a-escala-sdf">Una SDF escalada sin corregir la distancia</a></li>
+      <li><a href="#m6b-ruido-textura-escalones">Datos leídos de una textura RGBA8 que hacen escalones al ampliarlos</a></li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-estirado">
+    <h3>Estirado, en una esquina o recortado</h3>
+    <ul>
+      <li><a href="#m3-aspecto">La proyección no usa el aspecto de la imagen</a> (<a href="#m6a-circulo-estirado">en un fragment shader</a>, <a href="#m6b-imagen-estirada">con una textura</a>, <a href="#m6b-rotar-deforma">al girar</a>)</li>
+      <li><a href="#m5-viewport-olvidado">El viewport no se actualizó al redimensionar</a></li>
+      <li><a href="#m5-viewport-fbo">Se dibujó en un framebuffer con el viewport del canvas</a></li>
+      <li><a href="#m4-retina-viewport">En una pantalla Retina, el viewport se dio en puntos</a> (Python y glfw)</li>
+      <li><a href="#m6a-fragcoord-viewport"><code>gl_FragCoord</code> no es relativo al viewport</a></li>
+      <li><a href="#m1-canvas-crece">Un canvas sin tamaño CSS crece en cada frame</a></li>
+      <li><a href="#m1-canvas-flex">Un canvas no encoge dentro de un flex</a></li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-parpadeo">
+    <h3>Parpadeo y manchas que van y vienen</h3>
+    <ul>
+      <li><a href="#m5-profundidad-sin-borrar">La profundidad no se borra entre frames</a></li>
+      <li><a href="#m5-transparencia-orden">Un objeto transparente escribe profundidad o no se ordena</a></li>
+      <li><a href="#m5-muare">Muaré en texturas lejanas sin mipmaps</a> y <a href="#m6a-muare-procedural">en patrones procedurales</a></li>
+      <li><a href="#m6b-ruido-parpadea">El tiempo entra en la entrada del hash</a>: el ruido hierve en vez de moverse</li>
+      <li><a href="#m6b-rm-agujeros">Una escena de raymarching que no es una distancia exacta</a></li>
+      <li><a href="#m3-temblor-mundo-grande">Todo tiembla lejos del origen</a> (float32)</li>
+      <li><a href="#m7-calidad-oscila">La calidad adaptativa oscila</a> y cambia la nitidez cada pocos segundos</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-colores">
+    <h3>Colores lavados, oscuros o de otro tono</h3>
+    <ul>
+      <li><a href="#m6a-doble-gamma">La conversión a sRGB se aplica dos veces</a> (o ninguna)</li>
+      <li><a href="#m6b-st-transparente">El alfa del shader deja ver la página</a> (<a href="#m5-canvas-translucido">el blending también mezcla el alfa</a>)</li>
+      <li><a href="#m5-canvas-premultiplicado">Colores sin premultiplicar en un canvas premultiplicado</a></li>
+      <li><a href="#m5-halo-oscuro">Halos oscuros al filtrar en alfa directo</a></li>
+      <li><a href="#m2-color-mitad-oscura">Un degradado que pasa por un tono sucio</a>: se interpoló en sRGB</li>
+      <li><a href="#m6a-mipmap-oscuro">La textura se oscurece de lejos</a>: mipmaps promediados en sRGB</li>
+      <li><a href="#m6a-luz-codificada">Se ilumina con valores sRGB</a> en lugar de luz lineal</li>
+      <li><a href="#m6a-recorte-tono">Las luces fuertes se vuelven amarillas o blancas y planas</a>: valores mayores que 1 recortados</li>
+      <li><a href="#m6a-bandas-lineales">Franjas en los degradados oscuros</a>: luz lineal guardada en 8 bits</li>
+      <li><a href="#m4-sin-normalizar">Colores en bytes sin normalizar</a>: todo sale blanco o saturado</li>
+      <li><a href="#m1-desbordamiento">Lo más claro se vuelve oscuro</a>: un <code>Uint8Array</code> que da la vuelta</li>
+      <li><a href="#m2-alfa-premultiplicado"><code>getImageData</code> no devuelve lo que escribiste</a> con transparencia</li>
+      <li><a href="#m2-estela-fantasma">Una estela que nunca desaparece del todo</a></li>
+      <li><a href="#m6a-depurar-saturado">El valor que depuras sale todo blanco o todo negro</a>: está fuera de 0…1</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-nan">
+    <h3>Píxeles negros sueltos o manchas negras</h3>
+    <p>Casi siempre, un NaN: en un canvas de 8 bits se escribe como negro y contagia todo lo que toca.</p>
+    <ul>
+      <li><a href="#m3-nan-pixel-negro">Un NaN en el shader</a> (también en efectos que leen el frame anterior)</li>
+      <li><a href="#m3-pow-negativo"><code>pow</code> con base negativa</a></li>
+      <li><a href="#m3-normalizar-cero">Normalizar un vector nulo</a></li>
+      <li><a href="#m3-acos-nan"><code>acos</code> de algo que se pasa de 1 por redondeo</a></li>
+      <li><a href="#m6a-smin-k-cero"><code>smin</code> con <code>k = 0</code></a></li>
+      <li><a href="#m3-smoothstep-invertido"><code>smoothstep</code> con los bordes al revés</a></li>
+      <li><a href="#m6a-out-a-cero">Un parámetro <code>out</code> que se lee antes de escribirlo</a></li>
+      <li><a href="#m3-isnan-heisenbug">Añadir <code>isnan</code> cambia el resultado</a> (fast math)</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-velocidad">
+    <h3>Va a otra velocidad según la pantalla</h3>
+    <ul>
+      <li><a href="#m2-velocidad-depende-hz">Se avanza una cantidad fija por frame</a> en lugar de por segundo</li>
+      <li><a href="#m6b-u-frame-hz">El shader anima con <code>u_frame</code></a> en lugar de <code>u_time</code></li>
+      <li><a href="#m2-suavizado-depende-hz">El seguimiento suave aplica una fracción fija por frame</a></li>
+      <li><a href="#m2-emision-por-frame">Las partículas se emiten por frame</a></li>
+      <li><a href="#m2-setinterval-tirones">La animación usa <code>setInterval</code></a></li>
+      <li><a href="#m7-camara-lenta-parcial">Hay más de un reloj</a>: con la pausa o la cámara lenta, unas partes se paran y otras no</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-saltos">
+    <h3>Saltos al volver, tras una pausa o tras horas</h3>
+    <ul>
+      <li><a href="#m1-segundo-plano">Al volver a la pestaña, el primer <code>dt</code> vale decenas de segundos</a></li>
+      <li><a href="#m1-salto-tras-pausa">Lo mismo tras un breakpoint</a>, y <a href="#m2-salto-al-volver">en un iframe fuera de la pantalla</a></li>
+      <li><a href="#m2-muelle-explota">Un muelle rígido con un <code>dt</code> grande explota</a></li>
+      <li><a href="#m2-euler-explota">Euler explícito añade energía</a> hasta que el objeto sale disparado</li>
+      <li><a href="#m3-tiempo-horas">El tiempo en float32 pierde resolución</a> tras horas (<a href="#m3-mediump-movil">o en el móvil, en minutos</a>)</li>
+      <li><a href="#m6a-patron-lejos">Un patrón que se desplaza se deshace</a>: <code>fract</code> de números enormes</li>
+      <li><a href="#m3-contador-congelado">Un contador float32 pasó de 2²⁴</a> y se congela</li>
+      <li><a href="#m3-salto-frecuencia">Cambiar la frecuencia de una onda en vivo</a> desplaza toda su fase</li>
+      <li><a href="#m6b-bucle-salta">Un bucle que salta al reiniciar</a>: algún periodo no divide a la duración</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-rendimiento">
+    <h3>Tirones y lentitud</h3>
+    <ul>
+      <li><a href="#m1-tarea-larga">Una tarea larga ocupa el hilo principal</a></li>
+      <li><a href="#m2-tirones-periodicos">Un frame largo aislado cada cierto tiempo</a>: GC, un temporizador, un layout forzado</li>
+      <li><a href="#m1-layout-forzado">Leer medidas justo después de escribir estilos</a>, en bucle</li>
+      <li><a href="#m2-animacion-congelada">Una animación CSS de una propiedad que no es de compositor</a></li>
+      <li><a href="#m1-inanicion-microtareas">Una cadena de microtareas que no termina</a></li>
+      <li><a href="#m2-beginpath-olvidado">Falta <code>beginPath</code></a> y cada frame repinta todo lo anterior</li>
+      <li><a href="#m4-if-lento">Divergencia</a>: un <code>if</code> caro que pocos píxeles toman, pero repartidos</li>
+      <li><a href="#m4-discard-lento">Un <code>discard</code> impide probar la profundidad antes de sombrear</a></li>
+      <li><a href="#m4-readpixels-lento"><code>getError</code> o <code>readPixels</code> en cada frame</a>: sincronizan CPU y GPU</li>
+      <li><a href="#m4-tiron-primer-dibujo">Un tirón la primera vez que se usa un estado nuevo</a></li>
+      <li><a href="#m4-drawcall-0ms">Se mide el tiempo de la CPU y no el de la GPU</a> (<a href="#m5-finish-no-espera"><code>finish</code> tampoco espera</a>)</li>
+      <li><a href="#m5-memoria-sin-liberar">Recursos de WebGL que nunca se borran</a></li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-otro-equipo">
+    <h3>Funciona en mi equipo y falla en otro</h3>
+    <ul>
+      <li><a href="#m3-mediump-movil"><code>mediump</code> es float16 en el móvil</a></li>
+      <li><a href="#m6a-indefinido-portabilidad">El shader depende de un comportamiento indefinido</a></li>
+      <li><a href="#m3-hash-roto">El hash del seno</a> depende de la precisión de cada GPU (<a href="#m6b-hash-fastmath">y de si el shader usa <code>isnan</code></a>)</li>
+      <li><a href="#m1-raton-desplazado">La conversión de coordenadas del ratón olvida <code>devicePixelRatio</code></a> o el borde del canvas</li>
+      <li><a href="#m1-100vw"><code>100vw</code> incluye la barra de scroll</a>, que no todos los sistemas muestran</li>
+      <li><a href="#m5-atributos-ignorados">Los atributos de <code>getContext</code> se ignoran</a>: el canvas ya tenía contexto</li>
+      <li><a href="#m4-contexto-21">En macOS, OpenGL sin perfil core es la versión 2.1</a> (Python)</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-geometria">
+    <h3>Geometría rota: triángulos que faltan, estirados o ajenos</h3>
+    <ul>
+      <li><a href="#m4-stride-en-elementos"><code>stride</code> u <code>offset</code> en floats en lugar de en bytes</a></li>
+      <li><a href="#m4-ebo-vao-equivocado">El buffer de índices quedó en otro VAO</a> (o se dibuja con los índices de otra malla)</li>
+      <li><a href="#m4-indice-65535">El índice 65535 corta la primitiva</a> (y los índices de 16 bits no pasan de 65 535)</li>
+      <li><a href="#m4-vao-buffer-antiguo">El VAO recuerda el buffer antiguo</a></li>
+      <li><a href="#m4-bind-para-editar">Se editó el objeto que estaba enlazado, que no era el tuyo</a></li>
+      <li><a href="#m5-cubo-del-reves">No hay test de profundidad</a>: las caras de atrás tapan a las de delante</li>
+      <li><a href="#m4-escala-negativa">Una escala negativa invierte el winding</a> y el culling se come el objeto</li>
+      <li><a href="#m5-divisor-olvidado">Todas las instancias en el mismo sitio</a>: falta el divisor</li>
+      <li><a href="#m3-orden-transformaciones">Orbita en vez de girar sobre sí mismo</a>: orden de las transformaciones (en un shader: <a href="#m3-rotacion-inversa-shader">rotar las coordenadas es la transformación inversa</a>)</li>
+      <li><a href="#m3-detras-camara">Una proyección hecha a mano que no recorta</a> lo que queda detrás de la cámara</li>
+      <li><a href="#m5-linewidth"><code>lineWidth</code> no hace nada</a> (en ninguna plataforma actual)</li>
+      <li><a href="#m4-clear-no-borra"><code>clear</code> no borra toda la pantalla</a>: respeta el scissor y las máscaras</li>
+      <li><a href="#m4-offset-entero">En PyOpenGL, un <code>offset</code> entero</a> deja un atributo a cero</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-luz">
+    <h3>La iluminación sale mal</h3>
+    <ul>
+      <li><a href="#m3-luz-sin-normalizar">Vectores sin normalizar en <code>dot(N, L)</code></a>: luz quemada o que cambia con la distancia</li>
+      <li><a href="#m5-matriz-normal">Normales transformadas con la matriz de modelo</a> en lugar de con la matriz normal</li>
+      <li><a href="#m3-reflect-sin-normalizar"><code>reflect</code> con una normal no unitaria</a></li>
+      <li><a href="#m6a-luz-codificada">Luz sumada sobre valores sRGB</a>: transiciones duras y focos que deslumbran</li>
+      <li><a href="#m6b-rm-acne">Acné de sombra en raymarching</a>: el rayo de sombra choca con su propia superficie</li>
+      <li><a href="#m6b-rm-normales">Normales por diferencias con un paso mal elegido</a></li>
+      <li><a href="#m6b-rm-halo">Halos en las siluetas y horizonte cortado</a>: pocos pasos</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-costuras">
+    <h3>Costuras, cortes y rejillas en patrones y ruido</h3>
+    <ul>
+      <li><a href="#m3-costura-atan">Una costura a la izquierda del centro</a>: <code>atan</code> salta de π a −π (<a href="#m6a-costura-fwidth">con <code>fwidth</code></a>)</li>
+      <li><a href="#m6b-costura-mipmap">Líneas en las juntas de un mosaico o un pixelado</a>: derivadas enormes eligen un mipmap diminuto</li>
+      <li><a href="#m6a-derivadas-rama">Derivadas dentro de un <code>if</code></a> que no toman todos los píxeles del quad</li>
+      <li><a href="#m6a-cuartos-esquinas">Formas en las esquinas de las celdas</a>: falta restar 0.5 a <code>fract</code></li>
+      <li><a href="#m6a-formas-cortadas">Formas cortadas por líneas rectas</a>: se salen de su celda (<a href="#m6b-rm-repeticion">en raymarching</a>)</li>
+      <li><a href="#m6b-ruido-rejilla">Se ve la cuadrícula del ruido</a></li>
+      <li><a href="#m6b-fbm-origen">Una mancha o una costura en el origen del fbm</a></li>
+      <li><a href="#m5-borde-repeat">Una línea del color del borde opuesto</a> (<a href="#m6b-borde-desenfoque">en un desenfoque</a>): el wrap es <code>REPEAT</code></li>
+      <li><a href="#m3-mod-negativos">El patrón se rompe al cruzar el cero</a>: se truncó donde había que redondear hacia abajo</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-angulos">
+    <h3>Ángulos, giros y coordenadas que no cuadran</h3>
+    <ul>
+      <li><a href="#m3-grados-radianes">Grados donde se esperan radianes</a></li>
+      <li><a href="#m3-giro-largo">Da la vuelta completa al cruzar ±180°</a></li>
+      <li><a href="#m2-rotate-360-no-gira">Un <code>rotate(360deg)</code> que no gira</a></li>
+      <li><a href="#m1-svg-origen">Una forma SVG gira alrededor de una esquina lejana</a></li>
+      <li><a href="#m6a-espacios-mezclados">El ratón y el píxel están en espacios distintos</a></li>
+      <li><a href="#m1-offsetx-hijo"><code>offsetX</code> salta al pasar sobre un elemento hijo</a></li>
+      <li><a href="#m6b-st-imouse">El <code>iMouse</code> de Shadertoy no responde o empieza en una esquina</a></li>
+      <li><a href="#m3-diagonal-rapida">En diagonal se va más rápido</a>: el vector (1, 1) no mide 1</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-webgl">
+    <h3>Mensajes de WebGL en la consola</h3>
+    <ul>
+      <li><code>Vertex buffer is not big enough for the draw call</code>: <a href="#m5-bufferdata-array-normal">buffer vacío</a> o <a href="#m5-instancias-buffer-corto">más instancias de las que caben</a></li>
+      <li><code>Must have element array buffer bound</code>: <a href="#m4-ebo-vao-equivocado">el EBO no está en el VAO enlazado</a></li>
+      <li><code>Vertex shader input type does not match…</code>: <a href="#m4-tipo-atributo">atributo entero configurado como float, o al revés</a></li>
+      <li><code>Stride must be a multiple of the passed in datatype</code>: <a href="#m4-stride-en-elementos">stride en elementos</a></li>
+      <li><code>location is not from the associated program</code>: <a href="#m5-uniform-otro-programa">otro programa en uso</a></li>
+      <li><code>Feedback loop formed between Framebuffer and active Texture</code>: <a href="#m5-bucle-realimentacion">leer y escribir la misma textura</a></li>
+      <li><code>INVALID_FRAMEBUFFER_OPERATION</code>: <a href="#m5-fbo-incompleto">framebuffer incompleto</a></li>
+      <li><code>attempt to use a deleted object</code>: <a href="#m5-objeto-borrado">objeto borrado</a></li>
+      <li><code>Sampler uniform value out of range</code>: <a href="#m5-sampler-unidad"><code>gl.TEXTURE1</code> en lugar de 1</a></li>
+      <li><code>ArrayBufferView not big enough</code>: <a href="#m5-unpack-alignment"><code>UNPACK_ALIGNMENT</code></a></li>
+      <li><code>srcOffset + length too large</code>: <a href="#m5-buffersubdata-elementos">elementos frente a bytes en <code>bufferSubData</code></a></li>
+      <li><code>Too many active WebGL contexts</code>: <a href="#m5-demasiados-contextos">límite de contextos</a></li>
+      <li><code>too many errors, no more errors will be reported</code>: <a href="#m5-demasiados-errores">Chrome dejó de avisar</a></li>
+      <li><code>SecurityError</code> al subir una imagen: <a href="#m5-imagen-securityerror">imagen de otro origen</a></li>
+      <li><code>getError</code> acusa a una línea inocente: <a href="#m5-geterror-pegajoso">el error es de antes</a></li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-compilador">
+    <h3>El shader no compila o el programa no enlaza</h3>
+    <ul>
+      <li><code>#version directive must occur on the first line</code>: <a href="#m5-version-primera-linea">hay algo antes, aunque sea un salto de línea</a></li>
+      <li>El error señala una línea que está bien: <a href="#m5-error-linea-siguiente">el fallo está en la anterior</a></li>
+      <li><code>'?' : syntax error</code>: <a href="#m6a-enie-identificador">una ñ o una tilde en un nombre</a></li>
+      <li><code>Precisions of uniform … differ</code>: <a href="#m4-precision-uniform">el mismo uniform con otra precisión en cada shader</a></li>
+      <li><code>Attribute … aliases attribute … at location</code>: <a href="#m5-location-solapada">una <code>mat4</code> ocupa cuatro locations</a></li>
+      <li><code>Loop index cannot be compared with non-constant expression</code>: <a href="#m6b-100-bucle">GLSL ES 1.00</a></li>
+      <li><code>'fwidth' : no matching overloaded function found</code>: <a href="#m6b-100-derivadas">derivadas en GLSL ES 1.00</a></li>
+      <li><code>'texture' : function name expected</code>: <a href="#m6b-textura-nombre">una variable que se llama <code>texture</code></a></li>
+      <li><code>wrong operand types</code> al inyectar un número: <a href="#m7-define-entero"><code>#define</code> que pega un entero</a></li>
+      <li><code>version '330' is not supported</code>: <a href="#m4-contexto-21">contexto antiguo de macOS</a></li>
+      <li>Una macro da resultados absurdos: <a href="#m6a-macro-parentesis">faltan paréntesis</a></li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-desaparece">
+    <h3>Algo desaparece sin ningún error</h3>
+    <ul>
+      <li><a href="#m1-nan">Un NaN en la posición</a>: Canvas 2D no se queja</li>
+      <li><a href="#m2-invlerp-nan">Un NaN en un <code>transform</code></a>: el navegador ignora la declaración</li>
+      <li><a href="#m3-normalizar-cero">La partícula desaparece al alcanzar su objetivo</a></li>
+      <li><a href="#m2-fuerza-infinita">Una fuerza 1/d² sin suavizar</a> dispara la partícula</li>
+      <li><a href="#m1-bufferdata-array">Un <code>Array</code> normal en <code>bufferData</code></a></li>
+      <li><a href="#m4-uniform-silencioso">Un uniform que no cambia nada</a>: location <code>null</code> o función del tipo equivocado</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-css-anim">
+    <h3>Animaciones CSS y WAAPI que no obedecen</h3>
+    <ul>
+      <li><a href="#m2-transicion-no-arranca">La transición no arranca al insertar el elemento</a></li>
+      <li><a href="#m2-animacion-no-reinicia">La animación no se repite al volver a poner la clase</a></li>
+      <li><a href="#m2-transitionend-varias-veces"><code>transitionend</code> llega varias veces, o ninguna</a></li>
+      <li><a href="#m2-fill-forwards-pegado">Tras <code>fill: 'forwards'</code>, el elemento ignora los estilos</a></li>
+      <li><a href="#m2-abort-error"><code>AbortError</code> sin ninguna petición de red</a></li>
+      <li><a href="#m2-animacion-congelada">Una animación CSS también se congela</a> cuando el hilo principal está ocupado</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-entrada">
+    <h3>Ratón, dedo y teclado</h3>
+    <ul>
+      <li><a href="#m1-arrastre-perdido">El arrastre se corta al mover rápido o con el dedo</a>: falta la captura del puntero</li>
+      <li><a href="#m1-pasivo"><code>preventDefault</code> no evita el desplazamiento</a>: listener pasivo</li>
+      <li><a href="#m1-tecla-atascada">Una tecla se queda pulsada</a> al perder el foco</li>
+      <li><a href="#m2-flick-falso">Al soltar, el objeto no sale lanzado</a> (o sale aunque estaba quieto)</li>
+      <li><a href="#m1-raton-desplazado">El dibujo sale desplazado del ratón</a>, más cerca del borde</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-html-css">
+    <h3>HTML y CSS: la página no se comporta</h3>
+    <ul>
+      <li><a href="#m1-quirks">Funciona en el archivo de prueba y no en el proyecto</a>: modo quirks</li>
+      <li><a href="#m1-mojibake">Aparece «Ã±» en lugar de «ñ»</a>: codificación sin declarar</li>
+      <li><a href="#m1-canvas-autocerrado">Todo lo que sigue al canvas desaparece</a>: <code>&lt;canvas/&gt;</code> no se cierra</li>
+      <li><a href="#m1-script-string">Un string con <code>&lt;/script&gt;</code> rompe el script</a></li>
+      <li><a href="#m1-margen-colapsa">El margen del hijo empuja al padre</a></li>
+      <li><a href="#m1-franja-canvas">Una franja de unos píxeles bajo el canvas</a></li>
+      <li><a href="#m1-fixed-transform">Un elemento <code>fixed</code> se mueve con el scroll</a></li>
+      <li><a href="#m1-zindex"><code>z-index: 9999</code> y sigue debajo</a>: contexto de apilamiento</li>
+      <li><a href="#m1-var-invalida">La variable CSS no aplica ni su valor ni el de respaldo</a></li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-js">
+    <h3>JavaScript: errores y valores inesperados</h3>
+    <ul>
+      <li><a href="#m1-ya-declarado"><code>Identifier 'x' has already been declared</code></a>: los scripts clásicos comparten ámbito</li>
+      <li><a href="#m1-this-perdido"><code>Cannot read properties of undefined</code> dentro de un método</a>: <code>this</code> perdido</li>
+      <li><a href="#m1-cero-falsy">Un 0 se sustituye por el valor por defecto</a>: <code>||</code> y los valores falsy</li>
+      <li><a href="#m1-modulo-negativo">Un índice cíclico da <code>undefined</code> hacia atrás</a>: <code>%</code> con negativos</li>
+      <li><a href="#m1-particulas-juntas">Todos los objetos se mueven a la vez</a>: comparten una referencia</li>
+      <li><a href="#m1-coleccion-viva">El bucle se salta la mitad</a>: colección viva</li>
+      <li><a href="#m2-splice-en-bucle"><code>splice</code> dentro de un bucle se salta elementos</a></li>
+      <li><a href="#m1-orden-timeout-raf"><code>setTimeout</code> unas veces antes que el rAF y otras después</a></li>
+      <li><a href="#m1-alineacion"><code>start offset of Float32Array should be a multiple of 4</code></a>: alineación</li>
+      <li><a href="#m1-dataview-endian"><code>DataView</code> lee números absurdos</a>: big-endian por defecto</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-archivos">
+    <h3>Archivos locales, orígenes y caché</h3>
+    <ul>
+      <li><a href="#m1-fetch-file"><code>Failed to fetch</code> al cargar un archivo local</a>: origen opaco de <code>file://</code></li>
+      <li><a href="#m1-textura-file"><code>SecurityError</code> al subir una imagen</a> con la página en <code>file://</code></li>
+      <li><a href="#m1-cache-vieja">El navegador sigue ejecutando el código antiguo</a>: caché heurística</li>
+    </ul>
+  </section>
+
+</div>
+
+<h2>Todos los casos</h2>
+<p>Agrupados por módulo, en el orden del curso. El filtro busca en el título, el texto y la lección de cada caso; el enlace de la derecha lleva a la lección, donde el caso aparece con su contexto.</p>
+<div class="ax-buscador" role="search">
+  <label for="ax-q">Filtrar</label>
+  <input id="ax-q" type="search" placeholder="p. ej. textura negra, INVALID_OPERATION, 120 Hz" autocomplete="off" spellcheck="false">
+  <span class="ax-cuenta"></span>
+  <label class="ax-opcion"><input type="checkbox" id="ax-compacto"> Solo títulos</label>
+  <div class="ax-mods" role="group" aria-label="Filtrar por módulo"></div>
+</div>
+<div id="ax-casos" class="ax-casos"></div>
+<noscript><p class="ax-aviso">Los casos se generan con JavaScript a partir de <code>assets/js/datos-bestiario.js</code>. Sin JavaScript, cada caso sigue en su lección.</p></noscript>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Cada caso sigue el mismo esquema: síntoma, causa y solución. Empieza siempre por describir el síntoma con precisión.</li>
+    <li>La consola manda: WebGL escribe allí sus errores, con un texto que casi siempre identifica el caso. <code>getError</code> solo dice que algo falló desde la última vez que preguntaste.</li>
+    <li>Los fallos silenciosos más comunes son un NaN (se pinta negro), una location <code>null</code>, un estado que quedó enlazado donde no tocaba y un tamaño (de búfer, de viewport, de framebuffer) que no se actualizó.</li>
+    <li>Si algo depende del equipo o del tiempo, sospecha de la precisión y de lo indefinido antes que de tu lógica.</li>
+  </ul>
+</div>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="../../assets/js/datos-bestiario.js"></script>
+<script src="recursos/bestiario.js"></script>
+</body>
+</html>

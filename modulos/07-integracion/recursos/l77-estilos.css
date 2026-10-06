@@ -1,0 +1,20 @@
+/* =====================================================================
+   l77-estilos.css — estilos propios de la lección 7.7
+   Solo variables del tema: funciona en claro y en oscuro.
+   ===================================================================== */
+
+/* Dos bloques de código comparados, lado a lado (WebGL ↔ Three.js, GLSL ↔ WGSL).
+   Se usa con .ancho para ganar espacio; por debajo de 920 px, uno encima del otro. */
+.l77-dos { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; margin: 1.2rem 0; }
+.l77-dos > * { min-width: 0; margin: 0; }
+.l77-dos pre { margin: 0; }
+@media (max-width: 920px) { .l77-dos { grid-template-columns: minmax(0, 1fr); } }
+
+/* Tablas de correspondencias: la primera columna es código; la última, enlaces cortos. */
+table.l77-equiv td:first-child { font-family: var(--mono); font-size: 13px; color: var(--text); }
+table.l77-equiv.l77-cursos td:last-child { white-space: nowrap; font-size: 14px; }
+table.l77-equiv td { vertical-align: top; }
+table.l77-equiv code { font-size: 12.5px; }
+
+/* Resultado de la comprobación de WebGPU en la página */
+#demo-webgpu .demo-info { white-space: pre-wrap; line-height: 1.55; min-height: 7.5em; }

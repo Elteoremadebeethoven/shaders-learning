@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.2 · CSS esencial: caja, posición y transformaciones — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m1.css">
+</head>
+<body data-leccion="01-web/css">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 1 · Fundamentos web mínimos</p>
+  <h1>CSS esencial: caja, posición y transformaciones</h1>
+  <p class="resumen">CSS decide dónde está cada caja y cómo se ve. Aquí aprendes el modelo con el que calcula el navegador (cascada, caja, posición, apilamiento, unidades) y, sobre todo, <code>transform</code>: la propiedad con la que vas a animar, que es literalmente una multiplicación de matrices.</p>
+  <div class="meta"><span class="chip">⏱ 85 min</span><span class="chip">Requisitos: 1.1</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás qué regla gana cuando varias compiten (cascada y especificidad) y cómo leer desde JavaScript el valor que ganó.</li>
+      <li>Calcularás el tamaño real de una caja (content, padding, border, margin, <code>box-sizing</code>) y sabrás qué mide cada una de <code>offsetWidth</code>, <code>clientWidth</code> y <code>getBoundingClientRect()</code>.</li>
+      <li>Colocarás elementos con <code>position</code> sabiendo cuál es su bloque contenedor, y entenderás por qué <code>z-index: 9999</code> a veces no sirve de nada.</li>
+      <li>Elegirás unidades y colores sabiendo qué son de verdad: un píxel CSS no es un píxel de la pantalla.</li>
+      <li>Dominarás <code>transform</code>: sus funciones, <code>transform-origin</code>, por qué el orden importa (se aplican de derecha a izquierda) y por qué no mueve a los vecinos.</li>
+      <li>Usarás variables CSS como canal entre JavaScript y CSS.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Qué tiene que ver CSS con animar</h2>
+<p>Animar en la web es, casi siempre, una de dos cosas: cambiar propiedades CSS de un elemento a lo largo del tiempo (lecciones <a href="../02-animacion/02-css-transiciones.html">2.2</a> y <a href="../02-animacion/07-waapi-flip.html">2.7</a>), o dibujar dentro de un canvas que CSS coloca en la página (<a href="../02-animacion/06-canvas2d.html">2.6</a> y todo el módulo 5). En ambos casos necesitas saber exactamente dónde acaba cada caja y cuánto mide: el canvas a pantalla completa, la interfaz superpuesta al WebGL, el botón que tiene que quedar encima.</p>
+<p>Y hay una razón más: no todas las propiedades cuestan lo mismo. Cambiar <code>width</code> obliga al navegador a recalcular la posición de media página; cambiar <code>transform</code> no mueve a nadie y, a menudo, lo resuelve la GPU sin tocar el hilo principal. Por eso la mitad de esta lección es preparación general y la otra mitad es <code>transform</code> a fondo. El porqué del coste lo verás en la lección <a href="../02-animacion/01-pipeline-render.html">2.1</a>, y una demostración en vivo en la <a href="05-event-loop.html">1.5</a>.</p>
+
+<h2>Cómo gana una regla: selectores, cascada y especificidad</h2>
+<p>Una regla CSS es un selector (a qué elementos se aplica) y una lista de declaraciones <code>propiedad: valor</code>:</p>
+<script type="text/plain" class="codigo" data-lang="css">
+canvas.fondo {            /* selector: los <canvas> con la clase "fondo" */
+  position: fixed;        /* declaración */
+  inset: 0;               /* top, right, bottom y left a la vez */
+}
+</script>
+<p>Los selectores que vas a usar en este curso son pocos: tipo (<code>canvas</code>), clase (<code>.fondo</code>), id (<code>#lienzo</code>), atributo (<code>[data-activo]</code>), descendiente (<code>.escena canvas</code>: un canvas dentro de <code>.escena</code>, a cualquier profundidad), hijo directo (<code>.escena &gt; canvas</code>), pseudoclases (<code>:hover</code>, <code>:first-child</code>) y pseudoelementos (<code>::before</code>). Se combinan pegados: <code>p.rojo.grande</code> es un <code>p</code> con las dos clases.</p>
+<p>Cuando varias reglas le dan valor a la misma propiedad del mismo elemento, la <strong>cascada</strong> decide cuál gana, comparando en este orden:</p>
+<ol>
+  <li><strong>Importancia</strong>: una declaración con <code>!important</code> gana a las que no lo tienen.</li>
+  <li><strong>Especificidad</strong> del selector: un trío (ids, clases, tipos) que se compara columna a columna, como un número de tres cifras en el que ninguna columna «se lleva» a la siguiente. Los atributos y las pseudoclases cuentan como clases; los pseudoelementos, como tipos. El atributo <code>style="…"</code> del HTML gana a cualquier selector.</li>
+  <li><strong>Orden</strong>: a igual especificidad, gana la regla que aparece después.</li>
+</ol>
+<p>Lo comprobé con cinco párrafos y estas reglas, leyendo el color resultante con <code>getComputedStyle</code>:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Regla</th><th>Especificidad</th><th>¿Quién gana?</th></tr></thead>
+  <tbody>
+    <tr><td><code>#p1 { color: blue }</code></td><td>(1, 0, 0)</td><td>el id gana a <code>p.rojo.grande</code> y a <code>.rojo</code>: azul</td></tr>
+    <tr><td><code>p.rojo.grande { color: green }</code></td><td>(0, 2, 1)</td><td>gana a <code>.rojo</code> y a <code>div p</code>: verde</td></tr>
+    <tr><td><code>.rojo { color: red }</code></td><td>(0, 1, 0)</td><td>una clase gana a dos tipos (<code>div p</code>): rojo</td></tr>
+    <tr><td><code>div p { color: rgb(1,2,3) }</code></td><td>(0, 0, 2)</td><td>solo gana si nadie más opina</td></tr>
+    <tr><td><code>.importante { color: … !important }</code></td><td>(0, 1, 0) + importante</td><td>gana incluso al <code>style="…"</code> en línea</td></tr>
+  </tbody>
+</table>
+<p>Además de la cascada está la <strong>herencia</strong>: algunas propiedades, como <code>color</code> o <code>font-size</code>, pasan de padres a hijos si el hijo no tiene valor propio; otras, como <code>width</code>, <code>margin</code> o <code>background</code>, no se heredan. Las palabras clave <code>inherit</code>, <code>initial</code> y <code>unset</code> fuerzan cada comportamiento.</p>
+<p>El resultado final de todo esto se lee desde JavaScript con <code>getComputedStyle(el)</code>, que devuelve los valores ya resueltos: longitudes en <code>px</code>, colores normalizados. Lo usarás mucho, y en la lección <a href="04-js-dom-eventos.html">1.4</a> veremos su diferencia con <code>el.style</code>.</p>
+
+<div class="quiz">
+  <p class="pregunta">Un botón tiene <code>class="btn primario"</code> e <code>id="enviar"</code>. Reglas: <code>.btn.primario { color: white }</code>, <code>#enviar { color: black }</code>, <code>button.btn.primario { color: yellow }</code>. ¿De qué color es el texto?</p>
+  <ul>
+    <li>Amarillo, porque su selector es el más largo.<div class="explicacion"><code>button.btn.primario</code> tiene especificidad (0, 2, 1): dos clases y un tipo. La longitud no importa; se comparan las columnas empezando por los ids.</div></li>
+    <li data-correcta>Negro.<div class="explicacion">Sí: <code>#enviar</code> es (1, 0, 0). La columna de ids se compara primero, y 1 &gt; 0 decide sin mirar las demás columnas. Ni diez clases le ganan a un id.</div></li>
+    <li>Blanco, porque es la primera regla.<div class="explicacion">El orden solo desempata cuando la especificidad es idéntica. Además, en caso de empate gana la <em>última</em>, no la primera.</div></li>
+  </ul>
+</div>
+
+<h2>El modelo de caja</h2>
+<p>Cada elemento genera una caja rectangular con cuatro capas, de dentro a fuera: el <strong>contenido</strong>, el <strong>relleno</strong> (<code>padding</code>), el <strong>borde</strong> (<code>border</code>) y el <strong>margen</strong> (<code>margin</code>). El fondo se pinta bajo el contenido, el relleno y el borde; el margen siempre es transparente y solo separa la caja de sus vecinas.</p>
+
+<svg class="diagrama" viewBox="0 0 760 300" width="760" role="img" aria-label="Capas del modelo de caja y qué mide cada propiedad">
+  <rect x="140" y="10" width="480" height="230" rx="4" style="fill:color-mix(in srgb, var(--c-cuidado) 16%, transparent);stroke:var(--c-cuidado);stroke-dasharray:6 4"/>
+  <rect x="180" y="40" width="400" height="170" style="fill:color-mix(in srgb, var(--c-resumen) 40%, transparent)"/>
+  <rect x="200" y="60" width="360" height="130" style="fill:color-mix(in srgb, var(--c-hack) 30%, var(--surface))"/>
+  <rect x="250" y="90" width="260" height="70" style="fill:color-mix(in srgb, var(--c-nota) 40%, var(--surface))"/>
+  <text x="152" y="30" style="font-weight:700">margin</text>
+  <text x="190" y="55" style="font-weight:700;font-size:12px">border</text>
+  <text x="210" y="78" style="font-weight:700;font-size:12px">padding</text>
+  <text x="380" y="122" text-anchor="middle" style="font-weight:700">contenido</text>
+  <text x="380" y="142" text-anchor="middle" class="texto-tenue" style="font-size:12px">width × height (con content-box)</text>
+  <path d="M200 258 L560 258" stroke="currentColor" stroke-width="1.5"/>
+  <path d="M200 252 L200 264 M560 252 L560 264" stroke="currentColor" stroke-width="1.5"/>
+  <text x="380" y="254" text-anchor="middle" style="font-size:12px">clientWidth = contenido + padding</text>
+  <path d="M180 284 L580 284" stroke="currentColor" stroke-width="1.5"/>
+  <path d="M180 278 L180 290 M580 278 L580 290" stroke="currentColor" stroke-width="1.5"/>
+  <text x="380" y="280" text-anchor="middle" style="font-size:12px">offsetWidth = contenido + padding + border</text>
+  <text x="640" y="120" class="texto-tenue" style="font-size:12px">el margen no</text>
+  <text x="640" y="136" class="texto-tenue" style="font-size:12px">entra en ninguna</text>
+  <text x="640" y="152" class="texto-tenue" style="font-size:12px">de las dos</text>
+</svg>
+
+<h3>box-sizing: qué mide <code>width</code></h3>
+<p>Aquí está la primera trampa: por defecto (<code>box-sizing: content-box</code>), <code>width</code> es el ancho <em>del contenido</em>, y el relleno y el borde se suman por fuera. Con <code>box-sizing: border-box</code>, <code>width</code> es el ancho <em>hasta el borde</em>, y el contenido encoge para hacer sitio. Medí dos cajas con <code>width: 200px; padding: 10px; border: 5px</code>:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th></th><th><code>content-box</code></th><th><code>border-box</code></th></tr></thead>
+  <tbody>
+    <tr><td><code>getComputedStyle(el).width</code></td><td><code>"200px"</code></td><td><code>"200px"</code></td></tr>
+    <tr><td>ancho del contenido</td><td>200</td><td>170 (200 − 2·10 − 2·5)</td></tr>
+    <tr><td><code>clientWidth</code> (contenido + padding)</td><td>220</td><td>190</td></tr>
+    <tr><td><code>offsetWidth</code> (hasta el borde)</td><td>230</td><td>200</td></tr>
+  </tbody>
+</table>
+<p>Con <code>border-box</code>, lo que escribes es lo que ocupa: por eso casi todos los proyectos empiezan con <code>* { box-sizing: border-box; }</code>, y este curso también (está en la primera línea de reglas de su hoja de estilos). Fíjate en que <code>getComputedStyle(el).width</code> devuelve <code>"200px"</code> en los dos casos: es la propiedad <code>width</code> ya resuelta, y su significado depende del <code>box-sizing</code> (el contenido con <code>content-box</code>, hasta el borde con <code>border-box</code>). No es una medida de la caja como <code>offsetWidth</code>: con <code>content-box</code> no te dice nada de cuánto añaden el relleno y el borde.</p>
+
+<h3>Medir desde JavaScript</h3>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Propiedad</th><th>Qué mide</th><th>Detalles</th></tr></thead>
+  <tbody>
+    <tr><td><code>el.offsetWidth</code> / <code>offsetHeight</code></td><td>la caja hasta el borde</td><td>entero; <strong>ignora</strong> <code>transform</code></td></tr>
+    <tr><td><code>el.clientWidth</code> / <code>clientHeight</code></td><td>contenido + padding</td><td>entero; sin borde y sin barra de scroll</td></tr>
+    <tr><td><code>el.getBoundingClientRect()</code></td><td>la caja hasta el borde, en coordenadas de la ventana</td><td>decimales; <strong>incluye</strong> <code>transform</code></td></tr>
+    <tr><td><code>getComputedStyle(el).width</code></td><td>el valor CSS resuelto</td><td>un string como <code>"200px"</code></td></tr>
+  </tbody>
+</table>
+<p>La diferencia entre las dos primeras filas y la tercera es la que más te va a importar al animar. A la caja de 230 px le añadí <code>transform: scale(2)</code>: <code>offsetWidth</code> siguió diciendo 230, pero <code>getBoundingClientRect().width</code> dijo 460. <code>offsetWidth</code> habla del <em>layout</em> (el sitio que la caja ocupa en el flujo); <code>getBoundingClientRect</code> habla de dónde se ve de verdad. Para saber dónde ha hecho clic el usuario sobre algo que se mueve con <code>transform</code>, usarás la segunda (lección <a href="04-js-dom-eventos.html">1.4</a>).</p>
+
+<h3>La demo: juega con la caja</h3>
+<p>La caja azul y verde es un elemento real con esas propiedades CSS. El rayado naranja es su margen, la franja amarilla el borde, el verde el relleno y el azul el contenido. Las cifras se leen en vivo del propio elemento.</p>
+
+<div class="demo" id="demo-caja">
+  <div class="m1-escenario m1-flujo" style="min-height:300px">
+    <div class="m1-caja-vecina">vecina de arriba (sin margen)</div>
+    <div class="m1-caja-margen"></div>
+    <div class="m1-caja-real">contenido</div>
+    <div class="m1-caja-vecina">vecina de abajo</div>
+  </div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+<p>Prueba esto: pon el padding a 40 con <code>content-box</code> y mira cómo crece <code>offsetWidth</code> aunque <code>width</code> no cambie; cambia a <code>border-box</code> y verás que el contenido encoge. Activa <code>scale(1.5)</code>: la caja se agranda en pantalla y pisa a sus vecinas, pero <code>offsetWidth</code> no cambia y las vecinas no se mueven. Es tu primer contacto con la idea más importante de la sección de <code>transform</code>.</p>
+
+<h3>Los márgenes verticales se fusionan</h3>
+<p>Una rareza con historia tipográfica: cuando dos márgenes verticales se tocan, no se suman, <strong>se fusionan</strong> (<em>margin collapsing</em>) y queda el mayor. Dos bloques seguidos, uno con <code>margin: 20px 0</code> y otro con <code>margin: 30px 0</code>, quedaron separados 30 px, no 50. Pensado para párrafos (el espacio entre dos párrafos es el de uno, no el doble), sorprende cuando maquetas.</p>
+<p>La versión traicionera ocurre entre padre e hijo:</p>
+
+<div class="callout bestiario" data-id="m1-margen-colapsa" data-titulo="El margen del hijo empuja al padre">
+  <p><strong>Síntoma:</strong> le pones <code>margin-top: 40px</code> al primer hijo para separarlo del borde de su contenedor, y lo que baja es el contenedor entero: el hijo sigue pegado arriba del padre y el fondo del padre empieza 40 px más abajo.</p>
+  <p><strong>Causa:</strong> si entre el margen del padre y el del primer hijo no hay borde, relleno ni contenido, los dos márgenes se fusionan y el del hijo «sale» por arriba del padre. Lo medí: el borde superior del padre y el del hijo quedaron a la misma altura.</p>
+  <p><strong>Solución:</strong> dale al padre un <code>padding-top</code> (o un borde), o conviértelo en un contexto de formato de bloque: <code>display: flow-root</code> (lo más limpio), <code>overflow: hidden</code> o <code>display: flex</code>. Con <code>overflow: hidden</code> comprobé que el hijo quedaba 40 px por debajo del borde del padre, como se esperaba. En flex y grid los márgenes nunca se fusionan.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.2.1 — ¿Cuánto mide de verdad esta caja?</h3>
+  <p>Un panel de controles tiene <code>width: 50%</code>, <code>padding: 12px 16px</code>, <code>border: 3px solid</code> y <code>margin: 10px</code>, sin <code>box-sizing</code>, dentro de un contenedor de 600 px de ancho de contenido. ¿Cuánto ocupa en horizontal? Primero a mano, después lo comprobamos.</p>
+  <ol>
+    <li><strong>El contenido.</strong> Un porcentaje en <code>width</code> se calcula sobre el ancho del contenido del bloque contenedor: 50 % de 600 = 300 px.</li>
+    <li><strong>Hasta el borde (<code>offsetWidth</code>).</strong> Con <code>content-box</code>, el relleno y el borde se suman: 300 + 16 + 16 + 3 + 3 = 338 px.</li>
+    <li><strong>Sin el borde (<code>clientWidth</code>).</strong> 300 + 16 + 16 = 332 px.</li>
+    <li><strong>Con los márgenes.</strong> 338 + 10 + 10 = 358 px de espacio horizontal reservado.</li>
+    <li><strong>Con <code>border-box</code>.</strong> <code>width</code> pasa a ser el ancho hasta el borde: <code>offsetWidth</code> = 300 y el contenido encoge a 300 − 32 − 6 = 262 px.</li>
+  </ol>
+  <div class="js-playground" data-titulo="Midiendo la caja" data-altura="200">
+<script type="text/x-html">
+<div id="contenedor">
+  <div id="panel">panel</div>
+</div>
+</script>
+<script type="text/x-css">
+body { margin: 0; font: 14px sans-serif; }
+#contenedor { width: 600px; background: #ddd; }
+#panel { width: 50%; padding: 12px 16px; border: 3px solid #333; margin: 10px; background: #8cb6ff; }
+</script>
+<script type="text/x-js">
+const panel = document.getElementById("panel");
+const medir = (titulo) => console.log(titulo,
+  "· offsetWidth:", panel.offsetWidth,
+  "· clientWidth:", panel.clientWidth,
+  "· rect.width:", panel.getBoundingClientRect().width,
+  "· CSS width:", getComputedStyle(panel).width);
+
+medir("content-box →");
+panel.style.boxSizing = "border-box";
+medir("border-box  →");
+panel.style.transform = "scale(0.5)";
+medir("+ scale(.5) →");
+</script>
+  </div>
+  <p>La consola confirma las cuentas: 338 / 332 con <code>content-box</code> y 300 / 294 con <code>border-box</code>. Y la última línea muestra el matiz de antes: con <code>scale(0.5)</code>, <code>offsetWidth</code> sigue en 300 mientras que <code>rect.width</code> pasa a 150. Mira también el valor de <code>getComputedStyle(panel).width</code>: con <code>border-box</code> dice <code>"300px"</code>, el ancho hasta el borde, porque devuelve la propiedad <code>width</code> tal como se interpreta con ese <code>box-sizing</code>.</p>
+</section>
+
+<h2>display: cómo fluyen las cajas</h2>
+<p>La propiedad <code>display</code> decide cómo se coloca una caja respecto a las demás. Cinco valores cubren el 95 % de lo que harás:</p>
+<ul>
+  <li><strong><code>block</code></strong> (<code>div</code>, <code>p</code>, <code>section</code>…): ocupa todo el ancho disponible y se apila verticalmente. <code>width</code> y <code>height</code> funcionan.</li>
+  <li><strong><code>inline</code></strong> (<code>span</code>, <code>a</code>, <code>em</code>…): fluye dentro del texto, como una palabra. <strong><code>width</code> y <code>height</code> se ignoran</strong>, y el relleno y los márgenes verticales no empujan las líneas. Lo medí: un <code>span</code> con <code>width: 300px; height: 300px; padding: 20px</code> midió 77 × 57 px, y el párrafo que lo contenía siguió midiendo 24 px de alto (el relleno se pinta, pero invade las líneas vecinas).</li>
+  <li><strong><code>inline-block</code></strong>: fluye como una palabra pero acepta <code>width</code> y <code>height</code>. Con un detalle: los nodos de texto de espacios de la lección <a href="01-html.html">1.1</a> se convierten en un espacio visible entre elementos. Medí 4,45 px de hueco entre dos <code>inline-block</code> separados por un salto de línea (con Arial a 16 px, lo que mide un espacio) y 0 px cuando iban pegados en el HTML.</li>
+  <li><strong><code>none</code></strong>: la caja desaparece del todo; no ocupa sitio. (<code>visibility: hidden</code>, en cambio, la oculta pero conserva su hueco).</li>
+  <li><strong><code>flex</code></strong>: convierte al elemento en un contenedor que reparte a sus hijos en una fila (o columna). Lo básico, abajo.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m1-franja-canvas" data-titulo="Una franja de unos píxeles bajo el canvas">
+  <p><strong>Síntoma:</strong> el contenedor de tu canvas mide unos píxeles más de alto que el canvas, y aparece una franja del color de fondo debajo.</p>
+  <p><strong>Causa:</strong> <code>canvas</code> (como <code>img</code> y <code>video</code>) es <code>inline</code> por defecto: se coloca sobre la línea base del texto, como una letra, y debajo queda el hueco reservado para los trazos descendentes de letras como «g» o «p». Lo medí: un <code>div</code> con un canvas de 100 px dentro midió 104 px.</p>
+  <p><strong>Solución:</strong> <code>canvas { display: block; }</code> (con eso el <code>div</code> pasó a medir 100 px), o <code>vertical-align: top</code>. Es la primera línea del CSS de casi cualquier proyecto con canvas.</p>
+</div>
+
+<h3>Flexbox en cinco propiedades</h3>
+<script type="text/plain" class="codigo" data-lang="css" data-titulo="Una barra de herramientas y un canvas que ocupa el resto">
+.app {
+  display: flex;            /* los hijos se colocan en fila */
+  flex-direction: column;   /* ...o en columna */
+  gap: 8px;                 /* separación entre hijos, sin márgenes */
+  align-items: center;      /* alineación en el eje cruzado (aquí, horizontal) */
+  justify-content: center;  /* reparto en el eje principal (aquí, vertical) */
+  height: 100vh;
+}
+.app > canvas { flex: 1; }  /* este hijo crece para ocupar el espacio sobrante */
+</script>
+<p>El eje principal es el de <code>flex-direction</code> (fila por defecto) y el cruzado, el perpendicular. <code>justify-content</code> reparte en el principal, <code>align-items</code> alinea en el cruzado, <code>gap</code> separa y <code>flex: 1</code> hace que un hijo crezca. Con eso montas el 90 % de las interfaces alrededor de un canvas. Y una trampa específica del canvas:</p>
+
+<div class="callout bestiario" data-id="m1-canvas-flex" data-titulo="El canvas no encoge dentro de un flex">
+  <p><strong>Síntoma:</strong> un canvas con <code>flex: 1</code> se sale de su contenedor (aparece scroll horizontal) en lugar de ocupar el espacio que le queda.</p>
+  <p><strong>Causa:</strong> los hijos de un flex tienen <code>min-width: auto</code>: no encogen por debajo del ancho de su contenido. Y el «contenido» de un canvas es su búfer: con <code>width="600"</code>, el canvas se negó a bajar de 600 px aunque solo quedaban 250 (medido). Peor aún, si ajustas el búfer al tamaño de la caja (como en el ejercicio 1.1.4), el canvas ya no encogerá nunca al estrechar la ventana.</p>
+  <p><strong>Solución:</strong> <code>min-width: 0</code> en el canvas (con eso midió los 250 px disponibles). En grid, usa columnas <code>minmax(0, 1fr)</code>.</p>
+</div>
+
+<h2>position: sacar cajas del flujo</h2>
+<p>Por defecto las cajas están en el <em>flujo normal</em>: cada bloque debajo del anterior. <code>position</code> cambia eso, junto con <code>top</code>, <code>right</code>, <code>bottom</code>, <code>left</code> (o <code>inset</code>, que los fija los cuatro a la vez):</p>
+<ul>
+  <li><strong><code>static</code></strong> (por defecto): en el flujo; <code>top</code>/<code>left</code> se ignoran.</li>
+  <li><strong><code>relative</code></strong>: se desplaza visualmente respecto a su sitio, pero su hueco original se conserva. Lo medí: con <code>left: 30px; top: 10px</code>, la caja se dibujó en (30, 10) y el bloque siguiente empezó donde habría empezado sin desplazamiento. Su uso principal no es moverse: es convertirse en <em>bloque contenedor</em> de sus hijos <code>absolute</code>.</li>
+  <li><strong><code>absolute</code></strong>: sale del flujo (los vecinos actúan como si no existiera) y se coloca respecto a su <strong>bloque contenedor</strong>: el ancestro más cercano con <code>position</code> distinto de <code>static</code>. Si no hay ninguno, respecto al documento.</li>
+  <li><strong><code>fixed</code></strong>: se coloca respecto a la ventana y no se mueve con el scroll. Ideal para un canvas de fondo a pantalla completa: <code>position: fixed; inset: 0</code>.</li>
+  <li><strong><code>sticky</code></strong>: se comporta como <code>relative</code> hasta que el scroll lo lleva a su <code>top</code>, y entonces se queda pegado mientras su contenedor siga a la vista.</li>
+</ul>
+<p>El detalle que no suele contarse: <strong><code>transform</code> (y también <code>filter</code> y <code>perspective</code>) convierte a un elemento en bloque contenedor</strong> de sus descendientes <code>absolute</code> y… <code>fixed</code>. Lo medí con un contenedor en (100, 160) y un hijo con <code>position: fixed; top: 10px; left: 10px</code>:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Contenedor</th><th>hijo <code>absolute</code> en</th><th>hijo <code>fixed</code> en</th></tr></thead>
+  <tbody>
+    <tr><td>sin <code>position</code></td><td>(10, 10) del documento</td><td>(10, 10) de la ventana</td></tr>
+    <tr><td><code>position: relative</code></td><td>(110, 170): relativo al contenedor</td><td>(10, 10) de la ventana</td></tr>
+    <tr><td><code>transform: translateX(0)</code> (una transformación que no hace nada)</td><td>(110, 170)</td><td>(110, 170), <strong>y se desplaza con el scroll</strong></td></tr>
+  </tbody>
+</table>
+
+<div class="callout bestiario" data-id="m1-fixed-transform" data-titulo="Mi elemento «fixed» se mueve con el scroll">
+  <p><strong>Síntoma:</strong> un panel o un canvas con <code>position: fixed</code> se desplaza con la página o aparece en un sitio raro.</p>
+  <p><strong>Causa:</strong> algún ancestro tiene <code>transform</code>, <code>filter</code>, <code>perspective</code> o <code>will-change: transform</code>. Eso lo convierte en el bloque contenedor del elemento fijo, que pasa a ser fijo respecto a ese ancestro, no respecto a la ventana. Pasa mucho cuando envuelves la página en un contenedor animado.</p>
+  <p><strong>Solución:</strong> saca el elemento fijo fuera del ancestro transformado (por ejemplo, como hijo directo de <code>&lt;body&gt;</code>) o quita la transformación del ancestro cuando no la necesites.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.2.2 — Un rótulo centrado encima del canvas</h3>
+  <p>Queremos una interfaz superpuesta (<em>HUD</em>) a un canvas: un rótulo centrado exactamente en el medio, y un contador de FPS en la esquina superior derecha. Es el esqueleto de cualquier escena WebGL con interfaz.</p>
+  <div class="js-playground" data-titulo="HUD sobre un canvas" data-altura="230" data-pestaña="css" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="escena">
+  <canvas id="lienzo"></canvas>
+  <div class="rotulo">PULSA PARA EMPEZAR</div>
+  <div class="fps">60 fps</div>
+</div>
+</script>
+<script type="text/x-css">
+body { margin: 0; }
+.escena { position: relative; height: 100vh; }      /* 1. bloque contenedor */
+canvas { display: block; width: 100%; height: 100%; background: #1d2230; }
+.rotulo {
+  position: absolute;                                /* 2. fuera del flujo */
+  left: 50%; top: 50%;                               /* 3. esquina en el centro */
+  transform: translate(-50%, -50%);                  /* 4. medio rótulo atrás */
+  padding: 10px 18px; border: 2px solid #8b7bff; border-radius: 8px;
+  color: #fff; font: 700 16px sans-serif; letter-spacing: .1em;
+  white-space: nowrap;                               /* 5. no partir el texto (ver abajo) */
+}
+.fps { position: absolute; top: 8px; right: 10px; color: #3fd0e8; font: 12px monospace; }
+</script>
+<script type="text/x-js">
+const escena = document.querySelector(".escena").getBoundingClientRect();
+const rotulo = document.querySelector(".rotulo").getBoundingClientRect();
+console.log("centro de la escena:", escena.left + escena.width / 2, escena.top + escena.height / 2);
+console.log("centro del rótulo:  ", rotulo.left + rotulo.width / 2, rotulo.top + rotulo.height / 2);
+</script>
+  </div>
+  <p><strong>1.</strong> <code>position: relative</code> en <code>.escena</code> no la mueve: la convierte en el bloque contenedor de los <code>absolute</code> de dentro. Sin esa línea, el rótulo se colocaría respecto al documento.</p>
+  <p><strong>2 y 3.</strong> <code>left: 50%; top: 50%</code> ponen la <em>esquina superior izquierda</em> del rótulo en el centro. Los porcentajes de <code>left</code> y <code>top</code> se refieren al bloque contenedor.</p>
+  <p><strong>4.</strong> Aquí está el truco: los porcentajes de <code>translate()</code> se refieren a <strong>la propia caja</strong> del elemento. <code>translate(-50%, -50%)</code> la retrocede la mitad de su ancho y la mitad de su alto, sea cual sea su tamaño. Lo comprobé aparte con una caja de 100 px de ancho en un contenedor de 600: con <code>left: 50%</code> y <code>translate(-50%)</code> quedó en x = 250, con el centro en 300. La consola del editor muestra que los dos centros coinciden.</p>
+  <p><strong>5.</strong> Un último detalle, que se ve al quitar <code>white-space: nowrap</code>: con <code>left: 50%</code>, a un elemento <code>absolute</code> solo le queda la mitad del ancho del contenedor para su contenido, y un texto largo se parte en dos líneas (este rótulo mide 253 px en una sola línea, pero en una escena de 350 px, con <code>left: 50%</code>, solo dispone de 175). Con <code>nowrap</code> el rótulo conserva su tamaño natural y el <code>translate(-50%, -50%)</code> lo centra de verdad.</p>
+  <p>Prueba a escribir mal una propiedad del rótulo, por ejemplo <code>postion: absolute</code>, y vuelve a ejecutar: el rótulo cae al flujo normal, debajo del canvas (y como el <code>transform</code> sigue aplicándose, medio rótulo queda fuera de la ventana por la izquierda), y no aparece ningún error en ninguna parte. Igual que el HTML, <strong>CSS no lanza errores</strong>: descarta en silencio cada declaración que no entiende y sigue con la siguiente. En el panel Elements de DevTools, esas declaraciones aparecen tachadas con un aviso; es el primer sitio donde mirar cuando «un estilo no se aplica».</p>
+</section>
+
+<h2>Contextos de apilamiento: por qué <code>z-index</code> «no funciona»</h2>
+<p>Cuando dos cajas se solapan, ¿cuál se ve encima? Sin hacer nada, la que va después en el HTML, y las posicionadas por encima de las que no lo están. <code>z-index</code> permite cambiarlo, con dos condiciones que casi nadie conoce del todo:</p>
+<ol>
+  <li><strong>Solo funciona en elementos posicionados</strong> (<code>position</code> distinto de <code>static</code>) o en hijos de un flex o un grid. En un bloque normal se ignora: una caja estática con <code>z-index: 50</code> quedó <em>debajo</em> de una caja con <code>position: relative</code> y sin <code>z-index</code>, que iba después. Al darle <code>position: relative</code> a la primera, pasó arriba. En cambio, un hijo de un flex con <code>z-index: 3</code> y sin <code>position</code> sí quedó encima de su vecino.</li>
+  <li><strong>Solo compite dentro de su contexto de apilamiento.</strong> Un <em>contexto de apilamiento</em> es un grupo de cajas que se pinta como una unidad, como una capa de un programa de dibujo con su propio orden interno. Los <code>z-index</code> de dentro solo ordenan a los miembros del grupo; hacia fuera, el grupo entero tiene el <code>z-index</code> de su raíz.</li>
+</ol>
+
+<svg class="diagrama" viewBox="0 0 760 230" width="760" role="img" aria-label="Árbol de contextos de apilamiento: A1 con z-index 9999 queda atrapado dentro de A">
+  <text x="20" y="30" style="font-weight:700">El árbol de contextos</text>
+  <text x="20" y="62" style="font-family:var(--mono);font-size:13px">raíz</text>
+  <text x="20" y="88" style="font-family:var(--mono);font-size:13px">├─ A   z-index: 1   ← crea contexto</text>
+  <text x="20" y="114" style="font-family:var(--mono);font-size:13px">│  └─ A1  z-index: 9999</text>
+  <text x="20" y="140" style="font-family:var(--mono);font-size:13px">└─ B   z-index: 2</text>
+  <text x="20" y="176" class="texto-tenue" style="font-size:12px">En la raíz compiten A (1) y B (2): B gana.</text>
+  <text x="20" y="196" class="texto-tenue" style="font-size:12px">A1 va dentro de A, con todo el grupo:</text>
+  <text x="20" y="216" class="texto-tenue" style="font-size:12px">su 9999 solo le sirve frente a otros hijos de A.</text>
+  <text x="470" y="30" style="font-weight:700">Lo que se ve</text>
+  <rect x="440" y="50" width="130" height="110" style="fill:rgb(230,80,80)"/>
+  <text x="452" y="72" style="fill:#fff;font-weight:700">A (z 1)</text>
+  <rect x="505" y="105" width="130" height="100" style="fill:rgb(240,200,60)"/>
+  <text x="560" y="195" style="fill:#222;font-weight:700">A1 (z 9999)</text>
+  <rect x="560" y="80" width="130" height="90" style="fill:rgb(80,110,230)"/>
+  <text x="600" y="102" style="fill:#fff;font-weight:700">B (z 2)</text>
+</svg>
+
+<p>Lo reproduje: A con <code>position: absolute; z-index: 1</code>, su hijo A1 con <code>z-index: 9999</code>, y B con <code>z-index: 2</code>. En la zona donde A1 y B se solapan, <code>document.elementFromPoint()</code> devolvió B. Y no hace falta un <code>z-index</code> para crear un contexto: con <code>opacity: 0.99</code> en el padre (y sin <code>z-index</code>), un hijo con <code>z-index: 100</code> quedó debajo de un vecino con <code>z-index: 5</code>. Crean contexto de apilamiento, entre otros:</p>
+<ul>
+  <li>un elemento posicionado (<code>absolute</code> o <code>relative</code>) con <code>z-index</code> distinto de <code>auto</code>; <code>fixed</code> y <code>sticky</code> siempre;</li>
+  <li><code>opacity</code> menor que 1, <code>transform</code>, <code>filter</code>, <code>mix-blend-mode</code> distintos de sus valores por defecto;</li>
+  <li><code>will-change: transform</code> u <code>opacity</code>, e <code>isolation: isolate</code> (que existe solo para eso);</li>
+  <li>un hijo de flex o grid con <code>z-index</code>.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m1-zindex" data-titulo="z-index: 9999 y sigue debajo">
+  <p><strong>Síntoma:</strong> un menú, un tooltip o una etiqueta sobre tu canvas queda tapado por otro elemento, subas lo que subas su <code>z-index</code>.</p>
+  <p><strong>Causa:</strong> o el elemento no está posicionado (y su <code>z-index</code> se ignora), o un ancestro suyo crea un contexto de apilamiento (<code>z-index</code>, <code>opacity</code>, <code>transform</code>, <code>filter</code>…) que está por debajo del elemento que lo tapa. Su <code>z-index</code> solo compite dentro de ese ancestro.</p>
+  <p><strong>Solución:</strong> sube de la hoja a la raíz buscando quién crea contexto (en DevTools, el panel <em>Layers</em> o el inspector de estilos computados ayudan). Sube el <code>z-index</code> de <em>ese</em> ancestro, quita la propiedad que crea el contexto o mueve el elemento fuera de él.</p>
+</div>
+
+<div class="callout senior" data-titulo="Animar transform puede cambiar quién está encima">
+  <p>Como <code>transform</code> crea un contexto de apilamiento (y un bloque contenedor para los <code>fixed</code>), empezar a animar un elemento puede cambiar el orden de pintado de sus descendientes o recolocar a un hijo <code>fixed</code>. Mismo aviso para el viejo truco de «forzar la GPU» con <code>transform: translateZ(0)</code> o <code>will-change: transform</code>: además de lo que buscabas, creas un contexto nuevo. Si algo «salta» justo cuando empieza una animación, sospecha de esto.</p>
+</div>
+
+<h2>Unidades: qué mide cada una</h2>
+<h3>El píxel CSS no es un píxel de tu pantalla</h3>
+<p><code>px</code> es una unidad de referencia, no un punto físico. En una pantalla «retina» con <code>devicePixelRatio = 2</code>, un píxel CSS ocupa 2 × 2 píxeles físicos; en un móvil con <code>devicePixelRatio = 3</code>, 3 × 3. Al maquetar no lo notas: todo se mide en px CSS y el navegador escala. Pero un canvas y WebGL trabajan con píxeles <em>físicos</em>, y ahí aparece el factor: por eso en el ejercicio 1.1.4 multiplicamos el búfer por <code>devicePixelRatio</code>. Además, ese valor no es constante: cambia si arrastras la ventana a otra pantalla y, según la documentación de MDN, también con el zoom del navegador. Compruébalo tú: ejecuta este editor, haz zoom con <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>+</kbd> y pulsa ▶ otra vez.</p>
+<div class="js-playground" data-titulo="Tu devicePixelRatio" data-sin-resultado data-fondo="oscuro">
+<script type="text/x-js">
+console.log("devicePixelRatio =", window.devicePixelRatio);
+console.log("un cuadrado de 100 × 100 px CSS ocupa",
+  Math.round(100 * devicePixelRatio), "×", Math.round(100 * devicePixelRatio), "píxeles físicos");
+console.log("pantalla:", screen.width, "×", screen.height, "px CSS");
+</script>
+</div>
+
+<h3>Las demás unidades</h3>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Unidad</th><th>Relativa a…</th><th>Medido en Chrome</th></tr></thead>
+  <tbody>
+    <tr><td><code>%</code> en <code>width</code>, <code>left</code>, <code>margin</code>, <code>padding</code></td><td>el <strong>ancho</strong> del bloque contenedor… incluso en <code>padding-top</code></td><td><code>padding-top: 50%</code> dentro de un contenedor de 400 px de ancho → 200 px</td></tr>
+    <tr><td><code>%</code> en <code>height</code>, <code>top</code></td><td>el alto del contenedor (si tiene un alto definido; si no, <code>height</code> en % se queda en <code>auto</code>)</td><td>ver el modo quirks en la lección <a href="01-html.html">1.1</a></td></tr>
+    <tr><td><code>%</code> en <code>translate()</code></td><td>la <strong>propia caja</strong> del elemento</td><td>el centrado del ejemplo 1.2.2</td></tr>
+    <tr><td><code>em</code></td><td>en <code>font-size</code>, la fuente del padre; en el resto, la fuente del propio elemento</td><td><code>font-size: 2em</code> con padre a 20 px → 40 px; y su <code>padding: 1em</code> → 40 px</td></tr>
+    <tr><td><code>rem</code></td><td>la fuente del elemento raíz (16 px por defecto)</td><td><code>2rem</code> → 32 px, lo anide donde lo anide</td></tr>
+    <tr><td><code>vw</code> / <code>vh</code></td><td>1 % del ancho / alto de la ventana</td><td>en móviles, según la especificación, <code>vh</code> mide el alto con la barra del navegador escondida: con la barra visible, <code>100vh</code> sobresale. <code>100dvh</code> sigue el alto real</td></tr>
+  </tbody>
+</table>
+
+<div class="callout hack" data-titulo="Proporciones fijas con padding en %">
+  <p>Como el <code>padding-top</code> en % se calcula sobre el <em>ancho</em>, durante años el truco para una caja de proporción 16:9 fue <code>height: 0; padding-top: 56.25%</code> (9 / 16). Hoy existe <code>aspect-ratio: 16 / 9</code>, pero verás el truco en muchísimo código, y ahora sabes por qué funciona.</p>
+</div>
+
+<div class="callout bestiario" data-id="m1-100vw" data-titulo="width: 100vw provoca scroll horizontal">
+  <p><strong>Síntoma:</strong> un canvas o una sección con <code>width: 100vw</code> hace aparecer una barra de scroll horizontal de unos 15 px, en unos ordenadores sí y en otros no.</p>
+  <p><strong>Causa:</strong> <code>100vw</code> incluye el ancho de la barra de scroll vertical. Con una barra clásica de 15 px, lo medí: <code>100vw</code> = 800 px, pero el ancho útil del documento (<code>document.documentElement.clientWidth</code>) era 785, así que sobraban 15. En macOS con las barras superpuestas por defecto la barra no ocupa sitio y no pasa nada, por eso «en tu máquina funciona».</p>
+  <p><strong>Solución:</strong> usa <code>width: 100%</code> en los bloques y <code>position: fixed; inset: 0</code> para un canvas a pantalla completa. Para medir el ancho útil desde JavaScript, <code>document.documentElement.clientWidth</code>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un contenedor mide 800 px de ancho y 300 de alto. Un hijo tiene <code>padding-top: 10%</code>. ¿Cuánto mide ese relleno?</p>
+  <ul>
+    <li>30 px, el 10 % del alto.<div class="explicacion">Es lo intuitivo, pero no lo que dice CSS: los porcentajes de <code>padding</code> y <code>margin</code>, también los verticales, se calculan sobre el <em>ancho</em> del bloque contenedor.</div></li>
+    <li data-correcta>80 px, el 10 % del ancho.<div class="explicacion">Correcto. Es una regla deliberada (así el relleno es igual en los cuatro lados con el mismo porcentaje) y es la base del truco de las proporciones fijas.</div></li>
+    <li>Depende de la fuente del elemento.<div class="explicacion">Eso sería con <code>em</code>. Un porcentaje de <code>padding</code> no depende de la fuente.</div></li>
+  </ul>
+</div>
+
+<h2>Colores</h2>
+<p>CSS acepta el mismo color escrito de muchas formas. Las que vas a usar:</p>
+<ul>
+  <li><strong>Hexadecimal</strong>: <code>#rrggbb</code> (cada canal de 00 a ff), su forma corta <code>#rgb</code> y las versiones con alfa <code>#rrggbbaa</code> y <code>#rgba</code>.</li>
+  <li><strong><code>rgb()</code></strong>: canales de 0 a 255 (o en %). Con alfa: <code>rgb(255 0 0 / 50%)</code> (sintaxis moderna, con espacios) o <code>rgba(255, 0, 0, 0.5)</code> (la clásica).</li>
+  <li><strong><code>hsl()</code></strong>: tono (un ángulo de 0 a 360), saturación y luminosidad. Perfecto para animar: variar solo el tono recorre el arcoíris sin cambiar el brillo.</li>
+  <li>Nombres (<code>tomato</code>) y <code>transparent</code>.</li>
+</ul>
+<p>Lo interesante es qué te devuelve el navegador cuando lo lees. Esto es lo que dio <code>getComputedStyle(el).color</code> en Chrome:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Escribes</th><th>Lees</th></tr></thead>
+  <tbody>
+    <tr><td><code>#8b7bff</code></td><td><code>rgb(139, 123, 255)</code></td></tr>
+    <tr><td><code>#8b7bff80</code></td><td><code>rgba(139, 123, 255, 0.5)</code></td></tr>
+    <tr><td><code>#f008</code></td><td><code>rgba(255, 0, 0, 0.533)</code> (0x88 / 255)</td></tr>
+    <tr><td><code>hsl(240, 100%, 50%)</code></td><td><code>rgb(0, 0, 255)</code></td></tr>
+    <tr><td><code>rgb(255 0 0 / 50%)</code></td><td><code>rgba(255, 0, 0, 0.5)</code></td></tr>
+    <tr><td><code>tomato</code> / <code>transparent</code></td><td><code>rgb(255, 99, 71)</code> / <code>rgba(0, 0, 0, 0)</code></td></tr>
+    <tr><td><code>oklch(0.7 0.1 250)</code></td><td><code>oklch(0.7 0.1 250)</code>: ¡no lo convierte!</td></tr>
+    <tr><td><code>color-mix(in srgb, red 50%, blue)</code></td><td><code>color(srgb 0.5 0 0.5)</code></td></tr>
+  </tbody>
+</table>
+<p>Los formatos clásicos se normalizan a <code>rgb()</code>/<code>rgba()</code>, pero los espacios de color modernos conservan su notación, así que no des por hecho que siempre podrás extraer tres números con una expresión regular. (La propiedad <code>fillStyle</code> de un contexto 2D normaliza de otra forma: <code>"#ff6347"</code> para los opacos y <code>rgba(…)</code> para los translúcidos; y también deja <code>oklch</code> tal cual).</p>
+
+<div class="callout senior" data-titulo="De CSS a GLSL: de 0–255 a 0–1">
+  <p>En CSS los canales van de 0 a 255; en un shader, de 0.0 a 1.0. El morado del curso, <code>#8b7bff</code>, es <code>vec3(139.0, 123.0, 255.0) / 255.0</code> ≈ <code>vec3(0.545, 0.482, 1.0)</code>. Es exactamente lo que hace el selector de color de los editores de GLSL antes de mandar el uniform. (Hay un matiz más, la corrección gamma: los valores de CSS están en espacio sRGB, no lineal. Lo verás en la lección <a href="../06-glsl/04-color.html">6.4</a>).</p>
+</div>
+<p>Y no confundas el alfa de un color con <code>opacity</code>: el alfa afecta solo a ese color (un fondo translúcido con texto opaco encima), mientras que <code>opacity</code> vuelve translúcido el elemento entero con todos sus hijos… y, como acabas de ver, crea un contexto de apilamiento.</p>
+
+<h2>transform a fondo</h2>
+<p><code>transform</code> aplica una transformación geométrica a la caja <em>ya colocada</em>: la mueve, la gira, la escala o la inclina al pintarla. Es la propiedad estrella de la animación web.</p>
+
+<h3>Las funciones</h3>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Función</th><th>Qué hace</th><th>Matiz</th></tr></thead>
+  <tbody>
+    <tr><td><code>translate(x, y)</code>, <code>translateX(x)</code>, <code>translateY(y)</code></td><td>desplaza</td><td>los % son del tamaño de la propia caja</td></tr>
+    <tr><td><code>rotate(ángulo)</code></td><td>gira</td><td>unidades: <code>deg</code>, <code>rad</code>, <code>turn</code> (90deg = 0.25turn ≈ 1.5708rad). Positivo = <strong>horario</strong> en pantalla</td></tr>
+    <tr><td><code>scale(sx, sy)</code>, <code>scale(s)</code></td><td>escala</td><td>un valor negativo refleja: <code>scale(-1, 1)</code> es un espejo</td></tr>
+    <tr><td><code>skew(ax, ay)</code>, <code>skewX(a)</code></td><td>inclina</td><td><code>skewX(30deg)</code> dio la matriz <code>matrix(1, 0, 0.57735, 1, 0, 0)</code>: 0.57735 = tan 30°</td></tr>
+  </tbody>
+</table>
+
+<div class="callout cuidado">
+  <p><code>transform</code> no actúa sobre las cajas <code>inline</code> «de texto» (un <code>span</code> o un <code>a</code> con <code>display: inline</code>). Lo medí: un <code>span</code> con <code>rotate(45deg)</code> siguió midiendo 44 × 18 px, y aun así <code>getComputedStyle</code> devolvía la matriz del giro: el navegador guarda el valor, pero no lo aplica. Con <code>display: inline-block</code> (o <code>block</code>, o siendo hijo de un flex) el mismo giro sí funciona. Los elementos reemplazados como <code>img</code> se transforman aunque sean <code>inline</code>: una <code>img</code> de 40 × 40 girada 45° ocupó 57 × 57.</p>
+</div>
+
+<div class="callout senior" data-titulo="Por qué «positivo» gira en sentido horario">
+  <p>En matemáticas (y en WebGL), un ángulo positivo gira en sentido antihorario, porque el eje Y apunta hacia arriba. En CSS y en Canvas 2D el eje Y apunta hacia <strong>abajo</strong>: la misma fórmula de rotación, con la Y invertida, se ve en sentido horario. No es que CSS gire «al revés»: es que su sistema de coordenadas está volteado. Esta inversión de Y te perseguirá por todo el curso (ratón, texturas, <code>gl_FragCoord</code>); en la lección <a href="04-js-dom-eventos.html">1.4</a> aprenderás a convertir entre los dos sistemas.</p>
+</div>
+
+<h3>transform-origin: alrededor de qué punto</h3>
+<p>Rotar y escalar necesitan un punto fijo. Por defecto es el centro de la caja: <code>getComputedStyle</code> dio <code>"50px 25px"</code> para una caja de 100 × 50 (el 50 % 50 % ya resuelto a píxeles). Se cambia con <code>transform-origin</code>: <code>0 0</code> es la esquina superior izquierda, <code>50% 100%</code> el centro del borde inferior (el pie de una aguja de reloj).</p>
+
+<div class="callout bestiario" data-id="m1-svg-origen" data-titulo="Mi forma SVG gira alrededor de una esquina lejana">
+  <p><strong>Síntoma:</strong> aplicas <code>transform: rotate(…)</code> a un <code>&lt;rect&gt;</code> o un <code>&lt;circle&gt;</code> de un SVG y, en vez de girar sobre sí mismo, describe un arco enorme o desaparece.</p>
+  <p><strong>Causa:</strong> en los elementos SVG, el <code>transform-origin</code> por defecto es <code>0 0</code> <em>del SVG</em>, no el centro de la forma. Lo medí: <code>getComputedStyle(rect).transformOrigin</code> dio <code>"0px 0px"</code>, y un rectángulo en (50, 50) girado 90° acabó en x = −70, fuera del dibujo.</p>
+  <p><strong>Solución:</strong> <code>transform-box: fill-box; transform-origin: center;</code>. Con eso, el mismo rectángulo giró sobre su propio centro.</p>
+</div>
+
+<h3>El orden importa, y se aplica de derecha a izquierda</h3>
+<p><code>transform</code> admite una lista de funciones, y el orden cambia el resultado. Medí dos cajas iguales, de 100 × 50, con su centro en (250, 225):</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th><code>transform</code></th><th>matriz que devuelve <code>getComputedStyle</code></th><th>centro final</th></tr></thead>
+  <tbody>
+    <tr><td><code>translate(100px) rotate(90deg)</code></td><td><code>matrix(0, 1, -1, 0, 100, 0)</code></td><td>(350, 225): 100 px a la derecha</td></tr>
+    <tr><td><code>rotate(90deg) translate(100px)</code></td><td><code>matrix(0, 1, -1, 0, 0, 100)</code></td><td>(250, 325): ¡100 px hacia <strong>abajo</strong>!</td></tr>
+    <tr><td><code>translate(50px) scale(2)</code></td><td><code>matrix(2, 0, 0, 2, 50, 0)</code></td><td>50 px a la derecha, doble de grande</td></tr>
+    <tr><td><code>scale(2) translate(50px)</code></td><td><code>matrix(2, 0, 0, 2, 100, 0)</code></td><td>100 px: el desplazamiento también se escaló</td></tr>
+  </tbody>
+</table>
+<p>Hay dos formas equivalentes de leerlo, y te conviene dominar las dos:</p>
+<ul>
+  <li><strong>De derecha a izquierda, moviendo el objeto</strong> en los ejes fijos de la página. <code>rotate(90deg) translate(100px)</code>: primero se aplica la de la derecha (la caja se desplaza 100 px a la derecha) y después la de la izquierda (todo gira 90° alrededor del origen, que es el centro original de la caja, y ese desplazamiento hacia la derecha se convierte en un desplazamiento hacia abajo).</li>
+  <li><strong>De izquierda a derecha, moviendo los ejes</strong>. <code>rotate(90deg)</code> gira el sistema de coordenadas local de la caja; el <code>translate(100px)</code> siguiente avanza 100 px por el eje X <em>ya girado</em>, que ahora apunta hacia abajo.</li>
+</ul>
+<p>La lectura de derecha a izquierda es la de las matrices. El navegador convierte cada función en una matriz (3 × 3 en 2D; por dentro usa 4 × 4, por si hay 3D) y las multiplica en el orden en que las escribiste; el punto se multiplica por la derecha, así que la función más a la derecha es la que actúa primero sobre él:</p>
+$$\texttt{transform: } A\ B\ C \quad\Longrightarrow\quad M = A \cdot B \cdot C, \qquad p' = A\,(B\,(C\,p))$$
+<p>Y <code>matrix(a, b, c, d, e, f)</code> es esa matriz resultante, escrita por columnas:</p>
+$$\begin{pmatrix} x' \\ y' \\ 1 \end{pmatrix} = \begin{pmatrix} a & c & e \\ b & d & f \\ 0 & 0 & 1 \end{pmatrix} \begin{pmatrix} x \\ y \\ 1 \end{pmatrix}$$
+<p>Con un giro de 90°, <code>a = cos 90° = 0</code>, <code>b = sen 90° = 1</code>, <code>c = −sen 90° = −1</code>, <code>d = cos 90° = 0</code>, y <code>(e, f)</code> es el desplazamiento final. En <code>rotate(90deg) translate(100px)</code>, el desplazamiento (100, 0) queda girado: (0, 100). Son justo las matrices de la tabla. (Fíjate en que esa matriz no incluye el <code>transform-origin</code>: el navegador lo aplica aparte, llevando el origen al punto elegido antes de transformar y devolviéndolo después). La tercera fila, <code>0 0 1</code>, y ese 1 añadido al punto son las <em>coordenadas homogéneas</em>, el truco que permite expresar un desplazamiento como una multiplicación; los verás a fondo en la lección <a href="../03-matematicas/05-matrices.html">3.5</a>. Lo que aprendas aquí con cajas lo usarás tal cual con los vértices de WebGL.</p>
+
+<h3>La demo: el orden, paso a paso</h3>
+<p>Una caja real con tres transformaciones. Elige el orden con el selector y mueve los deslizadores. Con «pasos intermedios» ves los fantasmas de la lectura de derecha a izquierda: el paso 1 aplica solo la última función, el paso 2 las dos últimas, y así. Los ejes rojo (X) y verde (Y) de cada caja son sus ejes locales: fíjate en que la Y apunta hacia abajo.</p>
+
+<div class="demo ancho" id="demo-transform">
+  <div class="m1-escenario m1-rejilla m1-ejes" style="height:400px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+<p>Tres cosas que probar: con el orden «translate rotate scale», mueve el giro y verás que la caja gira sobre sí misma, desplazada; con «rotate translate scale», el mismo giro la hace orbitar alrededor del punto de partida. Activa «comparar con el orden inverso» para ver las dos a la vez. Y cambia el origen a la esquina: la misma lista de funciones da otro resultado, porque todas giran y escalan alrededor de otro punto.</p>
+
+<div class="quiz">
+  <p class="pregunta">Una caja tiene <code>transform: rotate(180deg) translate(50px, 0)</code>. ¿Hacia dónde se desplaza su centro?</p>
+  <ul>
+    <li>50 px a la derecha, porque el <code>translate</code> dice +50 en X.<div class="explicacion">Eso pasaría con el orden inverso, <code>translate(50px, 0) rotate(180deg)</code>. Aquí el desplazamiento se aplica primero (derecha a izquierda) y después se gira 180°.</div></li>
+    <li data-correcta>50 px a la izquierda.<div class="explicacion">Sí. Leyendo de derecha a izquierda: la caja se mueve 50 px a la derecha y después todo gira 180° alrededor del centro original, así que acaba 50 px a la izquierda (y boca abajo). De izquierda a derecha: el giro de 180° invierte el eje X local y el <code>translate</code> avanza por ese eje invertido.</div></li>
+    <li>No se desplaza: el giro anula el desplazamiento.<div class="explicacion">Un giro no anula un desplazamiento, lo reorienta. Para volver al sitio necesitarías un desplazamiento opuesto, no un giro.</div></li>
+  </ul>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.2.3 — Un planeta en órbita (y una luna)</h3>
+  <p>Queremos un planeta que orbite alrededor del sol, y una luna que orbite alrededor del planeta. Solo con <code>transform</code>, actualizado en cada frame desde JavaScript.</p>
+  <div class="js-playground" data-titulo="Órbitas con transform" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="sistema">
+  <div class="sol"></div>
+  <div class="planeta" id="planeta">
+    <div class="luna" id="luna"></div>
+  </div>
+</div>
+</script>
+<script type="text/x-css">
+body { margin: 0; }
+.sistema { position: relative; height: 100vh; }
+.sol, .planeta, .luna { position: absolute; left: 50%; top: 50%; border-radius: 50%; }
+.sol     { width: 44px; height: 44px; margin: -22px 0 0 -22px; background: #f5b84b; }
+.planeta { width: 22px; height: 22px; margin: -11px 0 0 -11px; background: #3fd0e8; }
+.luna    { width: 8px;  height: 8px;  margin: -4px 0 0 -4px;   background: #e4e7ee; }
+</script>
+<script type="text/x-js">
+const planeta = document.getElementById("planeta");
+const luna = document.getElementById("luna");
+
+function frame(ms) {
+  const t = ms / 1000;               // segundos
+  const a = t * 0.8;                 // ángulo de la órbita del planeta (rad)
+  const b = t * 3;                   // ángulo de la órbita de la luna (rad)
+  // Derecha a izquierda: primero alejar 110 px, después girar alrededor del sol
+  planeta.style.transform = `rotate(${a}rad) translate(110px)`;
+  // La luna es HIJA del planeta: su transform se suma al de su padre
+  luna.style.transform = `rotate(${b}rad) translate(26px)`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p><strong>El planeta.</strong> Está colocado en el centro del sol (<code>left: 50%; top: 50%</code> y márgenes negativos de medio tamaño). <code>rotate(a) translate(110px)</code>, de derecha a izquierda: lo alejamos 110 px a la derecha y después lo giramos <code>a</code> radianes alrededor de su <code>transform-origin</code>, que es su centro inicial, es decir, el centro del sol. Resultado: una órbita de radio 110. Con el orden al revés, <code>translate(110px) rotate(a)</code>, el planeta giraría sobre sí mismo, quieto a 110 px del sol. Pruébalo.</p>
+  <p><strong>La luna.</strong> Es hija del planeta en el HTML, así que su transformación se aplica <em>dentro</em> del sistema de coordenadas ya transformado del padre: la matriz total de la luna es la del planeta multiplicada por la suya. Por eso basta con describir su órbita alrededor del planeta; la órbita alrededor del sol viene «gratis» de su padre. Esta idea, transformaciones anidadas que se multiplican de padre a hijo, es exactamente un <em>grafo de escena</em>, la estructura con la que se organizan las escenas 3D: la jerarquía de matrices de la lección <a href="../03-matematicas/05-matrices.html">3.5</a>.</p>
+  <p><strong>Un detalle.</strong> Como el giro del planeta también gira sus ejes locales, la luna hereda ese giro. Si quisieras que el planeta no rotase sobre sí mismo (por ejemplo, para que un texto dentro se leyera siempre derecho), añadirías un giro opuesto al final: <code>rotate(a) translate(110px) rotate(-a)</code>. Otra vez el orden: el giro de la derecha se aplica primero, alrededor del propio centro del planeta.</p>
+</section>
+
+<h3>transform no mueve a los vecinos</h3>
+<p>La propiedad más importante de <code>transform</code> para animar es lo que <em>no</em> hace: <strong>no afecta al layout</strong>. La caja conserva su sitio en el flujo y los vecinos no se enteran. Lo medí desplazando una caja 500 px dentro de un contenedor: el <code>offsetTop</code> de su hermana siguió siendo 50 y su propio <code>offsetLeft</code>, 0. Lo que sí cambia:</p>
+<ul>
+  <li><code>getBoundingClientRect()</code>, que devuelve el rectángulo <em>alineado con los ejes</em> que envuelve la caja transformada: la caja de 100 × 50 girada 45° dio un rectángulo de 106 × 106 (100 cos 45° + 50 sen 45° ≈ 106).</li>
+  <li>El área desplazable de un contenedor con <code>overflow: auto</code>: al desplazar la caja 500 px a la derecha, el <code>scrollWidth</code> del contenedor pasó de 300 a 600, y aparecieron barras de scroll. Pero hacia la izquierda no: con −500 px, el <code>scrollWidth</code> siguió en 300, porque lo que sale por la izquierda o por arriba no se puede alcanzar con scroll.</li>
+</ul>
+<p>Como no toca el layout, el navegador puede aplicar <code>transform</code> (y <code>opacity</code>) sin recalcular la posición de nada; a menudo, incluso en otro hilo, el compositor, con la GPU. Por eso son las dos propiedades baratas de animar. La explicación completa, en la lección <a href="../02-animacion/01-pipeline-render.html">2.1</a>; la demostración de que siguen moviéndose aunque JavaScript se congele, en la <a href="05-event-loop.html">1.5</a>.</p>
+
+<div class="callout nota">
+  <p>Existen también las propiedades sueltas <code>translate</code>, <code>rotate</code> y <code>scale</code> (sin paréntesis: <code>rotate: 30deg</code>). Son cómodas para animar cada una por separado, pero tienen un orden fijo que no depende de cómo las escribas: primero <code>translate</code>, luego <code>rotate</code>, luego <code>scale</code> y, al final, <code>transform</code>. Lo comprobé: <code>translate: 100px 0; rotate: 90deg</code> y <code>rotate: 90deg; translate: 100px 0</code> dieron el mismo resultado, con la caja desplazada a la derecha. Y cuidado: <code>getComputedStyle(el).transform</code> no las incluye (dice <code>none</code>).</p>
+</div>
+
+<h2>Variables CSS: el puente entre JavaScript y CSS</h2>
+<p>Las <em>propiedades personalizadas</em> (el nombre oficial de las variables CSS) empiezan por dos guiones, se declaran en cualquier selector y se usan con <code>var()</code>:</p>
+<div class="anotado" data-lang="css">
+<script type="text/plain">
+:root { --tam: 50px; --acento: tomato; }
+
+.caja {
+  --giro: 0deg;
+  width: var(--tam);
+  height: calc(var(--tam) * 2);
+  background: var(--acento, gray);
+  transform: rotate(var(--giro));
+}
+</script>
+<ol>
+  <li data-l="1"><code>:root</code> es el elemento <code>&lt;html&gt;</code>. Las propiedades personalizadas <strong>se heredan</strong>, así que declaradas ahí valen para toda la página. Lo comprobé leyendo <code>--tam</code> en un hijo de <code>.caja</code>: <code>"50px"</code>.</li>
+  <li data-l="4">También se pueden declarar en un elemento concreto; valen para él y sus descendientes.</li>
+  <li data-l="5-6"><code>var()</code> sustituye el valor como si fuera texto, y se combina con <code>calc()</code>: la caja midió 50 × 100 px.</li>
+  <li data-l="7">El segundo argumento es el respaldo, para cuando la variable no existe.</li>
+  <li data-l="8">Una transformación que depende de una variable: basta con cambiar la variable desde JavaScript para girar la caja.</li>
+</ol>
+</div>
+<p>Desde JavaScript se escriben con <code>setProperty</code> y se leen con <code>getPropertyValue</code>:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+caja.style.setProperty("--giro", "90deg");                // funciona: la caja gira
+caja.style["--giro"] = "90deg";                           // NO funciona: se ignora en silencio
+getComputedStyle(caja).getPropertyValue("--tam");         // "50px" (un string)
+</script>
+<p>Lo comprobé: tras <code>setProperty("--giro", "90deg")</code>, el <code>transform</code> computado pasó a <code>matrix(0, 1, -1, 0, 0, 0)</code>, mientras que la asignación con corchetes no cambió nada (solo crea una propiedad JavaScript suelta en el objeto <code>style</code>).</p>
+
+<div class="callout hack" data-titulo="Números sin unidad y calc()">
+  <p>Un patrón muy limpio para animar: pasa desde JavaScript números <em>sin unidad</em> y pon la unidad en el CSS con <code>calc()</code>. Con <code>--n: 3</code> y <code>width: calc(var(--n) * 10px)</code>, el ancho fue 30 px. En JavaScript, <code>el.style.setProperty("--progreso", 0.42)</code>, y en CSS, <code>transform: scaleX(var(--progreso))</code> o <code>rotate(calc(var(--progreso) * 1turn))</code>. JavaScript solo calcula números; CSS decide qué significan.</p>
+</div>
+
+<div class="callout bestiario" data-id="m1-var-invalida" data-titulo="La variable CSS no aplica ni su valor ni el de respaldo">
+  <p><strong>Síntoma:</strong> <code>color: var(--c, blue)</code> no sale azul, o un <code>width: var(--tam)</code> hace que la caja ocupe todo el ancho de la página.</p>
+  <p><strong>Causa:</strong> la variable existe pero su valor no tiene sentido para esa propiedad. El respaldo solo se usa cuando la variable <em>no existe</em>; si existe con un valor absurdo, la declaración queda «inválida en tiempo de cálculo» y la propiedad vuelve a su valor heredado o inicial, no a la regla anterior. Lo medí: con <code>--c: 20px</code>, el color fue el heredado del <code>body</code>; y con <code>setProperty("--tam", 80)</code> (un número sin unidad), <code>width: var(--tam)</code> quedó en <code>auto</code> y la caja midió 1000 px, todo el ancho.</p>
+  <p><strong>Solución:</strong> pasa valores con su unidad (<code>"80px"</code>) o multiplica en el CSS con <code>calc(var(--tam) * 1px)</code>. Si algo «desaparece», lee la variable con <code>getPropertyValue</code> y comprueba que es lo que la propiedad espera.</p>
+</div>
+
+<div class="callout senior" data-titulo="Las variables no se interpolan (salvo que las registres)">
+  <p>Una transición sobre <code>--x</code> no anima nada: el navegador no sabe si <code>--x</code> es un número, una longitud o un color, así que no puede calcular valores intermedios. Lo comprobé a mitad de una transición de 1 s: <code>opacity</code> valía 0,4999 y <code>--x</code> ya valía su valor final. Para interpolar una variable hay que registrarla con <code>@property</code> y declarar su tipo (lección <a href="../02-animacion/02-css-transiciones.html">2.2</a>). Y un apunte de rendimiento: cambiar una variable en <code>:root</code> obliga a recalcular el estilo de toda la página, porque todo la hereda; cámbiala en el elemento que la usa.</p>
+</div>
+
+<h2>overflow: lo que sobresale</h2>
+<p><code>overflow</code> decide qué pasa con el contenido que no cabe en una caja:</p>
+<ul>
+  <li><code>visible</code> (por defecto): sobresale y se pinta fuera.</li>
+  <li><code>hidden</code>: se recorta. Pero la caja sigue siendo desplazable por código: con <code>overflow: hidden</code>, <code>el.scrollLeft = 100</code> funcionó (leí 100 después).</li>
+  <li><code>clip</code>: se recorta y <strong>no</strong> es desplazable ni por código (el mismo <code>scrollLeft = 100</code> se quedó en 0).</li>
+  <li><code>scroll</code> y <code>auto</code>: barras de scroll siempre o solo cuando hace falta.</li>
+</ul>
+<p>Cualquier valor distinto de <code>visible</code> (salvo <code>clip</code>) crea además un contexto de formato de bloque, y por eso <code>overflow: hidden</code> es uno de los remedios para los márgenes que se fusionan.</p>
+<div class="callout hack" data-titulo="Carruseles con overflow: hidden y scrollLeft">
+  <p>Que <code>overflow: hidden</code> se pueda desplazar por código es la base de muchos carruseles y efectos de «revelado»: el usuario no ve barras ni puede arrastrar, pero tu JavaScript mueve el contenido con <code>scrollLeft</code> o <code>scrollTo({ left, behavior: "smooth" })</code>. Si quieres recortar sin que nada pueda desplazar la caja (ni siquiera el navegador al enfocar un elemento de dentro), usa <code>overflow: clip</code>.</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 1.2.1 — Tres columnas que no caben</h3>
+  <p>Las tres columnas deberían caber en una fila (cada una ocupa un tercio), pero la tercera baja a la siguiente línea. Arréglalo añadiendo <strong>una sola declaración</strong> al CSS, sin tocar anchos, rellenos ni bordes. Al terminar, la consola debe decir que la suma de los <code>offsetWidth</code> no supera el ancho de la fila y que las tres columnas tienen el mismo <code>offsetTop</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.2.1" data-altura="240" data-pestaña="css">
+<script type="text/x-html">
+<div class="fila">
+  <div class="col">uno</div><div class="col">dos</div><div class="col">tres</div>
+</div>
+</script>
+<script type="text/x-css">
+body { margin: 0; font: 14px sans-serif; }
+.fila { width: 600px; background: #eee; }
+.col {
+  display: inline-block;
+  width: 33.333%;
+  padding: 10px;
+  border: 2px solid #5b46e8;
+  background: #d9d4ff;
+}
+</script>
+<script type="text/x-js">
+const cols = [...document.querySelectorAll(".col")];
+const suma = cols.reduce((s, c) => s + c.offsetWidth, 0);
+console.log("offsetWidth:", cols.map((c) => c.offsetWidth), "· suma:", suma, "· fila:", document.querySelector(".fila").clientWidth);
+console.log("offsetTop:", cols.map((c) => c.offsetTop));
+</script>
+<script type="text/x-css" data-solucion>
+body { margin: 0; font: 14px sans-serif; }
+.fila { width: 600px; background: #eee; }
+.col {
+  display: inline-block;
+  box-sizing: border-box;   /* width ya incluye padding y borde */
+  width: 33.333%;
+  padding: 10px;
+  border: 2px solid #5b46e8;
+  background: #d9d4ff;
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Calcula el <code>offsetWidth</code> de una columna a mano: un tercio de 600 más el relleno y el borde de los dos lados. ¿Caben tres?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Qué propiedad hace que <code>width</code> incluya el relleno y el borde?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <code>content-box</code>, cada columna ocupa 200 + 2·10 + 2·2 = 224 px, y tres suman 672: más que los 600 de la fila, así que la tercera salta de línea. <code>box-sizing: border-box</code> hace que los 200 px incluyan relleno y borde: cada columna ocupa exactamente 200 (el contenido encoge a 176) y las tres suman 600.</p>
+    <p>Fíjate en un detalle: en el HTML las tres columnas van pegadas, <code>&lt;/div&gt;&lt;div&gt;</code>, sin espacios entre ellas. No es casualidad: son <code>inline-block</code>, y cualquier salto de línea entre ellas sería un nodo de texto que se pintaría como un espacio de unos 4 px, suficiente para que 600 + 8 ya no cupiera. Prueba a separarlas en líneas distintas en la pestaña HTML. (En una maqueta real usarías <code>display: flex</code>, que ignora esos espacios).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 1.2.2 — La aguja del reloj</h3>
+  <p>La aguja de los segundos debería girar alrededor de su pie, en el centro de la esfera, como en un reloj de verdad. Ahora gira alrededor de su propio centro. Arréglalo con CSS. Al terminar, la base de la aguja debe quedarse quieta en el centro mientras la punta recorre la esfera.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.2.2" data-altura="260" data-pestaña="css" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="esfera">
+  <div class="aguja" id="aguja"></div>
+  <div class="eje"></div>
+</div>
+</script>
+<script type="text/x-css">
+body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; }
+.esfera { position: relative; width: 200px; height: 200px; border-radius: 50%; border: 3px solid #8791a5; }
+.aguja {
+  position: absolute;
+  left: 99px;  top: 20px;       /* de la punta (y = 20) al centro (y = 100) */
+  width: 2px;  height: 80px;
+  background: #ff6b7a;
+}
+.eje { position: absolute; left: 95px; top: 95px; width: 10px; height: 10px; border-radius: 50%; background: #e4e7ee; }
+</script>
+<script type="text/x-js">
+const aguja = document.getElementById("aguja");
+function frame(ms) {
+  const segundos = ms / 1000;
+  aguja.style.transform = `rotate(${segundos * 6}deg)`;   // 6° por segundo = una vuelta por minuto
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+// (Va a 6°/s: acelera el tiempo multiplicando `segundos` si quieres verla dar la vuelta)
+</script>
+<script type="text/x-css" data-solucion>
+body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; }
+.esfera { position: relative; width: 200px; height: 200px; border-radius: 50%; border: 3px solid #8791a5; }
+.aguja {
+  position: absolute;
+  left: 99px;  top: 20px;       /* de la punta (y = 20) al centro (y = 100) */
+  width: 2px;  height: 80px;
+  background: #ff6b7a;
+  transform-origin: 50% 100%;   /* el pie de la aguja: centro del borde inferior */
+}
+.eje { position: absolute; left: 95px; top: 95px; width: 10px; height: 10px; border-radius: 50%; background: #e4e7ee; }
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Alrededor de qué punto gira por defecto un elemento HTML? ¿Dónde está, en coordenadas de la aguja, el punto que debería quedarse quieto?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>transform-origin</code> acepta porcentajes de la propia caja: <code>0 0</code> es la esquina superior izquierda y <code>100% 100%</code> la inferior derecha.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>transform-origin: 50% 100%</code> pone el punto fijo en el centro del borde inferior de la aguja, que es justo el centro de la esfera (la aguja va de y = 20 a y = 100 y está centrada en x). Por defecto el origen es <code>50% 50%</code>, el centro de la aguja, y por eso giraba como una hélice.</p>
+    <p>Por dentro, un <code>transform-origin</code> equivale a trasladar el origen al punto elegido, aplicar la transformación y deshacer la traslación: <code>translate(o) rotate(θ) translate(−o)</code>. Leído de derecha a izquierda: llevar el pie al origen, girar, devolverlo a su sitio. Es exactamente la receta que usarás con matrices para «girar alrededor de un punto» en la lección <a href="../03-matematicas/05-matrices.html">3.5</a>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.2.3 — Un foco que sigue al ratón</h3>
+  <p>El CSS ya dibuja un foco de luz centrado en las variables <code>--x</code> y <code>--y</code> (en píxeles, relativas a la escena). Escribe el JavaScript que las actualiza al mover el puntero por la escena, para que el foco lo siga. Además, haz que el radio del foco (<code>--radio</code>) sea mayor mientras mantienes pulsado el botón. Imprime en la consola las coordenadas de cada <code>pointerdown</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.2.3" data-altura="300" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="escena" id="escena"><p>Mueve el puntero por aquí</p></div>
+</script>
+<script type="text/x-css">
+body { margin: 0; }
+.escena {
+  --x: 50%; --y: 50%; --radio: 90;
+  height: 100vh;
+  background: radial-gradient(circle at var(--x) var(--y),
+              #ffe9a8 0, #8b7bff calc(var(--radio) * 0.4px), #0e1014 calc(var(--radio) * 1px));
+  display: flex; align-items: flex-end; justify-content: center;
+  color: #8791a5; font: 13px sans-serif; user-select: none;
+}
+</script>
+<script type="text/x-js">
+const escena = document.getElementById("escena");
+
+// 1. En "pointermove", calcula la posición del puntero relativa a la escena
+//    (pista: e.clientX y escena.getBoundingClientRect()) y escríbela en --x y --y
+//    CON unidades ("123px").
+
+// 2. En "pointerdown" y "pointerup", cambia --radio (por ejemplo, 160 y 90)
+//    e imprime las coordenadas del pointerdown.
+</script>
+<script type="text/x-js" data-solucion>
+const escena = document.getElementById("escena");
+
+function posicion(e) {
+  const r = escena.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };   // px relativos a la escena
+}
+
+escena.addEventListener("pointermove", (e) => {
+  const p = posicion(e);
+  escena.style.setProperty("--x", p.x + "px");               // con unidad: es una posición
+  escena.style.setProperty("--y", p.y + "px");
+});
+escena.addEventListener("pointerdown", (e) => {
+  const p = posicion(e);
+  escena.style.setProperty("--radio", 160);                  // sin unidad: el CSS la pone con calc()
+  console.log("pointerdown en", Math.round(p.x), Math.round(p.y));
+});
+escena.addEventListener("pointerup", () => escena.style.setProperty("--radio", 90));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p><code>e.clientX</code> es la posición del puntero en la ventana; <code>escena.getBoundingClientRect().left</code> es dónde empieza la escena en la ventana. La resta es la posición dentro de la escena. (Los sistemas de coordenadas del puntero, a fondo, en la lección <a href="04-js-dom-eventos.html">1.4</a>).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>escena.style.setProperty("--x", valor + "px")</code>. ¿Por qué <code>--x</code> necesita la unidad y <code>--radio</code> no? Mira cómo usa cada una el CSS.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>En cada <code>pointermove</code> calculamos la posición relativa a la escena restando la esquina de su rectángulo, y la escribimos en <code>--x</code>/<code>--y</code> con <code>setProperty</code>. El navegador recalcula el <code>radial-gradient</code> con los nuevos valores: JavaScript solo mueve dos números y CSS pinta.</p>
+    <p>La diferencia de unidades es el punto fino. <code>--x</code> se usa directamente como posición (<code>circle at var(--x) var(--y)</code>), así que tiene que ser una longitud válida: <code>"123px"</code>. <code>--radio</code> se usa dentro de <code>calc(var(--radio) * 1px)</code>, así que debe ser un número sin unidad; si le pasaras <code>"160px"</code>, el <code>calc</code> quedaría <code>160px * 1px</code>, que es inválido (no se pueden multiplicar dos longitudes), y el degradado entero dejaría de pintarse, como en el bestiario de la variable inválida.</p>
+    <p>Un fleco que dejamos suelto: si sueltas el botón fuera de la escena, el <code>pointerup</code> no llega a ella y el foco se queda grande. Se arregla con la captura de puntero (<code>setPointerCapture</code>), que verás en la lección <a href="04-js-dom-eventos.html">1.4</a>.</p>
+    <p>Este patrón, «el puntero escribe variables CSS», es el mismo que usarás para pasar <code>u_mouse</code> a un shader en la lección <a href="../07-integracion/02-interaccion.html">7.2</a>: allí el destino es un uniform en lugar de una variable CSS.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 1.2.4 — z-index: 9999 y sigue debajo</h3>
+  <p>Al pasar el ratón por la primera tarjeta, esta sube un poco y muestra un aviso (amarillo) que debería quedar por encima de la segunda tarjeta; pero queda debajo, a pesar de su <code>z-index: 9999</code>. Arréglalo <strong>sin cambiar el HTML ni el <code>z-index</code> del aviso</strong>. Para comprobarlo sin ratón, el aviso está siempre visible y el JavaScript mira qué elemento hay en un punto de la zona de solape dos veces: en reposo y simulando el <code>:hover</code> de la tarjeta 1 con la clase <code>hover</code>. Al terminar, las dos líneas de la consola deben decir <code>aviso</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.2.4" data-altura="300" data-pestaña="css">
+<script type="text/x-html">
+<div class="tarjeta t1" id="t1">Tarjeta 1
+  <div class="aviso" id="aviso">¡Aviso importante!</div>
+</div>
+<div class="tarjeta t2" id="t2">Tarjeta 2</div>
+</script>
+<script type="text/x-css">
+body { margin: 0; padding: 20px; font: 14px sans-serif; }
+.tarjeta {
+  position: relative;
+  z-index: 1;                   /* "para que las tarjetas queden sobre el fondo" */
+  width: 260px; height: 70px; padding: 10px; margin-bottom: 12px;
+  background: #d9d4ff; border: 1px solid #5b46e8; border-radius: 8px;
+}
+/* .hover imita a :hover para poder comprobarlo desde JavaScript */
+.tarjeta:hover, .tarjeta.hover { transform: translateY(-2px); }
+.aviso {
+  position: absolute; left: 140px; top: 75px; z-index: 9999;
+  width: 160px; height: 40px; padding: 8px; background: #ffe066; border: 1px solid #b48a00; border-radius: 6px;
+}
+</script>
+<script type="text/x-js">
+function queHayEncima() {
+  const aviso = document.getElementById("aviso").getBoundingClientRect();
+  const t2 = document.getElementById("t2").getBoundingClientRect();
+  // un punto que está dentro del aviso Y dentro de la tarjeta 2
+  const x = aviso.left + 20, y = Math.max(aviso.top, t2.top) + 10;
+  const el = document.elementFromPoint(x, y);
+  return el.id || el.className;
+}
+const t1 = document.getElementById("t1");
+console.log("en reposo:", queHayEncima());
+t1.classList.add("hover");                       // simulamos el :hover de la tarjeta 1
+console.log("con la tarjeta 1 en :hover:", queHayEncima());
+t1.classList.remove("hover");
+</script>
+<script type="text/x-css" data-solucion>
+body { margin: 0; padding: 20px; font: 14px sans-serif; }
+.tarjeta {
+  position: relative;           /* sigue haciendo falta: es el bloque contenedor del aviso */
+  /* sin z-index: en reposo, las tarjetas ya no crean contexto de apilamiento */
+  width: 260px; height: 70px; padding: 10px; margin-bottom: 12px;
+  background: #d9d4ff; border: 1px solid #5b46e8; border-radius: 8px;
+}
+/* transform crea un contexto: al hacer hover, que ese contexto quede por encima */
+.tarjeta:hover, .tarjeta.hover { transform: translateY(-2px); z-index: 2; }
+.aviso {
+  position: absolute; left: 140px; top: 75px; z-index: 9999;
+  width: 160px; height: 40px; padding: 8px; background: #ffe066; border: 1px solid #b48a00; border-radius: 6px;
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Dibuja el árbol de contextos de apilamiento: ¿qué elementos crean uno, en reposo y con <code>:hover</code>? ¿Contra quién compite el <code>z-index: 9999</code> del aviso?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Las dos tarjetas tienen <code>position: relative</code> <em>y</em> <code>z-index: 1</code>. Con el mismo <code>z-index</code>, ¿cuál se pinta encima, la primera o la segunda?</p></details>
+  <details class="pista"><summary>Pista 3</summary><p>Si quitas el <code>z-index: 1</code>, la línea «en reposo» se arregla, pero la del <code>:hover</code> no. ¿Qué propiedad tiene la tarjeta cuando está en <code>:hover</code>, y qué crea esa propiedad?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>Por qué falla.</strong> Cada tarjeta, con <code>position: relative</code> y <code>z-index: 1</code>, crea su propio contexto de apilamiento. El aviso vive dentro del de la tarjeta 1, así que su 9999 solo le sirve frente a otros hijos de la tarjeta 1. Hacia fuera compiten las dos tarjetas con el mismo <code>z-index</code>, y el empate lo gana la que va después en el HTML: la tarjeta 2 se pinta encima de la tarjeta 1… con el aviso dentro.</p>
+    <p><strong>Medio arreglo.</strong> Quitar el <code>z-index: 1</code> arregla el reposo: las tarjetas ya no crean contexto y el aviso compite en el contexto raíz, donde su 9999 gana a todo. Pero con <code>:hover</code>, la tarjeta 1 tiene <code>transform</code>, y <code>transform</code> crea un contexto de apilamiento: el aviso vuelve a quedar encerrado, y la tarjeta 2 (posicionada y posterior en el HTML) vuelve a pintarse encima. Es la trampa de la caja de senior «Animar transform puede cambiar quién está encima».</p>
+    <p><strong>Arreglo completo.</strong> Sin <code>z-index</code> en reposo, y <code>z-index: 2</code> en el <code>:hover</code>: cuando la tarjeta crea su contexto, ese contexto queda por encima de la tarjeta vecina. Otra solución que pasa las dos comprobaciones es <code>.t1 { z-index: 2; }</code>, que sube el grupo entero de la tarjeta 1; pero en una lista de muchas tarjetas tendrías que decidir de antemano cuál va encima, mientras que la regla del <code>:hover</code> sube siempre la que tiene el ratón.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>La cascada decide qué regla gana: importancia, especificidad (ids, clases, tipos; se comparan columna a columna) y orden. <code>getComputedStyle</code> te da el valor que ganó, ya resuelto.</li>
+    <li>La caja tiene contenido, padding, borde y margen. Con <code>content-box</code>, <code>width</code> es solo el contenido; con <code>border-box</code>, llega hasta el borde. <code>offsetWidth</code> y <code>clientWidth</code> hablan del layout e ignoran <code>transform</code>; <code>getBoundingClientRect()</code> dice dónde se ve la caja, con transformaciones.</li>
+    <li>Los márgenes verticales se fusionan, también entre padre e hijo (remedio: <code>display: flow-root</code>). <code>inline</code> ignora <code>width</code>/<code>height</code>; el canvas es <code>inline</code> por defecto (franja inferior: <code>display: block</code>) y en un flex necesita <code>min-width: 0</code>.</li>
+    <li><code>absolute</code> se coloca respecto al ancestro posicionado más cercano; <code>transform</code> y <code>filter</code> también crean bloque contenedor, incluso para los <code>fixed</code>.</li>
+    <li><code>z-index</code> solo funciona en elementos posicionados (o hijos de flex/grid) y solo compite dentro de su contexto de apilamiento; <code>opacity</code>, <code>transform</code> y <code>filter</code> crean contextos.</li>
+    <li>Un px CSS no es un píxel físico: <code>devicePixelRatio</code>. Los % de <code>padding</code> son del ancho del contenedor; los de <code>translate()</code>, de la propia caja.</li>
+    <li><code>transform</code>: la lista se aplica de derecha a izquierda sobre la caja (M = A·B·C), alrededor de <code>transform-origin</code> (en SVG, <code>0 0</code>). No afecta al layout: por eso es barata de animar.</li>
+    <li>Las variables CSS se heredan, se escriben con <code>setProperty</code> y no se interpolan sin <code>@property</code>. El respaldo solo actúa si la variable no existe.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/CSS/Specificity">MDN, «Specificity»</a>: el cálculo completo, con <code>:is()</code>, <code>:where()</code> y <code>:not()</code>.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_positioned_layout/Stacking_context">MDN, «Stacking context»</a>: la lista completa de lo que crea un contexto de apilamiento.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/CSS/transform-function">MDN, las funciones de <code>transform</code></a>, cada una con su matriz.</li>
+  <li><a href="https://www.w3.org/TR/css-transforms-1/">CSS Transforms Module Level 1</a>: la especificación, con el cálculo exacto de la matriz y de <code>transform-origin</code>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script>
+/* Demo 1: modelo de caja. La caja es un elemento real; los controles escriben
+   variables CSS (--w, --p…) y las cifras se leen del propio elemento. */
+Curso.alListo(() => {
+  const raiz = document.getElementById("demo-caja");
+  const caja = raiz.querySelector(".m1-caja-real");
+  const margen = raiz.querySelector(".m1-caja-margen");
+  const info = raiz.querySelector(".demo-info");
+  const ctrl = raiz.querySelector(".demo-controles");
+  const v = { w: 160, h: 70, p: 20, b: 6, m: 24 };
+  let bs = "content-box", escalar = false;
+
+  function actualizar() {
+    for (const k in v) caja.style.setProperty("--" + k, v[k]);
+    caja.style.setProperty("--bs", bs);
+    caja.style.transform = escalar ? "scale(1.5)" : "";
+    // El margen no se pinta: lo dibujamos con una capa rayada alrededor de la caja
+    margen.style.left = caja.offsetLeft - v.m + "px";
+    margen.style.top = caja.offsetTop - v.m + "px";
+    margen.style.width = caja.offsetWidth + 2 * v.m + "px";
+    margen.style.height = caja.offsetHeight + 2 * v.m + "px";
+    const cw = parseFloat(getComputedStyle(caja).width);
+    const contenido = bs === "content-box" ? v.w : Math.max(0, v.w - 2 * v.p - 2 * v.b);
+    caja.textContent = "contenido " + contenido + "×" + (bs === "content-box" ? v.h : Math.max(0, v.h - 2 * v.p - 2 * v.b));
+    const r = caja.getBoundingClientRect();
+    info.textContent =
+      "box-sizing: " + bs + "   ·   width CSS = " + v.w + "px   (getComputedStyle → \"" + cw + "px\")\n" +
+      (bs === "content-box"
+        ? "offsetWidth  = contenido " + v.w + " + padding 2×" + v.p + " + borde 2×" + v.b + " = " + caja.offsetWidth + "\n"
+        : "offsetWidth  = width " + v.w + " (ya incluye padding y borde; el contenido encoge a " + contenido + ") = " + caja.offsetWidth + "\n") +
+      "clientWidth  = contenido + padding = " + caja.clientWidth + "\n" +
+      "getBoundingClientRect().width = " + (Math.round(r.width * 100) / 100) + (escalar ? "   ← incluye el scale(1.5); offsetWidth no" : "") + "\n" +
+      "espacio reservado en el flujo, con márgenes = " + caja.offsetWidth + " + 2×" + v.m + " = " + (caja.offsetWidth + 2 * v.m);
+  }
+  const def = [["w", "width", 40, 300, 1], ["h", "height", 20, 160, 1], ["p", "padding", 0, 40, 1], ["b", "border", 0, 20, 1], ["m", "margin", 0, 40, 1]];
+  def.forEach(([k, et, min, max, paso]) => Curso.control(ctrl, { etiqueta: et, min, max, paso, valor: v[k], alCambiar: (x) => { v[k] = x; actualizar(); } }));
+  Curso.selector(ctrl, { etiqueta: "box-sizing:", opciones: [["content-box", "content-box"], ["border-box", "border-box"]], valor: bs, alCambiar: (x) => { bs = x; actualizar(); } });
+  Curso.casilla(ctrl, { etiqueta: "transform: scale(1.5)", valor: false, alCambiar: (x) => { escalar = x; actualizar(); } });
+  actualizar();
+  if ("ResizeObserver" in window) new ResizeObserver(actualizar).observe(raiz);
+});
+
+/* Demo 2: orden de las transformaciones. Cajas reales con transform real;
+   los fantasmas muestran la lectura de derecha a izquierda. */
+Curso.alListo(() => {
+  const raiz = document.getElementById("demo-transform");
+  const esc = raiz.querySelector(".m1-escenario");
+  const info = raiz.querySelector(".demo-info");
+  const ctrl = raiz.querySelector(".demo-controles");
+  const est = { tx: 110, giro: 40, s: 1.3, orden: "t r s", pasos: true, inverso: false, origen: "centro" };
+  const ORDENES = [["t r s", "translate rotate scale"], ["r t s", "rotate translate scale"], ["s r t", "scale rotate translate"],
+                   ["s t r", "scale translate rotate"], ["t s r", "translate scale rotate"], ["r s t", "rotate scale translate"]];
+
+  function crearCaja(clase) {
+    const d = document.createElement("div");
+    d.className = "m1-fantasma " + clase;
+    d.innerHTML = 'F<span class="eje-x"></span><span class="eje-y"></span><span class="origen"></span>';
+    esc.appendChild(d);
+    // La etiqueta va FUERA de la caja: si fuera hija, giraría y escalaría con ella
+    d.etiqueta = document.createElement("div");
+    d.etiqueta.className = "m1-etq-fantasma " + (clase === "" ? "resultado" : clase);
+    esc.appendChild(d.etiqueta);
+    return d;
+  }
+  // Coloca la etiqueta encima del rectángulo que ocupa la caja YA transformada
+  function etiquetar(caja, texto, debajo) {
+    const e = caja.etiqueta;
+    if (caja.style.display === "none") { e.style.display = "none"; return; }
+    const r = caja.getBoundingClientRect(), er = esc.getBoundingClientRect();
+    e.style.display = "";
+    e.textContent = texto;
+    e.style.left = Math.max(4, r.left - er.left) + "px";
+    e.style.top = (debajo ? Math.min(er.height - 16, r.bottom - er.top + 5) : Math.max(4, r.top - er.top - 16)) + "px";
+  }
+  const marca = document.createElement("div");
+  marca.className = "m1-marca-origen";
+  esc.appendChild(marca);
+  const pasos = [crearCaja("paso"), crearCaja("paso")];
+  const inversa = crearCaja("inverso");
+  const final = crearCaja("");
+
+  function funciones() {
+    const f = { t: "translate(" + est.tx + "px)", r: "rotate(" + est.giro + "deg)", s: "scale(" + est.s + ")" };
+    return est.orden.split(" ").map((k) => f[k]);
+  }
+  function actualizar() {
+    const lista = funciones();
+    const origen = est.origen === "centro" ? "50% 50%" : "0 0";
+    [final, inversa, ...pasos].forEach((c) => {
+      c.style.transformOrigin = origen;
+      const o = c.querySelector(".origen");
+      o.style.left = est.origen === "centro" ? "50%" : "0";
+      o.style.top = est.origen === "centro" ? "50%" : "0";
+    });
+    // marca fija: dónde está el transform-origin antes de transformar (en la página)
+    marca.style.left = est.origen === "centro" ? "50%" : "calc(50% - 50px)";
+    marca.style.top = est.origen === "centro" ? "50%" : "calc(50% - 30px)";
+    final.style.transform = lista.join(" ");
+    // pasos de derecha a izquierda: 1 = última función, 2 = las dos últimas
+    pasos.forEach((p, i) => {
+      const sub = lista.slice(lista.length - (i + 1));
+      p.style.display = est.pasos ? "" : "none";
+      p.style.transform = sub.join(" ");
+      etiquetar(p, "paso " + (i + 1) + ": " + sub.join(" "));
+    });
+    inversa.style.display = est.inverso ? "" : "none";
+    inversa.style.transform = lista.slice().reverse().join(" ");
+    etiquetar(inversa, "orden inverso", true);
+    etiquetar(final, "resultado", true);
+    const m = getComputedStyle(final).transform;
+    const mi = getComputedStyle(inversa).transform;
+    info.textContent =
+      "transform: " + lista.join(" ") + "\n" +
+      "se aplica así (derecha a izquierda): 1º " + lista[2] + "  →  2º " + lista[1] + "  →  3º " + lista[0] + "\n" +
+      "getComputedStyle(el).transform = " + m +
+      (est.inverso ? "\norden inverso: " + lista.slice().reverse().join(" ") + "  →  " + mi : "");
+  }
+  Curso.control(ctrl, { etiqueta: "translate", min: -160, max: 160, paso: 1, valor: est.tx, alCambiar: (x) => { est.tx = x; actualizar(); }, formato: (x) => x + "px" });
+  Curso.control(ctrl, { etiqueta: "rotate", min: -180, max: 180, paso: 1, valor: est.giro, alCambiar: (x) => { est.giro = x; actualizar(); }, formato: (x) => x + "°" });
+  Curso.control(ctrl, { etiqueta: "scale", min: 0.3, max: 2, paso: 0.05, valor: est.s, alCambiar: (x) => { est.s = x; actualizar(); }, formato: (x) => x.toFixed(2) });
+  Curso.selector(ctrl, { etiqueta: "orden:", opciones: ORDENES, valor: est.orden, alCambiar: (x) => { est.orden = x; actualizar(); } });
+  Curso.selector(ctrl, { etiqueta: "transform-origin:", opciones: [["centro", "centro (50% 50%)"], ["esquina", "esquina (0 0)"]], valor: est.origen, alCambiar: (x) => { est.origen = x; actualizar(); } });
+  Curso.casilla(ctrl, { etiqueta: "pasos intermedios", valor: est.pasos, alCambiar: (x) => { est.pasos = x; actualizar(); } });
+  Curso.casilla(ctrl, { etiqueta: "comparar con el orden inverso", valor: est.inverso, alCambiar: (x) => { est.inverso = x; actualizar(); } });
+  actualizar();
+});
+</script>
+</body>
+</html>

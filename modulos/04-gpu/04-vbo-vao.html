@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4.4 · VBO, VAO y EBO: la memoria de los vértices — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m4.css">
+</head>
+<body data-leccion="04-gpu/vbo-vao">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 4 · La GPU por dentro</p>
+  <h1>VBO, VAO y EBO: la memoria de los vértices</h1>
+  <p class="resumen">Qué es exactamente un buffer de vértices, qué guarda exactamente un VAO (y qué no, que es donde está la confusión clásica), cómo se colocan los atributos en memoria byte a byte y por qué los índices ahorran mucho más que memoria.</p>
+  <div class="meta"><span class="chip">⏱ 90 min</span><span class="chip">Requisitos: 1.6, 4.1, 4.3</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Sabrás qué hace <code>bufferData</code> con tus bytes (y qué no hace), y para qué sirven los <em>hints</em> de uso.</li>
+      <li>Diseñarás el formato de un vértice: entrelazado o separado, con sus <em>strides</em> y <em>offsets</em> en bytes.</li>
+      <li>Usarás atributos enteros normalizados (colores en <code>UNSIGNED_BYTE</code>) y atributos enteros de verdad (<code>vertexAttribIPointer</code>).</li>
+      <li>Sabrás la lista completa de lo que guarda un VAO y comprobarás que <code>ARRAY_BUFFER</code> <strong>no</strong> es parte de ella, con tres implementaciones distintas.</li>
+      <li>Usarás buffers de índices, entenderás la caché post-transformación y ordenarás índices para aprovecharla.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Tres objetos, tres papeles</h2>
+<p>Para dibujar, la GPU necesita los datos de cada vértice (posición, color, coordenadas de textura…) en su memoria, y necesita saber cómo leerlos. De eso se encargan tres objetos que llevas viendo de reojo todo el módulo:</p>
+<ul>
+  <li><strong>VBO</strong> (<em>Vertex Buffer Object</em>): un bloque de memoria de la GPU con los datos de los vértices. Solo bytes: no sabe si contiene floats, colores o nada útil.</li>
+  <li><strong>EBO</strong> (<em>Element Buffer Object</em>, también llamado IBO, <em>index buffer</em>): otro buffer, pero con índices: «dibuja el vértice 0, luego el 1, luego el 2, luego otra vez el 0…». Permite reutilizar vértices.</li>
+  <li><strong>VAO</strong> (<em>Vertex Array Object</em>): no guarda datos de vértices. Guarda la <strong>receta</strong>: para cada atributo, de qué buffer se lee, en qué formato, desde qué byte y cada cuántos bytes. Y qué buffer de índices usar.</li>
+</ul>
+<p>En la GPU de juguete de <a href="03-gpu-de-juguete.html">4.3</a> los tres eran objetos de Python que podías imprimir. Ahora vamos a mirarlos en la API real, con sus reglas exactas y sus trampas.</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Un VAO apunta a VBOs y a un EBO">
+  <defs><marker id="m44-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <rect class="caja" x="20" y="20" width="300" height="210" rx="10"/>
+  <text x="170" y="44" text-anchor="middle" style="font-weight:700">VAO (la receta)</text>
+  <text x="36" y="72" style="font-family:var(--mono);font-size:12px">atributo 0: vbo, 2 × FLOAT, stride 12, offset 0</text>
+  <text x="36" y="94" style="font-family:var(--mono);font-size:12px">atributo 1: vbo, 4 × UBYTE norm., stride 12, off. 8</text>
+  <text x="36" y="116" style="font-family:var(--mono);font-size:12px" class="texto-tenue">atributo 2…15: deshabilitados</text>
+  <text x="36" y="150" style="font-family:var(--mono);font-size:12px">ELEMENT_ARRAY_BUFFER: ebo</text>
+  <text x="36" y="200" class="texto-tenue" style="font-size:12px">no guarda NINGÚN byte de vértices</text>
+  <rect class="acento" x="440" y="30" width="300" height="76" rx="10"/>
+  <text x="590" y="54" text-anchor="middle" style="font-weight:700">VBO (48 bytes)</text>
+  <text x="590" y="78" text-anchor="middle" style="font-family:var(--mono);font-size:11.5px">cd cc 4c bf cd cc 4c bf ff 40 20 ff …</text>
+  <text x="590" y="96" text-anchor="middle" class="texto-tenue" style="font-size:11.5px">solo bytes: la GPU no sabe qué son</text>
+  <rect class="acento2" x="440" y="150" width="300" height="70" rx="10"/>
+  <text x="590" y="174" text-anchor="middle" style="font-weight:700">EBO (12 bytes)</text>
+  <text x="590" y="198" text-anchor="middle" style="font-family:var(--mono);font-size:11.5px">índices: 0 1 2 · 0 2 3</text>
+  <path d="M322 82 L436 68" stroke="currentColor" stroke-width="1.5" marker-end="url(#m44-fl)"/>
+  <path d="M322 146 L436 180" stroke="currentColor" stroke-width="1.5" marker-end="url(#m44-fl)"/>
+</svg>
+
+<h2>El VBO: bytes en la memoria de la GPU</h2>
+<p>Un buffer se crea, se enlaza y se llena. Ya conoces el patrón de <a href="01-cpu-vs-gpu.html">4.1</a>:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, datos, gl.STATIC_DRAW);
+gl.bufferSubData(gl.ARRAY_BUFFER, 16, nuevos);
+</script>
+<ol>
+  <li data-l="1">Crea el objeto. Todavía no tiene memoria: es solo un nombre.</li>
+  <li data-l="2">Lo enlaza en <code>ARRAY_BUFFER</code>, el punto de enlace de los datos de vértices. En WebGL, el primer destino en el que enlazas un buffer lo marca para siempre: un buffer de vértices no puede enlazarse después como buffer de índices ni al revés (<code>INVALID_OPERATION</code>, lo comprobamos en Chrome). OpenGL nativo sí lo permite; WebGL no, porque necesita validar los índices en la CPU.</li>
+  <li data-l="3">Reserva memoria del tamaño exacto de <code>datos</code> (un <code>TypedArray</code>, un <code>ArrayBuffer</code> o un <code>DataView</code>) y <strong>copia</strong> los bytes. El tercer argumento es un <em>hint</em>, una pista para el driver sobre cómo lo usarás. Cada <code>bufferData</code> reemplaza la memoria entera, aunque cambie el tamaño.</li>
+  <li data-l="4">Sobrescribe un trozo a partir del byte 16, sin cambiar el tamaño. Si te sales del tamaño reservado, <code>INVALID_VALUE</code> («buffer overflow», medido): un buffer no crece solo.</li>
+</ol>
+</div>
+
+<p>Tres detalles de <code>bufferData</code> que comprobamos en Chrome y que conviene tener claros:</p>
+<ul>
+  <li><strong>Copia.</strong> Si después de <code>bufferData</code> cambias el <code>Float32Array</code> de JavaScript, la GPU no se entera: sus bytes son una copia. Para actualizar hay que volver a llamar a <code>bufferData</code> o <code>bufferSubData</code>.</li>
+  <li><strong>Se puede reservar sin datos</strong>: <code>gl.bufferData(gl.ARRAY_BUFFER, 1024, gl.DYNAMIC_DRAW)</code> reserva 1 024 bytes. En WebGL están garantizados a cero (lo leímos de vuelta); en OpenGL nativo, su contenido es indefinido.</li>
+  <li><strong>En WebGL2 puedes subir solo una parte de un array</strong>: <code>gl.bufferData(destino, array, uso, srcOffset, length)</code>. Ojo: <code>srcOffset</code> y <code>length</code> se cuentan en <em>elementos</em> del <code>TypedArray</code>, no en bytes (es de las pocas cosas de la API que no cuentan en bytes).</li>
+</ul>
+
+<div class="js-playground" data-titulo="bufferData copia (compruébalo)" data-altura="56" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:10px 16px;font:14px monospace">resultado en la consola ↓ <button id="errores" style="margin-left:12px">provocar dos errores</button></p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+const datos = new Float32Array([1, 2, 3, 4]);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, datos, gl.STATIC_DRAW);
+datos[0] = 99;                                    // cambiamos el array DESPUÉS de subirlo
+
+const leido = new Float32Array(4);
+gl.getBufferSubData(gl.ARRAY_BUFFER, 0, leido);   // WebGL2: leer el buffer de vuelta (¡espera a la GPU!)
+console.log('array de JS:     ', datos);
+console.log('buffer de la GPU:', leido);
+
+gl.bufferData(gl.ARRAY_BUFFER, 16, gl.DYNAMIC_DRAW);   // reservar 16 bytes sin datos
+const bytes = new Uint8Array(16);
+gl.getBufferSubData(gl.ARRAY_BUFFER, 0, bytes);
+console.log('reserva sin datos:', bytes, '· tamaño:', gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_SIZE), 'bytes');
+
+// Provocar dos errores a propósito (los verás también en la consola del navegador):
+document.getElementById('errores').addEventListener('click', () => {
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 12, new Float32Array([7, 8]));  // 12 + 8 > 16: se sale
+  console.log('bufferSubData fuera de rango →', gl.getError() === gl.INVALID_VALUE ? 'INVALID_VALUE' : 'otro');
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vbo);                    // vbo ya se usó como ARRAY_BUFFER
+  console.log('usar un VBO como EBO →', gl.getError() === gl.INVALID_OPERATION ? 'INVALID_OPERATION' : 'sin error');
+});
+</script>
+</div>
+
+<h3>Los hints: STATIC, DYNAMIC, STREAM</h3>
+<p>El último argumento de <code>bufferData</code> no cambia lo que hace la llamada: es una promesa sobre cómo vas a usar el buffer, para que el driver decida dónde colocarlo.</p>
+<table class="m4-compacta">
+  <thead><tr><th>Hint</th><th>Promesa</th><th>Ejemplo</th></tr></thead>
+  <tbody>
+    <tr><td><code>STATIC_DRAW</code></td><td>lo escribo una vez y lo dibujo muchas</td><td>la malla de un personaje</td></tr>
+    <tr><td><code>DYNAMIC_DRAW</code></td><td>lo reescribo a menudo y lo dibujo muchas veces</td><td>vértices animados en la CPU cada frame</td></tr>
+    <tr><td><code>STREAM_DRAW</code></td><td>lo escribo, lo dibujo una o pocas veces y lo tiro</td><td>la geometría de un texto que cambia cada frame</td></tr>
+  </tbody>
+</table>
+<p>WebGL2 añade las variantes <code>_READ</code> y <code>_COPY</code> (para buffers que la GPU escribe y tú lees o copias). Mentir no produce errores: un buffer <code>STATIC_DRAW</code> que actualizas cada frame funciona igual, quizá más lento; muchos drivers ignoran el hint casi por completo. Puedes consultar el que elegiste con <code>gl.getBufferParameter(gl.ARRAY_BUFFER, gl.BUFFER_USAGE)</code>.</p>
+
+<h2>Colocar los atributos: entrelazado o separado</h2>
+<p>Supón que cada vértice lleva una posición (2 floats, 8 bytes) y un color (4 bytes, uno por canal). Hay varias formas de colocar esos 12 bytes por vértice en memoria, y todas son correctas si el VAO las describe bien:</p>
+<ul>
+  <li><strong>Entrelazada</strong> (<em>AoS</em>, <em>array of structures</em>): todo el vértice 0, luego todo el vértice 1… Un solo buffer; <code>stride</code> = 12 para los dos atributos; <code>offset</code> 0 para la posición y 8 para el color.</li>
+  <li><strong>Separada</strong> (<em>SoA</em>, <em>structure of arrays</em>): un buffer con todas las posiciones y otro con todos los colores. <code>stride</code> 0 («empaquetado») y <code>offset</code> 0 en los dos.</li>
+  <li><strong>Por bloques</strong>: un solo buffer, primero todas las posiciones y luego todos los colores. El color empieza en el byte 32 (4 vértices × 8 bytes).</li>
+</ul>
+<p>Elige una distribución, un atributo y un vértice, y mira exactamente qué bytes lee el vertex fetch (pasa el ratón o haz clic en los bytes):</p>
+
+<div class="demo" id="demo-memoria">
+  <div class="m4-bytes"></div>
+  <div class="m4-leyenda"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<p>La fórmula que ves en la demo es la única que usa el hardware: el atributo del vértice $i$ empieza en el byte</p>
+$$\text{dirección} = \text{offset} + i \times \text{stride}$$
+<p>y ocupa $\text{size} \times \text{bytes del tipo}$ bytes. Con <code>stride = 0</code>, el stride efectivo es justo ese tamaño (atributos pegados). Todo en <strong>bytes</strong>: el error más frecuente es pasar el número de floats.</p>
+
+<div class="callout bestiario" data-id="m4-stride-en-elementos" data-titulo="La malla sale hecha trizas (stride u offset en floats, no en bytes)">
+  <p><strong>Síntoma:</strong> los triángulos aparecen estirados hasta el infinito, en posiciones absurdas o no aparecen; los colores parecen ruido. O WebGL avisa: <code>GL_INVALID_OPERATION: glVertexAttribPointer: Stride must be a multiple of the passed in datatype</code>.</p>
+  <p><strong>Causa:</strong> <code>stride</code> y <code>offset</code> se miden en bytes, y has pasado el número de componentes: por ejemplo, stride 3 en lugar de 12 para un vértice de 3 floats. La GPU lee entonces floats que empiezan a mitad de otro float y los interpreta tal cual: en la GPU de juguete, leer la posición del vértice 1 con stride 3 da <code>(107376120.0, 1.6e-19)</code>. WebGL, además, exige que stride y offset sean múltiplos del tamaño del tipo (4 para <code>FLOAT</code>) y que el stride no pase de 255.</p>
+  <p><strong>Solución:</strong> multiplica por el tamaño del tipo: <code>stride = componentesPorVértice * 4</code> para floats. Si usas un <code>Float32Array</code>, <code>Float32Array.BYTES_PER_ELEMENT</code> (4) deja claro qué estás multiplicando.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.4.1 — Diseñar el formato de un vértice</h3>
+  <p>Un vértice lleva posición (3 floats), normal (3 componentes), coordenadas de textura (2 floats) y color (4 canales). Diseña un formato entrelazado compacto, escribe las cuatro llamadas a <code>vertexAttribPointer</code> y calcula cuánta memoria ahorras frente a ponerlo todo en floats, para una malla de 100 000 vértices.</p>
+  <ol>
+    <li><strong>Todo en floats</strong>: $3 + 3 + 2 + 4 = 12$ floats = 48 bytes por vértice. Para 100 000 vértices, 4,8 MB.</li>
+    <li><strong>Compacto</strong>: la normal es un vector unitario (componentes entre −1 y 1): cabe en 3 <code>SHORT</code> normalizados (2 bytes cada uno), que dan unas 32 767 divisiones por unidad. El color, en 4 <code>UNSIGNED_BYTE</code> normalizados. Posición y coordenadas de textura, en floats.</li>
+    <li><strong>Alineación</strong>: WebGL exige que el offset de cada atributo sea múltiplo del tamaño de su tipo. La normal ocupa 6 bytes; si el siguiente atributo es un float, tiene que empezar en múltiplo de 4, así que añadimos 2 bytes de relleno.</li>
+    <li><strong>El formato</strong>: posición en 0–11, normal en 12–17, relleno en 18–19, uv en 20–27, color en 28–31. Stride = 32 bytes.
+<script type="text/plain" class="codigo" data-lang="js">
+const STRIDE = 32;
+gl.vertexAttribPointer(0, 3, gl.FLOAT,         false, STRIDE, 0);    // a_pos
+gl.vertexAttribPointer(1, 3, gl.SHORT,         true,  STRIDE, 12);   // a_normal: −32767..32767 → −1..1
+gl.vertexAttribPointer(2, 2, gl.FLOAT,         false, STRIDE, 20);   // a_uv
+gl.vertexAttribPointer(3, 4, gl.UNSIGNED_BYTE, true,  STRIDE, 28);   // a_color: 0..255 → 0..1
+</script></li>
+    <li><strong>Ahorro</strong>: 32 bytes frente a 48, un tercio menos: 3,2 MB en lugar de 4,8 MB para 100 000 vértices. Y la lectura de vértices también es un tercio más barata en ancho de banda, que ya sabes que es el recurso escaso (<a href="01-cpu-vs-gpu.html">4.1</a>). Los shaders no cambian: siguen recibiendo <code>vec3</code> y <code>vec4</code> de floats.</li>
+  </ol>
+</section>
+
+<div class="callout senior" data-titulo="¿Entrelazado o separado?">
+  <p>El entrelazado es la opción por defecto para mallas estáticas: cuando el vertex fetch lee el vértice $i$, todos sus atributos están juntos en la misma línea de caché. El separado gana en dos casos: cuando un atributo cambia cada frame y los demás no (subes solo el buffer de posiciones con <code>bufferSubData</code>, sin tocar el resto) y cuando hay pasadas que solo necesitan un atributo (una pasada de sombras solo necesita posiciones: con un buffer aparte, no arrastra normales ni colores por la caché). Los motores reales suelen mezclar: un buffer con las posiciones y otro entrelazado con todo lo demás.</p>
+</div>
+
+<h2>Tipos: floats, normalizados y enteros</h2>
+<p>El vertex fetch no solo lee bytes: los <strong>convierte</strong> al tipo que espera el shader. Con <code>vertexAttribPointer</code> el shader recibe siempre floats (declara <code>in float</code>, <code>vec2</code>, <code>vec3</code> o <code>vec4</code>), y el cuarto argumento, <code>normalized</code>, decide qué pasa con los tipos enteros:</p>
+<ul>
+  <li><code>normalized = true</code>: el entero se escala a un rango fijo. Sin signo, $[0, 2^b - 1] \to [0, 1]$ (un byte 255 llega como 1,0). Con signo, se divide por $2^{b-1} - 1$ y se limita a −1 (un <code>BYTE</code> de 127 llega como 1,0, y tanto el −127 como el −128 llegan como −1,0).</li>
+  <li><code>normalized = false</code>: el entero se convierte a float sin más (255 llega como 255,0).</li>
+</ul>
+<p>Esto es lo que recibió el vertex shader en Chrome. Para leerlo de vuelta usamos <em>transform feedback</em>, una función de WebGL2 que copia las salidas del vertex shader a un buffer que después se puede leer desde JavaScript:</p>
+<table class="m4-compacta">
+  <thead><tr><th>Bytes en el buffer</th><th>Llamada</th><th>El shader recibe</th></tr></thead>
+  <tbody>
+    <tr><td><code>UNSIGNED_BYTE</code> 255, 128, 0, 64</td><td>normalizado</td><td class="num">1,0 · 0,50196 · 0,0 · 0,25098</td></tr>
+    <tr><td><code>UNSIGNED_BYTE</code> 255, 128, 0, 64</td><td>sin normalizar</td><td class="num">255,0 · 128,0 · 0,0 · 64,0</td></tr>
+    <tr><td><code>BYTE</code> −128, −127, 127, 64</td><td>normalizado</td><td class="num">−1,0 · −1,0 · 1,0 · 0,50394</td></tr>
+    <tr><td><code>SHORT</code> −32768, 32767, 16384, 1</td><td>normalizado</td><td class="num">−1,0 · 1,0 · 0,50002 · 0,0000305</td></tr>
+    <tr><td><code>UNSIGNED_BYTE</code> 255, 51 (size 2)</td><td>normalizado</td><td class="num">1,0 · 0,2 · <strong>0,0 · 1,0</strong> (relleno)</td></tr>
+    <tr><td><code>HALF_FLOAT</code> 0x3C00, 0x3800, 0xC000, 0x7BFF</td><td>—</td><td class="num">1,0 · 0,5 · −2,0 · 65504</td></tr>
+    <tr><td><code>INT</code> 7, −3, 100000, 2147483647</td><td><code>vertexAttribIPointer</code>, <code>in ivec4</code></td><td class="num">7 · −3 · 100000 · 2147483647 (exactos)</td></tr>
+  </tbody>
+</table>
+<p>Los colores en <code>UNSIGNED_BYTE</code> normalizados son el caso de uso estrella: ocupan 4 bytes en lugar de 16 y el shader no nota la diferencia. La GPU de juguete implementa exactamente estas reglas (el <code>ejemplo_07_formatos.py</code> dibuja el mismo quad con las tres distribuciones de la demo y comprueba que las tres imágenes son idénticas):</p>
+
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="python3 gpu_juguete/ejemplo_07_formatos.py (final)">
+¿las tres imágenes son idénticas? True
+a_color del vértice 0 = (1.0, 0.25098039215686274, 0.12549019607843137, 1.0)  ← 64/255 = 0.25098039215686274
+sin normalizar, a_color del vértice 0 = (255.0, 64.0, 32.0, 255.0)
+stride = 3 (¡en bytes!): posición del vértice 1 = (107376120.0, 1.6347651871477034e-19, 0.0, 1.0)
+</script>
+
+<figure class="m4-figura">
+  <div class="m4-fila">
+    <div><img class="pixelada" src="img/juguete-formatos.png" width="180" height="180" alt="Quad con un degradado de cuatro colores"><small>colores normalizados</small></div>
+    <div><img class="pixelada" src="img/juguete-sin-normalizar.png" width="180" height="180" alt="Quad completamente blanco"><small>el mismo buffer, <code>normalized = false</code></small></div>
+  </div>
+  <figcaption>Generadas por la GPU de juguete. Sin normalizar, el shader recibe colores entre 0 y 255: todo lo que pasa de 1 se satura a blanco.</figcaption>
+</figure>
+
+<div class="callout bestiario" data-id="m4-sin-normalizar" data-titulo="Los colores salen blancos (o saturados) aunque el buffer está bien">
+  <p><strong>Síntoma:</strong> guardas los colores de los vértices como bytes (0–255) para ahorrar memoria y la malla sale completamente blanca, o con colores chillones.</p>
+  <p><strong>Causa:</strong> <code>normalized = false</code> en <code>vertexAttribPointer</code>: el shader recibe 255,0 en lugar de 1,0, y el framebuffer satura todo lo que pasa de 1. El mismo síntoma aparece si pones en un buffer de floats valores de 0 a 255 (y en el <code>clearColor</code>: es el ejercicio 5.1.1).</p>
+  <p><strong>Solución:</strong> <code>gl.vertexAttribPointer(loc, 4, gl.UNSIGNED_BYTE, true, stride, offset)</code>. Si de verdad quieres los enteros sin escalar, recíbelos como enteros (siguiente apartado) o divide en el shader.</p>
+</div>
+
+<h3>Atributos enteros de verdad: vertexAttribIPointer</h3>
+<p>A veces un atributo es un número entero con significado exacto: el índice de un hueso en un esqueleto, un identificador de material, un conjunto de banderas de bits. Convertirlo a float y compararlo con <code>==</code> es buscarse problemas (<a href="../03-matematicas/07-precision.html">3.7</a>). WebGL2 tiene una variante que entrega enteros sin convertir:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+// shader:  layout(location = 4) in uvec4 a_huesos;     (u = unsigned)
+gl.vertexAttribIPointer(4, 4, gl.UNSIGNED_BYTE, stride, offset);   // ¡sin argumento "normalized"!
+</script>
+<p>Fíjate en que falta el argumento <code>normalized</code>: no tiene sentido. Y hay una regla estricta que comprobamos en Chrome: el <strong>tipo base</strong> del atributo tiene que coincidir con el del shader. Float con float (<code>vertexAttribPointer</code> + <code>vec</code>), entero con signo con entero con signo (<code>vertexAttribIPointer</code> con <code>BYTE</code>/<code>SHORT</code>/<code>INT</code> + <code>ivec</code>) y sin signo con sin signo (<code>UNSIGNED_*</code> + <code>uvec</code>). Si no coinciden, no es la conversión la que falla: es el dibujo entero.</p>
+
+<div class="callout bestiario" data-id="m4-tipo-atributo" data-titulo="drawArrays falla con «Vertex shader input type does not match the type of the bound vertex attribute»">
+  <p><strong>Síntoma:</strong> no se dibuja nada y la consola dice <code>GL_INVALID_OPERATION: glDrawArrays: Vertex shader input type does not match the type of the bound vertex attribute</code>.</p>
+  <p><strong>Causa:</strong> el shader declara el atributo como entero (<code>in int</code>, <code>ivec4</code>, <code>uvec4</code>) y lo configuraste con <code>vertexAttribPointer</code> (que entrega floats), o al revés; o mezclaste signos: <code>vertexAttribIPointer(…, gl.UNSIGNED_BYTE, …)</code> con <code>in ivec4</code> (lo medimos: <code>INVALID_OPERATION</code>; con <code>uvec4</code> funciona).</p>
+  <p><strong>Solución:</strong> que coincidan función, tipo y signo: <code>vertexAttribPointer</code> ↔ <code>float/vecN</code>; <code>vertexAttribIPointer</code> con tipos con signo ↔ <code>int/ivecN</code>; con tipos sin signo ↔ <code>uint/uvecN</code>.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un buffer guarda colores RGBA como 4 bytes sin signo y el shader declara <code>in vec4 a_color</code>. ¿Qué llamada es la correcta?</p>
+  <ul>
+    <li><code>gl.vertexAttribIPointer(1, 4, gl.UNSIGNED_BYTE, 12, 8)</code><div class="explicacion">La versión <code>I</code> entrega enteros y exige un <code>uvec4</code> en el shader. Con <code>vec4</code>, el dibujo falla con <code>INVALID_OPERATION</code>.</div></li>
+    <li><code>gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, false, 12, 8)</code><div class="explicacion">Funciona, pero el shader recibe valores de 0 a 255 (sin normalizar): colores saturados.</div></li>
+    <li data-correcta><code>gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, 12, 8)</code><div class="explicacion">Exacto: floats de 0 a 1 a partir de bytes. Cuatro veces menos memoria que cuatro floats, y el shader no se entera.</div></li>
+  </ul>
+</div>
+
+<h2>El VAO: qué guarda exactamente (y qué no)</h2>
+<p>Esta es la parte de la API que más gente cree entender sin entenderla. Un VAO es un objeto de <em>estado</em>: un contenedor de configuración. Esta es la lista completa de lo que guarda, según la especificación de OpenGL ES 3.0 y comprobado consultando el estado en Chrome, en el driver de Apple con PyOpenGL y con moderngl:</p>
+<table class="m4-compacta">
+  <thead><tr><th>Estado guardado en el VAO</th><th>¿Cuántos?</th><th>Lo establece</th></tr></thead>
+  <tbody>
+    <tr><td>atributo habilitado o no</td><td>uno por atributo (16 en nuestra máquina)</td><td><code>enableVertexAttribArray</code> / <code>disable…</code></td></tr>
+    <tr><td><strong>el buffer del que se lee</strong></td><td>uno por atributo</td><td><code>vertexAttribPointer</code>: el que esté enlazado en <code>ARRAY_BUFFER</code> <em>en ese momento</em></td></tr>
+    <tr><td><code>size</code>, <code>type</code>, <code>normalized</code>, <code>stride</code>, <code>offset</code></td><td>uno por atributo</td><td><code>vertexAttribPointer</code></td></tr>
+    <tr><td>«es entero»</td><td>uno por atributo</td><td><code>vertexAttribIPointer</code></td></tr>
+    <tr><td><code>divisor</code> (instancing)</td><td>uno por atributo</td><td><code>vertexAttribDivisor</code> (<a href="../05-webgl/09-instancing.html">5.9</a>)</td></tr>
+    <tr><td><strong>el buffer de índices</strong> (<code>ELEMENT_ARRAY_BUFFER</code>)</td><td>uno por VAO</td><td><code>bindBuffer(ELEMENT_ARRAY_BUFFER, …)</code> con el VAO enlazado</td></tr>
+  </tbody>
+</table>
+<p>Y lo que <strong>no</strong> guarda, que es igual de importante:</p>
+<ul>
+  <li><strong>El enlace <code>ARRAY_BUFFER</code>.</strong> Es estado del contexto. Cambiar de VAO no lo cambia; enlazar otro buffer en <code>ARRAY_BUFFER</code> no cambia ningún VAO. Lo único que conecta <code>ARRAY_BUFFER</code> con un VAO es el <em>momento</em> de llamar a <code>vertexAttribPointer</code>, que copia el buffer enlazado en el descriptor del atributo.</li>
+  <li><strong>Los valores constantes de los atributos deshabilitados</strong> (<code>vertexAttrib4f</code>): son del contexto (<a href="05-uniforms-varyings.html">4.5</a>).</li>
+  <li>El programa, los uniforms, las texturas, el viewport, el blending: nada de eso tiene que ver con el VAO.</li>
+</ul>
+
+<p>No te lo creas: pregúntaselo a WebGL.</p>
+
+<div class="js-playground" data-titulo="Pregúntale a WebGL qué guarda un VAO" data-altura="50" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:10px 16px;font:14px monospace">el informe sale en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+const x = gl.createBuffer(), y = gl.createBuffer(), ebo = gl.createBuffer();
+const nombre = (b) => b === x ? 'x' : b === y ? 'y' : b === ebo ? 'ebo' : String(b);
+
+const vaoA = gl.createVertexArray();
+gl.bindVertexArray(vaoA);                                   // todo lo que sigue se graba en vaoA...
+gl.bindBuffer(gl.ARRAY_BUFFER, x);
+gl.bufferData(gl.ARRAY_BUFFER, 64, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 12, 0);       // ...captura x
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, 12, 8);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);                // el EBO se guarda en vaoA
+gl.bindBuffer(gl.ARRAY_BUFFER, y);                          // cambiamos ARRAY_BUFFER DESPUÉS
+gl.vertexAttrib4f(3, 0.1, 0.2, 0.3, 0.4);                   // un valor constante para el atributo 3
+
+const informe = (etiqueta) => {
+  console.log(`— ${etiqueta}`);
+  console.log(`   ARRAY_BUFFER_BINDING = ${nombre(gl.getParameter(gl.ARRAY_BUFFER_BINDING))}   ELEMENT_ARRAY_BUFFER_BINDING = ${nombre(gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING))}`);
+  for (const loc of [0, 1]) {
+    const q = (p) => gl.getVertexAttrib(loc, p);
+    console.log(`   atributo ${loc}: habilitado=${q(gl.VERTEX_ATTRIB_ARRAY_ENABLED)} buffer=${nombre(q(gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING))} size=${q(gl.VERTEX_ATTRIB_ARRAY_SIZE)} ` +
+      `normalizado=${q(gl.VERTEX_ATTRIB_ARRAY_NORMALIZED)} stride=${q(gl.VERTEX_ATTRIB_ARRAY_STRIDE)} offset=${gl.getVertexAttribOffset(loc, gl.VERTEX_ATTRIB_ARRAY_POINTER)}`);
+  }
+  console.log(`   valor constante del atributo 3 = ${Array.from(gl.getVertexAttrib(3, gl.CURRENT_VERTEX_ATTRIB), (v) => v.toFixed(2))}`);
+};
+informe('con vaoA enlazado');
+const vaoB = gl.createVertexArray();
+gl.bindVertexArray(vaoB);
+informe('con vaoB (recién creado) enlazado');
+gl.bindVertexArray(vaoA);
+informe('otra vez vaoA');
+</script>
+</div>
+
+<p>La salida (en Chrome sobre Metal) confirma la tabla: los atributos de <code>vaoA</code> siguen leyendo de <code>x</code> aunque <code>ARRAY_BUFFER</code> sea <code>y</code>; con <code>vaoB</code> enlazado los atributos están deshabilitados y sin buffer, el EBO es <code>null</code>… pero <code>ARRAY_BUFFER</code> sigue siendo <code>y</code> y el valor constante del atributo 3 sigue siendo $(0{,}1,\ 0{,}2,\ 0{,}3,\ 0{,}4)$: ninguno de los dos es del VAO. El mismo experimento con llamadas crudas de OpenGL (<code>python/pyopengl/02_estado_y_errores.py</code>, sobre el driver OpenGL de Apple) da lo mismo:</p>
+
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="python pyopengl/02_estado_y_errores.py (fragmento)">
+== 1 y 2. Qué guarda un VAO ==
+buffers: x=1 y=2 ebo=3 | VAOs: a=1 b=2
+vao_a, atributo 0: {'habilitado': 1, 'size': 2, 'tipo': '0x1406', 'normalizado': 0, 'entero': 0, 'stride': 12, 'divisor': 0, 'buffer': 1, 'offset': 0}
+vao_a, atributo 1: {'habilitado': 1, 'size': 4, 'tipo': '0x1401', 'normalizado': 1, 'entero': 0, 'stride': 12, 'divisor': 0, 'buffer': 1, 'offset': 8}
+vao_a, atributo 2 (sin tocar): {'habilitado': 0, 'size': 4, 'tipo': '0x1406', 'normalizado': 0, 'entero': 0, 'stride': 0, 'divisor': 0, 'buffer': 0, 'offset': 0}
+vao_a: ELEMENT_ARRAY_BUFFER = 3 | ARRAY_BUFFER = 2
+vao_b: ELEMENT_ARRAY_BUFFER = 0 | ARRAY_BUFFER = 2 ← sigue siendo y: no es del VAO
+CURRENT_VERTEX_ATTRIB 3 visto desde vao_a: [0.1, 0.2, 0.3, 0.4] ← no es estado del VAO
+</script>
+
+<p>Observa el atributo 2, que nunca se tocó: el estado inicial de cualquier atributo es «deshabilitado, sin buffer, size 4, <code>FLOAT</code>, stride 0, offset 0» (también lo medimos en WebGL).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.4.2 — El orden de las llamadas al configurar un VAO</h3>
+  <p>Queremos un VAO para el quad entrelazado de la demo, con índices. ¿En qué orden van las llamadas y qué pasa si lo cambias?</p>
+  <div class="anotado" data-lang="js">
+<script type="text/plain">
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 12, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, 12, 8);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+gl.bindVertexArray(null);
+</script>
+<ol>
+  <li data-l="1-2">Primero el VAO. A partir de aquí, cada <code>enableVertexAttribArray</code>, cada <code>vertexAttribPointer</code> y cada enlace de <code>ELEMENT_ARRAY_BUFFER</code> se graban en él. Si te saltas este paso, todo se graba en el VAO que estuviera enlazado (quizá el de otra malla, quizá el de por defecto).</li>
+  <li data-l="3">El buffer del que leerán los atributos. Tiene que estar enlazado <em>antes</em> de <code>vertexAttribPointer</code>: si lo enlazas después, los atributos capturan el que hubiera antes (o <code>null</code>, y entonces el dibujo falla con <code>no buffer is bound to enabled attribute</code>).</li>
+  <li data-l="4-7">Habilitar y describir cada atributo. El orden entre <code>enable</code> y <code>vertexAttribPointer</code> da igual; lo que importa es que los dos ocurran con este VAO enlazado.</li>
+  <li data-l="8">El buffer de índices, <strong>con el VAO enlazado</strong>: así queda guardado en él. Si lo enlazaras antes de la línea 2, se lo quedaría el VAO anterior.</li>
+  <li data-l="9">Desenlazar el VAO. No es obligatorio, pero protege: cualquier <code>bindBuffer(ELEMENT_ARRAY_BUFFER, …)</code> que haga luego otro código ya no modificará este VAO. Ojo con la tentación contraria: <code>gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null)</code> <em>antes</em> de esta línea le quitaría el EBO al VAO (lo comprobamos: después, <code>drawElements</code> falla con <code>Must have element array buffer bound</code>). Con <code>ARRAY_BUFFER</code> no pasa nada: puedes desenlazarlo cuando quieras.</li>
+</ol>
+  </div>
+  <p>Para dibujar, basta con <code>gl.bindVertexArray(vao)</code> y <code>gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0)</code>: una llamada restaura toda la receta. Esa es la razón de ser del VAO: sin él (en WebGL1 sin extensiones) habría que repetir los <code>vertexAttribPointer</code> de cada malla antes de cada dibujo.</p>
+</section>
+
+<div class="callout bestiario" data-id="m4-ebo-vao-equivocado" data-titulo="drawElements dibuja la malla de otro objeto (o falla con «Must have element array buffer bound»)">
+  <p><strong>Síntoma:</strong> una malla se dibuja con los índices de otra (triángulos que conectan vértices al azar), o <code>drawElements</code> falla con <code>GL_INVALID_OPERATION: glDrawElements: Must have element array buffer bound</code> aunque «acabas de enlazar el EBO».</p>
+  <p><strong>Causa:</strong> el enlace <code>ELEMENT_ARRAY_BUFFER</code> es estado del VAO que esté enlazado en ese momento. Si enlazas el EBO antes de enlazar tu VAO, se lo queda el VAO anterior; si lo desenlazas (<code>null</code>) con tu VAO enlazado, se lo quitas.</p>
+  <p><strong>Solución:</strong> sigue el orden del ejemplo 4.4.2: VAO, buffers, atributos, EBO, y desenlazar el VAO al final. Para comprobarlo, con tu VAO enlazado, <code>gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING)</code> debe devolver tu EBO.</p>
+</div>
+
+<div class="callout bestiario" data-id="m4-vao-buffer-antiguo" data-titulo="Cambio el buffer y la malla no se actualiza">
+  <p><strong>Síntoma:</strong> para cambiar la geometría creas un buffer nuevo, lo rellenas y lo enlazas en <code>ARRAY_BUFFER</code>, pero se sigue dibujando la malla antigua.</p>
+  <p><strong>Causa:</strong> el VAO guarda el buffer que había enlazado cuando llamaste a <code>vertexAttribPointer</code>. Enlazar otro en <code>ARRAY_BUFFER</code> no afecta al VAO.</p>
+  <p><strong>Solución:</strong> o bien actualiza el <em>contenido</em> del buffer antiguo (<code>bufferData</code>/<code>bufferSubData</code> con él enlazado), o bien, con el VAO enlazado, enlaza el buffer nuevo y repite los <code>vertexAttribPointer</code> para que lo capturen.</p>
+</div>
+
+<div class="callout hack" data-titulo="Un VAO para varios programas: fija las locations">
+  <p>Un VAO no sabe nada de programas: solo guarda «la location 0 lee de este buffer así, la 1 de este otro asá». Si todos tus programas ponen cada atributo en la misma location, un único VAO por malla sirve para todos (el del color, el de las sombras, el de depuración…) sin reconfigurar nada. Para garantizarlo, fija las locations en el shader con <code>layout(location = N)</code>, o con <code>gl.bindAttribLocation(programa, N, nombre)</code> antes de enlazar.</p>
+  <p>Lo comprobamos con un VAO (posición en la location 0, color en la 1) y cinco programas. Los dos que usan <code>layout</code> dibujan bien aunque declaren los atributos en distinto orden. Sin <code>layout</code>, el enlazador de Chrome asignó las locations por orden de declaración: el programa que declara primero <code>a_pos</code> funcionó, de casualidad; el que declara primero <code>a_color</code> recibió el color como posición; y uno con un atributo más acabó con <code>a_pos</code> en la location 2, que el VAO ni siquiera tiene activada. Estos dos últimos no pintaron nada, y sin ningún error.</p>
+</div>
+
+<h3>El VAO por defecto: WebGL1, WebGL2 y OpenGL de escritorio</h3>
+<p>Si no enlazas ningún VAO, ¿dónde se guarda el estado de los atributos? Depende de la API:</p>
+<ul>
+  <li><strong>WebGL1</strong>: no tenía VAOs en el núcleo. Había un único VAO implícito y la extensión <code>OES_vertex_array_object</code> para crear más (sigue disponible: en Chrome, <code>getExtension('OES_vertex_array_object')</code> devuelve un objeto con <code>createVertexArrayOES()</code>; el contexto WebGL1 no tiene <code>createVertexArray</code>).</li>
+  <li><strong>WebGL2</strong>: VAOs en el núcleo, y el VAO por defecto sigue existiendo: <code>gl.bindVertexArray(null)</code> lo enlaza y se puede configurar y dibujar con él (lo comprobamos).</li>
+  <li><strong>OpenGL de escritorio en perfil <em>core</em></strong> (el único disponible en macOS por encima de 2.1): <strong>no hay VAO por defecto</strong>. Sin un VAO enlazado, el driver de Apple da <code>GL_INVALID_OPERATION</code> en <code>glEnableVertexAttribArray</code> y en <code>glDrawArrays</code> (y, curiosamente, no en <code>glVertexAttribPointer</code>). Lo verás en <a href="06-opengl-python.html">4.6</a>.</li>
+</ul>
+<p>Regla práctica: en WebGL2, crea siempre tus propios VAOs, uno por malla, y no dejes estado en el VAO por defecto.</p>
+
+<h2>Índices: el EBO</h2>
+<p>Un quad son dos triángulos que comparten dos vértices. Sin índices, esos dos vértices se guardan (y se procesan) dos veces: 6 vértices. Con un buffer de índices, se guardan 4 vértices y una lista de 6 índices, <code>0 1 2 0 2 3</code>, que dice qué vértices forman cada triángulo:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+const indices = new Uint16Array([0, 1, 2,   0, 2, 3]);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);                 // con el VAO enlazado
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);     // modo, cuántos índices, su tipo, offset EN BYTES
+</script>
+<p>Los argumentos de <code>drawElements</code>: el modo (igual que en <code>drawArrays</code>), <strong>cuántos índices</strong> (no cuántos vértices ni cuántos triángulos), el tipo de cada índice y el <strong>byte</strong> del EBO donde empezar, que tiene que ser múltiplo del tamaño del índice (con <code>UNSIGNED_SHORT</code>, un offset impar da <code>INVALID_OPERATION</code>: medido).</p>
+<table class="m4-compacta">
+  <thead><tr><th>Tipo de índice</th><th>Bytes</th><th>Índice máximo</th><th>Notas</th></tr></thead>
+  <tbody>
+    <tr><td><code>UNSIGNED_BYTE</code></td><td class="num">1</td><td class="num">254</td><td>mallas diminutas</td></tr>
+    <tr><td><code>UNSIGNED_SHORT</code></td><td class="num">2</td><td class="num">65 534</td><td>el habitual; ¡65 535 está reservado!</td></tr>
+    <tr><td><code>UNSIGNED_INT</code></td><td class="num">4</td><td class="num">4 294 967 294</td><td>en WebGL2 sin extensiones (en WebGL1, <code>OES_element_index_uint</code>)</td></tr>
+  </tbody>
+</table>
+<p>La columna del máximo tiene truco: el valor más alto de cada tipo (255, 65 535, 4 294 967 295) está reservado para el <strong>reinicio de primitivas</strong> (<em>primitive restart</em>). En WebGL2 está siempre activo (ni siquiera se puede desactivar: <code>gl.enable(gl.PRIMITIVE_RESTART_FIXED_INDEX)</code> da <code>INVALID_ENUM</code>, porque en WebGL no existe como opción). Cuando el ensamblado encuentra ese índice, corta la primitiva y empieza una nueva. Es útil para dibujar varias tiras separadas en un solo <code>drawElements</code>: medimos que <code>0 1 2 3 · 65535 · 4 5 6 7</code> en <code>TRIANGLE_STRIP</code> dibuja dos quads separados, sin los triángulos «puente» que se formarían sin el corte.</p>
+
+<div class="callout bestiario" data-id="m4-indice-65535" data-titulo="Con 65 536 vértices o más, parte de la malla desaparece o se retuerce">
+  <p><strong>Síntoma:</strong> una malla grande con índices <code>UNSIGNED_SHORT</code> pierde triángulos, o a partir de cierto punto los triángulos conectan vértices equivocados.</p>
+  <p><strong>Causa:</strong> dos problemas que suelen ir juntos. Un <code>Uint16Array</code> no puede guardar índices mayores que 65 535: el 65 536 se convierte en 0 sin avisar (aritmética módulo $2^{16}$, <a href="../01-web/06-binario.html">1.6</a>). Y el índice 65 535 es el de reinicio: en <code>TRIANGLES</code>, medimos que descarta el triángulo incompleto en el que aparece y el ensamblado vuelve a empezar desde el índice siguiente, así que los triángulos de después pueden quedar desalineados. Y basta un solo triángulo para verlo: con 65 536 vértices, el de índices (0, 1, 65535) no pintó ni un píxel y el (0, 1, 65534) sí; con <code>Uint32Array</code>, el 65535 funcionó como un vértice normal.</p>
+  <p><strong>Solución:</strong> con más de 65 535 vértices, usa <code>Uint32Array</code> y <code>gl.UNSIGNED_INT</code>, o parte la malla en trozos de menos de 65 535 vértices.</p>
+</div>
+
+<p>Otra diferencia con OpenGL nativo: WebGL <strong>comprueba cada dibujo con índices</strong>. Si un índice apunta más allá del final de algún buffer de atributos, el dibujo falla con <code>INVALID_OPERATION</code> (<code>Vertex buffer is not big enough for the draw call</code>, medido con un índice 50 en un buffer de 8 vértices). OpenGL nativo leería memoria ajena. Esa seguridad cuesta tiempo de CPU (WebGL guarda una copia de tus índices para poder revisarlos), y es la razón de que un buffer de índices no pueda usarse también como buffer de vértices.</p>
+
+<h3>Por qué los índices ahorran más que memoria</h3>
+<p>El ahorro de memoria es modesto: en el quad, 64 + 12 = 76 bytes frente a 96. Lo importante es el <strong>trabajo</strong>: con índices, la GPU sabe cuándo dos vértices son el mismo y puede reutilizar el resultado del vertex shader en lugar de volver a ejecutarlo. Guarda los últimos vértices transformados en una pequeña <strong>caché post-transformación</strong>, indexada por el índice. Con la GPU de juguete (que tiene una caché FIFO de tamaño configurable) podemos contar cuántas veces se ejecuta el vertex shader:</p>
+
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="python3 gpu_juguete/ejemplo_02_indices.py">
+A) quad
+   drawArrays:   VBO 96 bytes                    → vertex shader × 6
+   drawElements: VBO 64 bytes + EBO 12 bytes = 76 → vertex shader × 4 (aciertos de caché: 2)
+   ¿misma imagen? True
+
+B) rejilla 16×16: 289 vértices distintos, 512 triángulos, 1536 índices
+   caché (entradas) | por filas: VS   VS/triángulo | barajados: VS   VS/triángulo
+                  0 |         1536    3.00        |        1536    3.00
+                  4 |         1024    2.00        |        1522    2.97
+                  8 |          544    1.06        |        1500    2.93
+                 16 |          544    1.06        |        1474    2.88
+                 32 |          514    1.00        |        1409    2.75
+                  ∞ |          289    0.56        |         289    0.56
+</script>
+
+<p>La columna «VS/triángulo» es la métrica clásica (se suele llamar ACMR, <em>average cache miss ratio</em>). Sin caché, cada triángulo cuesta 3 ejecuciones del vertex shader. Con una caché infinita, cada vértice se procesa una vez: 289 / 512 ≈ 0,56 (una malla de triángulos tiene, de media, unos dos triángulos por vértice). Con una caché de 16 y los triángulos recorridos fila a fila, 1,06. Y con <strong>los mismos triángulos en orden aleatorio</strong>, 2,88: la caché casi no sirve. El orden de los índices importa casi tanto como su existencia.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 4.4.3 — ¿Por qué 1,06 y no 0,56?</h3>
+  <p>Con la rejilla recorrida fila a fila y una caché FIFO de 16 entradas, ¿por qué no se alcanza el ideal de 0,56 invocaciones por triángulo?</p>
+  <ol>
+    <li><strong>Qué necesita cada triángulo</strong>: al recorrer la fila $j$, los triángulos usan vértices de la fila de abajo ($j$) y de la de arriba ($j + 1$). Cada fila de la rejilla tiene 17 vértices.</li>
+    <li><strong>Qué hay en la caché</strong>: cuando el recorrido llega a la columna $i$ de la fila $j$, el vértice de abajo que necesita (de la fila $j$) entró en la caché al procesar la columna $i$ de la fila anterior, como vértice «de arriba». Desde entonces se han insertado los vértices del resto de la fila anterior y los del principio de esta: unos 32 (dos por columna, porque los de abajo también fallaban). Una FIFO de 16 solo recuerda los 16 últimos: ese vértice ya ha salido.</li>
+    <li><strong>Resultado</strong>: casi todos los vértices se procesan <em>dos</em> veces, una como fila de arriba y otra como fila de abajo: 544 invocaciones (las filas inferior y superior de la rejilla solo se procesan una vez), que entre 512 triángulos son 1,06. Con una caché de 32, que alcanza a recordar esas inserciones, baja a 1,00.</li>
+    <li><strong>La lección</strong>: para aprovechar una caché de $K$ entradas hay que recorrer la malla en «bandas» lo bastante estrechas como para que la fila anterior quepa en la caché. Lo harás en el ejercicio 4.4.4 y bajarás de 0,7.</li>
+  </ol>
+</section>
+
+<div class="callout senior" data-titulo="Las cachés de verdad">
+  <p>Las GPU modernas no tienen exactamente una FIFO de 16 entradas: unas reutilizan vértices dentro de un «lote» de índices, otras tienen cachés de tamaños y políticas que los fabricantes no siempre documentan. Pero la conclusión práctica es la misma en todas: índices ordenados para que los triángulos cercanos se dibujen juntos. Las herramientas de exportación y bibliotecas como <a href="https://github.com/zeux/meshoptimizer">meshoptimizer</a> reordenan los índices de las mallas por ti; es un paso que casi todo motor aplica al importar un modelo.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Una malla tiene 10 000 vértices y 19 000 triángulos. La dibujas con <code>drawElements(gl.TRIANGLES, …)</code>. ¿Cuál es el <code>count</code> correcto?</p>
+  <ul>
+    <li>10 000, el número de vértices.<div class="explicacion">Con índices, <code>count</code> no son vértices distintos: es cuántos índices leer del EBO.</div></li>
+    <li>19 000, el número de triángulos.<div class="explicacion">Casi: cada triángulo necesita 3 índices en modo <code>TRIANGLES</code>.</div></li>
+    <li data-correcta>57 000: tres índices por triángulo.<div class="explicacion">Exacto. Y con 10 000 vértices basta con <code>Uint16Array</code> y <code>UNSIGNED_SHORT</code> (el índice más alto, 9 999, está muy lejos del 65 535 reservado).</div></li>
+  </ul>
+</div>
+
+<h2>Lo mismo, en la GPU real desde Python</h2>
+<p>El script <code>python/moderngl/02_buffers_y_vao.py</code> sube el quad entrelazado de la demo a la GPU con moderngl, lo lee de vuelta con <code>buffer.read()</code> y, sobre el mismo contexto, pregunta al driver con PyOpenGL qué ha guardado moderngl en el VAO. moderngl describe el formato con una cadena: <code>"2f 4f1"</code> significa «2 floats, y luego 4 valores de 1 byte que el shader verá como float», es decir, <code>UNSIGNED_BYTE</code> normalizado (lo comprobamos preguntando al driver; lo verás a fondo en <a href="06-opengl-python.html">4.6</a>):</p>
+
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="python moderngl/02_buffers_y_vao.py">
+locations asignadas por el enlazador: {'a_pos': 0, 'a_color': 1}
+VBO: 48 bytes | ¿lo que devuelve la GPU es idéntico? True
+vértice 0 @ byte   0: xy[cd cc 4c bf cd cc 4c bf] rgba[ff 40 20 ff]
+vértice 1 @ byte  12: xy[cd cc 4c 3f cd cc 4c bf] rgba[20 c8 40 ff]
+vértice 2 @ byte  24: xy[cd cc 4c 3f cd cc 4c 3f] rgba[28 5a ff ff]
+vértice 3 @ byte  36: xy[cd cc 4c bf cd cc 4c 3f] rgba[ff dc 28 ff]
+  a_pos    loc=0 habilitado=1 size=2 tipo=FLOAT normalizado=0 stride=12 offset=0 buffer=1 (vbo.glo=1)
+  a_color  loc=1 habilitado=1 size=4 tipo=UNSIGNED_BYTE normalizado=1 stride=12 offset=8 buffer=1 (vbo.glo=1)
+  ELEMENT_ARRAY_BUFFER del VAO = 2 (ebo.glo=2)
+guardado img/moderngl-quad.png
+miembros de prog2: ['a_pos']
+ctx.vertex_array con a_color → KeyError: 'a_color' (el enlazador lo eliminó)
+con '2f 4x' (saltando los bytes del color) funciona: stride = 12
+</script>
+
+<p>Tres cosas para fijarse. Los bytes de $-0{,}8$ son <code>cd cc 4c bf</code>: el 0,8 no es exacto en binario, igual que el 0,9 del bestiario de 4.3. La imagen que dibuja la GPU real con este VAO (<code>moderngl-quad.png</code>) es idéntica, píxel a píxel, a la que dibuja la GPU de juguete con el mismo buffer (<code>juguete-formatos.png</code>): lo comprobamos. Y las últimas líneas muestran algo que verás con los uniforms en <a href="05-uniforms-varyings.html">4.5</a> y con los atributos en <a href="../05-webgl/02-primer-triangulo.html#m5-atributo-menos-uno">5.2</a>: si el shader no usa un atributo, el enlazador lo elimina, y moderngl se niega a configurarlo (<code>KeyError</code>); la cadena de formato <code>"4x"</code> sirve para saltarse esos bytes.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 4.4.1 — ¿Qué bytes lee el vertex fetch?</h3>
+  <p>Con el formato compacto del ejemplo 4.4.1 (stride 32: posición en 0–11, normal <code>SHORT</code> normalizada en 12–17, uv en 20–27, color en 28–31): (a) ¿qué bytes lee la GPU para el uv del vértice 5? (b) ¿Y para la normal del vértice 2? (c) Si la componente y de esa normal guarda el <code>SHORT</code> 16 384, ¿qué valor recibe el shader? (d) ¿Qué bytes no lee nunca ningún atributo?</p>
+  <details class="pista"><summary>Pista</summary><p>Dirección = offset + i × stride. El uv son 2 floats (8 bytes); la normal, 3 shorts (6 bytes). Para (c), un <code>SHORT</code> normalizado se divide por 32 767.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>(a) $20 + 5 \times 32 = 180$: bytes 180 a 187. (b) $12 + 2 \times 32 = 76$: bytes 76 a 81 (la x en 76–77, la y en 78–79, la z en 80–81). (c) $16\,384 / 32\,767 \approx 0{,}50002$ (no exactamente 0,5: el divisor es 32 767, no 32 768; es la misma cifra que midió el shader en la tabla de tipos). (d) Los bytes de relleno, 18 y 19 de cada vértice: $18 + i \times 32$ y $19 + i \times 32$. Existen solo para que el uv empiece en un múltiplo de 4, como exige WebGL. Si alguna vez necesitas un dato extra de 2 bytes, ahí tienes sitio gratis.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.4.2 — El quad blanco y deshecho</h3>
+  <p>Este programa empaqueta un quad entrelazado (posición en 2 floats + color en 4 bytes, 12 bytes por vértice) con un <code>DataView</code> (<a href="../01-web/06-binario.html">1.6</a>) y lo dibuja con índices. Pero sale deformado y blanco, y <code>getError</code> no protesta: para la API, todas las llamadas son válidas. Hay dos fallos, los dos en llamadas a <code>vertexAttribPointer</code>. Arréglalos: debe verse el quad con un degradado de rojo, verde, azul y amarillo en las esquinas.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.4.2" data-altura="220" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 220;
+const gl = canvas.getContext('webgl2');
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec4 a_color;
+out vec4 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_pos, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; in vec4 v_color; out vec4 fragColor;
+void main() { fragColor = v_color; }`));
+gl.linkProgram(prog);
+
+// 4 vértices × 12 bytes: x, y (float32) + r, g, b, a (uint8)
+const vertices = [[-0.8, -0.8, 255, 64, 32, 255], [0.8, -0.8, 32, 200, 64, 255],
+                  [0.8, 0.8, 40, 90, 255, 255], [-0.8, 0.8, 255, 220, 40, 255]];
+const bytes = new ArrayBuffer(vertices.length * 12);
+const dv = new DataView(bytes);
+vertices.forEach(([x, y, r, g, b, a], i) => {
+  dv.setFloat32(i * 12, x, true);          // true = little-endian
+  dv.setFloat32(i * 12 + 4, y, true);
+  dv.setUint8(i * 12 + 8, r); dv.setUint8(i * 12 + 9, g); dv.setUint8(i * 12 + 10, b); dv.setUint8(i * 12 + 11, a);
+});
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, bytes, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);            // posición: 2 floats = 8 bytes
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, false, 12, 8);   // color
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW);
+
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(prog);
+gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+const e = gl.getError();
+console.log(e === gl.NO_ERROR ? 'sin errores' : 'error de GL: 0x' + e.toString(16));
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 220;
+const gl = canvas.getContext('webgl2');
+function shader(tipo, fuente) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec4 a_color;
+out vec4 v_color;
+void main() { v_color = a_color; gl_Position = vec4(a_pos, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; in vec4 v_color; out vec4 fragColor;
+void main() { fragColor = v_color; }`));
+gl.linkProgram(prog);
+
+const vertices = [[-0.8, -0.8, 255, 64, 32, 255], [0.8, -0.8, 32, 200, 64, 255],
+                  [0.8, 0.8, 40, 90, 255, 255], [-0.8, 0.8, 255, 220, 40, 255]];
+const bytes = new ArrayBuffer(vertices.length * 12);
+const dv = new DataView(bytes);
+vertices.forEach(([x, y, r, g, b, a], i) => {
+  dv.setFloat32(i * 12, x, true);
+  dv.setFloat32(i * 12 + 4, y, true);
+  dv.setUint8(i * 12 + 8, r); dv.setUint8(i * 12 + 9, g); dv.setUint8(i * 12 + 10, b); dv.setUint8(i * 12 + 11, a);
+});
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, bytes, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 12, 0);           // stride = el vértice ENTERO: 12 bytes
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, 12, 8);    // normalizado: 0..255 → 0..1
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW);
+
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(prog);
+gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+const e = gl.getError();
+console.log(e === gl.NO_ERROR ? 'sin errores' : 'error de GL: 0x' + e.toString(16));
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El stride es la distancia en bytes entre el principio de un vértice y el principio del siguiente, no el tamaño del atributo. ¿Cuántos bytes ocupa un vértice entero en este buffer?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con la posición arreglada, el quad sale blanco. ¿Qué rango de valores recibe el shader en <code>a_color</code> si los bytes no se normalizan?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>Fallo 1</strong>: el stride de la posición es 8, el tamaño de la posición, cuando de un vértice al siguiente hay 12 bytes (8 de posición + 4 de color). El vértice 0 se lee bien (bytes 0–7), pero el vértice 1 se lee en los bytes 8–15: los 4 bytes del color del vértice 0 interpretados como un float, más la x del vértice 1. Basura con apariencia de número: geometría deshecha. <strong>Fallo 2</strong>: el color no se normaliza, así que el shader recibe valores de 0 a 255 y todo se satura a blanco. Con <code>normalized = true</code>, 255 → 1,0 y 64 → 0,251.</p>
+    <p>Ninguno de los dos da error: para la API, un stride de 8 y un color sin normalizar son configuraciones perfectamente válidas (WebGL solo rechaza strides que no sean múltiplos del tamaño del tipo, o mayores de 255). Por eso estos dos fallos son clásicos del bestiario: nada te avisa, y hay que razonar con los bytes. La demo de la memoria de esta lección es la herramienta mental para eso.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 4.4.3 — De drawArrays a drawElements</h3>
+  <p>El programa dibuja un hexágono como 6 triángulos independientes con <code>drawArrays</code>: 18 vértices, aunque solo hay 7 puntos distintos (el centro y los 6 del borde). Conviértelo a <code>drawElements</code>: un VBO con los 7 vértices, un EBO con 18 índices (<code>Uint16Array</code>) y la llamada correcta. La consola muestra cuántos bytes subes a la GPU; debe verse exactamente el mismo hexágono.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.4.3" data-altura="220" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 220;
+const gl = canvas.getContext('webgl2');
+function shader(tipo, fuente) { const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+out vec2 v_pos;
+void main() { v_pos = a_pos; gl_Position = vec4(a_pos, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; in vec2 v_pos; out vec4 fragColor;
+void main() { fragColor = vec4(0.5 + 0.5 * v_pos, 0.8, 1.0); }`));
+gl.linkProgram(prog);
+
+// Los 7 puntos: el centro y los 6 vértices del borde
+const puntos = [[0, 0]];
+for (let k = 0; k < 6; k++) puntos.push([0.8 * Math.cos(k * Math.PI / 3), 0.8 * Math.sin(k * Math.PI / 3)]);
+
+// VERSIÓN ACTUAL: 6 triángulos × 3 vértices = 18 vértices, repitiendo puntos
+const datos = [];
+for (let k = 0; k < 6; k++) datos.push(...puntos[0], ...puntos[1 + k], ...puntos[1 + (k + 1) % 6]);
+const vbo = new Float32Array(datos);
+
+gl.bindVertexArray(gl.createVertexArray());
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, vbo, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+console.log('bytes subidos a la GPU:', vbo.byteLength);
+
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(prog);
+gl.drawArrays(gl.TRIANGLES, 0, 18);
+console.log('error:', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+canvas.width = canvas.height = 220;
+const gl = canvas.getContext('webgl2');
+function shader(tipo, fuente) { const s = gl.createShader(tipo); gl.shaderSource(s, fuente); gl.compileShader(s); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+layout(location = 0) in vec2 a_pos;
+out vec2 v_pos;
+void main() { v_pos = a_pos; gl_Position = vec4(a_pos, 0.0, 1.0); }`));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; in vec2 v_pos; out vec4 fragColor;
+void main() { fragColor = vec4(0.5 + 0.5 * v_pos, 0.8, 1.0); }`));
+gl.linkProgram(prog);
+
+const puntos = [[0, 0]];
+for (let k = 0; k < 6; k++) puntos.push([0.8 * Math.cos(k * Math.PI / 3), 0.8 * Math.sin(k * Math.PI / 3)]);
+
+// Los 7 puntos, UNA vez cada uno
+const vbo = new Float32Array(puntos.flat());
+// 6 triángulos: (centro, borde k, borde k+1); los índices del borde van de 1 a 6
+const indices = [];
+for (let k = 0; k < 6; k++) indices.push(0, 1 + k, 1 + (k + 1) % 6);
+const ebo = new Uint16Array(indices);
+
+gl.bindVertexArray(gl.createVertexArray());                 // el VAO primero...
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, vbo, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());  // ...y el EBO con el VAO enlazado
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, ebo, gl.STATIC_DRAW);
+console.log('bytes subidos a la GPU:', vbo.byteLength, '+', ebo.byteLength, '=', vbo.byteLength + ebo.byteLength);
+
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(prog);
+gl.drawElements(gl.TRIANGLES, 18, gl.UNSIGNED_SHORT, 0);   // 18 ÍNDICES, cada uno de 2 bytes
+console.log('error:', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El VBO nuevo es <code>new Float32Array(puntos.flat())</code>. Cada triángulo es (centro, punto del borde $k$, punto del borde $k + 1$): con el centro en el índice 0, los del borde son los índices 1 a 6.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El EBO se enlaza en <code>ELEMENT_ARRAY_BUFFER</code> <em>con el VAO enlazado</em>. Y en <code>drawElements</code> el segundo argumento es el número de índices.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los datos pasan de 18 vértices × 8 bytes = 144 bytes a 7 × 8 = 56 bytes de vértices más 18 × 2 = 36 bytes de índices: 92 bytes. Y, sobre todo, el vertex shader pasa de ejecutarse 18 veces a (idealmente) 7: el centro, que usan los seis triángulos, se transforma una sola vez y se reutiliza desde la caché.</p>
+    <p>El truco de <code>(k + 1) % 6</code> cierra el hexágono: el último triángulo usa el borde 6 y el borde 1. Y fíjate en que el hexágono se ve igual con las dos versiones: los índices no cambian qué se dibuja, solo cómo se describe. El orden de los índices dentro de cada triángulo sí importa: centro, $k$, $k + 1$ recorre cada triángulo en sentido antihorario (el ángulo crece), así que todos son frontales si activas el culling.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 4.4.4 — Ordena los triángulos para la caché</h3>
+  <p>Con la GPU de juguete en JavaScript: la rejilla de 16 × 16 quads del ejemplo 4.4.3, con los triángulos en orden aleatorio y una caché de 16 entradas, cuesta unas 2,9 invocaciones del vertex shader por triángulo. Escribe la función <code>ordenar(triangulos)</code>, que recibe la lista de triángulos (cada uno, un array de 3 índices) y devuelve los mismos en otro orden. Objetivo: <strong>menos de 0,8 invocaciones por triángulo</strong>. Recorrer por filas da 1,06; habrá que pensar un poco más.</p>
+  <div class="js-playground" data-titulo="Ejercicio 4.4.4" data-altura="50" data-incluir="gpujuguete" data-fondo="oscuro" data-apilado>
+<script type="text/x-html">
+<p style="padding:10px 16px;font:14px monospace">resultado en la consola ↓</p>
+</script>
+<script type="text/x-js">
+const G = GPUJuguete;
+const N = 16;                                          // 16 × 16 quads, (N + 1)² = 289 vértices
+function ordenar(triangulos) {
+  // TODO: devuelve los mismos triángulos en un orden que aproveche la caché
+  return triangulos;
+}
+
+// ---- la rejilla (el vértice de la columna i y la fila j tiene el índice j * (N + 1) + i)
+const vertices = [];
+for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) vertices.push(-1 + 2 * i / N, -1 + 2 * j / N);
+const triangulos = [];
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const a = j * (N + 1) + i;
+  triangulos.push([a, a + 1, a + N + 2], [a, a + N + 2, a + N + 1]);
+}
+let semilla = 12345;                                   // barajado repetible
+const azar = () => (semilla = (semilla * 1103515245 + 12345) % 2147483648) / 2147483648;
+for (let i = triangulos.length - 1; i > 0; i--) { const k = Math.floor(azar() * (i + 1)); [triangulos[i], triangulos[k]] = [triangulos[k], triangulos[i]]; }
+
+function medir(lista, cache) {
+  const indices = new Uint16Array(lista.flat());
+  const vao = new G.VAO();
+  vao.configurar(0, new G.Atributo(new G.Buffer(new Float32Array(vertices)), { size: 2 }));
+  vao.elementos = new G.Buffer(indices);
+  const prog = new G.Programa({ vertexShader: (a) => [[a.a_pos[0], a.a_pos[1], 0, 1], {}], fragmentShader: () => [1, 1, 1, 1], atributos: { a_pos: [0, 'vec2'] } });
+  const estado = new G.EstadoFijo();
+  estado.cacheVertices = cache;
+  const est = G.dibujarElementos(new G.Framebuffer(32, 32), prog, vao, G.TRIANGLES, indices.length, G.UNSIGNED_SHORT, 0, estado);
+  return est.invocacionesVS / lista.length;
+}
+const ordenados = ordenar(triangulos.slice());
+console.log('mismos triángulos:', ordenados.length === triangulos.length);
+console.log('aleatorio: ', medir(triangulos, 16).toFixed(2), 'invocaciones por triángulo');
+console.log('tu orden:  ', medir(ordenados, 16).toFixed(2), 'invocaciones por triángulo (objetivo: < 0.8; ideal: 0.56)');
+</script>
+<script type="text/x-js" data-solucion>
+const G = GPUJuguete;
+const N = 16;
+function ordenar(triangulos) {
+  // Recorremos la rejilla por BANDAS verticales de B columnas: dentro de una banda, fila a fila.
+  // Así, al empezar una fila, los B + 1 vértices de la fila de abajo acaban de entrar en la caché.
+  // Con una caché de 16, una banda cabe si las dos filas (2·(B + 1) vértices) caben: B ≤ 7.
+  const B = 7;
+  const columna = (t) => Math.min(...t.map((v) => v % (N + 1)));
+  const fila = (t) => Math.floor(Math.min(...t) / (N + 1));
+  return triangulos.sort((p, q) =>
+    Math.floor(columna(p) / B) - Math.floor(columna(q) / B)   // 1.º la banda
+    || fila(p) - fila(q)                                       // 2.º la fila dentro de la banda
+    || columna(p) - columna(q)                                 // 3.º de izquierda a derecha
+    || Math.max(...p) - Math.max(...q));                       // 4.º los dos triángulos del quad, en orden
+}
+
+const vertices = [];
+for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) vertices.push(-1 + 2 * i / N, -1 + 2 * j / N);
+const triangulos = [];
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const a = j * (N + 1) + i;
+  triangulos.push([a, a + 1, a + N + 2], [a, a + N + 2, a + N + 1]);
+}
+let semilla = 12345;
+const azar = () => (semilla = (semilla * 1103515245 + 12345) % 2147483648) / 2147483648;
+for (let i = triangulos.length - 1; i > 0; i--) { const k = Math.floor(azar() * (i + 1)); [triangulos[i], triangulos[k]] = [triangulos[k], triangulos[i]]; }
+
+function medir(lista, cache) {
+  const indices = new Uint16Array(lista.flat());
+  const vao = new G.VAO();
+  vao.configurar(0, new G.Atributo(new G.Buffer(new Float32Array(vertices)), { size: 2 }));
+  vao.elementos = new G.Buffer(indices);
+  const prog = new G.Programa({ vertexShader: (a) => [[a.a_pos[0], a.a_pos[1], 0, 1], {}], fragmentShader: () => [1, 1, 1, 1], atributos: { a_pos: [0, 'vec2'] } });
+  const estado = new G.EstadoFijo();
+  estado.cacheVertices = cache;
+  const est = G.dibujarElementos(new G.Framebuffer(32, 32), prog, vao, G.TRIANGLES, indices.length, G.UNSIGNED_SHORT, 0, estado);
+  return est.invocacionesVS / lista.length;
+}
+const ordenados = ordenar(triangulos.slice());
+console.log('mismos triángulos:', ordenados.length === triangulos.length);
+console.log('aleatorio: ', medir(triangulos, 16).toFixed(2), 'invocaciones por triángulo');
+console.log('tu orden:  ', medir(ordenados, 16).toFixed(2), 'invocaciones por triángulo (objetivo: < 0.8; ideal: 0.56)');
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Primero, ordénalos por filas (compara <code>Math.min(...t)</code>): deberías obtener 1,06. Lee el ejemplo 4.4.3 para entender por qué no baja más.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>El problema es que una fila entera (17 vértices) no cabe en la caché. Recorre la rejilla en bandas verticales de pocas columnas, fila a fila dentro de cada banda. ¿Cuántas columnas caben si hay que mantener en la caché la fila de abajo y la de arriba de la banda?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con bandas de 7 columnas, al procesar la fila $j$ de una banda, los 8 vértices de su fila de abajo entraron en la caché al procesar la fila $j - 1$ (como fila de arriba) y siguen ahí, porque la banda solo mete 8 vértices nuevos por fila y la caché guarda 16. Cada fila de la banda añade 8 vértices nuevos para 14 triángulos: ≈ 0,57, más un pequeño sobrecoste en los bordes de las bandas. En la GPU de juguete, esta función da <strong>0,64</strong> (medido; según los desempates del orden, entre 0,63 y 0,66 con bandas de 4 a 7 columnas). Con bandas de 8 columnas vuelve a subir a 1,01: 9 + 9 = 18 vértices ya no caben en 16.</p>
+    <p>Es exactamente la clase de razonamiento que hacen los algoritmos de optimización de mallas (el de Tom Forsyth, el de meshoptimizer), aunque generalizado a mallas arbitrarias y a cachés de tamaño desconocido. Y la moraleja vale para cualquier caché: el orden de los datos puede valer tanto como los datos.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un <strong>VBO</strong> es memoria de la GPU sin tipo. <code>bufferData</code> reserva y <em>copia</em> (en WebGL, una reserva sin datos queda a cero); <code>bufferSubData</code> sobrescribe sin crecer. Los hints (<code>STATIC</code>/<code>DYNAMIC</code>/<code>STREAM</code>) son promesas, no órdenes.</li>
+    <li>Colocación: <strong>entrelazada</strong> (un buffer, stride = tamaño del vértice) o <strong>separada</strong> (un buffer por atributo). Dirección del atributo del vértice $i$ = offset + $i$ × stride, <strong>en bytes</strong>; stride 0 = empaquetado.</li>
+    <li><code>vertexAttribPointer</code> entrega floats: los enteros se normalizan (<code>true</code>: 255 → 1,0) o se convierten tal cual (<code>false</code>: 255 → 255,0). <code>vertexAttribIPointer</code> entrega enteros; función, tipo y signo deben coincidir con el shader o el dibujo falla.</li>
+    <li>El <strong>VAO</strong> guarda, por atributo: habilitado, buffer capturado, size, type, normalized, entero, stride, offset y divisor; y el <code>ELEMENT_ARRAY_BUFFER</code>. <strong>No</strong> guarda el enlace <code>ARRAY_BUFFER</code> ni los valores constantes.</li>
+    <li>Orden de configuración: VAO → buffer → atributos → EBO → desenlazar el VAO. En WebGL2 hay VAO por defecto; en OpenGL core (macOS) no.</li>
+    <li><strong>Índices</strong>: <code>drawElements(modo, nº de índices, tipo, offset en bytes)</code>. El índice máximo de cada tipo está reservado para el reinicio de primitivas (siempre activo en WebGL2). WebGL valida los índices; OpenGL nativo no.</li>
+    <li>La <strong>caché post-transformación</strong> reutiliza vértices procesados: el orden de los índices decide cuánto (de 2,9 a 0,64 invocaciones por triángulo en la misma rejilla).</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li>Khronos, <a href="https://www.khronos.org/opengl/wiki/Vertex_Specification">Vertex Specification</a> (OpenGL Wiki): el VAO, sus estados y sus trampas, en detalle.</li>
+  <li>MDN, <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/vertexAttribPointer"><code>vertexAttribPointer</code></a> y <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext/vertexAttribIPointer"><code>vertexAttribIPointer</code></a>.</li>
+  <li>Arseny Kapoulkine, <a href="https://github.com/zeux/meshoptimizer">meshoptimizer</a> y su explicación de la optimización de la caché de vértices.</li>
+  <li>Tom Forsyth, <a href="https://tomforsyth1000.github.io/papers/fast_vert_cache_opt.html">Linear-Speed Vertex Cache Optimisation</a>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/gpu-juguete.js"></script>
+<script src="recursos/demo-memoria.js"></script>
+</body>
+</html>

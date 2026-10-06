@@ -1,0 +1,1321 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5.5 · Texturas: carga, filtrado, wrap y unidades — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+</head>
+<body data-leccion="05-webgl/texturas">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 5 · WebGL2 desde cero</p>
+  <h1>Texturas: carga, filtrado, wrap y unidades</h1>
+  <p class="resumen">Una textura es una tabla de datos que el fragment shader puede consultar en cualquier punto. Aquí aprendes a subirla (desde un canvas, un ImageBitmap o un array), a elegir su formato, a controlar cómo se filtra y qué pasa fuera de sus bordes, y a conectarla con el shader a través de las unidades de textura. Por el camino, la textura negra, la imagen al revés y la imagen torcida.</p>
+  <div class="meta"><span class="chip">⏱ 100 min</span><span class="chip">Requisitos: 5.4, 1.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Crearás texturas desde canvas, <code>ImageBitmap</code> y arrays tipados, eligiendo la combinación correcta de formato interno, formato y tipo.</li>
+      <li>Controlarás <code>UNPACK_FLIP_Y_WEBGL</code>, <code>UNPACK_PREMULTIPLY_ALPHA_WEBGL</code> y <code>UNPACK_ALIGNMENT</code>, y sabrás cuándo se ignoran.</li>
+      <li>Entenderás la completitud de una textura, por qué sale negra, y qué hacen <code>NEAREST</code>, <code>LINEAR</code>, los mipmaps y la anisotropía.</li>
+      <li>Usarás los modos de wrap y las unidades de textura sin caer en la trampa del sampler que recibe un enum.</li>
+      <li>Sabrás dónde está cada texel (<code>(i + 0.5) / N</code>), leerás texels exactos con <code>texelFetch</code> y cargarás imágenes de forma asíncrona entendiendo por qué este curso no puede usar archivos de imagen.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Una tabla que el shader puede consultar</h2>
+<p>Hasta ahora, el fragment shader solo sabía lo que le llegaba por varyings y uniforms: unos pocos números. Una <strong>textura</strong> le da acceso a una tabla entera de datos, normalmente una imagen: millones de valores que puede consultar en cualquier coordenada, con interpolación gratuita. Es el tercer canal entre JavaScript y la GPU del <a href="../00-inicio/01-bienvenida.html">mapa mental del curso</a>, y el más potente: con texturas se pintan fotos y sprites, pero también se guardan alturas de un terreno, tablas de colores, datos de simulación o el resultado de un dibujo anterior (5.8).</p>
+<p>Conceptualmente es sencillo. En la práctica, las texturas acumulan más comportamientos raros por línea de código que ninguna otra parte de WebGL: estado global que afecta a la subida, reglas de completitud que las vuelven negras en silencio, un sistema de unidades con un nivel de indirección que confunde a todo el mundo, y restricciones de seguridad que impiden usar imágenes del disco. Vamos a verlas todas, una a una.</p>
+
+<div class="callout nota">
+  <p>Las imágenes de este curso se generan con código (<code>Texturas.crear(nombre)</code>, que dibuja en un canvas: <code>damero</code>, <code>uv</code>, <code>paisaje</code>, <code>letraF</code>…) porque, abierto con <code>file://</code>, el navegador no deja subir archivos de imagen a WebGL. Lo explicamos y lo comprobamos en la sección de <a href="#carga-asincrona-y-la-trampa-de-file">carga asíncrona</a>. En los playgrounds, <code>data-incluir="glkit,texturas"</code> pone <code>Texturas</code> a tu disposición.</p>
+</div>
+
+<h2>La primera textura, llamada por llamada</h2>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.5.1 — Una imagen sobre un rectángulo</h3>
+  <p>Un rectángulo de dos triángulos con posición y coordenadas de textura (UV) entrelazadas, y una textura creada a partir de un canvas. Primero, el código completo en funcionamiento; después lo desmenuzamos.</p>
+  <div class="js-playground" data-titulo="La primera textura" data-altura="300" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+layout(location = 0) in vec2 a_posicion;
+layout(location = 1) in vec2 a_uv;
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  v_uv = a_uv;
+  gl_Position = vec4(a_posicion.x * u_aspecto, a_posicion.y, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+// Rectángulo: x, y, u, v (4 vértices en TRIANGLE_STRIP)
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  -0.8, -0.8,   0, 0,
+   0.8, -0.8,   1, 0,
+  -0.8,  0.8,   0, 1,
+   0.8,  0.8,   1, 1,
+]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+
+// La textura
+const imagen = Texturas.crear('letraF', 256);             // un <canvas> de 256×256
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imagen);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+// Dibujar
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.uniform1i(gl.getUniformLocation(programa, 'u_tex'), 0);
+gl.bindVertexArray(vao);
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+  </div>
+</section>
+
+<p>En los shaders, dos novedades: el atributo <code>a_uv</code>, que viaja como varying hasta el fragment shader, y el uniform <code>sampler2D u_tex</code>, que se consulta con <code>texture(u_tex, v_uv)</code>. Las coordenadas de textura (UV) van de 0 a 1 en cada eje, sea cual sea el tamaño de la imagen en píxeles. En JavaScript, la creación:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const imagen = Texturas.crear('letraF', 256);
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imagen);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+</script>
+<ol>
+  <li data-l="1">Un <code>&lt;canvas&gt;</code> de 256×256 dibujado con Canvas 2D: la letra F, asimétrica en los dos ejes, ideal para detectar volteos.</li>
+  <li data-l="2"><code>createTexture()</code> crea un objeto textura vacío (<code>WebGLTexture</code>).</li>
+  <li data-l="3"><code>bindTexture(gl.TEXTURE_2D, t)</code>: como con los buffers, las llamadas siguientes actúan sobre la textura enlazada en ese destino. El primer enlace fija su tipo: 2D, cubemap, 3D o array.</li>
+  <li data-l="4">Estado <strong>global</strong> que afecta a cómo se interpretan los datos al subirlos: invertir las filas. Lo explicamos enseguida.</li>
+  <li data-l="5"><code>texImage2D(destino, nivel, formatoInterno, formato, tipo, fuente)</code>: reserva memoria en la GPU y copia la imagen. <strong>0</strong> es el nivel de mipmap (el tamaño completo); <code>RGBA</code> es cómo se guarda en la GPU; <code>RGBA</code> y <code>UNSIGNED_BYTE</code> describen los datos de origen. El tamaño lo toma del canvas.</li>
+  <li data-l="6">Dejar el estado global como estaba: la siguiente textura que suba alguien no debería salir invertida por sorpresa.</li>
+  <li data-l="7-8">Los filtros: qué hacer cuando la textura se ve más pequeña (<em>min</em>) o más grande (<em>mag</em>) que su tamaño real. Sin la línea 7, esta textura saldría <strong>negra</strong>.</li>
+  <li data-l="9-10">Qué pasa con las coordenadas fuera de 0…1, en cada eje (S es u, T es v).</li>
+</ol>
+</div>
+
+<p>Y para dibujar con ella, tres llamadas que parecen redundantes y no lo son:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+gl.activeTexture(gl.TEXTURE0);            // elegir la UNIDAD de textura 0
+gl.bindTexture(gl.TEXTURE_2D, textura);   // colocar la textura en esa unidad
+gl.uniform1i(locTex, 0);                  // el sampler lee de la unidad 0 (un número, no la textura)
+</script>
+<p>Esa indirección (el sampler apunta a una unidad y la unidad contiene una textura) tiene su propia sección más abajo. Primero, lo que pasa dentro de <code>texImage2D</code>.</p>
+
+<h2>texImage2D: fuentes, formatos y tipos</h2>
+<p><code>texImage2D</code> tiene dos familias de firmas:</p>
+<ul>
+  <li><strong>Con una fuente del DOM</strong>: <code>texImage2D(destino, nivel, formatoInterno, formato, tipo, fuente)</code>, donde <code>fuente</code> es un <code>HTMLCanvasElement</code>, <code>ImageBitmap</code>, <code>ImageData</code>, <code>HTMLImageElement</code> o <code>HTMLVideoElement</code>. El tamaño sale de la fuente.</li>
+  <li><strong>Con datos crudos</strong>: <code>texImage2D(destino, nivel, formatoInterno, ancho, alto, borde, formato, tipo, arrayTipado)</code>. El <code>borde</code> es una reliquia de OpenGL antiguo y tiene que ser 0. Si pasas <code>null</code> en lugar del array, se reserva la memoria sin datos (lo usaremos para renderizar a textura en 5.8).</li>
+</ul>
+<p>Los tres parámetros de formato son la fuente de más confusión. <strong>El formato interno</strong> es cómo se guardan los texels en la GPU; <strong>formato</strong> y <strong>tipo</strong> describen los datos que le das. No todas las combinaciones son válidas; estas son las que usarás:</p>
+<table>
+  <thead><tr><th>Formato interno</th><th>Formato</th><th>Tipo</th><th>Bytes/texel</th><th>El shader lee</th></tr></thead>
+  <tbody>
+    <tr><td><code>RGBA</code> (sin tamaño)</td><td><code>RGBA</code></td><td><code>UNSIGNED_BYTE</code></td><td>4</td><td>0…1. Heredado de WebGL1.</td></tr>
+    <tr><td><code>RGBA8</code></td><td><code>RGBA</code></td><td><code>UNSIGNED_BYTE</code></td><td>4</td><td>0…1. El equivalente «con tamaño».</td></tr>
+    <tr><td><code>RGB8</code></td><td><code>RGB</code></td><td><code>UNSIGNED_BYTE</code></td><td>3</td><td>(r, g, b, 1). Cuidado con la alineación.</td></tr>
+    <tr><td><code>R8</code></td><td><code>RED</code></td><td><code>UNSIGNED_BYTE</code></td><td>1</td><td>(r, 0, 0, 1). Máscaras, alturas.</td></tr>
+    <tr><td><code>RGBA16F</code></td><td><code>RGBA</code></td><td><code>HALF_FLOAT</code> o <code>FLOAT</code></td><td>8</td><td>Floats de 16 bits (máximo 65 504). Filtrable sin extensión.</td></tr>
+    <tr><td><code>RGBA32F</code></td><td><code>RGBA</code></td><td><code>FLOAT</code></td><td>16</td><td>Floats de 32 bits, sin recortar. <code>LINEAR</code> exige <code>OES_texture_float_linear</code>.</td></tr>
+    <tr><td><code>SRGB8_ALPHA8</code></td><td><code>RGBA</code></td><td><code>UNSIGNED_BYTE</code></td><td>4</td><td>Convierte de sRGB a lineal al leer (128 → 0,216). Color y gamma: <a href="../06-glsl/04-color.html">6.4</a>.</td></tr>
+  </tbody>
+</table>
+<p>Comprobado en la GPU: <code>R8</code> con el byte 200 devolvió <code>(0.784, 0, 0, 1)</code>; <code>RGBA32F</code> guardó intactos <code>2.5, −1, 1000, 0.5</code>; en <code>RGBA16F</code>, 70 000 se convirtió en infinito. Las combinaciones inválidas dan <code>INVALID_OPERATION</code>: <code>RGBA8</code> con <code>FLOAT</code>, <code>RGBA32F</code> con <code>UNSIGNED_BYTE</code>, el <code>RGBA</code> sin tamaño con <code>FLOAT</code> (<code>Invalid internal format 0x1908</code>), o un tipo <code>FLOAT</code> con un <code>Uint8Array</code> (<code>type FLOAT but ArrayBufferView not Float32Array</code>).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.5.2 — Texturas desde datos</h3>
+  <p>Tres texturas creadas desde arrays tipados, dibujadas en tres paneles con <code>viewport</code>: un damero RGBA de 4×4 bytes, un mapa de calor <code>R8</code> de 16×16 y una textura <code>RGBA32F</code> con valores mayores que 1, que el shader divide antes de mostrarlos. Todas con <code>NEAREST</code>, para ver cada texel como un cuadrado.</p>
+  <div class="js-playground" data-titulo="Tres formatos desde arrays" data-altura="250" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID] * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform highp sampler2D u_tex;
+uniform float u_divisor;           // para ver valores float grandes
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(texture(u_tex, v_uv).rgb / u_divisor, 1.0); }`);
+
+function nuevaTextura() {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  return t;
+}
+// 1) RGBA8: damero 4×4 de dos colores
+const damero = new Uint8Array(4 * 4 * 4);
+for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) {
+  damero.set((i + j) % 2 ? [139, 123, 255, 255] : [63, 208, 232, 255], (j * 4 + i) * 4);
+}
+const tDamero = nuevaTextura();
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, damero);
+
+// 2) R8: una "montaña" de 16×16, un byte por texel
+const calor = new Uint8Array(16 * 16);
+for (let j = 0; j < 16; j++) for (let i = 0; i < 16; i++) {
+  const d = Math.hypot(i - 7.5, j - 7.5) / 10.6;
+  calor[j * 16 + i] = Math.round(255 * Math.max(0, 1 - d));
+}
+const tCalor = nuevaTextura();
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 16, 16, 0, gl.RED, gl.UNSIGNED_BYTE, calor);   // 16 bytes por fila: alineado
+
+// 3) RGBA32F: valores de 0 a 4 (se ven divididos entre 4)
+const grande = new Float32Array(8 * 1 * 4);
+for (let i = 0; i < 8; i++) grande.set([i * 0.5, 4 - i * 0.5, 2, 1], i * 4);
+const tFloat = nuevaTextura();
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 8, 1, 0, gl.RGBA, gl.FLOAT, grande);
+console.log('getError tras las subidas →', gl.getError());
+
+const locDiv = gl.getUniformLocation(programa, 'u_divisor');
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1i(gl.getUniformLocation(programa, 'u_tex'), 0);
+gl.bindVertexArray(gl.createVertexArray());
+gl.activeTexture(gl.TEXTURE0);
+const w = gl.drawingBufferWidth / 3, h = gl.drawingBufferHeight, lado = Math.min(w, h);
+[[tDamero, 1], [tCalor, 1], [tFloat, 4]].forEach(([t, divisor], k) => {
+  gl.viewport(Math.round(k * w + (w - lado) / 2), Math.round((h - lado) / 2), Math.round(lado), Math.round(lado));
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.uniform1f(locDiv, divisor);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+});
+</script>
+  </div>
+  <p>El mapa de calor sale rojo porque <code>R8</code> se lee como <code>(r, 0, 0, 1)</code>: el shader recibe el dato en el canal rojo y el resto a cero. Para verlo en gris bastaría con <code>vec3(texture(u_tex, v_uv).r)</code>. Y la tercera textura demuestra que una textura float es, ante todo, una tabla de números: guarda valores de 0 a 4 sin recortarlos, y es el shader el que decide qué hacer con ellos. Así se guardan posiciones de partículas o resultados de simulaciones (5.8, 7.5).</p>
+</section>
+
+<h2>El estado de desempaquetado: pixelStorei</h2>
+<p><code>gl.pixelStorei(parámetro, valor)</code> cambia cómo se leen los datos de origen al subir cualquier textura. Es <strong>estado global del contexto</strong>, no de la textura: afecta a todas las subidas siguientes hasta que alguien lo cambie. Hay tres que tienes que conocer.</p>
+
+<h3>UNPACK_FLIP_Y_WEBGL: arriba y abajo</h3>
+<p>En una imagen (canvas, foto, <code>ImageData</code>), la primera fila de datos es la de <strong>arriba</strong>. En WebGL, <code>texImage2D</code> coloca la primera fila de datos en <code>v = 0</code>, que en la convención de GL es la parte de <strong>abajo</strong> (la misma que <code>gl_FragCoord</code> y el clip space). Resultado: sin hacer nada, las imágenes salen boca abajo. Lo comprobamos con un canvas de 2×2 con la fila de arriba roja: sin <code>FLIP_Y</code>, el texel de <code>v = 0</code> era rojo; con <code>gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)</code>, el rojo pasaba a <code>v = 1</code>.</p>
+
+<div class="callout bestiario" data-id="m5-textura-volteada" data-titulo="La imagen sale boca abajo (y a veces no hay manera de darle la vuelta)">
+  <p><strong>Síntoma:</strong> la textura aparece invertida verticalmente. Variante desconcertante: activas <code>UNPACK_FLIP_Y_WEBGL</code> y no cambia nada.</p>
+  <p><strong>Causa:</strong> las imágenes guardan primero la fila de arriba y WebGL la coloca en <code>v = 0</code>, abajo. La variante: con fuentes <code>ImageBitmap</code>, WebGL <strong>ignora</strong> <code>UNPACK_FLIP_Y_WEBGL</code> y <code>UNPACK_PREMULTIPLY_ALPHA_WEBGL</code> (comprobado: con el flag activado, el bitmap se subió sin invertir). La orientación de un bitmap se decide al crearlo.</p>
+  <p><strong>Solución:</strong> <code>gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)</code> antes de <code>texImage2D</code> (y devuélvelo a <code>false</code> después), o invierte la v en el shader (<code>1.0 - v</code>), o genera las UV al revés. Con <code>ImageBitmap</code>: <code>createImageBitmap(fuente, { imageOrientation: 'flipY' })</code>. Lo importante es elegir una convención y aplicarla siempre igual; los editores GLSL del curso suben con <code>FLIP_Y</code> activado, así que <code>v = 0</code> es la parte de abajo de la imagen.</p>
+</div>
+
+<h3>UNPACK_PREMULTIPLY_ALPHA_WEBGL: alfa premultiplicado</h3>
+<p>Si está activado, cada píxel se sube con su color ya multiplicado por su alfa: un azul <code>(0, 0, 255)</code> con alfa 128 se guarda como <code>(0, 0, 128, 128)</code> (comprobado). Por defecto está desactivado y los colores se suben tal cual. Por qué querrías premultiplicar, y lo que tiene que ver con los bordes oscuros de las texturas transparentes, es el tema central de <a href="07-blending.html">5.7</a>. De momento, dos datos: el Canvas 2D guarda sus píxeles premultiplicados internamente, así que al subirlo sin premultiplicar el navegador los «despremultiplica» (y en píxeles muy transparentes eso pierde precisión); y con <code>ImageBitmap</code> este flag también se ignora: se usa la opción <code>premultiplyAlpha: 'premultiply' | 'none'</code> de <code>createImageBitmap</code>.</p>
+
+<h3>UNPACK_ALIGNMENT: filas que empiezan donde no toca</h3>
+<p>Al subir datos crudos, WebGL supone por defecto que cada fila empieza en una dirección múltiplo de 4 bytes (<code>UNPACK_ALIGNMENT = 4</code>). Con RGBA y bytes, cada fila mide <code>4 × ancho</code> bytes y siempre cumple. Pero con <code>RGB</code> (3 bytes por texel), <code>R8</code> (1) o <code>RG8</code> (2), una fila de ancho impar no mide un múltiplo de 4, y WebGL espera relleno al final de cada fila que tus datos no tienen.</p>
+
+<div class="callout bestiario" data-id="m5-unpack-alignment" data-titulo="La textura sale torcida en diagonal (o «ArrayBufferView not big enough»)">
+  <p><strong>Síntoma:</strong> una textura subida desde un array de bytes RGB, R8 o RG sale inclinada: una línea vertical se convierte en diagonal y la imagen se desplaza fila a fila. O bien no se sube y la consola dice <code>INVALID_OPERATION: texImage2D: ArrayBufferView not big enough for request</code>.</p>
+  <p><strong>Causa:</strong> con <code>UNPACK_ALIGNMENT = 4</code> (el valor por defecto), WebGL busca cada fila en un múltiplo de 4 bytes. Una textura <code>R8</code> de 3×3 tiene filas de 3 bytes, pero WebGL lee la fila 1 desde el byte 4 y la 2 desde el byte 8. Si tu array es justo del tamaño apretado (27 bytes para RGB de 3×3), no llega y da el error de arriba; si es más grande (reutilizas un array o una vista sobre un buffer mayor), no hay error y la imagen sale torcida. Comprobamos los dos casos: la diagonal de una R8 de 3×3 se convirtió en una columna vertical.</p>
+  <p><strong>Solución:</strong> <code>gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)</code> antes de subir datos cuyas filas no midan un múltiplo de 4 bytes (y devuélvelo a 4 después, por ser estado global). O usa RGBA, que siempre está alineado y a menudo es más rápido de muestrear.</p>
+</div>
+
+<div class="callout senior" data-titulo="pixelStorei es global: la higiene importa">
+  <p>Como el estado de desempaquetado es del contexto y no de cada textura, una función que activa <code>FLIP_Y</code> o cambia la alineación y no lo restaura cambia el resultado de todo lo que se suba después, en otra parte del programa, quizá en una librería ajena. Es el mismo tipo de bug que el del scissor de 5.1. La costumbre profesional es restaurar el valor por defecto justo después de la subida, como hace <code>GLKit.crearTextura</code> al final de esta lección. En cambio, los filtros y el wrap (<code>texParameteri</code>) se guardan <em>dentro de cada textura</em>, así que no se contaminan entre sí.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Creas un <code>ImageBitmap</code> de una imagen con <code>createImageBitmap(img)</code>, activas <code>gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)</code> y lo subes con <code>texImage2D</code>. ¿Cómo queda?</p>
+  <ul>
+    <li>Invertida, como con cualquier otra fuente.<div class="explicacion">Con canvas, <code>ImageData</code> o <code>&lt;img&gt;</code> sí. Pero con <code>ImageBitmap</code> WebGL ignora los flags de volteo y premultiplicado.</div></li>
+    <li data-correcta>Sin invertir: con <code>ImageBitmap</code> el flag se ignora; la orientación se elige al crear el bitmap con <code>imageOrientation: 'flipY'</code>.<div class="explicacion">Correcto, y lo comprobamos. La razón de diseño: un <code>ImageBitmap</code> está pensado para subirse sin procesar nada más, así que cualquier transformación se hace al decodificarlo.</div></li>
+    <li>Da <code>INVALID_OPERATION</code> porque no se puede combinar el flag con un bitmap.<div class="explicacion">No hay ningún error: el flag, simplemente, no se aplica.</div></li>
+  </ul>
+</div>
+
+<h2>La textura negra: completitud</h2>
+<p>Este es el comportamiento raro más famoso de WebGL. Una textura solo se puede muestrear si está <strong>completa</strong>, y si no lo está, todas las lecturas devuelven <code>(0, 0, 0, 1)</code>: negro opaco. Sin excepciones, sin <code>getError</code> y, en nuestras pruebas, sin ningún aviso en la consola. Una textura es incompleta, entre otros casos, si:</p>
+<ol>
+  <li><strong>Su filtro de minificación pide mipmaps que no existen.</strong> El valor por defecto de <code>TEXTURE_MIN_FILTER</code> es <code>NEAREST_MIPMAP_LINEAR</code> (comprobado: <code>0x2702</code>). Si solo subes el nivel 0 y no cambias el filtro ni generas mipmaps, la textura es incompleta. Es la causa número uno.</li>
+  <li><strong>Es float y la filtras linealmente sin la extensión.</strong> <code>RGBA32F</code> con <code>LINEAR</code> sin haber pedido <code>OES_texture_float_linear</code>: negro (comprobado; con la extensión pedida, la misma textura se filtró bien). <code>RGBA16F</code> sí es filtrable sin extensión.</li>
+  <li><strong>(Solo WebGL1) No es potencia de dos</strong> y usa <code>REPEAT</code> o mipmaps. En WebGL2 esa restricción desapareció: una textura de 3×5 con <code>REPEAT</code> y mipmaps funcionó; en un contexto WebGL1, salió negra.</li>
+</ol>
+<p>Un caso que despista mucho: una textura de <strong>1×1</strong> es completa con el filtro por defecto, porque un único nivel de 1×1 ya es una cadena de mipmaps completa. Tus pruebas con una textura de un píxel funcionan… y la imagen de verdad sale negra.</p>
+
+<div class="callout bestiario" data-id="m5-textura-negra" data-titulo="La textura sale negra">
+  <p><strong>Síntoma:</strong> el objeto texturizado se ve negro opaco (o del color que resulte de multiplicar por negro). Nada en la consola, <code>getError()</code> = 0.</p>
+  <p><strong>Causa:</strong> la textura es incompleta, o el sampler lee de una unidad donde no hay ninguna textura (que da el mismo negro). Las causas típicas: el filtro de minificación por defecto (<code>NEAREST_MIPMAP_LINEAR</code>) sin mipmaps; una textura float filtrada con <code>LINEAR</code> sin <code>OES_texture_float_linear</code>; la textura enlazada a otra unidad distinta de la que dice el sampler; en WebGL1, una textura no potencia de dos con <code>REPEAT</code> o mipmaps.</p>
+  <p><strong>Solución:</strong> fija siempre <code>TEXTURE_MIN_FILTER</code> al crear una textura (<code>LINEAR</code> o <code>NEAREST</code>), o llama a <code>generateMipmap</code> si vas a usar un filtro con mipmaps. Para floats, pide la extensión (y comprueba que no devuelve <code>null</code>) o usa <code>NEAREST</code> o <code>RGBA16F</code>. Revisa que <code>activeTexture</code> + <code>bindTexture</code> y el valor del sampler coinciden.</p>
+</div>
+
+<div class="callout hack" data-titulo="TEXTURE_MAX_LEVEL = 0">
+  <p>WebGL2 permite decir cuántos niveles de mipmap tiene una textura con <code>gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 0)</code>. Con eso, una textura de un solo nivel es «completa» aunque el filtro de minificación siga siendo el que pide mipmaps: una textura de 2×2 que salía negra con el filtro por defecto se leyó bien tras fijar <code>MAX_LEVEL = 0</code> (comprobado). Útil cuando no controlas el código que fija los filtros, pero la forma limpia sigue siendo elegir el filtro correcto.</p>
+</div>
+
+<h2>Filtrado: NEAREST, LINEAR y mipmaps</h2>
+<p>El shader pide un color en una coordenada UV que casi nunca cae exactamente en un texel. El filtro decide qué devolver:</p>
+<ul>
+  <li><code>NEAREST</code>: el texel más cercano, tal cual. Bordes nítidos y pixelados; ideal para pixel art y para leer datos (no quieres mezclar la altura de un punto con la de otro).</li>
+  <li><code>LINEAR</code>: mezcla bilineal de los 4 texels más cercanos, ponderada por la distancia. Suave al ampliar.</li>
+  <li>Con <strong>mipmaps</strong> (solo para minificación): versiones precalculadas de la textura a la mitad, a un cuarto… hasta 1×1. <code>gl.generateMipmap(gl.TEXTURE_2D)</code> las genera todas (en una textura de 256×256, 9 niveles). La GPU elige el nivel según cuántos texels caen en cada píxel. <code>LINEAR_MIPMAP_LINEAR</code> (trilineal) mezcla además entre los dos niveles más cercanos.</li>
+</ul>
+<p>¿Por qué hacen falta los mipmaps? Cuando una textura se ve muy pequeña, cada píxel de pantalla cubre muchos texels, pero el filtro solo lee 1 (<code>NEAREST</code>) o 4 (<code>LINEAR</code>) de ellos: el resultado depende de qué texels caigan justo bajo el centro del píxel, y cambia caóticamente de un píxel a otro. Es <em>aliasing</em>, el mismo fenómeno que el de 5.4 con el tiempo, ahora en el espacio: se ve como muaré (patrones de interferencia) y como parpadeo al moverse. Los mipmaps resuelven el problema leyendo de una versión ya promediada de la textura.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.5.3 — Explorador de filtros: muaré, mipmaps y anisotropía</h3>
+  <p>Un suelo infinito en perspectiva, calculado en el fragment shader: cada píxel calcula su coordenada UV como si mirara a un plano horizontal, así que cerca del horizonte cada píxel cubre muchísimos texels. La mitad izquierda y la derecha usan dos objetos textura con la misma imagen y filtros que eliges en los selectores.</p>
+  <div class="js-playground" data-titulo="Filtros en un suelo en perspectiva" data-altura="330" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles">
+  <label>izquierda <select id="izq"></select></label>
+  <label>derecha <select id="der"></select></label>
+  <span id="info"></span>
+</div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { display: flex; gap: 16px; align-items: center; padding: 8px 10px; font: 12px ui-monospace, monospace; color: #b4bccb; flex-wrap: wrap; }
+select { font: 12px ui-monospace, monospace; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_izq;
+uniform sampler2D u_der;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 color;
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  float horizonte = 0.3;
+  float z = 0.35 / max(horizonte - p.y, 0.001);          // distancia al punto del suelo
+  vec2 uv = vec2(p.x * z, z + u_time * 0.3) * 0.5;       // coordenadas sobre el suelo (se repiten)
+  vec4 a = texture(u_izq, uv);                           // las dos lecturas, fuera de cualquier if
+  vec4 b = texture(u_der, uv);
+  vec4 c = mix(a, b, step(0.5, gl_FragCoord.x / u_resolution.x));
+  float niebla = clamp(z / 25.0, 0.0, 1.0);
+  vec3 cielo = vec3(0.08, 0.09, 0.12);
+  color = p.y > horizonte ? vec4(cielo, 1.0) : vec4(mix(c.rgb, cielo, niebla), 1.0);
+}`);
+
+const ani = gl.getExtension('EXT_texture_filter_anisotropic');
+const maxAni = ani ? gl.getParameter(ani.MAX_TEXTURE_MAX_ANISOTROPY_EXT) : 1;
+const MODOS = {
+  'NEAREST': [gl.NEAREST, gl.NEAREST, 1],
+  'LINEAR': [gl.LINEAR, gl.LINEAR, 1],
+  'NEAREST_MIPMAP_NEAREST': [gl.NEAREST_MIPMAP_NEAREST, gl.NEAREST, 1],
+  'LINEAR_MIPMAP_LINEAR': [gl.LINEAR_MIPMAP_LINEAR, gl.LINEAR, 1],
+  ['LINEAR_MIPMAP_LINEAR + anisotropía ×' + maxAni]: [gl.LINEAR_MIPMAP_LINEAR, gl.LINEAR, maxAni],
+};
+function crearTextura() {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, Texturas.crear('damero', 512));
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.generateMipmap(gl.TEXTURE_2D);        // los niveles existen; el filtro decide si se usan
+  return t;                                // wrap: REPEAT por defecto
+}
+function aplicar(t, nombre) {
+  const [min, mag, a] = MODOS[nombre];
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, min);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag);
+  if (ani) gl.texParameterf(gl.TEXTURE_2D, ani.TEXTURE_MAX_ANISOTROPY_EXT, a);
+}
+const tIzq = crearTextura(), tDer = crearTextura();
+const selIzq = document.getElementById('izq'), selDer = document.getElementById('der');
+for (const sel of [selIzq, selDer]) for (const n of Object.keys(MODOS)) sel.add(new Option(n, n));
+selIzq.value = 'NEAREST';
+selDer.value = Object.keys(MODOS)[4];
+selIzq.onchange = () => aplicar(tIzq, selIzq.value);
+selDer.onchange = () => aplicar(tDer, selDer.value);
+aplicar(tIzq, selIzq.value); aplicar(tDer, selDer.value);
+document.getElementById('info').textContent = 'anisotropía máxima: ' + maxAni;
+
+const loc = { izq: gl.getUniformLocation(programa, 'u_izq'), der: gl.getUniformLocation(programa, 'u_der'),
+  res: gl.getUniformLocation(programa, 'u_resolution'), t: gl.getUniformLocation(programa, 'u_time') };
+const vaoVacio = gl.createVertexArray();
+function frame(ms) {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.useProgram(programa);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tIzq);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tDer);
+  gl.uniform1i(loc.izq, 0);
+  gl.uniform1i(loc.der, 1);
+  gl.uniform2f(loc.res, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.uniform1f(loc.t, ms / 1000);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Compara con calma: con <code>NEAREST</code> (y también con <code>LINEAR</code>) el suelo lejano es un hervidero de muaré que además parpadea al moverse. Con mipmaps, el fondo se vuelve gris y estable: cada píxel lee de un nivel donde los cuadros ya están promediados. Pero el mipmapping normal es conservador: elige el nivel según la dirección en la que la textura se comprime <em>más</em> (en un suelo, la profundidad), y emborrona también en la otra. La <strong>anisotropía</strong> (extensión <code>EXT_texture_filter_anisotropic</code>, aquí hasta ×16) toma varias muestras a lo largo de la dirección comprimida y recupera nitidez en ángulos rasantes. Las dos lecturas de textura van fuera de cualquier <code>if</code> a propósito: la GPU elige el nivel de mipmap comparando la UV entre píxeles vecinos, y dentro de ramas que divergen esa comparación no es fiable (los quads y las derivadas, en <a href="../06-glsl/02-pensar-en-paralelo.html">6.2</a>; lo que pasa dentro de las ramas, medido, en <a href="../06-glsl/03-formas-sdf.html">6.3</a>).</p>
+</section>
+
+<div class="callout bestiario" data-id="m5-muare" data-titulo="Muaré y parpadeo en texturas lejanas">
+  <p><strong>Síntoma:</strong> una textura que se ve bien de cerca forma patrones de interferencia, ondas o ruido a lo lejos o al reducirla, y parpadea cuando la cámara o el objeto se mueven.</p>
+  <p><strong>Causa:</strong> minificación sin mipmaps: cada píxel cubre muchos texels, pero el filtro solo lee uno (<code>NEAREST</code>) o cuatro (<code>LINEAR</code>). Es aliasing.</p>
+  <p><strong>Solución:</strong> <code>generateMipmap</code> + <code>TEXTURE_MIN_FILTER = LINEAR_MIPMAP_LINEAR</code>, y anisotropía para superficies vistas de canto. Los mipmaps ocupan un tercio más de memoria (¼ + 1/16 + … de la original). Si generas la textura en cada frame (vídeo, render a textura), tendrás que regenerar los mipmaps o renunciar a ellos.</p>
+</div>
+
+<h2>Dónde está cada texel</h2>
+<p>En una textura de <em>N</em> texels de ancho, la coordenada <em>u</em> va de 0 (borde izquierdo del primer texel) a 1 (borde derecho del último). Cada texel ocupa un intervalo de anchura <code>1/N</code>, así que <strong>el centro del texel <em>i</em> está en <code>u = (i + 0.5) / N</code></strong>. Con <code>LINEAR</code>, solo en esos centros se lee el valor exacto de un texel; en cualquier otro punto se mezcla con los vecinos. Comprobado con una textura de 2×2 (rojo y verde en la fila de abajo, azul y blanco en la de arriba):</p>
+<table>
+  <thead><tr><th>Lectura con LINEAR</th><th>Resultado</th><th>Por qué</th></tr></thead>
+  <tbody>
+    <tr><td><code>texture(t, vec2(0.25, 0.25))</code></td><td>rojo exacto</td><td>(0 + 0.5) / 2 = 0.25: centro del texel (0, 0).</td></tr>
+    <tr><td><code>texture(t, vec2(0.5, 0.5))</code></td><td>gris (0.5, 0.5, 0.5)</td><td>La esquina común de los cuatro texels: media de los cuatro.</td></tr>
+    <tr><td><code>texture(t, vec2(0.0, 0.25))</code> con <code>REPEAT</code></td><td>(0.5, 0.5, 0)</td><td>Medio texel a la izquierda del rojo… que, con <code>REPEAT</code>, es el verde del otro lado.</td></tr>
+    <tr><td>lo mismo con <code>CLAMP_TO_EDGE</code></td><td>rojo</td><td>Fuera del borde se repite el texel del borde.</td></tr>
+  </tbody>
+</table>
+<p>Para leer un texel exacto sin pensar en coordenadas ni filtros, GLSL ES 3.00 tiene <code>texelFetch(sampler, ivec2(i, j), nivel)</code>: índices enteros de texel, sin filtrado, sin wrap. Fuera de rango, GLSL ES 3.00 dice que el resultado es indefinido, pero <strong>WebGL 2.0 lo concreta</strong>: por seguridad (para que un shader no pueda leer memoria ajena), las lecturas que en OpenGL ES serían indefinidas <em>deben devolver cero</em> (especificación de WebGL 2.0, «Texel Fetches»; lo comprobamos en la GPU de pruebas: <code>(0, 0, 0, 0)</code> con coordenadas mayores que el tamaño, con coordenadas negativas y con un nivel de mipmap que no existe). Y <code>textureSize(sampler, nivel)</code> devuelve el tamaño en texels como <code>ivec2</code> (comprobado: 2×2 en el nivel 0 y 1×1 en el nivel 1). Son las herramientas para usar texturas como tablas de datos.</p>
+
+<div class="callout bestiario" data-id="m5-borde-repeat" data-titulo="Una línea de otro color en el borde del sprite">
+  <p><strong>Síntoma:</strong> al dibujar una imagen con <code>LINEAR</code>, en su borde aparece una línea fina del color del borde <em>opuesto</em> (arriba se ve un poco del color de abajo, a la izquierda un poco del de la derecha).</p>
+  <p><strong>Causa:</strong> el wrap por defecto es <code>REPEAT</code>. En el último medio texel de cada borde, el filtro bilineal mezcla con el texel vecino, que con <code>REPEAT</code> es el del lado contrario. Lo mismo pasa entre sprites vecinos de un atlas (una imagen con muchos sprites) aunque uses <code>CLAMP_TO_EDGE</code>.</p>
+  <p><strong>Solución:</strong> <code>CLAMP_TO_EDGE</code> en los dos ejes para imágenes que no se repiten. En atlas, deja un margen de píxeles entre sprites o ajusta las UV medio texel hacia dentro.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Una textura mide 8 texels de ancho. ¿Qué coordenada <em>u</em> lee exactamente el texel número 3 (contando desde 0) con filtrado <code>LINEAR</code>?</p>
+  <ul>
+    <li><code>3 / 8 = 0.375</code><div class="explicacion">Eso es el borde izquierdo del texel 3. Con <code>LINEAR</code> leerías la mezcla a partes iguales de los texels 2 y 3.</div></li>
+    <li data-correcta><code>3.5 / 8 = 0.4375</code><div class="explicacion">Correcto: el centro del texel <em>i</em> está en <code>(i + 0.5) / N</code>. Solo ahí el filtro bilineal devuelve el valor exacto. O usa <code>texelFetch(t, ivec2(3, 0), 0)</code>.</div></li>
+    <li><code>3 / 7 ≈ 0.4286</code><div class="explicacion">Ese sería el reparto si el primer y el último texel estuvieran centrados en 0 y 1, pero las UV cubren los texels completos, de borde a borde.</div></li>
+  </ul>
+</div>
+
+<h2>Wrap: qué pasa fuera de 0…1</h2>
+<p><code>TEXTURE_WRAP_S</code> (eje u) y <code>TEXTURE_WRAP_T</code> (eje v) deciden qué devuelve una lectura con coordenadas fuera de 0…1:</p>
+<ul>
+  <li><code>REPEAT</code> (por defecto): la textura se repite como un mosaico. Útil para suelos, paredes, patrones.</li>
+  <li><code>MIRRORED_REPEAT</code>: se repite reflejada en cada repetición, sin costuras en los bordes.</li>
+  <li><code>CLAMP_TO_EDGE</code>: fuera del rango se repite el texel del borde. Lo que quieres para imágenes sueltas, sprites y post-proceso.</li>
+</ul>
+<p>En WebGL1, <code>REPEAT</code> y <code>MIRRORED_REPEAT</code> exigían texturas potencia de dos; en WebGL2, cualquier tamaño vale (lo comprobamos en los dos contextos).</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.5.4 — Los tres modos, lado a lado</h3>
+  <p>Tres paneles dibujados con <code>viewport</code>, cada uno con un objeto textura distinto (la misma imagen <code>uv</code>) y un modo de wrap. Las coordenadas van de −1 a 2 en los dos ejes, así que se ven 3×3 «copias»; el cuadrado central, marcado en blanco, es el rango 0…1.</p>
+  <div class="js-playground" data-titulo="REPEAT, MIRRORED_REPEAT y CLAMP_TO_EDGE" data-altura="260" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = (P[gl_VertexID] * 0.5 + 0.5) * 3.0 - 1.0;     // de −1 a 2
+  gl_Position = vec4(P[gl_VertexID] * 0.92, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() {
+  vec3 c = texture(u_tex, v_uv).rgb;
+  vec2 d = min(abs(v_uv), abs(v_uv - 1.0));             // distancia a los bordes del rango 0…1
+  float marco = step(min(d.x, d.y), 0.015) * step(-0.015, min(v_uv.x, v_uv.y)) * step(max(v_uv.x, v_uv.y), 1.015);
+  color = vec4(mix(c, vec3(1.0), marco), 1.0);
+}`);
+const imagen = Texturas.crear('uv', 256);
+const modos = [gl.REPEAT, gl.MIRRORED_REPEAT, gl.CLAMP_TO_EDGE];
+const texturas = modos.map((modo) => {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imagen);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, modo);   // el wrap es de CADA textura
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, modo);
+  return t;
+});
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1i(gl.getUniformLocation(programa, 'u_tex'), 0);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindVertexArray(gl.createVertexArray());
+const w = gl.drawingBufferWidth / 3, h = gl.drawingBufferHeight, lado = Math.min(w, h);
+texturas.forEach((t, k) => {
+  gl.viewport(Math.round(k * w + (w - lado) / 2), Math.round((h - lado) / 2), Math.round(lado), Math.round(lado));
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+});
+</script>
+  </div>
+  <p>La textura <code>uv</code> codifica u en rojo y v en verde, y lleva escrito «ARRIBA» en la parte de arriba: con <code>FLIP_Y</code> activado, sale al derecho en el cuadrado central. En <code>REPEAT</code>, el mismo cuadrado se repite con costuras bruscas; en <code>MIRRORED_REPEAT</code>, cada copia vecina es un espejo (fíjate en el texto invertido); en <code>CLAMP_TO_EDGE</code>, fuera del centro solo hay los colores del borde estirados hasta el infinito.</p>
+</section>
+
+<h2>Unidades de textura: el sampler es un número</h2>
+<p>Un shader puede leer varias texturas a la vez. Para organizarlo, la GPU tiene un conjunto de <strong>unidades de textura</strong> (32 combinadas en la GPU de pruebas, <code>MAX_COMBINED_TEXTURE_IMAGE_UNITS</code>; 16 accesibles desde el fragment shader). Cada unidad tiene sus propios puntos de enlace (<code>TEXTURE_2D</code>, <code>TEXTURE_CUBE_MAP</code>, <code>TEXTURE_3D</code>, <code>TEXTURE_2D_ARRAY</code>). La conexión se hace en dos saltos:</p>
+
+<svg class="diagrama" viewBox="0 0 760 220" width="760" role="img" aria-label="Del uniform sampler a la unidad de textura y a la textura">
+  <defs>
+    <marker id="m55-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="caja" x="10" y="40" width="200" height="120" rx="10"/>
+  <text x="110" y="66" text-anchor="middle" style="font-weight:700">Programa</text>
+  <text x="110" y="92" text-anchor="middle" class="texto-tenue" style="font-size:12px">uniform sampler2D u_foto;</text>
+  <text x="110" y="112" text-anchor="middle" class="texto-tenue" style="font-size:12px">uniform sampler2D u_mascara;</text>
+  <text x="110" y="140" text-anchor="middle" style="font-size:12px">u_foto = 0 · u_mascara = 1</text>
+  <rect class="caja" x="280" y="20" width="200" height="180" rx="10"/>
+  <text x="380" y="44" text-anchor="middle" style="font-weight:700">Unidades de textura</text>
+  <rect class="caja" x="300" y="60" width="160" height="30" rx="5"/><text x="380" y="80" text-anchor="middle" style="font-size:12px">0: TEXTURE_2D → A</text>
+  <rect class="caja" x="300" y="98" width="160" height="30" rx="5"/><text x="380" y="118" text-anchor="middle" style="font-size:12px">1: TEXTURE_2D → B</text>
+  <rect class="caja" x="300" y="136" width="160" height="30" rx="5"/><text x="380" y="156" text-anchor="middle" style="font-size:12px">2: (vacía)</text>
+  <text x="380" y="188" text-anchor="middle" class="texto-tenue" style="font-size:12px">… hasta 31</text>
+  <rect class="caja" x="550" y="50" width="200" height="50" rx="10"/><text x="650" y="80" text-anchor="middle">Textura A (paisaje)</text>
+  <rect class="caja" x="550" y="120" width="200" height="50" rx="10"/><text x="650" y="150" text-anchor="middle">Textura B (máscara)</text>
+  <path d="M212 110 L296 76" stroke="currentColor" stroke-width="1.5" marker-end="url(#m55-fl)"/>
+  <path d="M212 125 L296 113" stroke="currentColor" stroke-width="1.5" marker-end="url(#m55-fl)"/>
+  <path d="M462 75 L546 75" class="acento" stroke-width="2" marker-end="url(#m55-fl)"/>
+  <path d="M462 113 L546 143" class="acento" stroke-width="2" marker-end="url(#m55-fl)"/>
+  <text x="250" y="210" text-anchor="middle" class="texto-tenue" style="font-size:12px">uniform1i(loc, unidad)</text>
+  <text x="505" y="210" text-anchor="middle" class="texto-tenue" style="font-size:12px">activeTexture + bindTexture</text>
+</svg>
+
+<ul>
+  <li><code>gl.activeTexture(gl.TEXTURE0 + n)</code> elige la unidad <em>n</em> como «activa». Es estado: los <code>bindTexture</code> siguientes colocan la textura en esa unidad. El argumento es un enum (<code>gl.TEXTURE0</code> vale 33984): <code>gl.activeTexture(1)</code> da <code>INVALID_ENUM: texture unit out of range</code>.</li>
+  <li><code>gl.bindTexture(gl.TEXTURE_2D, t)</code> coloca la textura en el punto <code>TEXTURE_2D</code> <strong>de la unidad activa</strong>.</li>
+  <li><code>gl.uniform1i(locSampler, n)</code>: el valor de un sampler es el <strong>número de unidad</strong> (un entero de 0 a 31), no la textura ni el enum. <code>uniform1i(loc, gl.TEXTURE1)</code> pasa 33985 y da <code>INVALID_VALUE: Sampler uniform value out of range</code>; <code>uniform1f</code> sobre un sampler, <code>INVALID_OPERATION</code>.</li>
+</ul>
+<p>Todos los samplers valen 0 al enlazar el programa, así que con una sola textura en la unidad 0 no hace falta asignar nada, y por eso muchos ejemplos «funcionan» sin la llamada a <code>uniform1i</code>… hasta que añades una segunda textura. Dos trampas más, comprobadas: si enlazas la textura con otra unidad activa (la que dejó activa otro código), el sampler que apunta a la 0 lee una unidad vacía y devuelve negro; y si dos samplers de tipos distintos (<code>sampler2D</code> y <code>samplerCube</code>) apuntan a la misma unidad, el dibujo falla con <code>INVALID_OPERATION: Two textures of different types use the same sampler location</code>.</p>
+
+<div class="callout bestiario" data-id="m5-sampler-unidad" data-titulo="Dos texturas y el shader lee la misma dos veces (o ninguna)">
+  <p><strong>Síntoma:</strong> con dos texturas, las dos lecturas devuelven la misma imagen, o una sale negra. Variante ruidosa: <code>INVALID_VALUE: Sampler uniform value out of range</code>.</p>
+  <p><strong>Causa:</strong> los dos samplers valen 0 (nadie les asignó otra unidad), la segunda textura se enlazó sin cambiar de unidad (sustituyendo a la primera en la unidad 0), o se asignó al sampler el enum <code>gl.TEXTURE1</code> en lugar del número 1.</p>
+  <p><strong>Solución:</strong> para cada textura, el trío completo: <code>activeTexture(gl.TEXTURE0 + n)</code>, <code>bindTexture</code>, <code>uniform1i(locSampler, n)</code>. Las asignaciones de samplers persisten en el programa (son uniforms), pero los enlaces de las unidades son estado global del contexto que otro código puede cambiar: vuelve a enlazar antes de cada dibujo.</p>
+</div>
+
+<div class="callout senior" data-titulo="Sampler objects">
+  <p>En WebGL2 los parámetros de filtrado y wrap pueden vivir fuera de la textura, en un <strong>sampler object</strong>: <code>const s = gl.createSampler(); gl.samplerParameteri(s, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.bindSampler(unidad, s);</code>. Mientras esté enlazado a una unidad, sus parámetros sustituyen a los de la textura que haya en ella. Sirven para leer la misma textura con dos filtros distintos en el mismo shader (en el ejemplo del suelo usamos dos texturas; con samplers bastaría una). No los usaremos más, pero así los reconocerás.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Quieres que <code>uniform sampler2D u_mascara</code> lea la textura que enlazaste tras <code>gl.activeTexture(gl.TEXTURE2)</code>. ¿Qué llamada es correcta?</p>
+  <ul>
+    <li><code>gl.uniform1i(loc, gl.TEXTURE2)</code><div class="explicacion"><code>gl.TEXTURE2</code> vale 33986: el sampler espera el número de unidad. Da <code>INVALID_VALUE</code> y el sampler no cambia.</div></li>
+    <li data-correcta><code>gl.uniform1i(loc, 2)</code><div class="explicacion">Correcto: un sampler guarda el índice de la unidad, un entero. <code>activeTexture</code> usa el enum; el sampler, el número.</div></li>
+    <li><code>gl.uniform1i(loc, textura)</code><div class="explicacion">Un sampler no guarda texturas: guarda de qué unidad leer. La textura se coloca en la unidad con <code>bindTexture</code>.</div></li>
+    <li><code>gl.uniform1f(loc, 2.0)</code><div class="explicacion">Los samplers solo se asignan con <code>uniform1i</code>; <code>uniform1f</code> da <code>INVALID_OPERATION</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Carga asíncrona y la trampa de file://</h2>
+<p>En una web servida por HTTP, las texturas suelen venir de archivos de imagen. El patrón moderno: cargar y decodificar la imagen sin bloquear, convertirla en <code>ImageBitmap</code> (lista para subir, sin más procesamiento) y subirla cuando esté. Mientras tanto, conviene dibujar con una textura provisional de 1×1 para que el bucle no tenga que esperar.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 5.5.5 — Cargar una imagen con createImageBitmap</h3>
+  <p>Para poder ejecutarlo dentro del curso, la «imagen remota» es una <em>data URL</em> generada a partir de un canvas (un PNG codificado dentro del propio texto de la URL), y un <code>setTimeout</code> simula el retraso de la red. El resto es exactamente lo que harías con <code>'img/foto.jpg'</code> en un servidor.</p>
+  <div class="js-playground" data-titulo="Carga asíncrona con textura provisional" data-altura="260" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+// 1) Textura provisional: 1×1 gris, disponible al instante
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([60, 60, 80, 255]));
+
+// 2) Carga asíncrona: descargar, decodificar, convertir en ImageBitmap, subir
+async function cargarEn(tex, url) {
+  const img = new Image();
+  img.src = url;
+  await img.decode();                                   // espera a que llegue y se decodifique
+  const bmp = await createImageBitmap(img, {
+    imageOrientation: 'flipY',                          // el volteo se decide AQUÍ (FLIP_Y se ignora)
+    premultiplyAlpha: 'none',
+  });
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+  bmp.close();                                          // liberar la memoria del bitmap ya
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  console.log('imagen cargada:', img.naturalWidth + '×' + img.naturalHeight);
+}
+const urlSimulada = Texturas.crear('paisaje', 512).toDataURL('image/png');
+setTimeout(() => cargarEn(textura, urlSimulada).catch((e) => console.log('falló la carga:', e.message)), 1000);
+
+// 3) El bucle dibuja siempre, con lo que haya en la textura
+const locAspecto = gl.getUniformLocation(programa, 'u_aspecto');
+const vaoVacio = gl.createVertexArray();
+function frame() {
+  GLKit.ajustarTamaño(canvas);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform1f(locAspecto, gl.drawingBufferHeight / gl.drawingBufferWidth);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, textura);
+  gl.bindVertexArray(vaoVacio);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <p>Detalles que importan: <code>img.decode()</code> devuelve una promesa que se resuelve cuando la imagen está descargada <em>y decodificada</em> (con el antiguo <code>img.onload</code>, la decodificación podía ocurrir después, durante el <code>texImage2D</code>, provocando un tirón). El <code>ImageBitmap</code> ya está en el formato que la GPU necesita, y su orientación y premultiplicado se eligen al crearlo porque, como vimos, <code>pixelStorei</code> no le afecta. <code>bmp.close()</code> libera su memoria sin esperar al recolector de basura. Y la textura provisional de 1×1 es completa incluso con el filtro por defecto: un único texel ya es una cadena de mipmaps entera.</p>
+</section>
+
+<p>¿Y por qué no usamos imágenes de verdad en el curso? Porque lo comprobamos:</p>
+<ul>
+  <li><strong>Página abierta con <code>file://</code></strong>: la imagen vecina se carga y se decodifica (el navegador la muestra en un <code>&lt;img&gt;</code> sin problema), pero <code>texImage2D</code> lanza <code>SecurityError: The image element contains cross-origin data, and may not be loaded</code>. Con <code>file://</code>, Chrome trata cada archivo como un origen distinto, así que la imagen es «de otro origen» y WebGL se niega a leer sus píxeles (podría usarse para espiar el disco). Convertirla en <code>ImageBitmap</code> no ayuda (<code>The ImageBitmap contains cross-origin data</code>), y pedirla con <code>crossOrigin = 'anonymous'</code> la bloquea del todo, porque CORS no existe para <code>file://</code>.</li>
+  <li><strong>La misma página servida por HTTP</strong> (<code>python3 -m http.server</code>, <a href="../01-web/07-herramientas.html">1.7</a>): todo funciona.</li>
+  <li><strong>Dentro de los playgrounds</strong>, que son iframes aislados de origen opaco, ni siquiera se carga: la consola dice <code>Not allowed to load local resource</code>. Las <em>data URLs</em> y los canvas propios, en cambio, siempre funcionan.</li>
+</ul>
+
+<div class="callout bestiario" data-id="m5-imagen-securityerror" data-titulo="SecurityError al subir una imagen a una textura">
+  <p><strong>Síntoma:</strong> <code>texImage2D</code> lanza <code>SecurityError: Failed to execute 'texImage2D'…: The image element contains cross-origin data, and may not be loaded</code>, aunque la imagen se ve perfectamente en la página.</p>
+  <p><strong>Causa:</strong> la imagen es de otro origen: otro dominio sin cabeceras CORS, o cualquier archivo cuando la página se abre con <code>file://</code>. WebGL no permite leer píxeles de imágenes ajenas (sí mostrarlas).</p>
+  <p><strong>Solución:</strong> sirve la página y las imágenes desde el mismo origen con un servidor local; para imágenes de otro dominio, que el servidor envíe <code>Access-Control-Allow-Origin</code> y pídelas con <code>img.crossOrigin = 'anonymous'</code> <em>antes</em> de asignar <code>src</code>. Para demos que deban funcionar con doble clic, genera las texturas con código (canvas, arrays) o incrústalas como data URL.</p>
+</div>
+
+<div class="callout nota">
+  <p><strong>Vídeo.</strong> Un <code>&lt;video&gt;</code> también es una fuente válida para <code>texImage2D</code>: cada frame que quieras mostrar, lo vuelves a subir (idealmente solo cuando haya uno nuevo, con <code>video.requestVideoFrameCallback</code>). Aplican las mismas reglas de origen, y el coste es el de subir una imagen completa por frame, que en 5.10 veremos cómo medir. Para texturas que cambian a menudo existe también <code>texSubImage2D</code>, que reescribe una parte sin reservar memoria nueva, igual que <code>bufferSubData</code> con los buffers.</p>
+</div>
+
+<div class="callout senior" data-titulo="texStorage2D: texturas inmutables">
+  <p>WebGL2 permite reservar una textura con un tamaño y un número de niveles fijos: <code>gl.texStorage2D(gl.TEXTURE_2D, niveles, gl.RGBA8, ancho, alto)</code>, y rellenarla después con <code>texSubImage2D</code>. La textura queda <em>inmutable</em> (<code>TEXTURE_IMMUTABLE_FORMAT = true</code>): un <code>texImage2D</code> posterior da <code>INVALID_OPERATION: Texture is immutable</code>. A cambio, el driver sabe desde el principio exactamente qué memoria necesita y no tiene que comprobar la completitud en cada dibujo. Es la forma recomendada en OpenGL ES 3 moderno; <code>texImage2D</code> sigue siendo perfectamente válido y es lo que usamos en el curso por ser más directo.</p>
+</div>
+
+<h2>GLKit: crearTextura</h2>
+<p>Con todo lo anterior, puedes leer y usar <code>GLKit.crearTextura</code>:</p>
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="assets/js/glkit.js (extracto)">
+/* Crea una textura 2D desde un canvas/imagen/ImageBitmap o desde datos crudos.
+   opciones: { filtro: gl.LINEAR, wrap: gl.CLAMP_TO_EDGE, mipmaps: false, flipY: true,
+               alineacion (UNPACK_ALIGNMENT, p. ej. 1), ancho, alto, formatoInterno, formato, tipo } */
+crearTextura(gl, fuente, o) {
+  o = o || {};
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, o.flipY !== false);
+  if (o.alineacion) gl.pixelStorei(gl.UNPACK_ALIGNMENT, o.alineacion);
+  if (fuente && !ArrayBuffer.isView(fuente)) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, o.formatoInterno || gl.RGBA, o.formato || gl.RGBA, o.tipo || gl.UNSIGNED_BYTE, fuente);
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, o.formatoInterno || gl.RGBA, o.ancho, o.alto, 0, o.formato || gl.RGBA, o.tipo || gl.UNSIGNED_BYTE, fuente || null);
+  }
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  if (o.alineacion) gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);   // dejar el estado global como estaba
+  const filtro = o.filtro || gl.LINEAR;
+  if (o.mipmaps) {
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filtro === gl.NEAREST ? gl.NEAREST_MIPMAP_NEAREST : gl.LINEAR_MIPMAP_LINEAR);
+  } else {
+    // Sin esto la textura queda "incompleta" (el filtro por defecto pide mipmaps) y se ve NEGRA.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filtro);
+  }
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filtro);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, o.wrap || gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, o.wrap || gl.CLAMP_TO_EDGE);
+  return t;
+},
+</script>
+<p>Reconocerás cada decisión: <code>FLIP_Y</code> activado por defecto y restaurado al terminar; siempre fija el filtro de minificación (adiós a la textura negra); <code>CLAMP_TO_EDGE</code> por defecto (adiós a la línea del borde); mipmaps opcionales; y la variante de datos crudos, con <code>null</code> para reservar sin datos, que usaremos en 5.8. Ojo con dos cosas: <code>UNPACK_ALIGNMENT</code> solo se toca si se lo pides con la opción <code>alineacion</code> (si subes datos RGB o R8 de ancho impar, pasa <code>{ alineacion: 1 }</code>; la función lo devuelve a 4 al terminar, por ser estado global); y con fuentes <code>ImageBitmap</code> su <code>flipY</code> no tiene efecto, por lo que acabas de aprender.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.5.1 — La textura negra</h3>
+  <p>El rectángulo debería mostrar el paisaje, pero sale negro. Sin errores. Arréglalo de dos formas distintas (deja una comentada).</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.5.1" data-altura="240" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, Texturas.crear('paisaje', 512));
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('MIN_FILTER = 0x' + gl.getTexParameter(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER).toString(16), '· getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, Texturas.crear('paisaje', 512));
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+// Forma 1: un filtro que no pide mipmaps
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+// Forma 2: crear los mipmaps que el filtro por defecto pide
+// gl.generateMipmap(gl.TEXTURE_2D);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('MIN_FILTER = 0x' + gl.getTexParameter(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER).toString(16), '· getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>La consola imprime el filtro de minificación: 0x2702 es <code>NEAREST_MIPMAP_LINEAR</code>. ¿Qué niveles de mipmap tiene la textura?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con el filtro por defecto, la GPU necesita toda la cadena de mipmaps, pero solo existe el nivel 0: la textura es incompleta y se lee como <code>(0, 0, 0, 1)</code>. <strong>Forma 1</strong>: <code>MIN_FILTER = LINEAR</code> (o <code>NEAREST</code>), que no usa mipmaps. <strong>Forma 2</strong>: <code>generateMipmap</code>, que crea los niveles que el filtro pide (aquí hay minificación, así que además se verá mejor que con <code>LINEAR</code>). Una tercera, de hacker: <code>TEXTURE_MAX_LEVEL = 0</code>. Fíjate en que <code>getError</code> vale 0: nada en la API es incorrecto.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 5.5.2 — Boca abajo</h3>
+  <p>La textura <code>uv</code> lleva escrito «ARRIBA» en su parte superior y «(0,0)» en su esquina inferior izquierda. Sale al revés. Arréglalo con <code>pixelStorei</code>, sin tocar los shaders.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.5.2" data-altura="240" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;                  // (0,0) abajo a la izquierda
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, Texturas.crear('uv', 512));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;                  // (0,0) abajo a la izquierda
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);      // primera fila de la imagen → v = 1 (arriba)
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, Texturas.crear('uv', 512));
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);     // higiene: estado global
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+</script>
+  </div>
+  <details class="pista"><summary>Pista</summary><p>¿Qué fila de la imagen queda en <code>v = 0</code>? ¿Y dónde está <code>v = 0</code> en este rectángulo?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La primera fila de datos del canvas es la de arriba (la que dice «ARRIBA»), y <code>texImage2D</code> la coloca en <code>v = 0</code>, que este rectángulo pinta abajo. <code>UNPACK_FLIP_Y_WEBGL = true</code> invierte las filas al subir: la de arriba acaba en <code>v = 1</code>. Se restaura a <code>false</code> después porque es estado global. Alternativas igual de válidas: <code>1.0 - v_uv.y</code> en el shader, o UV invertidas en los vértices. Lo que no vale es mezclar convenciones en el mismo programa.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.5.3 — La unidad equivocada</h3>
+  <p>Otra parte del programa usa la unidad 2 para sus texturas y dejó <code>activeTexture(gl.TEXTURE2)</code> activo. Nuestro código sale negro. Arréglalo de dos maneras: haciendo que el sampler lea de la unidad 2, y usando la unidad 0 explícitamente.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.5.3" data-altura="240" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+gl.activeTexture(gl.TEXTURE2);     // (lo dejó así "otra parte del programa")
+
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+const textura = GLKit.crearTextura(gl, Texturas.crear('ladrillos', 512));   // se enlaza en la unidad ACTIVA
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('sampler u_tex =', gl.getUniform(programa, gl.getUniformLocation(programa, 'u_tex')),
+  '· unidad activa =', gl.getParameter(gl.ACTIVE_TEXTURE) - gl.TEXTURE0);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+gl.activeTexture(gl.TEXTURE2);     // (lo dejó así "otra parte del programa")
+
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = texture(u_tex, v_uv); }`);
+
+const textura = GLKit.crearTextura(gl, Texturas.crear('ladrillos', 512));
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+// Manera 2 (la robusta): elegir la unidad explícitamente justo antes de dibujar
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.uniform1i(gl.getUniformLocation(programa, 'u_tex'), 0);
+// Manera 1: dejar la textura en la unidad 2 y apuntar el sampler allí
+// gl.uniform1i(gl.getUniformLocation(programa, 'u_tex'), 2);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('sampler u_tex =', gl.getUniform(programa, gl.getUniformLocation(programa, 'u_tex')),
+  '· unidad activa =', gl.getParameter(gl.ACTIVE_TEXTURE) - gl.TEXTURE0);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>La consola dice de qué unidad lee el sampler y cuál está activa. ¿En qué unidad acabó la textura?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Qué hay en la unidad 0?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>crearTextura</code> enlaza la textura en la unidad <em>activa</em>, que es la 2. El sampler vale 0 (su valor inicial), y la unidad 0 está vacía: leer de una unidad sin textura da negro, sin error. <strong>Manera 1</strong>: <code>uniform1i(loc, 2)</code>, el sampler lee donde está la textura. <strong>Manera 2</strong>, la robusta: justo antes de dibujar, <code>activeTexture(gl.TEXTURE0)</code> + <code>bindTexture</code> + <code>uniform1i(loc, 0)</code>, sin depender de lo que haya dejado otro código. La regla general del módulo: el estado que tu dibujo necesita, fíjalo tú justo antes de dibujar.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.5.4 — La barra torcida</h3>
+  <p>Para no crear arrays en cada frame, este código escribe una textura <code>R8</code> de 7×7 en un array reutilizable de 64 bytes. Debería verse una barra <strong>vertical</strong> en la columna central, pero sale una diagonal (y la fila de arriba, vacía). Arréglalo sin cambiar el array.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.5.4" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { float v = texture(u_tex, v_uv).r; color = vec4(mix(vec3(0.1, 0.1, 0.16), vec3(1.0, 0.72, 0.29), v), 1.0); }`);
+
+const ANCHO = 7, ALTO = 7;
+const reutilizable = new Uint8Array(64);            // más grande de lo necesario, a propósito
+for (let j = 0; j < ALTO; j++) for (let i = 0; i < ANCHO; i++) {
+  reutilizable[j * ANCHO + i] = i === 3 ? 255 : 0;  // columna central encendida, filas apretadas
+}
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, ANCHO, ALTO, 0, gl.RED, gl.UNSIGNED_BYTE, reutilizable);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('UNPACK_ALIGNMENT =', gl.getParameter(gl.UNPACK_ALIGNMENT), '· getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { float v = texture(u_tex, v_uv).r; color = vec4(mix(vec3(0.1, 0.1, 0.16), vec3(1.0, 0.72, 0.29), v), 1.0); }`);
+
+const ANCHO = 7, ALTO = 7;
+const reutilizable = new Uint8Array(64);
+for (let j = 0; j < ALTO; j++) for (let i = 0; i < ANCHO; i++) {
+  reutilizable[j * ANCHO + i] = i === 3 ? 255 : 0;
+}
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);            // filas apretadas: cada fila empieza donde acaba la anterior
+console.log('UNPACK_ALIGNMENT durante la subida =', gl.getParameter(gl.UNPACK_ALIGNMENT));
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, ANCHO, ALTO, 0, gl.RED, gl.UNSIGNED_BYTE, reutilizable);
+gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);            // restaurar el valor por defecto
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.08, 0.09, 0.12, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('UNPACK_ALIGNMENT restaurado =', gl.getParameter(gl.UNPACK_ALIGNMENT), '· getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Cada fila mide 7 bytes. Con <code>UNPACK_ALIGNMENT = 4</code>, ¿en qué byte busca WebGL el principio de la fila 1? ¿Y de la fila 2?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Un <code>pixelStorei</code> antes de subir, y otro después para dejarlo como estaba.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con alineación 4, WebGL redondea el tamaño de fila de 7 a 8 bytes: busca la fila <em>j</em> en el byte <code>8j</code>, pero tus datos la tienen en <code>7j</code>. Cada fila se lee un byte más adelante que la anterior, así que la barra se desplaza una columna por fila: una diagonal. La última fila lee bytes que ya están más allá de tus datos (los ceros del final del array) y sale vacía. Como el array mide 64 bytes, no falta nada que leer y no hay error; con un array justo de 49 bytes, en cambio, habrías visto <code>ArrayBufferView not big enough for request</code>. <code>UNPACK_ALIGNMENT = 1</code> le dice que las filas van apretadas.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 5.5.5 — Un mapa de datos float</h3>
+  <p>Una textura <code>RGBA32F</code> de 8×8 guarda un campo de valores y queremos verla suavizada, con <code>LINEAR</code>. Sale negra. Arréglalo pidiendo la extensión adecuada, comprobando que existe, y con un plan B si no existe.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.5.5" data-altura="240" data-apilado data-incluir="glkit" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform highp sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { vec3 v = texture(u_tex, v_uv).rgb; color = vec4(v * vec3(0.25, 0.8, 0.9) + vec3(0.05), 1.0); }`);
+
+const N = 8, datos = new Float32Array(N * N * 4);
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const v = 0.5 + 0.5 * Math.sin(i * 0.9) * Math.cos(j * 0.7);
+  datos.set([v, v, v, 1], (j * N + i) * 4);
+}
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, N, N, 0, gl.RGBA, gl.FLOAT, datos);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('getError →', gl.getError());
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform highp sampler2D u_tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { vec3 v = texture(u_tex, v_uv).rgb; color = vec4(v * vec3(0.25, 0.8, 0.9) + vec3(0.05), 1.0); }`);
+
+// Pedir la extensión ACTIVA el filtrado lineal de floats (si la GPU lo soporta)
+const filtrableFloat = gl.getExtension('OES_texture_float_linear') !== null;
+console.log('OES_texture_float_linear:', filtrableFloat);
+
+const N = 8, datos = new Float32Array(N * N * 4);
+for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  const v = 0.5 + 0.5 * Math.sin(i * 0.9) * Math.cos(j * 0.7);
+  datos.set([v, v, v, 1], (j * N + i) * 4);
+}
+const textura = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, textura);
+// Plan B: RGBA16F es filtrable sin extensión (a costa de precisión: 11 bits de mantisa)
+const formatoInterno = filtrableFloat ? gl.RGBA32F : gl.RGBA16F;
+gl.texImage2D(gl.TEXTURE_2D, 0, formatoInterno, N, N, 0, gl.RGBA, gl.FLOAT, datos);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+gl.clearColor(0.2, 0.21, 0.25, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+gl.useProgram(programa);
+gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, textura);
+gl.bindVertexArray(gl.createVertexArray());
+gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+console.log('getError →', gl.getError());
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué extensión necesita el filtrado lineal de texturas de 32 bits float? Recuerda que en WebGL una extensión no existe hasta que la pides.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Si <code>getExtension</code> devuelve <code>null</code>, ¿qué formato float es filtrable sin extensión?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Las texturas <code>RGBA32F</code> no son filtrables linealmente en WebGL2 sin <code>OES_texture_float_linear</code>; sin ella, la textura es incompleta y se lee negra. La extensión debe <em>pedirse</em> con <code>getExtension</code> (5.1): que aparezca en <code>getSupportedExtensions</code> no basta. Como plan B, <code>RGBA16F</code> es filtrable por definición en WebGL2 y acepta datos <code>FLOAT</code> (se convierten al subir), a cambio de menos precisión y un máximo de 65 504. Otra opción: filtrar a mano en el shader con cuatro <code>texelFetch</code>.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 5.5.6 — Dos texturas, dos unidades</h3>
+  <p>El fragment shader mezcla dos texturas según <code>u_mezcla</code>, que un deslizador controla: el paisaje y la textura de texto. Ahora mismo solo se ve una de ellas, se mueva como se mueva el deslizador. Completa la preparación para que cada sampler lea su textura.</p>
+  <div class="js-playground" data-titulo="Ejercicio 5.5.6" data-altura="270" data-apilado data-incluir="glkit,texturas" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="c"></canvas>
+<div class="controles"><label>u_mezcla <input id="mezcla" type="range" min="0" max="1" step="0.01" value="0.5"></label></div>
+</script>
+<script type="text/x-css">
+body { display: flex; flex-direction: column; }
+canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+.controles { padding: 8px 12px; font: 13px ui-monospace, monospace; color: #b4bccb; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_paisaje;
+uniform sampler2D u_texto;
+uniform float u_mezcla;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = mix(texture(u_paisaje, v_uv), texture(u_texto, v_uv), u_mezcla); }`);
+
+const tPaisaje = GLKit.crearTextura(gl, Texturas.crear('paisaje', 512));
+const tTexto = GLKit.crearTextura(gl, Texturas.crear('texto', 512));
+const locMezcla = gl.getUniformLocation(programa, 'u_mezcla');
+// TODO: las unidades y los samplers
+
+function dibujar() {
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+  gl.uniform1f(locMezcla, +document.getElementById('mezcla').value);
+  gl.bindVertexArray(gl.createVertexArray());
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+document.getElementById('mezcla').oninput = dibujar;
+dibujar();
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+GLKit.ajustarTamaño(canvas);
+const programa = GLKit.crearPrograma(gl, `#version 300 es
+uniform float u_aspecto;
+out vec2 v_uv;
+void main() {
+  vec2 P[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  v_uv = P[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(P[gl_VertexID].x * 0.85 * u_aspecto, P[gl_VertexID].y * 0.85, 0.0, 1.0);
+}`, `#version 300 es
+precision highp float;
+uniform sampler2D u_paisaje;
+uniform sampler2D u_texto;
+uniform float u_mezcla;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = mix(texture(u_paisaje, v_uv), texture(u_texto, v_uv), u_mezcla); }`);
+
+const tPaisaje = GLKit.crearTextura(gl, Texturas.crear('paisaje', 512));
+const tTexto = GLKit.crearTextura(gl, Texturas.crear('texto', 512));
+const locMezcla = gl.getUniformLocation(programa, 'u_mezcla');
+// Los samplers apuntan a unidades distintas (persisten en el programa: basta una vez)
+gl.useProgram(programa);
+gl.uniform1i(gl.getUniformLocation(programa, 'u_paisaje'), 0);
+gl.uniform1i(gl.getUniformLocation(programa, 'u_texto'), 1);
+
+function dibujar() {
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.clearColor(0.08, 0.09, 0.12, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(programa);
+  // Cada textura en su unidad, justo antes de dibujar (estado global: puede haber cambiado)
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tPaisaje);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, tTexto);
+  gl.uniform1f(gl.getUniformLocation(programa, 'u_aspecto'), gl.drawingBufferHeight / gl.drawingBufferWidth);
+  gl.uniform1f(locMezcla, +document.getElementById('mezcla').value);
+  gl.bindVertexArray(gl.createVertexArray());
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+document.getElementById('mezcla').oninput = dibujar;
+dibujar();
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Cuánto valen los dos samplers si nadie los asigna? ¿Qué textura quedó enlazada en la unidad 0 después de crear las dos?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Tres cosas: cada sampler a una unidad distinta con <code>uniform1i</code>; cada textura en su unidad con <code>activeTexture</code> + <code>bindTexture</code>; y hacerlo con el programa en uso.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Los dos samplers valen 0 y en la unidad 0 quedó la última textura creada (<code>crearTextura</code> la enlaza en la unidad activa, la 0): las dos lecturas devuelven el texto, y la mezcla entre una imagen y ella misma no cambia nada. La solución asigna <code>u_paisaje = 0</code> y <code>u_texto = 1</code> (una vez basta, porque persisten en el programa) y, antes de cada dibujo, coloca cada textura en su unidad. Por cierto: el <code>createVertexArray()</code> dentro de <code>dibujar</code> crea un VAO nuevo en cada llamada; aquí da igual, pero en un bucle real deberías crearlo una sola vez (5.10 hablará de fugas).</p>
+  </details>
+</section>
+
+<h2>Resumen</h2>
+<div class="callout resumen">
+  <ul>
+    <li>Crear: <code>createTexture</code> → <code>bindTexture</code> → <code>texImage2D</code> (fuente del DOM o array tipado con ancho, alto y borde 0) → filtros y wrap con <code>texParameteri</code>. Leer en GLSL con <code>texture(sampler, uv)</code>, UV de 0 a 1.</li>
+    <li>Formato interno (cómo se guarda) + formato y tipo (cómo son tus datos): <code>RGBA/RGBA8</code> con bytes, <code>R8</code> se lee (r, 0, 0, 1), <code>RGBA16F</code> filtrable, <code>RGBA32F</code> sin recortar pero con <code>LINEAR</code> solo con <code>OES_texture_float_linear</code>.</li>
+    <li><code>pixelStorei</code> es global: <code>FLIP_Y</code> (las imágenes guardan primero la fila de arriba), <code>PREMULTIPLY_ALPHA</code> (5.7), <code>UNPACK_ALIGNMENT</code> = 4 (filas RGB/R8 de ancho impar: error o imagen torcida). Con <code>ImageBitmap</code>, los dos primeros se ignoran: se eligen en <code>createImageBitmap</code>.</li>
+    <li>Textura incompleta = negra y en silencio: el <code>MIN_FILTER</code> por defecto pide mipmaps; floats con <code>LINEAR</code> sin extensión; unidad vacía. Una textura de 1×1 siempre es completa.</li>
+    <li>Filtros: <code>NEAREST</code> (datos, pixel art), <code>LINEAR</code> (suave), mipmaps contra el muaré, anisotropía para superficies de canto.</li>
+    <li>Centro del texel <em>i</em>: <code>(i + 0.5) / N</code>. <code>texelFetch</code> para leer texels exactos, <code>textureSize</code> para el tamaño.</li>
+    <li>Wrap: <code>REPEAT</code> (por defecto; mezcla bordes opuestos con <code>LINEAR</code>), <code>MIRRORED_REPEAT</code>, <code>CLAMP_TO_EDGE</code>. Sin restricciones de tamaño en WebGL2.</li>
+    <li>Unidades: <code>activeTexture(gl.TEXTURE0 + n)</code> + <code>bindTexture</code>, y el sampler vale <code>n</code> (un entero, con <code>uniform1i</code>).</li>
+    <li>Carga: <code>img.decode()</code> + <code>createImageBitmap</code> con textura provisional. Con <code>file://</code>, las imágenes son de otro origen y <code>texImage2D</code> lanza <code>SecurityError</code>: por eso el curso genera sus texturas con código.</li>
+  </ul>
+</div>
+
+<p>En <a href="06-3d-cubo.html">5.6</a> pasamos a 3D: un cubo con normales y coordenadas de textura por cara, matrices de modelo, vista y proyección, el búfer de profundidad y la primera iluminación.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/texImage2D">MDN: <code>texImage2D()</code></a>, con la tabla completa de combinaciones de formato.</li>
+  <li><a href="https://registry.khronos.org/webgl/specs/latest/2.0/#TEXTURE_TYPES_FORMATS_FROM_DOM_ELEMENTS_TABLE">Especificación de WebGL 2.0: formatos admitidos desde elementos del DOM</a>.</li>
+  <li><a href="https://webgl2fundamentals.org/webgl/lessons/webgl-3d-textures.html">WebGL2 Fundamentals: Textures</a> y <a href="https://webgl2fundamentals.org/webgl/lessons/webgl-cors-permission.html">Cross Origin Images</a>.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

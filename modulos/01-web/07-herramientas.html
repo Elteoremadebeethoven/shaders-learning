@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.7 · Herramientas: DevTools, servidor local y file:// — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m1.css">
+</head>
+<body data-leccion="01-web/herramientas">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 1 · Fundamentos web mínimos</p>
+  <h1>Herramientas: DevTools, servidor local y file://</h1>
+  <p class="resumen">Las DevTools son la mitad del trabajo en gráficos: ver el DOM real, pausar el código en el frame exacto, medir qué come cada milisegundo. Y hay que saber dónde vive tu página: qué es un origen, por qué <code>file://</code> rompe <code>fetch</code>, los módulos y las texturas, cómo levantar un servidor local y por qué a veces el navegador te enseña una versión vieja de tu código.</p>
+  <div class="meta"><span class="chip">⏱ 75 min</span><span class="chip">Requisitos: 1.1 a 1.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Te moverás con soltura por los paneles Console, Elements, Sources, Performance, Network y Rendering, y sabrás qué pregunta responde cada uno.</li>
+      <li>Usarás la consola como una herramienta (<code>console.table</code>, <code>%c</code>, <code>$0</code>, <code>copy</code>, <code>monitorEvents</code>, <code>queryObjects</code>) y los breakpoints condicionales y logpoints para cazar errores en un bucle de animación.</li>
+      <li>Leerás una grabación de Performance: frames, tareas largas, layout, pintado y recolección de basura.</li>
+      <li>Sabrás qué es un origen y por qué con <code>file://</code> fallan <code>fetch</code>, los módulos, los workers y las texturas de imágenes, con los mensajes exactos de Chrome.</li>
+      <li>Levantarás un servidor local, conocerás sus cabeceras y evitarás que la caché te sirva código viejo.</li>
+      <li>Sabrás que existen Spector.js y <code>WEBGL_debug_shaders</code> para cuando llegues a WebGL.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Por qué una lección de herramientas</h2>
+<p>En gráficos, los errores rara vez dan un mensaje: una pantalla negra, una partícula que desaparece, una animación que tiembla. Las herramientas del navegador convierten esos síntomas en datos: qué elemento hay de verdad bajo el ratón, qué valor tiene una variable en el frame 347, qué tarea se comió 200 ms. Casi todos los bestiarios de este módulo se diagnostican en segundos con la herramienta adecuada, y esta lección te dice cuál.</p>
+<p>La segunda mitad trata de algo que parece administrativo y no lo es: <em>desde dónde</em> se carga tu página. Con doble clic (<code>file://</code>) o desde un servidor (<code>http://</code>), el navegador aplica reglas de seguridad distintas, y la diferencia decide si tus texturas cargan o lanzan un <code>SecurityError</code>.</p>
+<div class="callout nota">
+  <p>Dentro de una lección no puedes abrir las DevTools <em>de la lección</em> y a la vez leerla con comodidad, así que aquí trabajarás con esquemas e instrucciones paso a paso, y con ejercicios del tipo «haz esto en tus DevTools y anota lo que ves». Los nombres y atajos son los de Chrome actual; la interfaz cambia un poco entre versiones. Si algo no está donde digo, búscalo en el menú de comandos (<kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Mayús</kbd> + <kbd>P</kbd>), que encuentra cualquier panel u opción por su nombre.</p>
+</div>
+
+<h2>Abrir las DevTools y orientarse</h2>
+<p>Se abren con <kbd>F12</kbd>, con <kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>I</kbd> (<kbd>⌘</kbd>+<kbd>⌥</kbd>+<kbd>I</kbd> en Mac), o con clic derecho sobre cualquier cosa → <em>Inspeccionar</em>, que además selecciona ese elemento. <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Mayús</kbd>+<kbd>C</kbd> activa el selector de elementos: pasas el ratón por la página y se ilumina cada caja.</p>
+
+<svg class="diagrama" viewBox="0 0 760 300" width="760" role="img" aria-label="Esquema de la ventana de DevTools: pestañas de paneles, panel principal y cajón inferior">
+  <rect class="caja" x="10" y="10" width="740" height="280" rx="10"/>
+  <rect x="10" y="10" width="740" height="34" rx="10" style="fill:var(--surface);stroke:var(--border-2)"/>
+  <g style="font-size:12.5px">
+    <rect x="22" y="17" width="22" height="20" rx="4" class="tenue"/><text x="33" y="31" text-anchor="middle">⬚</text>
+    <text x="60" y="32" style="font-weight:700">Elements</text>
+    <text x="140" y="32">Console</text>
+    <text x="210" y="32">Sources</text>
+    <text x="280" y="32">Network</text>
+    <text x="352" y="32">Performance</text>
+    <text x="448" y="32">Memory</text>
+    <text x="512" y="32">Application</text>
+    <text x="700" y="32">⚙ ⋮</text>
+  </g>
+  <path d="M55 38 L125 38" class="acento" stroke-width="3"/>
+  <rect x="22" y="54" width="430" height="150" rx="6" style="fill:var(--code-bg);stroke:var(--border)"/>
+  <text x="34" y="74" style="font-family:var(--mono);font-size:12px">&lt;main class="leccion"&gt;</text>
+  <text x="50" y="94" style="font-family:var(--mono);font-size:12px">&lt;h1&gt;Herramientas…&lt;/h1&gt; == $0</text>
+  <text x="34" y="190" class="texto-tenue" style="font-size:11.5px">el árbol DOM vivo (no tu código fuente)</text>
+  <rect x="462" y="54" width="276" height="150" rx="6" style="fill:var(--code-bg);stroke:var(--border)"/>
+  <text x="474" y="74" style="font-size:12px;font-weight:700">Styles · Computed · Event Listeners</text>
+  <text x="474" y="96" style="font-family:var(--mono);font-size:11.5px">.leccion h1 { font-size: 2.35rem }</text>
+  <text x="474" y="116" style="font-family:var(--mono);font-size:11.5px;text-decoration:line-through" class="texto-tenue">h1 { font-size: 2em }</text>
+  <rect x="540" y="130" width="120" height="60" rx="3" style="fill:color-mix(in srgb, var(--c-cuidado) 20%, transparent);stroke:var(--c-cuidado)"/>
+  <rect x="556" y="142" width="88" height="36" rx="2" style="fill:color-mix(in srgb, var(--c-nota) 30%, transparent);stroke:var(--c-nota)"/>
+  <text x="600" y="165" text-anchor="middle" style="font-size:10.5px">modelo de caja</text>
+  <rect x="22" y="214" width="716" height="66" rx="6" style="fill:var(--surface);stroke:var(--border)"/>
+  <text x="34" y="234" style="font-size:12px;font-weight:700">Cajón (Esc):  Console · Rendering · Animations · Coverage…</text>
+  <text x="34" y="256" style="font-family:var(--mono);font-size:12px">&gt; $0.getBoundingClientRect().width</text>
+  <text x="34" y="273" style="font-family:var(--mono);font-size:12px" class="texto-tenue">&lt; 780</text>
+  <text x="600" y="256" class="texto-tenue" style="font-size:11.5px">⌘/Ctrl+Mayús+P:</text>
+  <text x="600" y="273" class="texto-tenue" style="font-size:11.5px">menú de comandos</text>
+</svg>
+
+<p>Arriba están los paneles; la tecla <kbd>Esc</kbd> abre y cierra el <strong>cajón</strong> inferior, donde puedes tener la consola visible mientras usas otro panel, y donde viven herramientas como <em>Rendering</em>. Cada panel responde a una pregunta:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Panel</th><th>Pregunta que responde</th><th>Lo usarás para…</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Console</strong></td><td>¿Qué dice mi código? ¿Cuánto vale esto ahora?</td><td>errores, valores, probar una línea</td></tr>
+    <tr><td><strong>Elements</strong></td><td>¿Qué árbol y qué estilos hay de verdad?</td><td>el DOM corregido (1.1), la cascada y la caja (1.2)</td></tr>
+    <tr><td><strong>Sources</strong></td><td>¿Qué pasa en esta línea, en este frame?</td><td>breakpoints, paso a paso</td></tr>
+    <tr><td><strong>Performance</strong></td><td>¿En qué se va el tiempo de cada frame?</td><td>tareas largas (1.5), layout forzado, GC (1.3)</td></tr>
+    <tr><td><strong>Network</strong></td><td>¿Qué se ha descargado, de dónde y con qué cabeceras?</td><td>la caché, los 404, los errores de CORS</td></tr>
+    <tr><td><strong>Rendering</strong> (en el cajón)</td><td>¿Qué se repinta? ¿A cuántos fps va?</td><td>comprobar que una animación no provoca pintado</td></tr>
+  </tbody>
+</table>
+
+<h2>Console: mucho más que <code>console.log</code></h2>
+<h3>Los métodos de <code>console</code></h3>
+<p>Todos estos existen en el objeto <code>console</code> de cualquier página (lo comprobé), así que puedes usarlos en tu código:</p>
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+console.log("posición", p.x, p.y);
+console.info("info"); console.warn("aviso"); console.error("error");
+console.table(particulas.slice(0, 5));
+console.group("frame " + n); console.log("…"); console.groupEnd();
+console.time("física"); actualizar(dt); console.timeEnd("física");
+console.count("pointermove");
+console.assert(Number.isFinite(p.x), "posición inválida", p);
+console.trace("¿quién me llama?");
+console.log("%cRENDER%c listo", "background:#8b7bff;color:#fff;padding:2px 6px;border-radius:4px", "");
+</script>
+<ol>
+  <li data-l="1">Varios argumentos, separados por espacios. Los objetos se muestran interactivos.</li>
+  <li data-l="2">Niveles: la barra de filtros de la consola permite ver solo errores, avisos, información… Los <code>console.debug</code> son de nivel <em>verbose</em> y están ocultos por defecto.</li>
+  <li data-l="3">Una tabla, con una fila por elemento y una columna por propiedad. Para inspeccionar un array de partículas, imbatible.</li>
+  <li data-l="4">Agrupa (y permite plegar) los mensajes de cada frame.</li>
+  <li data-l="5">Mide el tiempo entre <code>time</code> y <code>timeEnd</code> con la misma etiqueta. Recuerda la lección <a href="05-event-loop.html">1.5</a>: una sola medida de algo muy rápido no significa mucho.</li>
+  <li data-l="6">Cuenta cuántas veces pasa por aquí: ideal para saber cuántos <code>pointermove</code> llegan por segundo.</li>
+  <li data-l="7">Solo escribe (como error) si la condición es falsa. Es el detector de <code>NaN</code> del bestiario de la lección <a href="03-js-lenguaje.html">1.3</a>, sin <code>if</code>.</li>
+  <li data-l="8">Escribe la pila de llamadas completa: quién llamó a quién hasta aquí.</li>
+  <li data-l="9"><code>%c</code> aplica los estilos CSS del argumento siguiente al texto que sigue. Útil para que tus mensajes destaquen entre los de las librerías.</li>
+</ol>
+</div>
+<div class="callout cuidado">
+  <p>La consola de los editores de este curso es una imitación sencilla. Lo comprobé método a método: muestra <code>log</code>, <code>info</code>, <code>warn</code>, <code>error</code> y <code>debug</code>; escribe <code>console.table</code> como una tabla de texto (no la interactiva de Chrome); entiende <code>%c</code> pero descarta los estilos; y <strong>no muestra nada</strong> de <code>console.group</code> (sí los mensajes de dentro, pero sin cabecera ni sangría), <code>console.time</code>/<code>timeEnd</code>, <code>console.count</code>, <code>console.assert</code>, <code>console.trace</code> ni <code>console.dir</code>. Para probar estas funciones, usa la consola de verdad de tus DevTools. Y cuidado con otra rareza de la consola real: al desplegar un objeto registrado, lo que ves son sus valores <em>de ahora</em>, no los del momento en que lo registraste (la vista previa de una línea sí es de entonces). Si lo modificas después, verás el valor nuevo. Para registrar una foto fija, <code>console.log(structuredClone(obj))</code> o <code>JSON.stringify</code>.</p>
+</div>
+
+<h3>La API de la línea de comandos</h3>
+<p>Al escribir <em>en</em> la consola (no en tu código) tienes además unas funciones especiales. Lo comprobé evaluando código con y sin esa API: en la consola existen <code>$</code>, <code>$$</code>, <code>$x</code>, <code>copy</code>, <code>monitorEvents</code>, <code>getEventListeners</code>, <code>queryObjects</code>, <code>inspect</code> y compañía; desde el código de una página, ninguna.</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Escribe en la consola</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>$0</code></td><td>el elemento seleccionado en el panel Elements (<code>$1</code>, el anterior…)</td></tr>
+    <tr><td><code>$_</code></td><td>el resultado de la última expresión evaluada</td></tr>
+    <tr><td><code>$("canvas")</code> / <code>$$("canvas")</code></td><td>atajos de <code>querySelector</code> / <code>querySelectorAll</code> (este último, en un array de verdad)</td></tr>
+    <tr><td><code>copy(objeto)</code></td><td>copia el objeto al portapapeles como JSON: ideal para llevarte unos datos</td></tr>
+    <tr><td><code>monitorEvents($0, "pointermove")</code></td><td>registra cada evento de ese tipo que llega al elemento (<code>unmonitorEvents</code> para parar)</td></tr>
+    <tr><td><code>getEventListeners($0)</code></td><td>los listeners que tiene el elemento, con sus funciones</td></tr>
+    <tr><td><code>queryObjects(Particula)</code></td><td>todas las instancias vivas de un constructor</td></tr>
+  </tbody>
+</table>
+<div class="callout hack" data-titulo="queryObjects para encontrar fugas de la GPU">
+  <p><code>queryObjects</code> funciona con cualquier constructor, también con los objetos de WebGL. Lo probé por el protocolo de DevTools (la misma función que usa la consola): creé 4 texturas, guardé 3 en variables, y la búsqueda de instancias de <code>WebGLTexture</code> encontró 3; la cuarta, a la que no apuntaba nadie, ya no estaba. Escribir <code>queryObjects(WebGLTexture)</code> en la consola mientras una animación crea y destruye recursos te dice si se van acumulando: una fuga de memoria de la GPU, el problema que estudiarás en la lección <a href="../05-webgl/10-depuracion.html#fugas-de-memoria">5.10</a>.</p>
+</div>
+<div class="callout senior" data-titulo="El selector de contexto de la consola">
+  <p>Una página con iframes tiene varios contextos de JavaScript, cada uno con sus variables globales. Arriba a la izquierda de la consola hay un desplegable que dice <code>top</code>: es el contexto de la página principal. Los editores de este curso ejecutan tu código en un iframe; para consultar sus variables desde la consola, elige en ese desplegable el iframe (aparece como <code>about:srcdoc</code>). Y en el panel Sources, el código de un editor aparece con el nombre <code>tu-codigo.js</code>, porque el editor lo marca con un comentario <code>//# sourceURL=tu-codigo.js</code>: ahí puedes ponerle breakpoints.</p>
+</div>
+
+<h2>Elements: el DOM vivo y sus estilos</h2>
+<p>El panel Elements enseña el árbol DOM <em>actual</em>: el que construyó el parser corrigiendo tu HTML (lección <a href="01-html.html">1.1</a>) y el que ha modificado tu JavaScript desde entonces. Si un elemento no aparece o tiene otro padre del que esperabas, aquí lo ves. Lo más útil:</p>
+<ul>
+  <li><strong>Styles</strong>: las reglas que se aplican al elemento seleccionado, de más a menos específica. Las declaraciones que pierden en la cascada aparecen tachadas; las que el navegador no entiende (una errata, un valor inválido), tachadas y con un icono de aviso. Puedes editar cualquier valor en vivo y usar las flechas del teclado para cambiar números.</li>
+  <li><strong>Computed</strong>: el valor final de cada propiedad y el diagrama del modelo de caja (lección <a href="02-css.html">1.2</a>), con el contenido, el padding, el borde y el margen medidos.</li>
+  <li><strong>:hov</strong>: fuerza estados como <code>:hover</code> o <code>:active</code> para inspeccionarlos sin tener el ratón encima.</li>
+  <li><strong>Event Listeners</strong>: los listeners del elemento y de sus ancestros, agrupados por tipo de evento.</li>
+  <li><strong>Break on</strong> (clic derecho en un nodo): pausa el código cuando se modifiquen los hijos del nodo, sus atributos o cuando se elimine. Perfecto para descubrir qué script está cambiando un elemento.</li>
+</ul>
+
+<h2>Sources: pausar el tiempo</h2>
+<p>El panel Sources muestra los archivos cargados y permite <strong>pausar</strong> la ejecución en una línea (un <em>breakpoint</em>) para mirar el estado en ese instante: el valor de cada variable (<em>Scope</em>), la pila de llamadas (<em>Call Stack</em>) y las expresiones que vigiles (<em>Watch</em>). Pones un breakpoint haciendo clic en el número de línea. Una vez pausado:</p>
+<table class="m1-tabla-compacta">
+  <tbody>
+    <tr><td><kbd>F8</kbd></td><td>continuar hasta el siguiente breakpoint</td></tr>
+    <tr><td><kbd>F10</kbd></td><td>ejecutar la línea actual y pasar a la siguiente (<em>step over</em>)</td></tr>
+    <tr><td><kbd>F11</kbd> / <kbd>Mayús</kbd>+<kbd>F11</kbd></td><td>entrar en la función que se llama en esta línea / salir de la función actual</td></tr>
+  </tbody>
+</table>
+<p>En un bucle de animación, un breakpoint normal se dispara en <em>cada</em> frame, lo que lo hace casi inútil. Para eso hay dos variantes, con clic derecho sobre el número de línea:</p>
+<ul>
+  <li><strong>Breakpoint condicional</strong>: solo pausa si una expresión es verdadera. Con <code>!Number.isFinite(p.x)</code>, el código corre a toda velocidad hasta el frame exacto en que una posición deja de ser un número, y entonces se detiene con todas las variables a la vista.</li>
+  <li><strong>Logpoint</strong>: no pausa; escribe en la consola el valor de una expresión cada vez que pasa por la línea. Es un <code>console.log</code> que no ensucia tu código ni obliga a recargar.</li>
+</ul>
+<p>La instrucción <code>debugger;</code> escrita en tu código hace de breakpoint, pero solo con las DevTools abiertas: sin ellas no hace nada (lo comprobé: los mensajes de antes y de después se escribieron seguidos).</p>
+<div class="callout bestiario" data-id="m1-salto-tras-pausa" data-titulo="Tras un breakpoint, la animación da un salto">
+  <p><strong>Síntoma:</strong> pausas en un breakpoint, miras un rato, continúas… y los objetos aparecen de golpe muy lejos o la física explota.</p>
+  <p><strong>Causa:</strong> mientras el código estaba pausado, el reloj siguió avanzando. El primer frame tras la pausa calcula un <code>dt</code> de varios segundos, igual que al volver de una pestaña en segundo plano (lección <a href="05-event-loop.html">1.5</a>).</p>
+  <p><strong>Solución:</strong> la misma: limita <code>dt</code> (<code>Math.min(dt, 0.1)</code>). Una animación que sobrevive a un breakpoint también sobrevive a un cambio de pestaña y a un tirón del sistema.</p>
+</div>
+
+<h2>Performance: en qué se va cada frame</h2>
+<p>El panel Performance graba todo lo que hace el navegador durante unos segundos y lo dibuja en una línea de tiempo. Se graba con el botón redondo (<kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>E</kbd>) y se detiene con el mismo botón; el botón de la flecha circular recarga la página y graba la carga. Lo que conviene mirar, de arriba abajo:</p>
+
+<svg class="diagrama" viewBox="0 0 760 270" width="760" role="img" aria-label="Esquema de una grabación del panel Performance: frames, hilo principal con tareas y leyenda de colores">
+  <text x="10" y="24" style="font-weight:700;font-size:12px">Frames</text>
+  <g>
+    <rect x="100" y="12" width="44" height="18" rx="2" style="fill:color-mix(in srgb, var(--ok) 35%, transparent);stroke:var(--ok)"/>
+    <rect x="146" y="12" width="44" height="18" rx="2" style="fill:color-mix(in srgb, var(--ok) 35%, transparent);stroke:var(--ok)"/>
+    <rect x="192" y="12" width="330" height="18" rx="2" style="fill:color-mix(in srgb, var(--err) 25%, transparent);stroke:var(--err)"/>
+    <text x="357" y="25" text-anchor="middle" style="font-size:11px">frame perdido (1,5 s sin pintar)</text>
+    <rect x="524" y="12" width="44" height="18" rx="2" style="fill:color-mix(in srgb, var(--ok) 35%, transparent);stroke:var(--ok)"/>
+    <rect x="570" y="12" width="44" height="18" rx="2" style="fill:color-mix(in srgb, var(--ok) 35%, transparent);stroke:var(--ok)"/>
+  </g>
+  <text x="10" y="70" style="font-weight:700;font-size:12px">Main</text>
+  <g style="font-size:10.5px">
+    <rect x="100" y="54" width="30" height="16" rx="2" class="caja"/><rect x="146" y="54" width="30" height="16" rx="2" class="caja"/>
+    <rect x="100" y="72" width="18" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-resumen) 55%, transparent)"/>
+    <rect x="118" y="72" width="8" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-senior) 60%, transparent)"/>
+    <rect x="126" y="72" width="4" height="14" rx="1" style="fill:color-mix(in srgb, var(--ok) 60%, transparent)"/>
+    <rect x="192" y="54" width="330" height="16" rx="2" class="caja"/>
+    <path d="M510 54 L522 54 L522 66 z" style="fill:var(--err)"/>
+    <text x="200" y="66">Task 1.50 s</text>
+    <rect x="194" y="72" width="326" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-resumen) 45%, transparent)"/><text x="200" y="83">Event: click</text>
+    <rect x="196" y="88" width="322" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-resumen) 55%, transparent)"/><text x="200" y="99">Function call · 05-event-loop.html</text>
+    <rect x="524" y="54" width="30" height="16" rx="2" class="caja"/>
+    <rect x="524" y="72" width="10" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-resumen) 55%, transparent)"/>
+    <rect x="534" y="72" width="16" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-senior) 60%, transparent)"/>
+    <rect x="600" y="54" width="60" height="16" rx="2" class="caja"/>
+    <rect x="600" y="72" width="46" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-resumen) 55%, transparent)"/>
+    <rect x="620" y="88" width="20" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-nota) 55%, transparent)"/><text x="630" y="118" text-anchor="middle">Minor GC</text>
+  </g>
+  <text x="10" y="150" style="font-weight:700;font-size:12px">Leyenda</text>
+  <g style="font-size:12px">
+    <rect x="100" y="140" width="14" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-resumen) 55%, transparent)"/><text x="120" y="152">JavaScript (Scripting)</text>
+    <rect x="290" y="140" width="14" height="14" rx="2" style="fill:color-mix(in srgb, var(--c-senior) 60%, transparent)"/><text x="310" y="152">estilo y layout (Rendering)</text>
+    <rect x="500" y="140" width="14" height="14" rx="2" style="fill:color-mix(in srgb, var(--ok) 60%, transparent)"/><text x="520" y="152">pintado (Painting)</text>
+    <path d="M100 170 L114 170 L114 184 z" style="fill:var(--err)"/><text x="120" y="182">tarea larga: más de 50 ms (la parte que sobra, rayada en rojo)</text>
+  </g>
+  <text x="10" y="222" class="texto-tenue" style="font-size:12px">Cada bloque gris es una tarea; debajo, lo que se ejecutó dentro (el ancho es el tiempo). Haz clic en un bloque para ver</text>
+  <text x="10" y="240" class="texto-tenue" style="font-size:12px">su duración y el código que lo originó en la pestaña Summary / Bottom-Up. Es un esquema: los colores reales son los de tu Chrome.</text>
+</svg>
+
+<ul>
+  <li><strong>Frames</strong>: un rectángulo por frame. Los que no se pintaron a tiempo aparecen marcados como perdidos o parciales. Pasa el ratón por encima para ver su duración.</li>
+  <li><strong>Main</strong>: el hilo principal. Cada bloque gris es una <em>tarea</em>; debajo, lo que se ejecutó dentro, como un <em>flame chart</em> (el ancho es el tiempo; la profundidad, la pila de llamadas). Las tareas de más de 50 ms llevan un triángulo rojo en la esquina: son las <em>long tasks</em> de la lección <a href="05-event-loop.html">1.5</a>.</li>
+  <li><strong>Los colores</strong>: amarillo para JavaScript, morado para estilo y layout (si hay muchos bloques de <em>Layout</em> dentro de tu función, es un layout forzado), verde para pintado. Los bloques <em>Minor GC</em> y <em>Major GC</em> son el recolector de basura (lección <a href="03-js-lenguaje.html">1.3</a>).</li>
+  <li><strong>GPU</strong>: el trabajo del proceso de la GPU tiene su propia pista, aparte del hilo principal. En una traza de un canvas WebGL que se borraba en cada frame, el hilo principal apenas trabajaba y la GPU registró unas 80 tareas por segundo. Cuando el JavaScript va rápido pero los frames no llegan, mira ahí (lección <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>).</li>
+  <li><strong>El engranaje</strong> de opciones permite simular una CPU más lenta (<em>CPU throttling</em>, 4× o 6× más lenta): tu M1 no es el móvil de tus usuarios.</li>
+</ul>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.7.1 — Leer la grabación del bloqueo de la lección 1.5</h3>
+  <p>Vamos a grabar el botón «Bloquear el hilo principal 1,5 s» de la lección <a href="05-event-loop.html">1.5</a> e interpretar lo que sale. Hice esta misma grabación con el sistema de trazas de Chrome, que es de donde saca sus datos el panel Performance, así que puedo decirte qué contiene.</p>
+  <ol>
+    <li><strong>Prepara.</strong> Abre la lección 1.5, baja hasta la demo de las dos bolas y abre las DevTools en el panel Performance.</li>
+    <li><strong>Graba.</strong> Pulsa grabar, espera un segundo, pulsa el botón de bloquear, espera a que termine y otro segundo más, y detén la grabación.</li>
+    <li><strong>Busca la tarea larga.</strong> En la pista Main verás una tarea enorme con el triángulo rojo. En mi traza medía 1503 ms, y dentro contenía el despacho del evento (<em>Event: click</em>) y la llamada a la función del botón (<em>Function call</em>). Haz clic en ella: abajo, la pestaña Summary te da la duración y un enlace a la línea exacta del código.</li>
+    <li><strong>Mira qué no pasó.</strong> En los 500 ms anteriores al bloqueo, mi traza tenía 30 callbacks de <code>requestAnimationFrame</code> (<em>Animation Frame Fired</em>, uno por frame a 60 Hz); durante el bloqueo, solo el que estaba en marcha al empezar. En la pista Frames, el hueco de 1,5 s sin frames del hilo principal.</li>
+    <li><strong>Y qué sí pasó.</strong> Durante el bloqueo, otros hilos siguieron trabajando: la traza registró más de mil tareas fuera del hilo principal. Entre ellos está el compositor, que siguió moviendo la bola de CSS (la lección 1.5 lo mostró con capturas de pantalla).</li>
+  </ol>
+  <p>La misma técnica sirve para cualquier «¿por qué va a trompicones?»: graba, busca las tareas largas o los frames perdidos, y baja por el flame chart hasta la función responsable.</p>
+</section>
+
+<h2>Rendering: ver lo que se repinta</h2>
+<p>El panel Rendering vive en el cajón (menú <kbd>⋮</kbd> → <em>More tools</em> → <em>Rendering</em>, o «Show Rendering» en el menú de comandos). Sus casillas dibujan información de diagnóstico encima de la página:</p>
+<ul>
+  <li><strong>Paint flashing</strong>: ilumina en verde cada zona que se repinta. Una animación de <code>transform</code> bien hecha no debería parpadear; una que cambia <code>left</code> o <code>width</code> parpadea en cada frame.</li>
+  <li><strong>Layout shift regions</strong>: marca los elementos que se desplazan de golpe (el salto de contenido al cargar una imagen, por ejemplo).</li>
+  <li><strong>Layer borders</strong>: dibuja los bordes de las capas que gestiona el compositor.</li>
+  <li><strong>Frame rendering stats</strong>: un contador de frames por segundo en una esquina de la página.</li>
+  <li><strong>Emular preferencias</strong>: <code>prefers-color-scheme</code> (tema claro u oscuro) y <code>prefers-reduced-motion</code> (usuarios que piden menos animación; en la lección <a href="../02-animacion/02-css-transiciones.html">2.2</a> verás cómo respetarlo).</li>
+</ul>
+<p>La diferencia entre <code>left</code> y <code>transform</code> no es de opinión: la medí con una traza de un segundo de animación movida desde JavaScript con <code>requestAnimationFrame</code>, como en el ejercicio 1.7.3. Moviendo una caja con <code>left</code> hubo 61 layouts y 120 operaciones de pintado; con <code>transform</code>, <strong>ninguno</strong> de los dos. El recálculo de estilos sí ocurrió en cada frame en ambos casos, porque tu JavaScript escribe un estilo nuevo en cada frame. Si la misma animación de <code>transform</code> se declara en CSS, con <code>@keyframes</code>, desaparece hasta el recálculo de estilos: el hilo principal no hace nada (lo verás en la lección <a href="../02-animacion/01-pipeline-render.html">2.1</a>). El ejercicio 1.7.3 te pide verlo con tus propios ojos.</p>
+
+<h2>Network: qué se descarga y de dónde</h2>
+<p>El panel Network lista cada petición: su estado (200, 304, 404…), su tipo, su tamaño, cuánto tardó y quién la pidió (<em>Initiator</em>). En la columna de tamaño, <em>(memory cache)</em> o <em>(disk cache)</em> significa que no se descargó: salió de la caché. Dos casillas importantes: <strong>Disable cache</strong>, que desactiva la caché mientras las DevTools están abiertas (actívala siempre que desarrolles), y el desplegable de <strong>throttling</strong>, para simular una red lenta. Los errores de CORS que vas a ver en la sección siguiente aparecen aquí como peticiones fallidas, y en la consola con su explicación.</p>
+
+<div class="quiz">
+  <p class="pregunta">Una partícula desaparece de tu animación en algún momento de los primeros segundos, sin ningún error. ¿Qué herramienta te lleva antes a la causa?</p>
+  <ul>
+    <li>Un breakpoint normal en la línea que actualiza la posición.<div class="explicacion">Se detendría en el primer frame, y en el siguiente, y en el siguiente… Tendrías que pulsar F8 cientos de veces hasta llegar al frame malo.</div></li>
+    <li data-correcta>Un breakpoint condicional con <code>!Number.isFinite(p.x)</code> en esa línea.<div class="explicacion">Correcto. El código corre normal hasta el frame exacto en que la posición deja de ser un número, y entonces se detiene con el <em>Scope</em> a la vista: puedes ver qué valor era <code>NaN</code> (o <code>Infinity</code>) y subir por la pila hasta su origen.</div></li>
+    <li>El panel Performance.<div class="explicacion">Performance te dice cuánto tiempo cuesta cada cosa, no qué valores tienen las variables. Aquí el problema es de valores, no de tiempo.</div></li>
+  </ul>
+</div>
+
+<h2>Orígenes: esquema + host + puerto</h2>
+<p>Un <strong>origen</strong> es la combinación de <em>esquema</em> (<code>http</code>, <code>https</code>…), <em>host</em> (<code>localhost</code>, <code>ejemplo.com</code>) y <em>puerto</em> (8000, 443…). Dos URL son del mismo origen solo si coinciden las tres partes; la ruta no cuenta. El navegador aísla los orígenes entre sí (la <em>política del mismo origen</em>): una página no puede leer los datos, las respuestas ni los píxeles de otro origen, salvo que ese otro origen lo permita expresamente con cabeceras <em>CORS</em> (<em>Cross-Origin Resource Sharing</em>).</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>A</th><th>B</th><th>¿Mismo origen?</th></tr></thead>
+  <tbody>
+    <tr><td><code>http://localhost:8000/a.html</code></td><td><code>http://localhost:8000/otra/b.html</code></td><td>sí (solo cambia la ruta)</td></tr>
+    <tr><td><code>http://localhost:8000</code></td><td><code>http://localhost:8080</code></td><td>no: otro puerto</td></tr>
+    <tr><td><code>http://ejemplo.com</code></td><td><code>https://ejemplo.com</code></td><td>no: otro esquema</td></tr>
+    <tr><td><code>http://127.0.0.1:8000</code></td><td><code>http://localhost:8000</code></td><td><strong>no</strong>: otro host, aunque sean la misma máquina</td></tr>
+  </tbody>
+</table>
+<p>La última fila la comprobé con <code>localStorage</code>: un valor guardado en <code>http://127.0.0.1:<em>puerto</em></code> no estaba en <code>http://localhost:<em>puerto</em></code> (dio <code>null</code>), y sí en otra ruta de <code>127.0.0.1</code>. Si un día «desaparecen» tus datos guardados, mira si has cambiado de <code>localhost</code> a <code>127.0.0.1</code> o de puerto.</p>
+<p>Un detalle que afecta de lleno a los gráficos: dibujar en un canvas una imagen de otro origen está permitido, pero a partir de ese momento el canvas queda <em>contaminado</em> (<em>tainted</em>) y ya no puedes leer sus píxeles ni usarlo como textura. Así el navegador impide que una página use un canvas para espiar el contenido de imágenes ajenas.</p>
+
+<div class="quiz">
+  <p class="pregunta">Tu página está en <code>http://localhost:8000/demo/index.html</code>. ¿Cuál de estas URL es del <strong>mismo origen</strong>?</p>
+  <ul>
+    <li><code>http://127.0.0.1:8000/demo/datos.json</code><div class="explicacion">Es la misma máquina, pero el host se escribe distinto, y el origen compara el texto del host: <code>localhost</code> ≠ <code>127.0.0.1</code>. Lo comprobé con <code>localStorage</code>.</div></li>
+    <li data-correcta><code>http://localhost:8000/texturas/ladrillo.png</code><div class="explicacion">Correcto: mismo esquema (<code>http</code>), mismo host (<code>localhost</code>) y mismo puerto (8000). La ruta no forma parte del origen.</div></li>
+    <li><code>https://localhost:8000/demo/index.html</code><div class="explicacion">Cambia el esquema (<code>https</code>), y con él el origen, aunque todo lo demás coincida.</div></li>
+    <li><code>http://localhost:8080/demo/index.html</code><div class="explicacion">Otro puerto, otro origen. Si arrancas el servidor en otro puerto, pierdes lo guardado en <code>localStorage</code>.</div></li>
+  </ul>
+</div>
+
+<h2>Por qué <code>file://</code> rompe cosas</h2>
+<p>Una página abierta con doble clic tiene un origen <em>opaco</em>: un origen especial que no es igual a ningún otro, ni siquiera al de otro archivo de la misma carpeta. Chrome lo escribe como <code>null</code> en sus mensajes y en <code>self.origin</code>; curiosamente, <code>location.origin</code> devuelve <code>"file://"</code> (comprobado: las dos cosas en la misma página). Para el navegador, cada archivo que pidas desde esa página es de otro origen. Monté una carpeta con una página, un JSON, una imagen PNG, un módulo y un worker, y la abrí de las dos formas:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Operación</th><th>Con <code>file://</code></th><th>Por HTTP</th></tr></thead>
+  <tbody>
+    <tr><td><code>&lt;img src="foto.png"&gt;</code> (solo mostrarla)</td><td>✓ se ve</td><td>✓</td></tr>
+    <tr><td><code>&lt;script src&gt;</code> y <code>&lt;link rel="stylesheet"&gt;</code> clásicos</td><td>✓</td><td>✓</td></tr>
+    <tr><td><code>fetch("datos.json")</code> / <code>XMLHttpRequest</code></td><td>✗ <code>TypeError: Failed to fetch</code> / <code>onerror</code> con estado 0</td><td>✓</td></tr>
+    <tr><td><code>&lt;script type="module"&gt;</code> e <code>import</code></td><td>✗ bloqueado por CORS (lección <a href="03-js-lenguaje.html">1.3</a>)</td><td>✓</td></tr>
+    <tr><td><code>new Worker("trabajador.js")</code></td><td>✗ <code>SecurityError</code> (lección <a href="05-event-loop.html">1.5</a>)</td><td>✓</td></tr>
+    <tr><td><code>ctx.drawImage(img)</code> y después <code>getImageData</code> / <code>toDataURL</code></td><td>✗ <code>SecurityError</code>: canvas contaminado</td><td>✓</td></tr>
+    <tr><td><code>gl.texImage2D(…, img)</code></td><td>✗ <code>SecurityError</code></td><td>✓</td></tr>
+    <tr><td><code>img.crossOrigin = "anonymous"</code></td><td>✗ la imagen <strong>ni siquiera carga</strong></td><td>✓</td></tr>
+    <tr><td><code>localStorage</code></td><td>✓ y compartido por <strong>todos</strong> los archivos <code>file://</code></td><td>✓ por origen</td></tr>
+  </tbody>
+</table>
+<p>Los mensajes exactos de Chrome, para que los reconozcas al instante:</p>
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="Consola, página abierta con file://">
+Access to fetch at 'file:///…/datos.json' from origin 'null' has been blocked by CORS policy:
+Cross origin requests are only supported for protocol schemes: chrome, chrome-experimental-site-token-provider,
+chrome-extension, chrome-untrusted, data, http, https, isolated-app.
+
+SecurityError: Failed to execute 'getImageData' on 'CanvasRenderingContext2D':
+The canvas has been tainted by cross-origin data.
+
+SecurityError: Failed to execute 'texImage2D' on 'WebGL2RenderingContext':
+The image element contains cross-origin data, and may not be loaded.
+
+SecurityError: Failed to execute 'texImage2D' on 'WebGL2RenderingContext':
+Tainted canvases may not be loaded.
+</script>
+<div class="callout senior" data-titulo="Tu código no ve el motivo de un error de CORS">
+  <p>Fíjate en la diferencia: la consola da una explicación larga y precisa, pero el <code>catch</code> de mi <code>fetch</code> solo recibió <code>TypeError: Failed to fetch</code>, sin más detalle, y un <code>XMLHttpRequest</code>, un <code>onerror</code> con estado 0. Es deliberado: si una página pudiera averiguar desde JavaScript por qué falló una petición a otro origen (¿no existe?, ¿no hay permiso?, ¿hay algo en ese puerto?), podría usarlo para explorar tu red. El motivo solo lo ves tú, en la consola y en el panel Network. Por eso, ante un <code>Failed to fetch</code>, lo primero es abrir la consola.</p>
+</div>
+<p>La última línea es el caso traicionero: si dibujas la imagen en un canvas 2D para «saltarte» el problema y subes ese canvas como textura, el error viaja con el canvas. En cambio, un canvas dibujado <strong>solo por tu código</strong> nunca está contaminado. Por eso todas las texturas de este curso salen de <code>Texturas.crear(nombre)</code>, que las dibuja con código, y por eso el curso funciona con doble clic. Y la última fila de la tabla explica por qué tu progreso en el curso se conserva de una lección a otra: todas las páginas <code>file://</code> comparten el mismo <code>localStorage</code>.</p>
+
+<div class="callout bestiario" data-id="m1-textura-file" data-titulo="SecurityError al subir una imagen como textura">
+  <p><strong>Síntoma:</strong> <code>gl.texImage2D</code> lanza <code>SecurityError: … The image element contains cross-origin data, and may not be loaded.</code> (o <code>Tainted canvases may not be loaded.</code>) y la textura sale negra.</p>
+  <p><strong>Causa:</strong> la página está abierta con <code>file://</code> (origen opaco: cualquier imagen es de otro origen) o la imagen viene de otro servidor sin cabeceras CORS. WebGL no puede leer píxeles de otro origen.</p>
+  <p><strong>Solución:</strong> sirve la página con un servidor local (la sección siguiente). Para imágenes de otro servidor, <code>img.crossOrigin = "anonymous"</code> antes de <code>src</code>, y que ese servidor responda con <code>Access-Control-Allow-Origin</code>. Para ejemplos que deban funcionar con doble clic, genera las texturas con código.</p>
+</div>
+<div class="callout bestiario" data-id="m1-fetch-file" data-titulo="«Failed to fetch» al cargar un archivo local">
+  <p><strong>Síntoma:</strong> <code>fetch("datos.json")</code> (o de un shader en <code>.glsl</code>, o de un modelo) falla con <code>TypeError: Failed to fetch</code> y la consola habla de <code>origin 'null'</code> y CORS; o un <code>import</code> no carga.</p>
+  <p><strong>Causa:</strong> la página está abierta con <code>file://</code>. <code>fetch</code>, los módulos y los workers hacen peticiones que exigen permiso CORS, y un origen opaco no puede tenerlo.</p>
+  <p><strong>Solución:</strong> un servidor local. (Existe un parámetro de arranque de Chrome, <code>--allow-file-access-from-files</code>, con el que comprobé que <code>fetch</code>, <code>getImageData</code> y <code>texImage2D</code> pasaban a funcionar con <code>file://</code>; no lo uses para navegar: desactiva una protección real).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Con la página abierta con <code>file://</code>, ¿por qué funciona <code>gl.texImage2D(…, Texturas.crear("damero"))</code> y no <code>gl.texImage2D(…, imgDelDisco)</code>?</p>
+  <ul>
+    <li>Porque <code>Texturas.crear</code> usa una API especial que se salta la seguridad.<div class="explicacion">No hay ninguna API especial: <code>Texturas.crear</code> devuelve un canvas normal. La diferencia está en de dónde vienen sus píxeles.</div></li>
+    <li data-correcta>Porque el canvas se dibuja solo con código de la propia página, así que no está contaminado; la imagen del disco, con un origen opaco, cuenta como de otro origen.<div class="explicacion">Correcto. La contaminación es por el <em>origen</em> de los píxeles. Un canvas pintado con <code>fillRect</code>, degradados y texto no contiene nada ajeno; en cuanto le dibujas una imagen de otro origen, queda contaminado para siempre.</div></li>
+    <li>Porque las imágenes PNG no son compatibles con WebGL.<div class="explicacion">Las imágenes PNG son perfectamente válidas como textura: servida por HTTP, la misma imagen se subió sin errores.</div></li>
+  </ul>
+</div>
+
+<h2>Un servidor local</h2>
+<p>Un servidor local es un programa que sirve los archivos de una carpeta por HTTP en tu propia máquina. Con Python 3 basta una línea. En Linux suele venir instalado; en macOS, <code>python3</code> viene con las herramientas de línea de comandos de Apple (si faltan, el sistema te ofrece instalarlas la primera vez que lo escribes); en Windows se instala desde python.org y el comando suele ser <code>py</code> en lugar de <code>python3</code>:</p>
+<script type="text/plain" class="codigo" data-lang="bash" data-titulo="Terminal, dentro de la carpeta del proyecto">
+python3 -m http.server 8000 --bind 127.0.0.1
+# Serving HTTP on 127.0.0.1 port 8000 (http://127.0.0.1:8000/) ...
+# (y abre http://127.0.0.1:8000 en el navegador; Ctrl+C para pararlo)
+</script>
+<ul>
+  <li>El comando <strong>no termina</strong>: el terminal queda ocupado sirviendo archivos (y escribiendo una línea por cada petición) hasta que lo paras con <kbd>Ctrl</kbd>+<kbd>C</kbd>. Abre otra pestaña del terminal para seguir trabajando.</li>
+  <li><code>--bind 127.0.0.1</code>: según su propia ayuda (<code>python3 -m http.server --help</code>), por defecto escucha en <em>todas</em> las interfaces de red, es decir, cualquiera de tu red local (la wifi de una cafetería, por ejemplo) podría ver tus archivos. Con esta opción, solo tu máquina.</li>
+  <li>El número es el puerto (8000 por defecto). Si está ocupado, elige otro, y recuerda que cada puerto es un origen distinto.</li>
+</ul>
+<p>Lo arranqué y le pedí tres archivos para ver sus cabeceras: <code>index.html</code> llegó con <code>Content-Type: text/html</code> (<strong>sin <code>charset</code></strong>), <code>app.js</code> con <code>text/javascript</code>, todos con <code>Last-Modified</code> y ninguno con <code>Cache-Control</code> ni <code>ETag</code>; una petición condicional con <code>If-Modified-Since</code> recibió un <code>304 Not Modified</code>. Dos consecuencias: sin <code>&lt;meta charset="utf-8"&gt;</code> verás «Ã±» (el bestiario de la lección <a href="01-html.html">1.1</a>), y la caché se comporta de una forma que te va a sorprender.</p>
+<p>Otras opciones: con Node instalado, <code>npx serve</code> (la primera vez descarga el paquete, así que necesita conexión), o la extensión <em>Live Server</em> de VS Code, que además recarga la página al guardar.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 1.7.2 — La misma carpeta, con doble clic y con servidor</h3>
+  <p>Una práctica que te recomiendo hacer una vez en tu máquina, para ver con tus ojos todo lo anterior. La carpeta:</p>
+  <script type="text/plain" class="codigo" data-lang="text" data-titulo="prueba-origen/">
+index.html      ← la página: hace fetch("datos.json") y sube foto.png como textura
+datos.json      ← {"hola": "mundo"}
+foto.png        ← cualquier imagen pequeña
+</script>
+  <script type="text/plain" class="codigo" data-lang="html" data-titulo="index.html">
+<!doctype html>
+<meta charset="utf-8">
+<img id="foto" src="foto.png">
+<script>
+  fetch("datos.json").then((r) => r.json())
+    .then((d) => console.log("fetch OK:", d))
+    .catch((e) => console.log("fetch falló:", e.message));
+
+  document.getElementById("foto").onload = (e) => {
+    const gl = document.createElement("canvas").getContext("webgl2");
+    gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+    try {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, e.target);
+      console.log("textura OK");
+    } catch (err) { console.log("textura falló:", err.name); }
+  };
+<\/script>
+</script>
+  <p><strong>Con doble clic.</strong> Abre las DevTools en la consola: verás «fetch falló: Failed to fetch», el mensaje largo de CORS con <code>origin 'null'</code>, y «textura falló: SecurityError». En Network, la petición de <code>datos.json</code> aparece fallida. Escribe <code>self.origin</code> en la consola: <code>"null"</code>.</p>
+  <p><strong>Con servidor.</strong> En un terminal, dentro de la carpeta, <code>python3 -m http.server 8000 --bind 127.0.0.1</code>, y abre <code>http://127.0.0.1:8000</code>. Ahora: «fetch OK: {hola: 'mundo'}» y «textura OK». <code>self.origin</code> vale <code>"http://127.0.0.1:8000"</code>, y en el terminal verás una línea por cada petición (<code>"GET /datos.json HTTP/1.1" 200</code>…).</p>
+  <p>Es exactamente lo que medí en Chrome con esta misma estructura: nada ha cambiado en el código; solo el origen desde el que se cargó.</p>
+</section>
+
+<h2>La caché: por qué ves la versión vieja de tu código</h2>
+<p>Un servidor como el de Python no dice cuánto tiempo puede guardarse un archivo (no envía <code>Cache-Control</code>), pero sí cuándo se modificó por última vez (<code>Last-Modified</code>). Con eso, el navegador aplica una caché <em>heurística</em>: considera fresco el archivo durante una fracción del tiempo que lleva sin cambiar (la especificación de HTTP sugiere un 10 %). Un archivo que no tocabas desde hace 30 días se considera fresco unos 3 días. Lo reproduje con un servidor que imitaba esas cabeceras y un <code>app.js</code> «de hace 30 días»:</p>
+<table class="m1-tabla-compacta">
+  <thead><tr><th>Paso</th><th>Qué ejecutó la página</th><th>Peticiones al servidor</th></tr></thead>
+  <tbody>
+    <tr><td>1. primera visita</td><td><code>app.js</code> versión 1</td><td><code>index.html</code>, <code>app.js</code></td></tr>
+    <tr><td>2. editas <code>app.js</code> y vuelves a entrar en la página</td><td><strong>versión 1</strong> (¡vieja!)</td><td><strong>ninguna</strong>: todo salió de la caché</td></tr>
+    <tr><td>3. recarga normal (<kbd>F5</kbd>, <kbd>⌘</kbd>+<kbd>R</kbd>)</td><td><strong>versión 1</strong> (¡vieja!)</td><td>solo <code>index.html</code>, condicional</td></tr>
+    <tr><td>4. recarga forzada (<kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>R</kbd>, <kbd>⌘</kbd>+<kbd>Mayús</kbd>+<kbd>R</kbd>)</td><td>versión 2</td><td><code>index.html</code> y <code>app.js</code>, con <code>Cache-Control: no-cache</code></td></tr>
+  </tbody>
+</table>
+<p>El paso 3 es el que desespera: la recarga normal revalida la página, pero no sus scripts, que siguen saliendo de la caché. Con <code>file://</code> esto no pasa (no hay caché HTTP), y por eso el problema aparece justo al empezar a usar un servidor.</p>
+<div class="callout bestiario" data-id="m1-cache-vieja" data-titulo="Cambio el código y el navegador sigue ejecutando el antiguo">
+  <p><strong>Síntoma:</strong> editas un <code>.js</code> o un <code>.css</code>, recargas y no cambia nada; o cambia la página pero no el script. A veces «se arregla solo» al rato.</p>
+  <p><strong>Causa:</strong> la caché heurística del navegador. Sin <code>Cache-Control</code>, un archivo con un <code>Last-Modified</code> antiguo se considera fresco durante un tiempo, y la recarga normal no revalida los recursos de la página.</p>
+  <p><strong>Solución:</strong> mientras desarrollas, activa <em>Disable cache</em> en el panel Network (funciona mientras las DevTools están abiertas); o usa la recarga forzada; o, con las DevTools abiertas, clic derecho en el botón de recargar → <em>Vaciar caché y recargar de manera forzada</em>. En producción, se añade una versión al nombre o a la URL (<code>app.js?v=2</code>) para que cada cambio sea un archivo «nuevo».</p>
+</div>
+
+<h2>Herramientas para WebGL (un adelanto)</h2>
+<p>Cuando llegues a WebGL, las DevTools normales se quedan cortas: la GPU es una máquina de estados y los errores son silenciosos. Dos herramientas que conocerás en la lección <a href="../05-webgl/10-depuracion.html">5.10</a>:</p>
+<ul>
+  <li><strong>Spector.js</strong>: una extensión (y una librería) que captura un frame completo de WebGL y te enseña cada llamada a la API, en orden, con el estado de la GPU en cada paso, las texturas y los buffers. Es la forma de responder a «¿qué le he mandado de verdad a la GPU en este frame?».</li>
+  <li><strong><code>WEBGL_debug_shaders</code></strong>: una extensión que devuelve el shader <em>traducido</em>. Tu GLSL no llega tal cual a la GPU: en Chrome, la capa ANGLE lo traduce al lenguaje de la API gráfica de tu sistema. Lo comprobé en un Mac con M1: un fragment shader de cinco líneas se convirtió en 229 líneas de Metal Shading Language.</li>
+</ul>
+<script type="text/plain" class="codigo" data-lang="text" data-titulo="Un fragmento de lo que devolvió getTranslatedShaderSource (M1, ANGLE sobre Metal)">
+void ANGLE__0_main(thread ANGLE_FragmentOut & ANGLE_fragmentOut, constant ANGLE_UserUniforms & ANGLE_userUniforms)
+{
+  ANGLE_fragmentOut._ufragColor = metal::float4(0.0f, 0.0f, 0.0f, 0.0f);
+  float ANGLE_sbd9 = metal::sin(ANGLE_userUniforms._uu_time);
+  ANGLE_fragmentOut._ufragColor = ANGLE_sbcb(ANGLE_sbd9, 0.0f, 0.0f, 1.0f);
+}
+</script>
+<p>Ahí está tu <code>fragColor = vec4(sin(u_time), 0.0, 0.0, 1.0)</code>: <code>u_time</code> renombrado a <code>_uu_time</code>, <code>sin</code> convertido en <code>metal::sin</code> y tu <code>main</code> envuelto en una función de ANGLE. En otros sistemas el destino es otro lenguaje (en Windows, según la documentación de ANGLE, normalmente el HLSL de Direct3D). Esta traducción explica algunas diferencias de rendimiento y de precisión entre plataformas, y es la última capa que verás del camino que va de tu código a los píxeles.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 1.7.1 — La consola de verdad</h3>
+  <p>Este editor crea 40 partículas deterministas (siempre las mismas) y las anima. Contesta a estas preguntas usando la consola de tus DevTools, no editando el código: <strong>(a)</strong> ¿cuál es el <code>id</code> de la partícula más rápida, y a qué velocidad va (la propiedad <code>rapidez</code>)? <strong>(b)</strong> ¿cuántas partículas tienen <code>masa</code> mayor que 2? <strong>(c)</strong> ¿cuántas instancias vivas de <code>Particula</code> hay? <strong>(d)</strong> ¿qué eventos llegan al canvas cuando haces clic en él? Para empezar, elige el contexto del iframe en el desplegable <code>top</code> de la consola.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.7.1" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+// Generador determinista (mulberry32): mismas partículas en cada ejecución
+function azar(semilla) {
+  let a = semilla >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const aleatorio = azar(2026);
+
+class Particula {
+  constructor(id) {
+    this.id = id;
+    this.x = aleatorio() * 400; this.y = aleatorio() * 300;
+    const angulo = aleatorio() * 2 * Math.PI, velocidad = 20 + aleatorio() * 180;
+    this.vx = Math.cos(angulo) * velocidad; this.vy = Math.sin(angulo) * velocidad;
+    this.masa = +(0.5 + aleatorio() * 2).toFixed(2);
+  }
+  get rapidez() { return Math.hypot(this.vx, this.vy); }
+}
+var particulas = Array.from({ length: 40 }, (_, i) => new Particula(i));   // var: además, cuelga de window
+
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+let anterior = null;
+function frame(ms) {
+  const dt = anterior === null ? 0 : Math.min(0.1, (ms - anterior) / 1000);
+  anterior = ms;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const p of particulas) {
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.x < 0 || p.x > canvas.width) p.vx *= -1;     // rebote: la rapidez no cambia
+    if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
+    ctx.fillStyle = "hsl(" + (p.masa * 90) + " 70% 60%)";
+    ctx.beginPath(); ctx.arc(p.x, p.y, 2 + p.masa * 2, 0, 2 * Math.PI); ctx.fill();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+console.log("40 partículas listas: responde con la consola de las DevTools");
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>En la consola, con el contexto del iframe elegido, <code>particulas.length</code> debe dar 40. Si dice que <code>particulas</code> no existe, sigues en el contexto <code>top</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para (a): <code>console.table(particulas.map((p) =&gt; ({ id: p.id, rapidez: p.rapidez })))</code> y ordena la tabla pulsando en la cabecera de la columna; o usa <code>reduce</code>. Para (d): <code>monitorEvents($("canvas"))</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Las respuestas (el generador es determinista, así que son siempre las mismas, y los rebotes no cambian la rapidez): <strong>(a)</strong> la partícula con <code>id</code> 27, a 197,2 px/s; <strong>(b)</strong> 9 partículas con masa mayor que 2; <strong>(c)</strong> 40 instancias de <code>Particula</code>; <strong>(d)</strong> al hacer clic, en este orden, <code>pointerover</code>, <code>pointerenter</code>, <code>mouseover</code>, <code>pointermove</code>, <code>mousemove</code>, <code>pointerdown</code>, <code>mousedown</code>, <code>pointerup</code>, <code>mouseup</code> y <code>click</code> (el primer <code>pointermove</code> y los siguientes, uno por cada movimiento): es la secuencia de la lección <a href="04-js-dom-eventos.html">1.4</a>, salvo que <code>monitorEvents</code> no muestra <code>mouseenter</code>.</p>
+    <p>Las expresiones que las responden: <code>particulas.reduce((a, b) =&gt; (b.rapidez &gt; a.rapidez ? b : a))</code> para (a); <code>particulas.filter((p) =&gt; p.masa &gt; 2).length</code> para (b); <code>queryObjects(Particula)</code> para (c), que escribe en la consola el array de instancias; y <code>monitorEvents($("canvas"))</code> para (d), que registra todos los eventos que llegan al canvas (<code>unmonitorEvents($("canvas"))</code> para parar).</p>
+    <p>El paso clave era el selector de contexto: el código del editor vive en un iframe, con su propio objeto global. Por eso la variable está declarada con <code>var</code>: las declaraciones <code>var</code> de nivel superior se convierten en propiedades del objeto global (<code>window.particulas</code>) y la consola las ve igual que las <code>let</code> y <code>const</code> globales, pero así también existe <code>window.particulas</code>, lo que a veces es cómodo para inspeccionar. Y <code>copy(particulas[27])</code> te llevaría la partícula al portapapeles como JSON.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.7.2 — Caza el NaN con un breakpoint condicional</h3>
+  <p>Cada 2 segundos «nace» una partícula nueva justo en el centro de atracción (como si el usuario hiciera clic en él), y poco después la consola avisa de que una partícula tiene una posición inválida: desaparece del dibujo. Usa las DevTools para encontrar la línea y la causa: en Sources, abre <code>tu-codigo.js</code> (dentro del iframe <code>about:srcdoc</code>), pon un breakpoint condicional con <code>!Number.isFinite(p.vx)</code> en la línea adecuada y examina las variables cuando se detenga. Después arregla el código para que ninguna partícula se pierda.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.7.2" data-altura="340" data-fondo="oscuro">
+<script type="text/x-html">
+<canvas id="lienzo"></canvas>
+</script>
+<script type="text/x-css">
+canvas { width: 100%; height: 100%; display: block; }
+</script>
+<script type="text/x-js">
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const centro = { x: canvas.width / 2, y: canvas.height / 2 };
+const particulas = [];
+for (let i = 0; i < 24; i++) {
+  const a = i / 24 * 2 * Math.PI;
+  particulas.push({ x: centro.x + Math.cos(a) * 110, y: centro.y + Math.sin(a) * 110, vx: -Math.sin(a) * 60, vy: Math.cos(a) * 60 });
+}
+
+function atraer(p, dt) {
+  const dx = centro.x - p.x, dy = centro.y - p.y;
+  const d = Math.hypot(dx, dy);                 // distancia al centro
+  p.vx += dx / d * 250 * dt;                    // aceleración de 250 px/s² hacia el centro
+  p.vy += dy / d * 250 * dt;
+}
+
+let anterior = null, siguienteNacimiento = 2, avisado = false;
+function frame(ms) {
+  const t = ms / 1000;
+  const dt = anterior === null ? 0 : Math.min(0.05, t - anterior);
+  anterior = t;
+  if (t > siguienteNacimiento) {                // nace una partícula EN el centro
+    particulas.push({ x: centro.x, y: centro.y, vx: 0, vy: 0 });
+    siguienteNacimiento += 2;
+  }
+  ctx.fillStyle = "rgba(14, 16, 20, 0.3)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#3fd0e8";
+  for (const p of particulas) {
+    atraer(p, dt);
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+    if (!avisado && !Number.isFinite(p.x)) { avisado = true; console.log("⚠ partícula perdida: x =", p.x, "· t =", t.toFixed(2), "s"); }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const canvas = document.getElementById("lienzo");
+const ctx = canvas.getContext("2d");
+canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+const centro = { x: canvas.width / 2, y: canvas.height / 2 };
+const particulas = [];
+for (let i = 0; i < 24; i++) {
+  const a = i / 24 * 2 * Math.PI;
+  particulas.push({ x: centro.x + Math.cos(a) * 110, y: centro.y + Math.sin(a) * 110, vx: -Math.sin(a) * 60, vy: Math.cos(a) * 60 });
+}
+
+function atraer(p, dt) {
+  const dx = centro.x - p.x, dy = centro.y - p.y;
+  const d = Math.hypot(dx, dy);                 // distancia al centro
+  if (d < 1e-6) return;                         // en el centro no hay dirección: sin aceleración
+  p.vx += dx / d * 250 * dt;                    // aceleración de 250 px/s² hacia el centro
+  p.vy += dy / d * 250 * dt;
+}
+
+let anterior = null, siguienteNacimiento = 2, avisado = false;
+function frame(ms) {
+  const t = ms / 1000;
+  const dt = anterior === null ? 0 : Math.min(0.05, t - anterior);
+  anterior = t;
+  if (t > siguienteNacimiento) {                // nace una partícula EN el centro
+    particulas.push({ x: centro.x, y: centro.y, vx: 0, vy: 0 });
+    siguienteNacimiento += 2;
+  }
+  ctx.fillStyle = "rgba(14, 16, 20, 0.3)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#3fd0e8";
+  for (const p of particulas) {
+    atraer(p, dt);
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+    if (!avisado && !Number.isFinite(p.x)) { avisado = true; console.log("⚠ partícula perdida: x =", p.x, "· t =", t.toFixed(2), "s"); }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿En qué línea se calcula por primera vez algo que depende de la partícula nueva? Pon allí el breakpoint condicional y, al detenerse, mira en <em>Scope</em> los valores de <code>dx</code>, <code>dy</code> y <code>d</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Cuánto vale <code>0 / 0</code> en JavaScript? Repasa el bestiario del <code>NaN</code> de la lección <a href="03-js-lenguaje.html">1.3</a>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La partícula nueva nace exactamente en el centro, así que en su primer frame <code>dx = dy = 0</code> y <code>d = 0</code>. La dirección hacia el centro, <code>dx / d</code>, es <code>0 / 0 = NaN</code>, y la velocidad pasa a <code>NaN</code>; en la línea siguiente la posición también, y <code>fillRect</code> ignora en silencio las coordenadas <code>NaN</code>: la partícula desaparece sin error. Con el breakpoint condicional <code>!Number.isFinite(p.vx)</code> en la línea de <code>p.vy += …</code> (justo después de calcular <code>vx</code>), el código se detiene en ese frame y el panel <em>Scope</em> muestra <code>d: 0</code> y <code>p.vx: NaN</code>.</p>
+    <p>La corrección: si la partícula está (casi) en el centro, no hay dirección en la que acelerarla, así que no se aplica aceleración. <code>if (d &lt; 1e-6) return;</code> protege la división. Es el mismo patrón que para normalizar cualquier vector: comprueba antes que su longitud no es cero. El aviso del código es el <code>console.assert</code> del principio de la lección, escrito a mano.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 1.7.3 — Paint flashing: <code>left</code> frente a <code>transform</code></h3>
+  <p>Las dos cajas se mueven igual, pero la de arriba cambia <code>left</code> y la de abajo, <code>transform</code>. Abre en las DevTools el panel Rendering y activa <em>Paint flashing</em>: anota cuál parpadea en verde. Graba después 2 s en Performance y compara lo que hay en la pista Main. Por último, cambia el código para que las dos se animen sin provocar layout ni pintado, y comprueba que el parpadeo desaparece.</p>
+  <div class="js-playground" data-titulo="Ejercicio 1.7.3" data-altura="200" data-fondo="oscuro">
+<script type="text/x-html">
+<div class="pista"><div class="caja" id="conLeft">left</div></div>
+<div class="pista"><div class="caja" id="conTransform">transform</div></div>
+</script>
+<script type="text/x-css">
+body { margin: 0; padding: 14px; }
+.pista { position: relative; height: 70px; }
+.caja { position: absolute; left: 0; top: 10px; width: 90px; height: 50px; border-radius: 8px;
+        background: #8b7bff; color: #fff; font: 13px monospace; display: flex; align-items: center; justify-content: center; }
+</script>
+<script type="text/x-js">
+const conLeft = document.getElementById("conLeft");
+const conTransform = document.getElementById("conTransform");
+function frame(ms) {
+  const x = (Math.sin(ms / 600) * 0.5 + 0.5) * 230;     // de 0 a 230 px, ida y vuelta
+  conLeft.style.left = x + "px";                          // cambia el layout: layout + pintado
+  conTransform.style.transform = `translateX(${x}px)`;    // no cambia el layout
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+<script type="text/x-js" data-solucion>
+const conLeft = document.getElementById("conLeft");
+const conTransform = document.getElementById("conTransform");
+function frame(ms) {
+  const x = (Math.sin(ms / 600) * 0.5 + 0.5) * 230;     // de 0 a 230 px, ida y vuelta
+  conLeft.style.transform = `translateX(${x}px)`;         // ahora también con transform
+  conTransform.style.transform = `translateX(${x}px)`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Rendering está en el cajón inferior (<kbd>Esc</kbd>) o en el menú de comandos: escribe «rendering».</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En Performance, busca bloques morados (<em>Layout</em>) y verdes (<em>Paint</em>) dentro de cada frame. ¿Cuántos hay en cada versión?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con <em>Paint flashing</em>, la caja de <code>left</code> se ilumina en verde en cada frame y la de <code>transform</code>, no. En la grabación, cada frame del código original tiene un bloque de <em>Layout</em> y bloques de <em>Paint</em>. Coincide con lo que medí con una traza: moviendo una caja con <code>left</code> durante un segundo hubo 61 layouts y 120 operaciones de pintado; con <code>transform</code>, ninguno.</p>
+    <p>La solución anima las dos con <code>transform: translateX(…)</code>. <code>left</code> cambia la posición de la caja en el layout, así que el navegador recalcula la geometría y repinta la zona; <code>transform</code> se aplica al componer la capa ya pintada, sin tocar ni el layout ni el pintado (lecciones <a href="02-css.html">1.2</a> y <a href="../02-animacion/01-pipeline-render.html">2.1</a>). En una página con cientos de elementos, esa diferencia es la que separa 60 fps de una animación que tiembla.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 1.7.4 — La caché que te engaña (práctica en tu máquina)</h3>
+  <p>Reproduce el bestiario de la caché vieja con el servidor de Python y arréglalo de tres formas. Pasos: <strong>1.</strong> Crea una carpeta con un <code>index.html</code> (con <code>&lt;meta charset="utf-8"&gt;</code>) que cargue <code>app.js</code>, y un <code>app.js</code> que haga <code>console.log("versión 1")</code>. <strong>2.</strong> Envejece el archivo: <code>touch -t 202601010000 app.js</code> (en macOS y Linux; pone su fecha de modificación en enero). <strong>3.</strong> Arranca <code>python3 -m http.server 8000 --bind 127.0.0.1</code>, abre la página con las DevTools <em>cerradas</em> y mira la consola. <strong>4.</strong> Cambia <code>app.js</code> a <code>"versión 2"</code>, entra otra vez en la página (escribe la URL y pulsa Intro) y después recarga con <kbd>F5</kbd>. Anota qué versión ves en cada caso y qué peticiones aparecen en la terminal del servidor. <strong>5.</strong> Consigue ver la versión 2 con: la recarga forzada, <em>Disable cache</em> en Network, y cambiando el <code>&lt;script&gt;</code> a <code>app.js?v=2</code>. Explica por qué funciona cada una.</p>
+  <details class="pista"><summary>Pista 1</summary><p>La terminal del servidor escribe una línea por petición. Si al recargar solo aparece <code>GET /</code> o <code>GET /index.html</code>, ¿de dónde ha salido <code>app.js</code>?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>En el panel Network, la columna Size dice <em>(memory cache)</em> o <em>(disk cache)</em> para lo que no se descargó.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><strong>Lo que deberías ver</strong> (es lo que medí imitando las cabeceras del servidor de Python): al volver a entrar, versión 1 y ninguna petición nueva en la terminal; con <kbd>F5</kbd>, versión 1 y solo una petición de la página (que responde 304 si <code>index.html</code> no cambió). <code>app.js</code> no se pide: como su <code>Last-Modified</code> es de hace meses y no hay <code>Cache-Control</code>, el navegador lo considera fresco durante un tiempo (una fracción de su antigüedad) y lo sirve de su caché, y la recarga normal solo revalida la página, no sus recursos.</p>
+    <p><strong>Las tres soluciones.</strong> La <em>recarga forzada</em> pide todo de nuevo con <code>Cache-Control: no-cache</code> (en mi prueba, las dos peticiones llevaron esa cabecera y llegó la versión 2). <em>Disable cache</em> hace que las DevTools pidan siempre todo a la red mientras están abiertas: es la opción cómoda para desarrollar. Y <code>app.js?v=2</code> cambia la URL: para la caché es otro recurso, que nunca ha visto, así que lo descarga; es la técnica de producción (los empaquetadores ponen un <em>hash</em> del contenido en el nombre del archivo, como <code>app.3f9a1c.js</code>).</p>
+    <p>El paso 2 importa: con un archivo recién creado, su antigüedad es de segundos y la caché heurística casi no lo retiene. Por eso este problema aparece cuando llevas días trabajando en un proyecto, que es cuando más te despista.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Console para valores y errores (<code>console.table</code>, <code>time</code>, <code>count</code>, <code>assert</code>, <code>%c</code>); su línea de comandos añade <code>$0</code>, <code>$$</code>, <code>copy</code>, <code>monitorEvents</code>, <code>getEventListeners</code> y <code>queryObjects</code>. Elige el contexto del iframe para inspeccionar los editores del curso.</li>
+    <li>Elements enseña el DOM vivo y la cascada (tachado = pierde; con aviso = inválido). Sources: breakpoints condicionales y logpoints para bucles de animación; <code>debugger;</code> solo actúa con las DevTools abiertas; tras una pausa, limita <code>dt</code>.</li>
+    <li>Performance: frames, tareas (triángulo rojo si pasan de 50 ms), amarillo = JS, morado = estilo y layout, verde = pintado, GC. Rendering: <em>Paint flashing</em> (un <code>left</code> animado repinta cada frame; un <code>transform</code>, no).</li>
+    <li>Origen = esquema + host + puerto; <code>localhost</code> y <code>127.0.0.1</code> son orígenes distintos. Leer píxeles de otro origen contamina el canvas.</li>
+    <li>Con <code>file://</code> (origen opaco, <code>null</code>): fallan <code>fetch</code>, módulos, workers, <code>getImageData</code> de imágenes y <code>texImage2D</code> de imágenes; funcionan scripts clásicos, CSS, mostrar imágenes y los canvas dibujados por código. <code>localStorage</code> se comparte entre todos los <code>file://</code>.</li>
+    <li><code>python3 -m http.server 8000 --bind 127.0.0.1</code>: no termina hasta <kbd>Ctrl</kbd>+<kbd>C</kbd>, no envía <code>charset</code> ni <code>Cache-Control</code>. Por eso la caché heurística te puede servir scripts viejos: <em>Disable cache</em>, recarga forzada o <code>?v=</code>.</li>
+    <li>Para WebGL: Spector.js y <code>WEBGL_debug_shaders</code> (tu GLSL, traducido por ANGLE a Metal, HLSL…), en la lección 5.10.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://developer.chrome.com/docs/devtools">Chrome DevTools, documentación oficial</a>: todos los paneles, con ejemplos.</li>
+  <li><a href="https://developer.chrome.com/docs/devtools/console/utilities">Referencia de la Console Utilities API</a>: <code>$0</code>, <code>copy</code>, <code>monitorEvents</code>, <code>queryObjects</code> y el resto.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy">MDN, «Same-origin policy»</a> y <a href="https://developer.mozilla.org/en-US/docs/Web/HTML/CORS_enabled_image">«CORS enabled image»</a>: el origen, CORS y los canvas contaminados.</li>
+  <li><a href="https://spector.babylonjs.com/">Spector.js</a>: la herramienta de captura de frames de WebGL.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+</body>
+</html>

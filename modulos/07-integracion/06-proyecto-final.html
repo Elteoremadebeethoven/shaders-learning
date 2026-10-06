@@ -1,0 +1,2002 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7.6 · Proyecto final: un hero interactivo — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m7.css">
+</head>
+<body data-leccion="07-integracion/proyecto-final">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 7 · JavaScript + shaders juntos</p>
+  <h1>Proyecto final: un hero interactivo</h1>
+  <p class="resumen">La portada de una web es lo primero que se ve y lo primero que se rompe: la abren todos los dispositivos, en todas las condiciones. Aquí juntamos todo el curso en una sola sección de página, un fondo de ruido en la GPU con texto real encima, y la construimos por etapas hasta que aguante un móvil, un lector de pantalla, una GPU sin WebGL2 y a alguien que prefiere menos movimiento.</p>
+  <div class="meta"><span class="chip">⏱ 180 min</span><span class="chip">Requisitos: 7.1, 7.2, 6.6, 2.5, 2.7</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Montarás un hero completo: un flujo de ruido en WebGL que reacciona al puntero y al scroll, contenido del DOM animado con el mismo reloj que el shader y una transición entre dos diapositivas que dibuja el shader y guía un muelle.</li>
+      <li>Separarás el bucle de la página de la capa WebGL, para que el texto siga vivo aunque WebGL no exista, no compile o se pierda.</li>
+      <li>Harás que respete el DPR y el tamaño, que no gaste nada fuera de la pantalla ni cuando nada se mueve, que obedezca a <code>prefers-reduced-motion</code> y que tenga una alternativa digna sin WebGL (y sin JavaScript).</li>
+      <li>Revisarás la arquitectura con criterio de senior y la contrastarás con una lista de comprobación de rendimiento con cifras medidas.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>El encargo</h2>
+<p>Un <em>hero</em> es la sección que ocupa la primera pantalla de una página: un titular, una frase, un par de botones y algo que llame la atención detrás. Es el sitio favorito de los efectos WebGL, y también su peor escaparate: si el fondo va a tirones en un móvil, si tarda un segundo en aparecer, si el texto no se lee sobre él o si en una GPU vieja sale un rectángulo negro, lo ve todo el mundo nada más llegar. Por eso es el proyecto perfecto para cerrar el curso: la parte vistosa ya la sabes hacer; lo que separa a un junior de un senior es todo lo demás.</p>
+<p>Este es el encargo, tal como te lo daría un equipo de diseño. Cada línea tiene detrás una o varias lecciones:</p>
+
+<table>
+  <thead><tr><th>El hero debe…</th><th>Lo aprendiste en</th><th>En el código final</th></tr></thead>
+  <tbody>
+    <tr><td>Tener un fondo WebGL: un flujo de ruido que se retuerza alrededor del puntero y reaccione al scroll</td><td><a href="../06-glsl/06-ruido.html">6.6</a>, <a href="../06-glsl/07-animacion-shaders.html">6.7</a>, <a href="02-interaccion.html">7.2</a></td><td><code>shaders.js</code></td></tr>
+    <tr><td>Mostrar el texto y los botones en el DOM, con animaciones sincronizadas con el fondo</td><td><a href="../02-animacion/07-waapi-flip.html">2.7</a>, <a href="01-arquitectura.html">7.1</a></td><td><code>hero.js</code> §4 y §7</td></tr>
+    <tr><td>Cambiar entre dos diapositivas con una transición dibujada por el shader y guiada por un muelle</td><td><a href="../02-animacion/05-fisica-muelles.html">2.5</a>, <a href="03-transiciones-shader.html">7.3</a></td><td><code>hero.js</code> §3, <code>shaders.js</code> §4</td></tr>
+    <tr><td>Verse nítido y fluido en cualquier pantalla (responsive, DPR, calidad adaptativa)</td><td><a href="../05-webgl/01-contexto.html">5.1</a>, <a href="01-arquitectura.html">7.1</a></td><td><code>motor.js</code> §7, <code>estilos.css</code></td></tr>
+    <tr><td>No gastar nada fuera de la pantalla, con la pestaña oculta ni cuando nada se mueve</td><td><a href="../05-webgl/04-uniforms-animacion.html">5.4</a>, <a href="01-arquitectura.html">7.1</a></td><td><code>motor.js</code> §6</td></tr>
+    <tr><td>Respetar <code>prefers-reduced-motion</code> y ofrecer un botón de pausa</td><td><a href="../02-animacion/02-css-transiciones.html">2.2</a>, <a href="02-interaccion.html">7.2</a></td><td><code>hero.js</code> §5</td></tr>
+    <tr><td>Tener una alternativa elegante sin WebGL y no romperse si se pierde el contexto</td><td><a href="../05-webgl/01-contexto.html">5.1</a>, <a href="01-arquitectura.html">7.1</a></td><td><code>hero.js</code> §8, <code>estilos.css</code></td></tr>
+  </tbody>
+</table>
+
+<div class="m7-destacado">
+  <p><strong>Ábrelo antes de seguir.</strong> La versión terminada es una página autónoma: <a href="proyecto-final/index.html">proyecto-final/index.html</a>. Funciona con doble clic y sin internet, no depende de nada del curso y su código está comentado para que copies la carpeta entera como plantilla. Juega con ella un minuto: mueve el puntero, cambia de diapositiva varias veces seguidas, pulsa «Pausar animación», baja hasta el final. Y prueba sus tres parámetros de URL: <a href="proyecto-final/index.html?depurar">?depurar</a> (cifras en vivo y pérdida de contexto a voluntad), <a href="proyecto-final/index.html?reducir">?reducir</a> y <a href="proyecto-final/index.html?sinwebgl">?sinwebgl</a>.</p>
+</div>
+
+<p>Por dentro, el hero son cuatro capas apiladas en la misma sección, cada una con un único trabajo:</p>
+
+<svg class="diagrama" viewBox="0 0 760 300" width="760" role="img" aria-label="Las cuatro capas del hero, de abajo arriba: alternativa CSS, canvas WebGL, velo y contenido del DOM">
+  <defs><marker id="l76-fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <text x="200" y="26" text-anchor="middle" class="texto-tenue" style="font-size:12px">section.hero · position: relative; min-height: 100svh</text>
+  <polygon class="caja acento" points="70,82 280,82 330,52 120,52"/>
+  <text x="360" y="56" style="font-weight:700">3 · contenido (DOM)</text>
+  <text x="360" y="73" class="texto-tenue" style="font-size:12px">titular, texto y botones de verdad:</text>
+  <text x="360" y="89" class="texto-tenue" style="font-size:12px">se leen, se seleccionan, se traducen</text>
+  <polygon class="caja" points="70,148 280,148 330,118 120,118" style="stroke-dasharray:5 4"/>
+  <text x="360" y="122" style="font-weight:700">2 · velo</text>
+  <text x="360" y="139" class="texto-tenue" style="font-size:12px">oscurece donde va el texto:</text>
+  <text x="360" y="155" class="texto-tenue" style="font-size:12px">contraste pase lo que pase detrás</text>
+  <polygon class="caja acento" points="70,214 280,214 330,184 120,184"/>
+  <text x="360" y="188" style="font-weight:700">1 · canvas WebGL</text>
+  <text x="360" y="205" class="texto-tenue" style="font-size:12px">aria-hidden, pointer-events: none,</text>
+  <text x="360" y="221" class="texto-tenue" style="font-size:12px">invisible hasta su primer frame</text>
+  <polygon class="caja" points="70,280 280,280 330,250 120,250"/>
+  <text x="360" y="254" style="font-weight:700">0 · alternativa CSS</text>
+  <text x="360" y="271" class="texto-tenue" style="font-size:12px">degradados con las mismas paletas:</text>
+  <text x="360" y="287" class="texto-tenue" style="font-size:12px">sin WebGL o con el contexto perdido</text>
+  <path d="M40 58 L40 276" stroke="currentColor" stroke-width="1.5" marker-end="url(#l76-fl)" marker-start="url(#l76-fl)"/>
+  <text x="28" y="167" text-anchor="middle" class="texto-tenue" style="font-size:11px" transform="rotate(-90 28 167)">z-index</text>
+</svg>
+
+<p>Fíjate en el orden. La alternativa está <em>siempre</em> debajo, no solo cuando algo falla: mientras el shader compila, si el contexto se pierde o si WebGL no existe, lo que se ve es ella, y no un hueco negro. El canvas no recibe eventos del puntero, así que los clics atraviesan hasta los botones; el puntero se escucha en la sección entera (<a href="02-interaccion.html">7.2</a>). Y el texto nunca se dibuja en WebGL: vive en el DOM, que es donde se puede leer, seleccionar, traducir y ampliar.</p>
+
+<h2>La arquitectura: el bucle es de la página, no del canvas</h2>
+<p>En <a href="01-arquitectura.html">7.1</a> empaquetaste la arquitectura en <code>M7.crearApp</code>: un canvas, su contexto, su tamaño, su reloj y su bucle, todo junto. Para una escena WebGL es perfecto. Para un hero tiene un fallo de diseño que no se ve hasta que algo falla: <strong>el bucle pertenece al canvas</strong>. Si <code>getContext('webgl2')</code> devuelve <code>null</code>, si el shader no compila en esa GPU o si <code>dibujar</code> lanza una excepción, <code>crearApp</code> llama a <code>fallar</code> y deja de pedir frames. Con un fondo solo, es lo correcto. Pero en el hero, el texto también se anima con ese reloj: su animación de entrada se coloca en cada frame con el tiempo de la app. Si el bucle muere con el canvas, el texto se queda congelado en el primer fotograma de su entrada, que es… invisible.</p>
+<p>La solución es cortar <code>crearApp</code> en dos piezas con responsabilidades distintas:</p>
+
+<table class="m7-reglas">
+  <thead><tr><th>Pieza</th><th>Se encarga de</th><th>Si WebGL falla…</th></tr></thead>
+  <tbody>
+    <tr><td>Motor.crearBucle</td><td>Un único <code>requestAnimationFrame</code> para la página, el reloj (pausa, escala), los motivos de pausa (fuera de pantalla, pestaña oculta) y el modo bajo demanda</td><td class="m7-si">sigue funcionando</td></tr>
+    <tr><td>Motor.crearCapaGL</td><td>El contexto y sus atributos, el tamaño del búfer (DPR, tope de píxeles, calidad), la pérdida y recuperación del contexto, los fallos. <strong>No tiene bucle</strong>: expone <code>capa.dibujar()</code></td><td class="m7-no">se retira</td></tr>
+  </tbody>
+</table>
+
+<p>El bucle de la página llama a <code>capa.dibujar(estado)</code> al final de cada frame, después de escribir en el DOM. Si la capa no está viva (no hay WebGL2, falló al iniciar o el contexto está perdido), esa llamada no hace nada y devuelve <code>false</code>; el resto del frame ocurre igual. Las dos piezas viven en <a href="proyecto-final/motor.js">proyecto-final/motor.js</a>, junto con las herramientas de siempre (reloj, muelle, puntero, calidad adaptativa y lo mínimo de GLKit), reescritas sin dependencias para que la carpeta funcione sola. En los playgrounds de esta lección ese mismo archivo se inyecta con <code>data-incluir="motor"</code>. Este es el corazón de la capa:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function dibujar(estado, intervaloMs) {
+  if (!capa.viva || gl.isContextLost()) return false;
+  if (calidad) calidad.medir(intervaloMs);
+  aplicarTamaño();
+  gl.viewport(0, 0, capa.ancho, capa.alto);
+  try {
+    if (o.dibujar) o.dibujar(gl, estado, capa);
+  } catch (err) {
+    fallar('error al dibujar: ' + err.message, err);
+    return false;
+  }
+  if (capa.dibujados++ === 0 && o.alPrimerFrame) o.alPrimerFrame(capa);
+  return true;
+}
+function fallar(m, err) {
+  capa.viva = false; capa.fallada = true; capa.motivo = m;
+  if (err) console.error(err); else console.warn('[capa GL] ' + m);
+  if (o.fallar) o.fallar(m, capa);
+  destruir();
+}
+</script>
+<ol>
+  <li data-l="2"><code>capa.viva</code> es verdadero solo si hay contexto, <code>iniciar</code> terminó sin excepciones y no se ha perdido. Con el contexto perdido las llamadas de GL no hacen nada ni se quejan (<a href="../05-webgl/01-contexto.html">5.1</a>): no tiene sentido hacerlas.</li>
+  <li data-l="3">La calidad adaptativa de 7.1 mide el intervalo real entre frames, que le pasa el bucle de la página: la capa no tiene reloj propio.</li>
+  <li data-l="4-5">El tamaño se aplica al empezar a dibujar (el <code>ResizeObserver</code> solo lo anotó) y el viewport se fija siempre (<a href="01-arquitectura.html">7.1</a>).</li>
+  <li data-l="6-11">Una excepción en el dibujo retira la capa una sola vez: no se repite 60 veces por segundo y, sobre todo, no sube hasta el bucle de la página, que seguirá animando el DOM.</li>
+  <li data-l="12">El primer dibujo con éxito avisa a quien quiera saberlo: el hero lo usa para hacer visible el canvas (lo verás en la etapa 5).</li>
+  <li data-l="15-20">Fallar es retirarse con elegancia: se anota el motivo, se informa una vez, la página decide qué mostrar (<code>o.fallar</code>) y la capa suelta sus observadores y libera la GPU con <code>loseContext()</code>.</li>
+</ol>
+</div>
+
+<p>Y así queda la forma de cualquier página que use el motor. Compárala con la de <code>crearApp</code> en <a href="01-arquitectura.html">7.1</a>: las funciones son las mismas, pero repartidas entre dos dueños.</p>
+
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="La forma del hero con motor.js">
+const bucle = Motor.crearBucle({
+  observar: hero,                    // sin frames si la sección no se ve
+  bajoDemanda: true,                 // se duerme si nadie llama a bucle.pedirFrame()
+  actualizar(dt, bucle) { /* leer el layout y avanzar el estado: sin DOM ni GL */ },
+  dibujar(bucle) {
+    /* escribir el DOM con el estado… */
+    capa.dibujar(estado, bucle.reloj.intervaloMs);   // …y, si la capa vive, la GPU
+  },
+});
+const capa = Motor.crearCapaGL(lienzo, {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1, pixelesMax: 2.1e6, calidad: { min: 0.5 },
+  iniciar(gl, capa) { /* programas, VAO… → capa.gpu */ },
+  dibujar(gl, estado, capa) { /* uniforms y draw calls */ },
+  fallar(motivo, capa) { /* la alternativa CSS pasa a ser el fondo */ },
+});
+</script>
+
+<div class="callout senior" data-titulo="Por qué el bucle no se para cuando se pierde el contexto">
+  <p>En <code>crearApp</code>, la pérdida de contexto era un motivo más para parar el bucle. En el hero no: el texto, la transición del DOM y los botones siguen necesitando frames. Lo que se detiene es solo la capa, y eso tiene una consecuencia bonita que comprobamos en el Chrome de pruebas: con el contexto perdido, el canvas se vuelve transparente (tanto con <code>alpha: true</code> como con <code>alpha: false</code>, y aunque no se llame a <code>preventDefault</code>). Como la alternativa CSS está siempre debajo, el usuario ve un degradado con los colores de la diapositiva, no un agujero, hasta que el contexto vuelve y <code>iniciar</code> reconstruye la GPU.</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un usuario abre tu hero en un portátil cuya GPU no compila el shader. La app usa <code>M7.crearApp</code> de 7.1 y, en su <code>dibujar</code>, además de la GPU, coloca las animaciones de entrada del texto con <code>anim.currentTime = app.reloj.t * 1000</code>. ¿Qué ve?</p>
+  <ul>
+    <li>La alternativa sin WebGL y el texto con su animación de entrada, como siempre.<div class="explicacion">La alternativa sí (la muestra <code>fallar</code>), pero la entrada del texto depende de <code>dibujar</code>, y <code>crearApp</code> no volverá a llamarlo: el shader falló dentro de <code>iniciar</code>, antes del primer frame.</div></li>
+    <li data-correcta>La alternativa sin WebGL, pero sin texto: sus animaciones de entrada están en pausa en el instante 0, que es su primer fotograma, invisible.<div class="explicacion">Correcto. Las animaciones se crearon en pausa para obedecer al reloj; el bucle que debía moverlas murió con el canvas. Es el motivo de separar el bucle de la página de la capa WebGL: el DOM necesita el reloj aunque la GPU no esté.</div></li>
+    <li>Nada: la excepción de compilación deja la página a medio montar.<div class="explicacion"><code>crearApp</code> captura la excepción de <code>iniciar</code> (<a href="01-arquitectura.html">7.1</a>): la página no se rompe. El problema es más sutil: todo parece funcionar salvo el texto.</div></li>
+  </ul>
+</div>
+
+<h2>Etapa 1 — El fondo: un flujo de ruido</h2>
+<p>Empezamos por lo vistoso, sin interacción todavía. El fondo es un <em>domain warping</em> de <a href="../06-glsl/06-ruido.html">6.6</a>: un fbm evaluado en un espacio que otros dos fbm deforman. Con un solo nivel de deformación, y el tiempo empujando las entradas en direcciones distintas, las manchas se estiran y se retuercen como tinta en agua. El color sale de una paleta de tres colores (fondo, cuerpo y luz) que llega como uniform, porque en la etapa 4 habrá dos.</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+vec2 x = p * 1.6;
+float t = u_time * 0.07;
+vec2 q = vec2(fbm(x + vec2(0.0, t)),
+              fbm(x + vec2(5.2, 1.3) - vec2(t, 0.0)));
+float v = fbm(x + 2.6 * q + vec2(1.7, 9.2) + vec2(0.4 * t, -0.9 * t));
+float luz = smoothstep(0.25, 0.85, length(q) * 1.6 + 0.5 * v);
+vec3 col = mix(u_col[0], u_col[1], smoothstep(-0.3, 0.45, v))
+         + u_col[2] * luz;
+vec2 cv = uv - 0.5;
+col *= 1.0 - 0.6 * dot(cv, cv);
+col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
+</script>
+<ol>
+  <li data-l="1">Coordenadas en alturas del lienzo con el origen en el centro (<a href="../06-glsl/02-pensar-en-paralelo.html">6.2</a>): el dibujo no se estira con el aspecto, y en un móvil vertical se ve un trozo más estrecho del mismo flujo, no un flujo aplastado.</li>
+  <li data-l="2">La escala del ruido: 1,6 celdas por altura. Es el mando del «tamaño» de las manchas.</li>
+  <li data-l="3">La velocidad: 0,07 celdas por segundo. Un fondo debe moverse despacio; si llama más la atención que el titular, sobra.</li>
+  <li data-l="4-5">El campo de deformación <code>q</code>: dos fbm distintos (los desplazamientos (5,2; 1,3) hacen que no sean el mismo), empujados por el tiempo en direcciones perpendiculares.</li>
+  <li data-l="6">El valor final: el fbm evaluado en <code>x + 2.6·q</code>. El 2,6 es la fuerza de la deformación; el último término hace que, además, el conjunto derive.</li>
+  <li data-l="7">Una «luz»: donde la deformación es fuerte (<code>length(q)</code> grande) y el valor alto, aparecen los brillos. Usar los campos intermedios para teñir es el truco del ejemplo de warping de 6.6.</li>
+  <li data-l="8-9">La paleta: el valor mezcla fondo y cuerpo, y la luz suma el tercer color.</li>
+  <li data-l="10-11">Una viñeta suave: <code>dot(cv, cv)</code> es la distancia al centro al cuadrado, 0 en el centro, 0,25 en la mitad de cada borde y 0,5 en las esquinas; el brillo baja un 15 % en los bordes y un 30 % en las esquinas.</li>
+  <li data-l="12">El <em>dither</em>, que merece su propia caja.</li>
+</ol>
+</div>
+
+<div class="callout senior" data-titulo="El dither: medio escalón de ruido contra las bandas">
+  <p>El shader calcula en float, pero el canvas guarda 8 bits por canal: 256 niveles. En un degradado oscuro y lento, como este fondo, dos niveles vecinos pueden quedar a decenas de píxeles de distancia y el ojo ve escalones: bandas concéntricas en lo que debería ser un difuminado continuo. Sumar a cada píxel un ruido fijo de ±0,5/255 (medio escalón) hace que la frontera entre dos niveles se mezcle píxel a píxel, y el ojo, que promedia, vuelve a ver un degradado. Cuesta un hash por píxel. Es fijo (no depende del tiempo) a propósito: un grano que cambia en cada frame se percibe como un centelleo.</p>
+</div>
+
+<p>¿Cuánto cuesta? Cuenta primero, como en <a href="../06-glsl/06-ruido.html">6.6</a>: tres fbm de cuatro octavas son 12 ruidos de gradiente, 48 hashes por píxel, más o menos la mitad que el warping de dos niveles de aquella lección. Después, mide. Y aquí hay una trampa que merece su propio párrafo.</p>
+
+<div class="callout senior" data-titulo="Medir el coste en una GPU que cambia de marcha">
+  <p>El reflejo es usar el temporizador de GPU de <a href="../05-webgl/10-depuracion.html">5.10</a>. Lo hicimos, con 180 frames por tamaño, y salió esto para el mismo shader: 2,5 ms a 720 × 450, 5,7 ms a 1080 × 675, unos 9 ms a 1440 × 900 y 12,4 ms a 2880 × 1800. No es proporcional a los píxeles (el último tiene 16 veces más que el primero y cuesta solo 5 veces más), y a 1440 × 900 los frames medidos iban de 6 a 10 ms. Lo más probable es que la GPU del M1 baje su frecuencia cuando va sobrada: el temporizador mide <em>tiempo</em>, no <em>trabajo</em>, y un trabajo ligero a baja frecuencia tarda casi tanto como uno pesado a alta. La medida honesta es de capacidad: dibujar el fondo N veces por frame (con mezcla aditiva, para que la GPU no pueda descartar las pasadas tapadas) y subir N hasta que el frame deja de caber en 16,7 ms. Eso obliga a la GPU a ir a plena marcha, y el coste de una pasada queda acotado entre 16,7/N<sub>no cabe</sub> y 16,7/N<sub>cabe</sub>.</p>
+</div>
+
+<table class="m7-medidas">
+  <thead><tr><th>Búfer</th><th class="num">Megapíxeles</th><th class="num">Pasadas que caben / que no</th><th class="num">Coste de una pasada</th></tr></thead>
+  <tbody>
+    <tr><td>720 × 450</td><td class="num">0,32</td><td class="num">31 / 39</td><td class="num">0,43–0,54 ms</td></tr>
+    <tr><td>1440 × 900</td><td class="num">1,30</td><td class="num">8 / 10</td><td class="num">1,7–2,1 ms</td></tr>
+    <tr><td>2160 × 1350</td><td class="num">2,92</td><td class="num">3 / 4</td><td class="num">4,2–5,6 ms</td></tr>
+    <tr><td>2880 × 1800</td><td class="num">5,18</td><td class="num">2 / 3</td><td class="num">5,6–8,3 ms</td></tr>
+  </tbody>
+</table>
+<p>Medido en el M1 (Chrome, ANGLE sobre Metal), con el shader completo de la versión final. Ahora sí sale proporcional: unos 1,4 ms por megapíxel. La conclusión decide una opción de la capa: una ventana de 1440 × 900 en una pantalla retina (DPR 2) pide un búfer de 2880 × 1800 y le cuesta al M1 unos 7 ms por frame, casi la mitad del presupuesto; con el búfer limitado a DPR 1 son unos 2 ms. Un fondo de ruido suave, ampliado por el navegador con filtrado bilineal (el hack de <a href="01-arquitectura.html">7.1</a>), no pierde casi nada: los bordes del texto, que es lo que el ojo mira, son del DOM y siguen nítidos. Por eso el hero usa <code>dprMax: 1</code>. En un móvil, cuya GPU puede ser diez veces más lenta que la del M1 (<a href="../06-glsl/06-ruido.html">6.6</a>), esa decisión separa 60 fps de 20.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.6.1 — Etapa 1: el flujo, con el bucle y la capa separados</h3>
+  <p>El fondo solo, con <code>Motor.crearBucle</code> y <code>Motor.crearCapaGL</code>. El selector cambia la resolución del búfer: «DPR completo» usa todos los píxeles de tu pantalla (si es retina, verás el búfer al doble), «DPR 1» es lo que usa el hero y «mitad» es lo que haría la calidad adaptativa en un equipo lento. Compara la nitidez de los filamentos y mira el tamaño del búfer en la línea de abajo.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.6.1 — El flujo" data-altura="340" data-apilado data-incluir="motor" data-fondo="oscuro">
+<script type="text/x-html">
+<section id="hero">
+  <canvas aria-hidden="true"></canvas>
+  <div id="panel">
+    <label>resolución
+      <select id="resolucion">
+        <option value="3,1">DPR completo</option>
+        <option value="1,1" selected>DPR 1 (la del hero)</option>
+        <option value="1,0.5">mitad</option>
+      </select>
+    </label>
+    <span id="info"></span>
+  </div>
+</section>
+</script>
+<script type="text/x-css">
+html, body { height: 100%; margin: 0; }
+#hero { position: relative; height: 100%; overflow: hidden; background: #05061a; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#panel { position: absolute; left: 8px; bottom: 8px; color: #cfd3e2; font: 12px ui-monospace, monospace; background: rgba(5, 6, 15, 0.7); padding: 5px 8px; border-radius: 6px; }
+select { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec3 u_col[3];                    // fondo, cuerpo, luz
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruido(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f), b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1)), d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+float fbm(vec2 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 4; k++) {
+    suma += amplitud * ruido(p);
+    p = ROTAR * p * 2.0 + vec2(17.3, 5.9);
+    amplitud *= 0.5;
+  }
+  return suma;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  vec2 x = p * 1.6;
+  float t = u_time * 0.07;
+  vec2 q = vec2(fbm(x + vec2(0.0, t)), fbm(x + vec2(5.2, 1.3) - vec2(t, 0.0)));
+  float v = fbm(x + 2.6 * q + vec2(1.7, 9.2) + vec2(0.4 * t, -0.9 * t));
+  float luz = smoothstep(0.25, 0.85, length(q) * 1.6 + 0.5 * v);
+  vec3 col = mix(u_col[0], u_col[1], smoothstep(-0.3, 0.45, v)) + u_col[2] * luz;
+  vec2 cv = uv - 0.5;
+  col *= 1.0 - 0.6 * dot(cv, cv);
+  col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
+  fragColor = vec4(col, 1.0);
+}`;
+
+// ---------- Datos y DOM ----------
+const PALETA = new Float32Array([0.020, 0.024, 0.070,  0.15, 0.13, 0.46,  0.22, 0.56, 0.90]);
+const hero = document.getElementById('hero');
+const lienzo = hero.querySelector('canvas');
+const info = document.getElementById('info');
+const selector = document.getElementById('resolucion');
+
+// ---------- El bucle de la página (la capa aún no existe: se usa en el primer frame) ----------
+const bucle = Motor.crearBucle({
+  observar: hero,
+  dibujar(b) {
+    capa.dibujar(null, b.reloj.intervaloMs);
+    info.textContent = capa.viva
+      ? `búfer ${capa.ancho}×${capa.alto} · ${b.fps.toFixed(0)} fps · t = ${b.reloj.t.toFixed(1)} s`
+      : capa.motivo;
+  },
+});
+
+// ---------- La capa WebGL ----------
+const opciones = {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1,
+  iniciar(gl, capa) {
+    const p = Motor.crearPrograma(gl, VS, FS);
+    capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, estado, capa) {
+    const g = capa.gpu;
+    gl.useProgram(g.p);
+    Motor.ponerUniform(gl, g.u.u_resolution, [capa.ancho, capa.alto]);
+    Motor.ponerUniform(gl, g.u.u_time, bucle.reloj.t);
+    Motor.ponerUniform(gl, g.u.u_col, PALETA);       // uniform3fv con 9 floats
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+};
+const capa = Motor.crearCapaGL(lienzo, opciones);
+
+// El evento solo cambia la configuración; el siguiente frame la aplica al calcular el tamaño
+selector.onchange = () => {
+  const [dprMax, escala] = selector.value.split(',').map(Number);
+  opciones.dprMax = dprMax;
+  capa.escala = escala;
+};
+</script>
+  </div>
+  <p>Tres detalles del código:</p>
+  <ul>
+    <li><strong>El orden de creación.</strong> <code>bucle</code> se crea antes que <code>capa</code> y su <code>dibujar</code> la usa. Funciona porque <code>crearBucle</code> solo <em>pide</em> el primer frame con <code>requestAnimationFrame</code>: cuando llega, el script ya terminó y <code>capa</code> existe. Si lo llamaras de forma síncrona, <code>capa</code> estaría en su zona muerta temporal (<a href="../01-web/03-js-lenguaje.html">1.3</a>) y saltaría un <code>ReferenceError</code>.</li>
+    <li><strong>La capa no tiene reloj.</strong> El tiempo del shader sale de <code>bucle.reloj.t</code>, el único reloj de la página. En la etapa 3 el texto beberá de ese mismo reloj.</li>
+    <li><strong>La resolución se cambia sin tocar GL en el evento.</strong> El selector modifica el objeto de opciones (que la capa consulta al calcular el tamaño objetivo) y <code>capa.escala</code>; el siguiente <code>capa.dibujar</code> redimensiona el búfer. Es la regla de 7.1: el evento anota, el frame aplica.</li>
+  </ul>
+</section>
+
+<h2>Etapa 2 — El puntero y el scroll entran en el shader</h2>
+<p>Dos entradas del usuario, con la tubería completa de <a href="02-interaccion.html">7.2</a>: el evento anota lo crudo, el frame convierte con el rectángulo de ese frame, se suaviza con <code>dtReal</code> y el uniform se asigna al dibujar.</p>
+
+<h3>El puntero: un remolino</h3>
+<p>El canvas tiene <code>pointer-events: none</code> (los clics tienen que llegar a los botones de encima), así que el puntero se escucha en la sección: <code>new Motor.Puntero(hero)</code>, que es el <code>M7.Puntero</code> de 7.2 sin cambios. Su <code>aGL(lienzo)</code> devuelve la posición suavizada en píxeles del búfer con la y hacia arriba, y es correcto porque el canvas ocupa exactamente la caja de la sección. El efecto no mueve colores: deforma el <em>espacio</em> antes de evaluar el flujo. Cada punto se gira alrededor del puntero un ángulo que decrece con la distancia, y la tinta parece removida con un dedo:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec2 parallax = vec2(0.0, 0.5 * u_scroll);
+vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / alto + parallax;
+vec2 m = (u_mouse - 0.5 * u_resolution) / alto + parallax;
+vec2 d = p - m;
+float radio = 200.0 * u_escala / alto;
+float giro = u_raton * 2.4 * exp(-dot(d, d) / (radio * radio));
+float cg = cos(giro), sg = sin(giro);
+p = m + mat2(cg, sg, -sg, cg) * d;
+</script>
+<ol>
+  <li data-l="1">El desplazamiento del parallax, que explicamos enseguida. Lo importante aquí: se suma al píxel <em>y</em> al puntero.</li>
+  <li data-l="2-3">El píxel y el puntero, en el mismo espacio: alturas con el origen en el centro. Si solo el píxel llevara el parallax, el remolino se despegaría del puntero al hacer scroll (el bicho de los espacios mezclados, <a href="../06-glsl/02-pensar-en-paralelo.html#m6a-espacios-mezclados">6.2</a>).</li>
+  <li data-l="4">El vector del puntero al píxel.</li>
+  <li data-l="5">El radio del remolino: 200 px CSS. <code>u_escala</code> son los px del búfer por px CSS, así que <code>200 · u_escala</code> son px del búfer, y al dividir por la altura del búfer quedan en alturas. Mide lo mismo con DPR 1, con DPR 3 o con la calidad adaptativa a la mitad (<a href="02-interaccion.html">7.2</a>).</li>
+  <li data-l="6">El ángulo: hasta 2,4 rad (unos 140°) en el centro, con una campana gaussiana, <code>exp(−d²/r²)</code>, que a una distancia de un radio vale 0,37 y a dos radios, 0,02. <code>u_raton</code> (0 a 1) lo enciende y lo apaga.</li>
+  <li data-l="7-8">La rotación de <a href="../03-matematicas/05-matrices.html">3.5</a> (el constructor <code>mat2</code> va por columnas) aplicada al vector <code>d</code>, y vuelta a sumar el centro: <code>p</code> gira alrededor de <code>m</code>. A partir de aquí, el flujo se evalúa en el espacio girado.</li>
+</ol>
+</div>
+
+<p>Dos decisiones de <a href="02-interaccion.html">7.2</a> que hay que respetar aquí. La primera: el remolino no aparece de golpe ni llega volando desde una esquina; su <em>intensidad</em> <code>u_raton</code> se suaviza de 0 a 1 al entrar y de 1 a 0 al salir (semivida de 0,15 s), y la posición arranca sin barrido. La segunda: todo lo que responde al usuario usa <code>dtReal</code>, así que si alguien pausa la animación, el remolino sigue a su mano.</p>
+
+<h3>El scroll: parallax y oscuridad</h3>
+<p>El hero necesita saber cuánto ha salido por arriba: $s = \operatorname{clamp}(-r_{top} / r_{alto},\ 0,\ 1)$, con el rectángulo de la sección. Vale 0 con el hero entero en pantalla y 1 cuando su borde inferior toca el techo de la ventana. Se lee en el paso «leer» del frame, sin escuchar <code>scroll</code> (el evento llega justo antes del rAF con el mismo valor, <a href="02-interaccion.html">7.2</a>), y se suaviza con 0,1 s de semivida. Tiene tres usos:</p>
+<ul>
+  <li><strong>Parallax en el shader.</strong> El canvas está dentro de la sección, así que el compositor lo sube con la página. Si al espacio del shader le sumamos $0{,}5\,s$ alturas en la y, el dibujo baja respecto al canvas media altura por cada altura de hero que sube: en pantalla, el fondo se desplaza a la mitad de velocidad que el texto. Es la ilusión de profundidad de siempre, sin mover el canvas.</li>
+  <li><strong>Oscurecer el fondo</strong> (<code>col *= 1 − 0,6 s</code>), para que la transición hacia el contenido de debajo sea suave.</li>
+  <li><strong>Parallax en el DOM:</strong> el contenido baja 90 px como mucho y se desvanece, escrito en <code>dibujar</code> con el mismo valor suavizado.</li>
+</ul>
+
+<div class="callout senior" data-titulo="Por qué el canvas va dentro de la sección y no fijo">
+  <p>En <a href="02-interaccion.html">7.2</a> medimos que un canvas <code>position: fixed</code> va un frame por detrás del scroll del compositor (25 px a 1500 px/s). Aquí el canvas es <code>position: absolute</code> dentro de la sección: el compositor lo desplaza junto con el texto en el mismo frame, sin esperar a tu JavaScript. Lo único que va un frame tarde es el <em>parallax interno</em>, el desplazamiento del dibujo dentro del canvas, que es difuso y además está suavizado: nadie puede verlo. Y cuando el hero sale de la pantalla, el <code>IntersectionObserver</code> del bucle deja de pedir frames: con un canvas fijo a pantalla completa, eso nunca pasaría.</p>
+</div>
+
+<div class="callout bestiario" data-id="m7-6-hero-atrapa-scroll" data-titulo="En el móvil no hay forma de pasar del hero: el scroll no funciona">
+  <p><strong>Síntoma:</strong> en el ordenador todo va bien, pero en un móvil el dedo sobre la portada no desplaza la página. Como el hero ocupa la pantalla entera, no hay ningún sitio donde apoyar el dedo para bajar: el usuario está atrapado.</p>
+  <p><strong>Causa:</strong> alguien puso <code>touch-action: none</code> en el hero (o en el canvas, de pantalla completa) para recibir todos los <code>pointermove</code> del dedo sin que el navegador los cancele, como se hace en un lienzo de dibujo (<a href="02-interaccion.html">7.2</a>). Lo comprobamos simulando un gesto táctil de 500 px hacia arriba con el protocolo de depuración de Chrome sobre una sección de <code>100vh</code>: con <code>touch-action: auto</code> la página bajó 504 px (el puntero recibió <code>pointerdown</code>, <code>pointermove</code> y <code>pointercancel</code> al empezar el scroll); con <code>none</code>, 0 px, y el puntero recibió todo el arrastre hasta su <code>pointerup</code>; con <code>pan-y</code>, 500 px.</p>
+  <p><strong>Solución:</strong> en un fondo decorativo, deja <code>touch-action</code> por defecto y acepta que, con el dedo, el efecto dura hasta que el navegador decide que es un scroll (el <code>pointercancel</code> apaga el remolino, y <code>Motor.Puntero</code> lo trata como una salida). Si necesitas arrastres horizontales, <code>touch-action: pan-y</code> deja el scroll vertical al navegador. <code>none</code> solo en zonas pequeñas o en experiencias a pantalla completa con su propia forma de salir.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.6.2 — Etapa 2: remolino y scroll</h3>
+  <p>Mueve el puntero sobre el fondo y después desplázate dentro del playground: el fondo se oscurece y se queda atrás, y el título baja más despacio que la página. La línea de abajo muestra el progreso del scroll (crudo y suavizado) y la intensidad del remolino.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.6.2 — Puntero y scroll" data-altura="360" data-apilado data-incluir="motor" data-fondo="oscuro">
+<script type="text/x-html">
+<section id="hero">
+  <canvas aria-hidden="true"></canvas>
+  <h2 id="titulo">Mueve el puntero<br>y desplázate ↓</h2>
+  <p id="info"></p>
+</section>
+<div class="resto">Aquí acabaría el hero y empezaría el resto de la página. Vuelve a subir: el reloj no ha avanzado mientras el hero estaba fuera.</div>
+</script>
+<script type="text/x-css">
+html, body { margin: 0; background: #05061a; }
+#hero { position: relative; height: 100vh; overflow: hidden; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+#titulo { position: relative; margin: 0; padding: 56px 28px 0; color: #f3f4fa; font: 750 34px/1.05 system-ui; letter-spacing: -0.02em; will-change: transform; }
+#info { position: absolute; left: 10px; bottom: 6px; margin: 0; color: #cfd3e2; font: 12px ui-monospace, monospace; }
+.resto { height: 480px; padding: 24px 28px; color: #9aa1b8; font: 14px/1.5 system-ui; background: #0e1014; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec3 u_col[3];
+uniform float u_escala;     // px del búfer por px CSS
+uniform vec2 u_mouse;       // px del búfer, origen abajo
+uniform float u_raton;      // 0..1: intensidad del remolino
+uniform float u_scroll;     // 0..1: cuánto del hero ha salido por arriba
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruido(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f), b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1)), d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+float fbm(vec2 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 4; k++) { suma += amplitud * ruido(p); p = ROTAR * p * 2.0 + vec2(17.3, 5.9); amplitud *= 0.5; }
+  return suma;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float alto = u_resolution.y;
+  // Píxel y puntero en el mismo espacio, con el mismo parallax
+  vec2 parallax = vec2(0.0, 0.5 * u_scroll);
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / alto + parallax;
+  vec2 m = (u_mouse - 0.5 * u_resolution) / alto + parallax;
+  // Remolino: girar el espacio alrededor del puntero
+  vec2 d = p - m;
+  float radio = 200.0 * u_escala / alto;
+  float giro = u_raton * 2.4 * exp(-dot(d, d) / (radio * radio));
+  float cg = cos(giro), sg = sin(giro);
+  p = m + mat2(cg, sg, -sg, cg) * d;
+  // El flujo de la etapa 1
+  vec2 x = p * 1.6;
+  float t = u_time * 0.07;
+  vec2 q = vec2(fbm(x + vec2(0.0, t)), fbm(x + vec2(5.2, 1.3) - vec2(t, 0.0)));
+  float v = fbm(x + 2.6 * q + vec2(1.7, 9.2) + vec2(0.4 * t, -0.9 * t));
+  float luz = smoothstep(0.25, 0.85, length(q) * 1.6 + 0.5 * v);
+  vec3 col = mix(u_col[0], u_col[1], smoothstep(-0.3, 0.45, v)) + u_col[2] * luz;
+  col *= 1.0 - 0.6 * u_scroll;                        // se oscurece al salir
+  vec2 cv = uv - 0.5;
+  col *= 1.0 - 0.6 * dot(cv, cv);
+  col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
+  fragColor = vec4(col, 1.0);
+}`;
+
+const PALETA = new Float32Array([0.020, 0.024, 0.070,  0.15, 0.13, 0.46,  0.22, 0.56, 0.90]);
+const hero = document.getElementById('hero');
+const lienzo = hero.querySelector('canvas');
+const titulo = document.getElementById('titulo');
+const info = document.getElementById('info');
+
+// ---------- Estado ----------
+const puntero = new Motor.Puntero(hero, { semivida: 0.08 });   // en la SECCIÓN: el canvas no recibe eventos
+const estado = { raton: 0, scroll: 0, scrollSuave: 0 };
+
+// ---------- Bucle ----------
+const bucle = Motor.crearBucle({
+  observar: hero,
+  actualizar(dt, b) {
+    const dtr = b.reloj.dtReal;                              // responde al usuario: tiempo real
+    const r = hero.getBoundingClientRect();                  // 1. leer (el layout está limpio)
+    estado.scroll = Math.min(1, Math.max(0, -r.top / r.height));
+    puntero.actualizar(dtr);
+    estado.raton = Motor.suavizar(estado.raton, puntero.dentro ? 1 : 0, 0.15, dtr);   // 2. avanzar
+    estado.scrollSuave = Motor.suavizar(estado.scrollSuave, estado.scroll, 0.1, dtr);
+  },
+  dibujar(b) {
+    titulo.style.transform = `translateY(${(estado.scrollSuave * 90).toFixed(1)}px)`;   // 3. DOM
+    capa.dibujar(estado, b.reloj.intervaloMs);                                           // 4. GPU
+    info.textContent = `scroll ${estado.scroll.toFixed(2)} (suave ${estado.scrollSuave.toFixed(2)}) · remolino ${estado.raton.toFixed(2)}`;
+  },
+});
+
+// ---------- Capa WebGL ----------
+const capa = Motor.crearCapaGL(lienzo, {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1,
+  iniciar(gl, capa) {
+    const p = Motor.crearPrograma(gl, VS, FS);
+    capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, capa) {
+    const g = capa.gpu, u = g.u;
+    const k = capa.ancho / capa.anchoCSS;       // px del búfer por px CSS, sin leer el layout ahora
+    gl.useProgram(g.p);
+    Motor.ponerUniform(gl, u.u_resolution, [capa.ancho, capa.alto]);
+    Motor.ponerUniform(gl, u.u_time, bucle.reloj.t);
+    Motor.ponerUniform(gl, u.u_col, PALETA);
+    Motor.ponerUniform(gl, u.u_escala, k);
+    Motor.ponerUniform(gl, u.u_mouse, puntero.aGL(lienzo));
+    Motor.ponerUniform(gl, u.u_raton, e.raton);
+    Motor.ponerUniform(gl, u.u_scroll, e.scrollSuave);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+</script>
+  </div>
+  <p>Fíjate en el orden dentro del frame: <code>actualizar</code> lee el rectángulo de la sección (y <code>puntero.actualizar</code>, el suyo) antes de que nadie escriba nada; <code>dibujar</code> escribe el <code>transform</code> del título y después dibuja. Por eso la capa calcula <code>u_escala</code> con <code>capa.anchoCSS</code>, que anotó su <code>ResizeObserver</code>, en lugar de llamar a <code>getBoundingClientRect()</code>: después de escribir un estilo, esa lectura forzaría un layout síncrono (<a href="../02-animacion/01-pipeline-render.html">2.1</a>). Y baja hasta el final del texto gris: el hero deja de verse, el bucle deja de pedir frames y, al volver, el reloj sigue donde estaba.</p>
+</section>
+
+<h2>Etapa 3 — El texto, con el mismo reloj que el shader</h2>
+<p>Ahora el contenido: antetítulo, titular, entradilla y botones, en el DOM (<a href="02-interaccion.html">7.2</a>: nunca texto dibujado en WebGL). Al cargar entran uno tras otro, subiendo y apareciendo, mientras el fondo se ilumina desde casi negro. Y el botón principal late cada 3 segundos: una onda del DOM se expande a su alrededor y, en el mismo instante, el shader enciende un halo detrás de él. Para que todo eso vaya a una, la regla de <a href="01-arquitectura.html">7.1</a>: <strong>un solo reloj</strong>. En aquella lección quedó una promesa pendiente, la del cuadrado naranja que ignoraba la cámara lenta porque su animación CSS vivía en <code>document.timeline</code>. Se cumple así:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+const deEntrada = [];
+function entrada(selector, retardoMs) {
+  for (const el of hero.querySelectorAll(selector)) {
+    const a = el.animate(
+      [{ opacity: 0, transform: 'translateY(22px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 800, delay: retardoMs, easing: 'cubic-bezier(.2, .7, .2, 1)', fill: 'backwards' });
+    a.pause();
+    deEntrada.push(a);
+  }
+}
+entrada('.antetitulo', 150);
+entrada('.diapositiva h2', 280);
+entrada('.entradilla', 450);
+
+// en dibujar(bucle), cada frame:
+for (const a of deEntrada) a.currentTime = bucle.reloj.t * 1000;
+</script>
+<ol>
+  <li data-l="4-6"><code>element.animate</code> de <a href="../02-animacion/07-waapi-flip.html">2.7</a>: dos fotogramas (de abajo y transparente a su sitio y opaco), 800 ms, un retardo distinto por elemento para el escalonado y un easing que frena al final.</li>
+  <li data-l="6"><code>fill: 'backwards'</code>: durante el retardo se aplica el primer fotograma (invisible), y al terminar la animación deja de aplicar nada y manda el estilo normal. Con <code>'forwards'</code> el último fotograma se quedaría «pegado» encima de cualquier estilo posterior (<a href="../02-animacion/07-waapi-flip.html#m2-fill-forwards-pegado">2.7</a>); aquí el final coincide con el estilo normal, así que no hace falta.</li>
+  <li data-l="7">En pausa desde el primer momento: su posición ya no la decide <code>document.timeline</code>, sino quien escriba <code>currentTime</code>.</li>
+  <li data-l="16">Y ese somos nosotros, en cada frame, con el tiempo del reloj de la app en milisegundos (la unidad de <code>currentTime</code>). La pausa, la cámara lenta, el movimiento reducido y la pausa fuera de pantalla afectan al texto exactamente igual que al shader, porque es el mismo número.</li>
+</ol>
+</div>
+
+<p>Lo que comprobamos sobre este patrón en el Chrome de pruebas:</p>
+<table class="m7-medidas">
+  <thead><tr><th>Prueba</th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td>Animación en pausa de <code>opacity</code> 0 → 1, 1000 ms, retardo 200, lineal; <code>currentTime = 700</code></td><td><code>getComputedStyle</code> da 0,5 en el acto, sin esperar al frame</td></tr>
+    <tr><td>La misma, con <code>currentTime = 100</code> (dentro del retardo) y <code>fill: 'backwards'</code></td><td>0 (primer fotograma)</td></tr>
+    <tr><td>La misma, con <code>currentTime = 5000</code> (pasado el final)</td><td>1, el estilo normal; <code>playState</code> sigue siendo <code>'paused'</code></td></tr>
+    <tr><td>Una animación escrita en CSS (<code>@keyframes</code>): <code>el.getAnimations()</code></td><td>un <code>CSSAnimation</code> con su <code>animationName</code>; se pausa y se coloca igual</td></tr>
+    <tr><td>Sin <code>pause()</code>: escribir <code>currentTime = 0</code> diez frames y dejar de hacerlo</td><td>500 ms después, <code>currentTime</code> valía 500: siguió sola con <code>document.timeline</code></td></tr>
+    <tr><td>Coste: 12 animaciones en pausa colocadas en cada frame</td><td>por debajo de la resolución del reloj (0,1 ms) desde el inicio del frame hasta después de pintar</td></tr>
+    <tr><td>Coste: 300 animaciones</td><td>0,9 ms por frame, frente a 0,1 ms sin escribirlas</td></tr>
+  </tbody>
+</table>
+<p>El coste se midió desde el principio del callback de rAF hasta un mensaje de <code>MessageChannel</code> enviado desde él, que llega después de que el navegador recalcule estilos y pinte. Un hero tiene una docena de animaciones: gratis.</p>
+
+<h3>El latido: el DOM y el shader, a la vez</h3>
+<p>La onda del botón es una animación WAAPI más, infinita, de 3 s por vuelta, que el reloj coloca como a las demás. El halo del shader necesita dos cosas del DOM: <em>dónde</em> está el botón (su rectángulo, leído al principio del frame y convertido a px del búfer relativos al canvas, como las tarjetas de <a href="02-interaccion.html">7.2</a>) y <em>en qué momento</em> del latido estamos. Lo segundo se calcula en JavaScript:</p>
+<script type="text/plain" class="codigo" data-lang="js">
+const fase = (reloj.t % LATIDO_S) / LATIDO_S;        // 0 → 1 en cada latido, con 64 bits
+ponerUniform(gl, u.u_pulso, Math.exp(-6 * fase));   // 1 al empezar el latido, cae rápido
+</script>
+<p>¿Por qué no mandar <code>u_time</code> y calcular la fase en el shader? Porque <code>u_time</code> llega como float32 y crece sin parar: tras unas horas, <code>mod(u_time, 3.0)</code> avanza a saltos (<a href="../05-webgl/04-uniforms-animacion.html#m5-tiempo-float32">5.4</a>). La misma idea que las edades de las ondas de <a href="02-interaccion.html">7.2</a>: lo que sea periódico o una diferencia de tiempos, se calcula en JavaScript y viaja pequeño. El flujo sí usa <code>u_time</code> directamente, porque solo desplaza el ruido despacio: tras un día con el hero en pantalla, el float32 de <code>t</code> tendría escalones de unos 8 ms, menos de lo que avanza en un frame.</p>
+
+<div class="callout senior" data-titulo="El precio de la sincronía: el hilo principal">
+  <p>Una animación de <code>opacity</code> o <code>transform</code> que corre sola puede ir en el compositor: sigue fluida aunque el hilo principal esté ocupado (<a href="../02-animacion/01-pipeline-render.html">2.1</a>). Una animación en pausa que colocas tú en cada frame depende de que tu rAF se ejecute: si el hilo principal se bloquea 200 ms, el texto se congela 200 ms. Para el hero es el trato correcto, porque el canvas también se congelaría (se dibuja en ese mismo hilo) y lo que importa es que vayan juntos. Para un indicador de carga que debe seguir girando mientras la página hace un trabajo pesado, es el trato equivocado: déjalo en el compositor y fuera de tu reloj.</p>
+</div>
+
+<div class="callout bestiario" data-id="m7-6-texto-invisible" data-titulo="El texto del hero no aparece nunca (sin JavaScript, sin WebGL o con movimiento reducido)">
+  <p><strong>Síntoma:</strong> en tu equipo el titular entra con su animación; en otro, el hero se queda con el fondo y sin texto. Pasa sin JavaScript (un bloqueador, un error en otro script), en un navegador sin WebGL2 o cuando el sistema pide menos movimiento.</p>
+  <p><strong>Causa:</strong> el estado inicial invisible de la entrada depende de algo que no siempre llega a ejecutarse. Tres variantes: (1) el CSS pone <code>opacity: 0</code> al texto «para que la animación lo revele», y sin JavaScript nadie lo revela; (2) las animaciones están en pausa y las mueve un bucle que muere con el canvas (el quiz de la sección de arquitectura); (3) el movimiento reducido pone la escala del reloj a 0 (<a href="02-interaccion.html">7.2</a>), el tiempo se queda en 0 y la entrada, en su primer fotograma.</p>
+  <p><strong>Solución:</strong> el texto es visible por defecto y solo JavaScript lo oculta, creando las animaciones (con <code>fill: 'backwards'</code>) en el mismo script que las mueve; el bucle es de la página, no del canvas; y con movimiento reducido, las animaciones de entrada se colocan directamente en su final: <code>a.currentTime = FIN_ENTRADA</code>, con <code>FIN_ENTRADA</code> el mayor <code>effect.getComputedTiming().endTime</code>. En la versión final, las tres cosas.</p>
+</div>
+
+<div class="callout hack" data-titulo="Dale tus animaciones CSS al reloj">
+  <p>No hace falta escribir en JavaScript todas las animaciones que quieres sincronizar. La flecha «↓» del hero se anima con unos <code>@keyframes</code> normales en <code>estilos.css</code>, y <code>hero.js</code> se la queda: <code>indicador.getAnimations()</code> devuelve su <code>CSSAnimation</code>, que se pausa y se coloca con <code>currentTime</code> como cualquier otra. Sin JavaScript, la flecha se anima sola con CSS; con él, obedece al reloj. Una trampa: si una media query quita la animación (<code>animation: none</code> con movimiento reducido) y después la vuelve a poner, el navegador crea un objeto <em>nuevo</em>, que nace en marcha y fuera de tu control. Lo comprobamos alternando la preferencia emulada con la página abierta: la animación capturada pasó a <code>'idle'</code> al activar el movimiento reducido y, al desactivarlo, <code>getAnimations()</code> devolvió <em>otra</em>, en <code>'running'</code>. Por eso <code>hero.js</code> la vuelve a capturar cada vez que cambia la preferencia; con la recaptura, tras la vuelta había una sola animación, en pausa.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.6.3 — Etapa 3: un reloj para el DOM y la GPU</h3>
+  <p>El fondo de la etapa 2 (sin el scroll, para no alargar) con el contenido encima. Mira la entrada al cargar y el latido del botón. Después maltrata al reloj: pausa, cámara lenta y «t = 0», que devuelve el tiempo al principio y repite la entrada entera, porque todo lo que ves es una función de <code>t</code>. La flecha de abajo a la derecha es una animación CSS capturada con <code>getAnimations()</code>.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.6.3 — Un solo reloj" data-altura="380" data-apilado data-incluir="motor" data-fondo="oscuro">
+<script type="text/x-html">
+<section id="hero">
+  <canvas aria-hidden="true"></canvas>
+  <div class="velo" aria-hidden="true"></div>
+  <div class="contenido">
+    <p class="antetitulo">01 · Tinta</p>
+    <h2>Un fondo que respira</h2>
+    <p class="entradilla">Texto del DOM, animado con el reloj del shader.</p>
+    <a class="boton" href="#" onclick="return false">Cómo está hecho<span class="onda" aria-hidden="true"></span></a>
+  </div>
+  <span class="flecha" aria-hidden="true">↓</span>
+  <div id="panel">
+    <button data-q="pausa">⏯ pausa</button><button data-q="0.25">× 0,25</button><button data-q="1">× 1</button><button data-q="cero">↺ t = 0</button>
+    <span id="info"></span>
+  </div>
+</section>
+</script>
+<script type="text/x-css">
+html, body { height: 100%; margin: 0; }
+#hero { position: relative; height: 100%; overflow: hidden; background: #05061a; color: #f3f4fa; font-family: system-ui, sans-serif; }
+canvas, .velo { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+.velo { background: linear-gradient(90deg, rgba(3,4,12,.75), rgba(3,4,12,.4) 45%, rgba(3,4,12,0) 75%); }
+.contenido { position: relative; padding: 48px 28px 0; max-width: 460px; }
+.antetitulo { margin: 0 0 10px; font: 600 12px system-ui; letter-spacing: .16em; text-transform: uppercase; color: #8fc2ff; }
+h2 { margin: 0; font: 750 38px/1.02 system-ui; letter-spacing: -.025em; }
+.entradilla { margin: 14px 0 22px; color: #cfd3e2; font-size: 15px; }
+.boton { position: relative; display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; border-radius: 999px;
+  background: #f3f4fa; color: #0b0d18; font: 600 14px system-ui; text-decoration: none; }
+.onda { position: absolute; inset: -4px; border-radius: inherit; border: 2px solid rgba(255,255,255,.85); opacity: 0; pointer-events: none; }
+.flecha { position: absolute; right: 22px; bottom: 44px; font-size: 22px; color: #cfd3e2; animation: flotar 3s ease-in-out infinite; }
+@keyframes flotar { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(8px); } }
+#panel { position: absolute; left: 8px; bottom: 8px; color: #cfd3e2; font: 12px ui-monospace, monospace; }
+#panel button { font: 12px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 5px; padding: 3px 8px; margin-right: 3px; cursor: pointer; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec3 u_col[3];
+uniform float u_escala;
+uniform vec2 u_mouse;
+uniform float u_raton;
+uniform float u_entrada;    // 0 → 1 al cargar, con el texto
+uniform vec4 u_boton;       // x, y (abajo-izquierda), ancho, alto: px del búfer
+uniform float u_pulso;      // 0..1: latido, calculado en JavaScript
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruido(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f), b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1)), d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+float fbm(vec2 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 4; k++) { suma += amplitud * ruido(p); p = ROTAR * p * 2.0 + vec2(17.3, 5.9); amplitud *= 0.5; }
+  return suma;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float alto = u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / alto;
+  vec2 m = (u_mouse - 0.5 * u_resolution) / alto;
+  vec2 d = p - m;
+  float radio = 200.0 * u_escala / alto;
+  float giro = u_raton * 2.4 * exp(-dot(d, d) / (radio * radio));
+  float cg = cos(giro), sg = sin(giro);
+  p = m + mat2(cg, sg, -sg, cg) * d;
+  vec2 x = p * 1.6;
+  float t = u_time * 0.07;
+  vec2 q = vec2(fbm(x + vec2(0.0, t)), fbm(x + vec2(5.2, 1.3) - vec2(t, 0.0)));
+  float v = fbm(x + 2.6 * q + vec2(1.7, 9.2) + vec2(0.4 * t, -0.9 * t));
+  float luz = smoothstep(0.25, 0.85, length(q) * 1.6 + 0.5 * v);
+  vec3 col = mix(u_col[0], u_col[1], smoothstep(-0.3, 0.45, v)) + u_col[2] * luz;
+  // Halo del botón: SDF de una píldora (6.3) con su rectángulo del DOM
+  vec2 b = 0.5 * u_boton.zw;
+  vec2 k = abs(gl_FragCoord.xy - (u_boton.xy + b)) - b + b.y;
+  float db = length(max(k, 0.0)) + min(max(k.x, k.y), 0.0) - b.y;
+  col += u_col[2] * exp(-max(db, 0.0) / (34.0 * u_escala)) * (0.16 + 0.5 * u_pulso);
+  col *= 0.12 + 0.88 * u_entrada;                     // el fondo se ilumina con la entrada
+  vec2 cv = uv - 0.5;
+  col *= 1.0 - 0.6 * dot(cv, cv);
+  col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
+  fragColor = vec4(col, 1.0);
+}`;
+
+const PALETA = new Float32Array([0.020, 0.024, 0.070,  0.15, 0.13, 0.46,  0.22, 0.56, 0.90]);
+const ENTRADA_S = 1.6, LATIDO_S = 3;
+const hero = document.getElementById('hero');
+const lienzo = hero.querySelector('canvas');
+const cta = hero.querySelector('.boton');
+const info = document.getElementById('info');
+const puntero = new Motor.Puntero(hero, { semivida: 0.08 });
+const estado = { raton: 0, rectLienzo: null, rectBoton: null };
+
+// ---------- Animaciones del DOM: en pausa, las coloca el reloj ----------
+const animaciones = [];
+function entrada(selector, retardoMs) {
+  for (const el of hero.querySelectorAll(selector)) {
+    const a = el.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 800, delay: retardoMs, easing: 'cubic-bezier(.2, .7, .2, 1)', fill: 'backwards' });
+    a.pause();
+    animaciones.push(a);
+  }
+}
+entrada('.antetitulo', 150); entrada('h2', 280); entrada('.entradilla', 450); entrada('.boton', 620);
+const onda = hero.querySelector('.onda').animate(
+  [{ opacity: 0, transform: 'scale(1)' }, { opacity: 0.7, transform: 'scale(1)', offset: 0.04 }, { opacity: 0, transform: 'scale(1.12, 1.6)' }],
+  { duration: LATIDO_S * 1000, iterations: Infinity, easing: 'cubic-bezier(.2, .6, .3, 1)' });
+onda.pause();
+animaciones.push(onda);
+for (const a of hero.querySelector('.flecha').getAnimations()) { a.pause(); animaciones.push(a); }   // la de CSS
+
+// ---------- Controles del reloj (el evento solo toca el estado del reloj) ----------
+document.getElementById('panel').addEventListener('click', (e) => {
+  const q = e.target.dataset.q;
+  if (!q) return;
+  const r = bucle.reloj;
+  if (q === 'pausa') r.pausado = !r.pausado;
+  else if (q === 'cero') r.t = 0;                   // todo lo que es función de t vuelve al principio
+  else r.escala = Number(q);
+});
+
+// ---------- Bucle ----------
+const bucle = Motor.crearBucle({
+  observar: hero,
+  actualizar(dt, b) {
+    estado.rectLienzo = lienzo.getBoundingClientRect();    // 1. leer
+    estado.rectBoton = cta.getBoundingClientRect();
+    puntero.actualizar(b.reloj.dtReal);
+    estado.raton = Motor.suavizar(estado.raton, puntero.dentro ? 1 : 0, 0.15, b.reloj.dtReal);
+  },
+  dibujar(b) {
+    const ms = b.reloj.t * 1000;
+    for (const a of animaciones) a.currentTime = ms;       // 3. el DOM, en el instante del reloj
+    capa.dibujar(estado, b.reloj.intervaloMs);             // 4. la GPU, con el mismo instante
+    info.textContent = `t = ${b.reloj.t.toFixed(2)} s · escala ${b.reloj.escala}${b.reloj.pausado ? ' · PAUSA' : ''}`;
+  },
+});
+
+// ---------- Capa WebGL ----------
+const capa = Motor.crearCapaGL(lienzo, {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1,
+  iniciar(gl, capa) {
+    const p = Motor.crearPrograma(gl, VS, FS);
+    capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, capa) {
+    const g = capa.gpu, u = g.u, t = bucle.reloj.t;
+    const rl = e.rectLienzo, rb = e.rectBoton, k = capa.ancho / rl.width;
+    const s = Math.min(1, t / ENTRADA_S), entradaSuave = s * s * (3 - 2 * s);
+    gl.useProgram(g.p);
+    Motor.ponerUniform(gl, u.u_resolution, [capa.ancho, capa.alto]);
+    Motor.ponerUniform(gl, u.u_time, t);
+    Motor.ponerUniform(gl, u.u_col, PALETA);
+    Motor.ponerUniform(gl, u.u_escala, k);
+    Motor.ponerUniform(gl, u.u_mouse, puntero.aGL(lienzo));
+    Motor.ponerUniform(gl, u.u_raton, e.raton);
+    Motor.ponerUniform(gl, u.u_entrada, entradaSuave);
+    Motor.ponerUniform(gl, u.u_boton, [(rb.left - rl.left) * k, (rl.bottom - rb.bottom) * k, rb.width * k, rb.height * k]);
+    Motor.ponerUniform(gl, u.u_pulso, Math.exp(-6 * ((t % LATIDO_S) / LATIDO_S)));
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+</script>
+  </div>
+  <p>Con la pausa, se detienen a la vez el flujo, la onda del botón, el halo del shader y la flecha CSS; el remolino sigue al puntero porque usa <code>dtReal</code>. Con × 0,25 van todos a cámara lenta, juntos. Y un detalle del orden del frame: el rectángulo del botón se lee en <code>actualizar</code>, antes de que <code>dibujar</code> coloque su animación de entrada, así que durante esos 800 ms el halo usa la posición del frame anterior. Es un frame de retraso en un halo difuso: invisible, y a cambio no se fuerza ningún layout. Leer después de escribir costaría un layout síncrono en cada frame (<a href="../02-animacion/01-pipeline-render.html">2.1</a>).</p>
+</section>
+
+<div class="quiz">
+  <p class="pregunta">Creas las animaciones de entrada con <code>el.animate(…)</code> y en cada frame haces <code>a.currentTime = reloj.t * 1000</code>, pero olvidas <code>a.pause()</code>. Mientras miras el hero, todo va bien. ¿Cuándo aparece el problema?</p>
+  <ul>
+    <li>Nunca: asignar <code>currentTime</code> ya deja la animación quieta.<div class="explicacion">Asignar <code>currentTime</code> la coloca, pero si estaba en marcha sigue en marcha. Lo medimos: tras dejar de escribirla, avanzó 500 ms en 500 ms.</div></li>
+    <li>Enseguida: la animación avanza por los dos relojes y va al doble de velocidad.<div class="explicacion">No: en cada frame tu valor sustituye al que habría calculado <code>document.timeline</code>. Lo medimos con una animación en marcha que se colocaba en 1000 ms (100 px) en cada rAF: al entrar en el callback, el documento ya la había avanzado un frame (101,7 px); justo después de escribir, 100 px exactos, que es lo que se pinta.</div></li>
+    <li data-correcta>Cuando tu bucle deja de escribir con el hero a la vista, por ejemplo porque se duerme en cuanto nada se mueve (lo haremos en la etapa 5): las animaciones siguen solas.<div class="explicacion">Correcto. Una animación en marcha avanza con <code>document.timeline</code> cuando nadie la coloca; lo medimos: 500 ms después de dejar de escribirla, había avanzado 500 ms. Con la pausa pulsada y el bucle dormido, la onda y la flecha seguirían latiendo mientras el fondo está quieto. <code>pause()</code> hace que su posición dependa solo de ti.</div></li>
+  </ul>
+</div>
+
+<h2>Etapa 4 — Dos diapositivas y una transición guiada por un muelle</h2>
+<p>El hero tiene dos «diapositivas»: dos textos y dos paletas (Tinta, azul; Brasas, naranja) sobre el mismo flujo. Dos botones eligen una. Al cambiar, un frente de luz barre el fondo de izquierda a derecha con el borde irregular del ruido, y el texto se funde con él. En <a href="03-transiciones-shader.html">7.3</a> tienes el catálogo de transiciones por shader (fundidos, cortinillas, disoluciones, desplazamientos) y la comparación a fondo entre easings y muelles; aquí montamos una y nos centramos en cómo encaja en la arquitectura.</p>
+
+<h3>Una sola evaluación del flujo, dos paletas</h3>
+<p>Lo caro del shader es el flujo: 48 hashes por píxel. Si cada diapositiva tuviera su propio flujo, la transición costaría el doble mientras dura. Aquí las dos comparten el mismo valor <code>v</code> y la misma luz, y solo cambia la paleta: dos veces tres <code>mix</code>, nada. Las paletas llegan como <code>uniform vec3 u_colA[3]</code> y <code>u_colB[3]</code>, 9 floats cada una con <code>uniform3fv</code> (<a href="02-interaccion.html">7.2</a>). La transición decide, píxel a píxel, cuánto de cada una:</p>
+
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+vec3 colA = paleta(u_colA, v, luz);
+vec3 colB = paleta(u_colB, v, luz);
+float n = clamp(0.55 * uv.x + 0.45 * (0.5 + ruido(p * 3.0 + 11.0)), 0.0, 1.0);
+const float ANCHO = 0.15;
+float mezcla = smoothstep(n, n + ANCHO, u_progreso * (1.0 + ANCHO));
+vec3 col = mix(colA, colB, mezcla);
+float frente = 4.0 * mezcla * (1.0 - mezcla);
+col += 0.6 * frente * frente * mix(u_colA[2], u_colB[2], mezcla);
+</script>
+<ol>
+  <li data-l="1-2">El mismo flujo pintado con las dos paletas. <code>paleta</code> recibe el array como parámetro: en GLSL ES 3.00 los arrays se pueden pasar a funciones (por copia).</li>
+  <li data-l="3">El <strong>umbral</strong> de cada píxel, un número de 0 a 1 que dice <em>cuándo</em> cambia: un 55 % es su posición horizontal (los de la izquierda antes) y un 45 %, ruido (el borde no es recto). <code>ruido</code> da valores en torno a ±0,7, así que <code>0.5 + ruido</code> se sale de [0, 1] por los dos lados; el <code>clamp</code> es imprescindible, como verás en el bestiario.</li>
+  <li data-l="4-5">El píxel empieza a cambiar cuando el progreso supera su umbral y termina <code>ANCHO</code> después. El progreso no se usa tal cual: se estira a [0, 1 + <code>ANCHO</code>]. Con <code>u_progreso = 0</code>, el valor 0 no supera ningún umbral (todos son ≥ 0) y nadie ha cambiado; con <code>u_progreso = 1</code>, el valor 1 + <code>ANCHO</code> supera <code>n + ANCHO</code> para cualquier <code>n</code> ≤ 1 y han terminado todos. Sin ese estiramiento, los píxeles con umbral cerca de 1 no terminarían nunca.</li>
+  <li data-l="6">La mezcla de las dos paletas.</li>
+  <li data-l="7-8">El frente: <code>4m(1 − m)</code> vale 0 donde la mezcla es 0 o 1 y 1 donde está a medias, es decir, justo en el borde que avanza. Elevado al cuadrado, el brillo se concentra en una franja más estrecha.</li>
+</ol>
+</div>
+
+<p>En el graficador, <code>x</code> es el progreso y cada curva es la mezcla de un píxel: con umbral 0 (el primero en cambiar), 0,5 y 1 (el último). La curva amarilla es el píxel de umbral 1 <em>sin</em> estirar el progreso: fíjate en qué valor tiene en <code>x = 1</code>. Mueve <code>W</code> (el ancho del frente) y mira cómo cambia.</p>
+
+<div class="graficador" data-x="-0.05,1.25" data-y="-0.1,1.15" data-titulo="Mezcla de tres píxeles frente al progreso" data-uniforms='{"W":{"min":0.02,"max":0.5,"valor":0.15}}'>
+<script type="text/x-exprs">
+smoothstep(0.0, W, x * (1.0 + W))
+smoothstep(0.5, 0.5 + W, x * (1.0 + W))
+smoothstep(1.0, 1.0 + W, x * (1.0 + W))
+smoothstep(1.0, 1.0 + W, x)
+</script>
+</div>
+
+<div class="callout nota">
+  <p>Los dos fallos clásicos de esta fórmula tienen ficha en el bestiario de 7.3: <a href="03-transiciones-shader.html#m7-3-transicion-no-limpia">la transición que empieza con un velo de la imagen nueva o termina con restos de la vieja</a> (el umbral o el recorrido no cubren la anchura del borde, o el ruido se sale de [0, 1]) y <a href="03-transiciones-shader.html#m7-3-disolucion-atascada">la disolución que no hace nada al principio ni al final</a> (los valores de un fbm se amontonan en el centro). Aquí el segundo pesa poco, porque el 55 % del umbral es la posición horizontal, repartida por igual; el primero lo resuelven el <code>clamp</code> y el estiramiento. Compruébalo siempre en los dos extremos: con el progreso en 0 debe verse la primera diapositiva entera y con 1, la segunda. Es el ejercicio 7.6.1.</p>
+</div>
+
+<h3>El progreso es un muelle</h3>
+<p>El progreso de la transición vive en el estado como un <code>Motor.Muelle</code> (el de <a href="../02-animacion/05-fisica-muelles.html">2.5</a>): los botones solo cambian su objetivo, <code>actualizar</code> lo avanza y <code>dibujar</code> lo manda al shader y lo usa para el texto. Con rigidez 60 y amortiguamiento 15,5, la razón de amortiguamiento es $\zeta = 15{,}5 / (2\sqrt{60}) \approx 1$: <strong>crítico</strong>, llega sin pasarse. Su frecuencia natural es $\omega_0 = \sqrt{60} \approx 7{,}7$ rad/s, y con la regla de 2.5 (queda un 1 % en $\omega_0 t \approx 6{,}64$), la transición está al 99 % en unos 0,86 s. ¿Por qué un muelle y no una animación de 0,9 s con un easing?</p>
+<ul>
+  <li><strong>Interrupciones sin saltos.</strong> Si el usuario pulsa «02» y, a mitad de camino, «01», el muelle cambia de objetivo conservando su velocidad: el frente frena y vuelve atrás con suavidad. Un tween con easing puede dar la vuelta sin saltar de posición, pero su velocidad cambia de signo de golpe; <a href="03-transiciones-shader.html">7.3</a> compara los dos con interrupciones y gráficas.</li>
+  <li><strong>Independiente de la frecuencia.</strong> Los subpasos de 1/240 s hacen que el movimiento sea el mismo a 60 Hz que a 120 Hz.</li>
+  <li><strong>Un número para todos.</strong> El frente del shader, el fundido del texto y la alternativa CSS leen el mismo <code>progreso.x</code>. Imposible que se desincronicen.</li>
+</ul>
+<p>Tres decisiones más. La primera, discutible: el muelle avanza con <code>dtReal</code>, no con <code>dt</code>. En <a href="03-transiciones-shader.html">7.3</a> las transiciones avanzan con el <code>dt</code> del reloj, y obedecen a la pausa y a la cámara lenta como todo lo demás; aquí la transición la pide el usuario, y si ha pulsado «Pausar animación» y después cambia de diapositiva, quiere ver el cambio (dura menos de un segundo, lejos de los 5 s a partir de los cuales las pautas de accesibilidad exigen poder pausar, <a href="#etapa-5">etapa 5</a>). La segunda, el contrato de 7.3: un muelle se acerca al objetivo para siempre sin llegar, así que cuando <code>enReposo</code> dice que ya está, <code>fijar(objetivo)</code> lo deja en 0 o 1 exactos. La tercera: al shader le llega el progreso recortado a [0, 1]. Un muelle crítico no se pasa, pero si mañana alguien lo cambia por uno con rebote, un progreso de 1,05 que vuelve a 1 haría retroceder un instante a los píxeles de umbral más alto (y en otras transiciones, algo peor: <a href="03-transiciones-shader.html#m7-3-muelle-quema">la imagen que se quema</a>). El texto puede aprovechar ese rebote; la máscara, mejor no.</p>
+
+<h3>El texto y la accesibilidad</h3>
+<p>Las dos diapositivas están apiladas en la misma celda de una rejilla CSS (<code>grid-area: 1 / 1</code>), así que ocupan el mismo sitio y la más alta decide la altura. Con el mismo progreso <code>p</code>, la primera se desvanece entre 0,05 y 0,5 y la segunda aparece entre 0,5 y 0,95, cada una con un pequeño desplazamiento vertical. Pero lo que se ve no es lo único que importa. La diapositiva oculta sigue en el DOM: sin más, un lector de pantalla leería los dos titulares y el tabulador pararía en sus enlaces. El atributo <code>inert</code> la saca de las dos cosas a la vez; lo comprobamos: <code>focus()</code> sobre un botón dentro de un elemento <code>inert</code> dejó el foco en el <code>body</code>. Y los botones del selector llevan <code>aria-pressed</code>, que un lector anuncia como «pulsado» o «no pulsado». Las dos cosas se actualizan cuando cambia el objetivo, no en cada frame.</p>
+
+<section class="ejemplo">
+  <h3>Ejemplo 7.6.4 — Etapa 4: la transición</h3>
+  <p>Cambia de diapositiva con los botones, e interrumpe la transición pulsando el otro botón a mitad de camino: el frente se da la vuelta sin saltar. La línea de abajo muestra la posición y la velocidad del muelle.</p>
+  <div class="js-playground" data-titulo="Ejemplo 7.6.4 — Diapositivas y muelle" data-altura="380" data-apilado data-incluir="motor" data-fondo="oscuro">
+<script type="text/x-html">
+<section id="hero">
+  <canvas aria-hidden="true"></canvas>
+  <div class="velo" aria-hidden="true"></div>
+  <div class="contenido">
+    <div class="diapositivas">
+      <article class="diapositiva"><p class="antetitulo">01 · Tinta</p><h2>Un fondo que respira</h2><p class="entradilla">Ruido fbm en la GPU y texto real en el DOM.</p></article>
+      <article class="diapositiva" inert><p class="antetitulo">02 · Brasas</p><h2>Hecho con lo que ya sabes</h2><p class="entradilla">Un muelle guía la transición.</p></article>
+    </div>
+    <a class="boton" href="#" onclick="return false">Cómo está hecho<span class="onda" aria-hidden="true"></span></a>
+    <div class="selector">
+      <button data-ir="0" aria-pressed="true"><b>01</b> Tinta</button>
+      <button data-ir="1" aria-pressed="false"><b>02</b> Brasas</button>
+    </div>
+  </div>
+  <p id="info"></p>
+</section>
+</script>
+<script type="text/x-css">
+html, body { height: 100%; margin: 0; }
+#hero { position: relative; height: 100%; overflow: hidden; background: #05061a; color: #f3f4fa; font-family: system-ui, sans-serif; }
+canvas, .velo { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+.velo { background: linear-gradient(90deg, rgba(3,4,12,.75), rgba(3,4,12,.4) 45%, rgba(3,4,12,0) 75%); }
+.contenido { position: relative; padding: 40px 28px 0; max-width: 470px; }
+.diapositivas { display: grid; }
+.diapositiva { grid-area: 1 / 1; }
+.diapositiva[inert] { opacity: 0; }
+.antetitulo { margin: 0 0 10px; font: 600 12px system-ui; letter-spacing: .16em; text-transform: uppercase; }
+.diapositiva:nth-child(1) .antetitulo { color: #8fc2ff; }
+.diapositiva:nth-child(2) .antetitulo { color: #ffb27a; }
+h2 { margin: 0; font: 750 36px/1.02 system-ui; letter-spacing: -.025em; }
+.entradilla { margin: 12px 0 20px; color: #cfd3e2; font-size: 15px; }
+.boton { position: relative; display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; border-radius: 999px;
+  background: #f3f4fa; color: #0b0d18; font: 600 14px system-ui; text-decoration: none; }
+.onda { position: absolute; inset: -4px; border-radius: inherit; border: 2px solid rgba(255,255,255,.85); opacity: 0; pointer-events: none; }
+.selector { display: flex; gap: 6px; margin-top: 22px; }
+.selector button { min-width: 110px; padding: 8px 0; text-align: left; background: none; border: 0; border-top: 2px solid rgba(255,255,255,.2);
+  color: #9aa1b8; font: 500 14px system-ui; cursor: pointer; }
+.selector button[aria-pressed="true"] { color: #f3f4fa; border-top-color: #f3f4fa; }
+#info { position: absolute; left: 10px; bottom: 4px; margin: 0; color: #cfd3e2; font: 12px ui-monospace, monospace; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_escala;
+uniform vec2 u_mouse;
+uniform float u_raton;
+uniform float u_entrada;
+uniform vec4 u_boton;
+uniform float u_pulso;
+uniform float u_progreso;   // 0 = A, 1 = B
+uniform vec3 u_colA[3];
+uniform vec3 u_colB[3];
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruido(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f), b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1)), d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+const mat2 ROTAR = mat2(0.8, 0.6, -0.6, 0.8);
+float fbm(vec2 p) {
+  float suma = 0.0, amplitud = 0.5;
+  for (int k = 0; k < 4; k++) { suma += amplitud * ruido(p); p = ROTAR * p * 2.0 + vec2(17.3, 5.9); amplitud *= 0.5; }
+  return suma;
+}
+vec3 paleta(vec3 c[3], float v, float luz) {
+  return mix(c[0], c[1], smoothstep(-0.3, 0.45, v)) + c[2] * luz;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float alto = u_resolution.y;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / alto;
+  vec2 m = (u_mouse - 0.5 * u_resolution) / alto;
+  vec2 d = p - m;
+  float radio = 200.0 * u_escala / alto;
+  float giro = u_raton * 2.4 * exp(-dot(d, d) / (radio * radio));
+  float cg = cos(giro), sg = sin(giro);
+  p = m + mat2(cg, sg, -sg, cg) * d;
+  vec2 x = p * 1.6;
+  float t = u_time * 0.07;
+  vec2 q = vec2(fbm(x + vec2(0.0, t)), fbm(x + vec2(5.2, 1.3) - vec2(t, 0.0)));
+  float v = fbm(x + 2.6 * q + vec2(1.7, 9.2) + vec2(0.4 * t, -0.9 * t));
+  float luz = smoothstep(0.25, 0.85, length(q) * 1.6 + 0.5 * v);
+  // Dos paletas sobre el mismo flujo y la transición entre ellas
+  vec3 colA = paleta(u_colA, v, luz);
+  vec3 colB = paleta(u_colB, v, luz);
+  float n = clamp(0.55 * uv.x + 0.45 * (0.5 + ruido(p * 3.0 + 11.0)), 0.0, 1.0);
+  const float ANCHO = 0.15;
+  float mezcla = smoothstep(n, n + ANCHO, u_progreso * (1.0 + ANCHO));
+  vec3 col = mix(colA, colB, mezcla);
+  float frente = 4.0 * mezcla * (1.0 - mezcla);
+  vec3 luzActual = mix(u_colA[2], u_colB[2], mezcla);
+  col += 0.6 * frente * frente * luzActual;
+  // Halo del botón
+  vec2 b = 0.5 * u_boton.zw;
+  vec2 k = abs(gl_FragCoord.xy - (u_boton.xy + b)) - b + b.y;
+  float db = length(max(k, 0.0)) + min(max(k.x, k.y), 0.0) - b.y;
+  col += luzActual * exp(-max(db, 0.0) / (34.0 * u_escala)) * (0.16 + 0.5 * u_pulso);
+  col *= 0.12 + 0.88 * u_entrada;
+  vec2 cv = uv - 0.5;
+  col *= 1.0 - 0.6 * dot(cv, cv);
+  col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
+  fragColor = vec4(col, 1.0);
+}`;
+
+const PALETAS = [
+  new Float32Array([0.020, 0.024, 0.070,  0.15, 0.13, 0.46,  0.22, 0.56, 0.90]),   // 01 · Tinta
+  new Float32Array([0.045, 0.012, 0.020,  0.46, 0.10, 0.16,  0.95, 0.50, 0.20]),   // 02 · Brasas
+];
+const ENTRADA_S = 1.6, LATIDO_S = 3;
+const hero = document.getElementById('hero');
+const lienzo = hero.querySelector('canvas');
+const cta = hero.querySelector('.boton');
+const diapositivas = [...hero.querySelectorAll('.diapositiva')];
+const botones = [...hero.querySelectorAll('[data-ir]')];
+const info = document.getElementById('info');
+const puntero = new Motor.Puntero(hero, { semivida: 0.08 });
+const estado = {
+  objetivo: 0,
+  progreso: new Motor.Muelle({ rigidez: 60, amortiguamiento: 15.5 }),   // crítico: ζ ≈ 1
+  raton: 0, rectLienzo: null, rectBoton: null,
+};
+
+// ---------- Animaciones del DOM (etapa 3) ----------
+const animaciones = [];
+for (const [sel, retardo] of [['.antetitulo', 150], ['h2', 280], ['.entradilla', 450], ['.boton', 620], ['.selector', 760]]) {
+  for (const el of hero.querySelectorAll(sel)) {
+    const a = el.animate([{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 800, delay: retardo, easing: 'cubic-bezier(.2, .7, .2, 1)', fill: 'backwards' });
+    a.pause();
+    animaciones.push(a);
+  }
+}
+const onda = hero.querySelector('.onda').animate(
+  [{ opacity: 0, transform: 'scale(1)' }, { opacity: 0.7, transform: 'scale(1)', offset: 0.04 }, { opacity: 0, transform: 'scale(1.12, 1.6)' }],
+  { duration: LATIDO_S * 1000, iterations: Infinity, easing: 'cubic-bezier(.2, .6, .3, 1)' });
+onda.pause();
+animaciones.push(onda);
+
+// ---------- Eventos: solo cambian el objetivo ----------
+for (const btn of botones) btn.addEventListener('click', () => { estado.objetivo = Number(btn.dataset.ir); });
+
+// ---------- Bucle ----------
+const suave = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+let aplicado = -1;
+const bucle = Motor.crearBucle({
+  observar: hero,
+  actualizar(dt, b) {
+    const dtr = b.reloj.dtReal;
+    estado.rectLienzo = lienzo.getBoundingClientRect();
+    estado.rectBoton = cta.getBoundingClientRect();
+    puntero.actualizar(dtr);
+    estado.raton = Motor.suavizar(estado.raton, puntero.dentro ? 1 : 0, 0.15, dtr);
+    estado.progreso.objetivo = estado.objetivo;
+    estado.progreso.actualizar(dtr);                         // lo pide el usuario: tiempo real
+    if (estado.progreso.enReposo(1e-4)) estado.progreso.fijar(estado.objetivo);   // el contrato: 0 o 1 exactos
+  },
+  dibujar(b) {
+    const ms = b.reloj.t * 1000;
+    for (const a of animaciones) a.currentTime = ms;
+    const p = Math.min(1, Math.max(0, estado.progreso.x));
+    diapositivas[0].style.opacity = (1 - suave(0.05, 0.5, p)).toFixed(3);
+    diapositivas[1].style.opacity = suave(0.5, 0.95, p).toFixed(3);
+    diapositivas[0].style.transform = `translateY(${(-14 * p).toFixed(1)}px)`;
+    diapositivas[1].style.transform = `translateY(${(14 * (1 - p)).toFixed(1)}px)`;
+    if (aplicado !== estado.objetivo) {                       // accesibilidad: solo al cambiar
+      aplicado = estado.objetivo;
+      diapositivas.forEach((d, i) => { d.inert = i !== estado.objetivo; });
+      botones.forEach((btn) => btn.setAttribute('aria-pressed', String(Number(btn.dataset.ir) === estado.objetivo)));
+    }
+    capa.dibujar(estado, b.reloj.intervaloMs);
+    info.textContent = `muelle: x = ${estado.progreso.x.toFixed(3)} · v = ${estado.progreso.v.toFixed(2)} /s`;
+  },
+});
+
+// ---------- Capa WebGL ----------
+const capa = Motor.crearCapaGL(lienzo, {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1,
+  iniciar(gl, capa) {
+    const p = Motor.crearPrograma(gl, VS, FS);
+    capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, capa) {
+    const g = capa.gpu, u = g.u, t = bucle.reloj.t;
+    const rl = e.rectLienzo, rb = e.rectBoton, k = capa.ancho / rl.width;
+    gl.useProgram(g.p);
+    Motor.ponerUniform(gl, u.u_resolution, [capa.ancho, capa.alto]);
+    Motor.ponerUniform(gl, u.u_time, t);
+    Motor.ponerUniform(gl, u.u_escala, k);
+    Motor.ponerUniform(gl, u.u_mouse, puntero.aGL(lienzo));
+    Motor.ponerUniform(gl, u.u_raton, e.raton);
+    Motor.ponerUniform(gl, u.u_entrada, suave(0, ENTRADA_S, t));
+    Motor.ponerUniform(gl, u.u_boton, [(rb.left - rl.left) * k, (rl.bottom - rb.bottom) * k, rb.width * k, rb.height * k]);
+    Motor.ponerUniform(gl, u.u_pulso, Math.exp(-6 * ((t % LATIDO_S) / LATIDO_S)));
+    Motor.ponerUniform(gl, u.u_progreso, Math.min(1, Math.max(0, e.progreso.x)));
+    Motor.ponerUniform(gl, u.u_colA, PALETAS[0]);
+    Motor.ponerUniform(gl, u.u_colB, PALETAS[1]);
+    gl.bindVertexArray(g.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+</script>
+  </div>
+  <p>Mira la velocidad del muelle cuando interrumpes: no se pone a cero al pulsar, sino que cambia de signo con suavidad. Y fíjate en que el evento del botón es una sola línea: cambia <code>estado.objetivo</code>. Todo lo demás (el muelle, el texto, <code>inert</code>, <code>aria-pressed</code>, el shader) se deriva de ese número en el frame. Aún faltan cosas que un usuario real notaría: no hay alternativa sin WebGL, ignora el movimiento reducido, dibuja 60 veces por segundo aunque nada se mueva y, al cargar, el canvas pasa un instante en negro. Es la etapa 5.</p>
+</section>
+
+<h2 id="etapa-5">Etapa 5 — Robustez: lo que no se ve en tu portátil</h2>
+<p>La etapa 4 funciona en tu equipo. Esta etapa es para todos los demás: pantallas de otra densidad, móviles con barras que aparecen y desaparecen, equipos lentos, pestañas en segundo plano, personas que piden menos movimiento, navegadores sin WebGL2 y hasta sin JavaScript. Ninguna de estas cosas se ve en una demo; todas se ven en producción.</p>
+
+<h3>Tamaño, DPR y la altura del móvil</h3>
+<p>Las tres opciones de tamaño de la capa, con sus porqués:</p>
+<ul>
+  <li><code>dprMax: 1</code>: la decisión de la etapa 1. Un fondo suave a DPR 1 cuesta la cuarta parte que a DPR 2, y el texto, que es del DOM, sigue nítido.</li>
+  <li><code>pixelesMax: 2.1e6</code>: un tope de área para monitores enormes. Una ventana de 2560 × 1440 px CSS ya supera los 2 megapíxeles aun a DPR 1; con el tope, el búfer se reduce un poco (el factor de 7.1, $\sqrt{2{,}1/3{,}7} \approx 0{,}75$ por lado) y el fondo cuesta en el M1 unos 3 ms en lugar de 5.</li>
+  <li><code>calidad: { min: 0.5, calentamiento: 2000 }</code>: la calidad adaptativa de 7.1, que puede bajar la resolución hasta la mitad por lado si los frames no caben. El calentamiento de 2 s no es un capricho: en una de nuestras pruebas, con el segundo de calentamiento por defecto, los frames lentos del arranque (la página terminando de cargar) bajaron la calidad un escalón antes de que el fondo hubiera hecho nada; con 2 s, en tres cargas seguidas, el búfer se quedó en su tamaño completo.</li>
+</ul>
+<p>Todo lo que el shader mide en píxeles (el radio del remolino, el halo del botón) se multiplica por <code>u_escala</code>, los px del búfer por px CSS, así que con cualquiera de esos factores el dibujo mide lo mismo en pantalla (<a href="02-interaccion.html">7.2</a>). Y el texto usa <code>clamp()</code> en los tamaños de letra (<code>font-size: clamp(2.3rem, 1.3rem + 4.4vw, 4.8rem)</code> en el titular): crece con la ventana entre un mínimo y un máximo, sin saltos de media query.</p>
+
+<div class="callout senior" data-titulo="min-height: 100svh, y por qué no 100vh ni 100dvh">
+  <p>En los navegadores móviles, la barra de direcciones se esconde al bajar y reaparece al subir, y la ventana cambia de altura. CSS tiene tres unidades para eso (especificación <em>CSS Values and Units 4</em>): <code>svh</code> es la altura <em>pequeña</em>, con las barras visibles; <code>lvh</code>, la <em>grande</em>, con las barras escondidas; y <code>dvh</code>, la <em>dinámica</em>, que sigue a las barras en cada momento. La especificación recomienda que <code>vh</code> equivalga a la grande, así que un hero de <code>100vh</code> queda con el borde de abajo tapado por la barra al cargar. Con <code>100dvh</code> el borde se ve, pero la sección cambia de altura mientras el usuario desplaza la página: el <code>ResizeObserver</code> del canvas avisa, el búfer se redimensiona y, como cambiar el tamaño del búfer lo borra y lo reserva de nuevo (<a href="../05-webgl/01-contexto.html">5.1</a>), paga ese coste justo a mitad del gesto. Con <code>100svh</code> la altura no cambia nunca y el hero cabe entero en la primera pantalla. Comprobamos que el Chrome de pruebas acepta <code>svh</code> y <code>dvh</code> (<code>CSS.supports</code>), pero el comportamiento de las barras no se puede reproducir en el Chrome sin interfaz que usamos: cuéntalo como lo que dice la especificación. Por si un navegador viejo no conoce <code>svh</code>, la hoja declara antes <code>min-height: 100vh</code>: una declaración que no entiende se ignora y queda la anterior.</p>
+</div>
+
+<div class="callout bestiario" data-id="m7-6-dpr-emulado" data-titulo="En la emulación de móvil el fondo sale borroso (y en el móvil de verdad no)">
+  <p><strong>Síntoma:</strong> pruebas el hero con la emulación de dispositivo (DPR 2 o 3) y el fondo WebGL se ve mucho más borroso que el texto, como si tuviera un tercio de la resolución. En el móvil real se ve bien.</p>
+  <p><strong>Causa:</strong> el tamaño del búfer mezcla dos fuentes que, con la emulación, no cuentan lo mismo: los píxeles de dispositivo del <code>ResizeObserver</code> (<code>devicePixelContentBoxSize</code>, <a href="../05-webgl/01-contexto.html">5.1</a>) y <code>window.devicePixelRatio</code>, que se usa para aplicar el límite de DPR. Lo medimos con la emulación de Puppeteer (el comando <code>Emulation.setDeviceMetricsOverride</code> del protocolo de depuración, el mismo mecanismo en el que se apoya el modo dispositivo de DevTools, aunque no lo comprobamos en su interfaz): con <code>devicePixelRatio</code> 3, el observador devolvió 390 × 300 para un canvas de 390 × 300 px CSS, es decir, un píxel de dispositivo por píxel CSS. El límite de DPR dividía entonces por 3 algo que no estaba multiplicado por 3, y el hero pedía un búfer de 130 × 267 en lugar de 390 × 800 (con DPR 2 emulado, 720 × 450 en lugar de 1440 × 900). <code>M7.crearApp</code> de 7.1 hace la misma mezcla.</p>
+  <p><strong>Solución:</strong> que el límite y la medida salgan de la misma fuente. <code>motor.js</code> compara la proporción que mide el observador (<code>dispAncho / anchoCSS</code>) con <code>devicePixelRatio</code> y, si discrepan más de un 5 %, usa la caja CSS × <code>devicePixelRatio</code>; si coinciden (un dispositivo real, o el zoom del navegador), conserva los píxeles exactos del observador. Y en general: antes de dar por buena una cifra de rendimiento o de nitidez medida con emulación, compruébala en un dispositivo de verdad.</p>
+</div>
+
+<h3>Arrancar sin destello negro</h3>
+
+<div class="callout bestiario" data-id="m7-6-destello-negro" data-titulo="Al cargar la página, el fondo aparece tras un instante en negro (o parpadea al recargar)">
+  <p><strong>Síntoma:</strong> la página carga, el texto aparece y durante unas décimas de segundo el fondo es un rectángulo negro; después, de golpe, el shader. En recargas posteriores a veces no se nota y en la primera visita sí.</p>
+  <p><strong>Causa:</strong> un canvas con <code>alpha: false</code> se muestra opaco desde el principio, y su búfer, antes del primer dibujo, es negro. Lo medimos: el píxel de un canvas WebGL2 sin dibujar, sobre una página magenta, salió (0, 0, 0) con <code>alpha: false</code> y magenta (transparente) con <code>alpha: true</code>. El hueco dura lo que tarde el primer frame, y lo largo es compilar el shader: la primera vez que el navegador ve este código, compilarlo costó en el M1 entre 43 y 78 ms (lo medimos con variantes nuevas, cambiando una constante), hasta cinco frames; las siguientes, 2 o 3 ms, porque el resultado queda en caché (en nuestras pruebas, incluso con un perfil de Chrome nuevo, lo que apunta a una caché del propio sistema). Y, en la primera visita, lo que tarde en cargar el propio script.</p>
+  <p><strong>Solución:</strong> que el canvas no se vea hasta que tenga algo que enseñar. En el hero, el canvas empieza con <code>opacity: 0</code> y la capa llama a <code>alPrimerFrame</code> tras el primer dibujo con éxito, que le añade la clase <code>listo</code>: <code>opacity: 1</code> con una transición de 0,8 s. Debajo está siempre la alternativa CSS con los mismos colores, así que lo que se ve al cargar es un degradado que se convierte en flujo. Si el shader fuera muy grande, además, compílalo sin bloquear el hilo principal con <code>KHR_parallel_shader_compile</code> (<a href="01-arquitectura.html">7.1</a>).</p>
+</div>
+
+<h3>No gastar cuando nadie mira… ni cuando nada se mueve</h3>
+<p>Fuera de la pantalla, el bucle deja de pedir frames: <code>crearBucle</code> observa la sección con un <code>IntersectionObserver</code>, igual que <code>crearApp</code> observaba su canvas. Lo medimos contando las llamadas a <code>requestAnimationFrame</code> de la página final: con el hero fuera de la pantalla, 0 en 2 s; al volver, 60 por segundo. Con la pestaña oculta, el navegador ya no da frames (<a href="../05-webgl/04-uniforms-animacion.html">5.4</a>) y el reloj, al volver, empieza con <code>dt = 0</code>.</p>
+<p>Pero hay un tercer caso que <code>crearApp</code> no cubría en su modo continuo: el hero está a la vista y <em>nada se mueve</em>. Pasa con el movimiento reducido (el tiempo congelado) o con la animación pausada, mientras el usuario lee. Dibujar 60 veces por segundo la misma imagen es gastar batería para nada. Por eso el bucle del hero es <strong>bajo demanda</strong> (<code>bajoDemanda: true</code>), el modo que <code>crearApp</code> ya ofrecía (<a href="01-arquitectura.html">7.1</a>) y que <a href="03-transiciones-shader.html">7.3</a> usa para dejar de dibujar cuando una transición termina: al final de cada frame solo se pide el siguiente si alguien llamó a <code>bucle.pedirFrame()</code>. <code>actualizar</code> lo llama mientras algo se mueva:</p>
+
+<div class="anotado" data-lang="js">
+<script type="text/plain">
+function algoSeMueve(r) {
+  return (!r.pausado && r.escala > 0)
+    || !estado.progreso.enReposo(1e-4)
+    || !puntero.enReposo()
+    || Math.abs(estado.raton - (puntero.dentro ? 1 : 0)) > 1e-3
+    || Math.abs(estado.scrollSuave - estado.scroll) > 1e-4;
+}
+// al final de actualizar(dt, b):
+if (algoSeMueve(b.reloj)) b.pedirFrame();
+
+// y los eventos despiertan al bucle dormido:
+for (const tipo of ['pointermove', 'pointerdown', 'pointerleave', 'pointercancel']) {
+  hero.addEventListener(tipo, () => bucle.pedirFrame());
+}
+addEventListener('scroll', () => bucle.pedirFrame(), { passive: true });
+</script>
+<ol>
+  <li data-l="2">Si el reloj corre, el flujo se mueve: frame siempre. Es el caso normal, y en él el bucle nunca se duerme.</li>
+  <li data-l="3">La transición no ha terminado: el muelle aún no está en reposo (posición y velocidad por debajo de 10<sup>−4</sup>).</li>
+  <li data-l="4">La posición suavizada del puntero aún persigue a la real (el remolino se está moviendo).</li>
+  <li data-l="5-6">El remolino se está encendiendo o apagando, o el scroll suavizado aún no ha alcanzado al real.</li>
+  <li data-l="9">Con el bucle en marcha, se pide el siguiente frame. Si nada se mueve, no se pide y el bucle se duerme al acabar este.</li>
+  <li data-l="12-15">Dormido, nadie lee el puntero ni el scroll en el frame, así que sus eventos tienen que despertarlo. Es el caso que <a href="02-interaccion.html">7.2</a> dejaba abierto: el manejador de <code>scroll</code> no lee nada ni toca GL, solo pide un frame. Los clics de los botones, el cambio de preferencia y el <code>ResizeObserver</code> de la capa (vía la opción <code>pedirFrame</code>) también despiertan al bucle.</li>
+</ol>
+</div>
+<p>Medido en la página final con el movimiento reducido emulado: 0 llamadas a <code>requestAnimationFrame</code> en 2 s de reposo, y los píxeles que muestreamos en dos capturas separadas 1,2 s, idénticos. Un detalle que no hay que olvidar: tras dormir, el primer frame debe tener <code>dt = 0</code>, o el muelle y los suavizados darían un salto con todo el tiempo dormido. <code>pedirFrame</code> llama a <code>reloj.reiniciarReferencia()</code> al despertar, como <code>crearApp</code>.</p>
+
+<h3>Un botón de pausa</h3>
+<p>Un fondo que se mueve sin parar junto al contenido no es solo una cuestión de gusto. El criterio 2.2.2 de las pautas de accesibilidad WCAG («Pause, Stop, Hide», nivel A, el mínimo) pide que todo movimiento que empiece solo, dure más de 5 segundos y se presente junto a otro contenido se pueda pausar, detener u ocultar. Para personas con déficit de atención, un fondo que fluye junto al texto es una distracción constante. El hero lleva un botón «Pausar animación», con <code>aria-pressed</code>, que pone <code>reloj.pausado = true</code>: pausa del <em>tiempo</em>, no del bucle (<a href="01-arquitectura.html">7.1</a>). El flujo, la onda y la flecha se detienen a la vez porque beben del mismo reloj; el remolino sigue a la mano porque usa <code>dtReal</code>; y en cuanto el puntero se queda quieto, el bucle se duerme. La transición entre diapositivas sigue funcionando: la pide el usuario y dura menos de un segundo.</p>
+
+<h3>Movimiento reducido</h3>
+<p>Con <code>prefers-reduced-motion: reduce</code> (<a href="../02-animacion/02-css-transiciones.html">2.2</a>, <a href="02-interaccion.html">7.2</a>) no se apaga el hero: se quita lo que se mueve solo o de forma amplia y se conserva lo que el usuario provoca, en pequeño:</p>
+<table>
+  <thead><tr><th>Elemento</th><th>Normal</th><th>Movimiento reducido</th><th>Cómo</th></tr></thead>
+  <tbody>
+    <tr><td>Flujo del fondo</td><td>fluye</td><td>imagen fija</td><td><code>reloj.escala = 0</code></td></tr>
+    <tr><td>Entrada del texto</td><td>sube y aparece</td><td>ya está en su sitio</td><td><code>currentTime = FIN_ENTRADA</code>; <code>u_entrada = 1</code></td></tr>
+    <tr><td>Latido y flecha</td><td>laten</td><td>quietos</td><td><code>currentTime = 0</code>; <code>u_pulso = 0</code></td></tr>
+    <tr><td>Transición</td><td>frente que barre</td><td>fundido de todo el fondo</td><td><code>u_reducir = 1</code>: <code>mezcla = u_progreso</code></td></tr>
+    <tr><td>Texto de las diapositivas</td><td>se funde y se desplaza</td><td>solo se funde</td><td><code>transform: none</code></td></tr>
+    <tr><td>Parallax del scroll</td><td>fondo y texto a distinta velocidad</td><td>sin parallax</td><td><code>u_scroll = 0</code>, sin <code>transform</code></td></tr>
+    <tr><td>Remolino del puntero</td><td>hasta 2,4 rad</td><td>hasta 0,6 rad</td><td><code>mix(2.4, 0.6, u_reducir)</code></td></tr>
+  </tbody>
+</table>
+<p>La preferencia se lee con <code>matchMedia</code> y se escucha su <code>change</code>, porque puede cambiar con la página abierta (<a href="02-interaccion.html">7.2</a>). El parámetro <code>?reducir</code> de la URL fuerza el modo para probarlo sin tocar el sistema. Lo que depende solo de CSS se resuelve en CSS (<code>@media (prefers-reduced-motion: reduce)</code> quita la transición de aparición del canvas y la animación de la flecha), y por eso existe la recaptura de la caja «Dale tus animaciones CSS al reloj».</p>
+<script type="text/plain" class="codigo" data-lang="js" data-titulo="hero.js §5 — la preferencia">
+const consulta = matchMedia('(prefers-reduced-motion: reduce)');
+function aplicarPreferencia() {
+  estado.reducir = consulta.matches || url.has('reducir');
+  bucle.reloj.escala = estado.reducir ? 0 : 1;   // flujo quieto; la interacción sigue
+  capturarCSS();                                 // la media query pudo recrear la flecha
+  bucle.pedirFrame();
+}
+consulta.addEventListener('change', aplicarPreferencia);
+</script>
+
+<h3>Sin WebGL, sin contexto y sin JavaScript</h3>
+<p>La mejora progresiva de <a href="01-arquitectura.html">7.1</a>, llevada hasta el final. El hero tiene que estar completo en tres situaciones cada vez peores:</p>
+<ul>
+  <li><strong>Sin WebGL2</strong> (navegador viejo, GPU en lista negra) o con un shader que no compila: <code>crearCapaGL</code> llama a <code>fallar</code>, que añade la clase <code>sin-webgl</code> a la sección y retira el canvas. Queda la alternativa CSS: dos capas de degradados radiales con los colores de las paletas, y la segunda se funde encima con el <em>mismo</em> progreso del muelle, así que los botones siguen cambiando el fondo. El bucle sigue vivo: la entrada del texto, el latido y la transición del DOM funcionan igual. Para probarlo sin otro navegador, <code>?sinwebgl</code> usa el truco de 7.1: pedir antes un contexto <code>'2d'</code> al canvas hace que <code>getContext('webgl2')</code> devuelva <code>null</code> (en la consola verás el motivo: <code>Canvas has an existing context of a different type</code>).</li>
+  <li><strong>Con el contexto perdido:</strong> la capa se queda quieta (el bucle no), el canvas se vuelve transparente y se ve la alternativa hasta que vuelve el contexto y <code>iniciar</code> reconstruye el programa. Con <code>?depurar</code> tienes botones para provocarlo; lo comprobamos: al perderlo, el panel pasó a «contexto perdido» mientras los fps seguían en 60, y al recuperarlo volvió a dibujar.</li>
+  <li><strong>Sin JavaScript:</strong> el texto de la primera diapositiva se ve (nada lo oculta: las animaciones de entrada las crea el script), la segunda está oculta por CSS porque lleva <code>inert</code> en el HTML, y el selector y el botón de pausa desaparecen, porque sin script no harían nada. Eso último lo decide una línea en el <code>&lt;head&gt;</code>, <code>document.documentElement.classList.add('js')</code>, y la regla <code>html:not(.js) .hero-selector { display: none }</code>. Los enlaces siguen funcionando: son enlaces.</li>
+</ul>
+
+<div class="quiz">
+  <p class="pregunta">Con movimiento reducido activado, el usuario pulsa «02». ¿Qué debería hacer el hero?</p>
+  <ul>
+    <li>Nada: con movimiento reducido no hay transiciones, así que el botón se desactiva.<div class="explicacion">Reducir no es apagar. El usuario ha pedido otra diapositiva y debe tenerla; lo que cambia es <em>cómo</em> se llega a ella.</div></li>
+    <li data-correcta>Cambiar de diapositiva con un fundido corto de todo el fondo y del texto, sin frente que barre ni desplazamientos.<div class="explicacion">Correcto. Es un cambio que el usuario provoca, breve y sin desplazamiento: un fundido es la forma sobria de comunicarlo. En el shader, <code>mezcla = u_progreso</code>; en el DOM, opacidad sin <code>transform</code>.</div></li>
+    <li>Saltar a la otra diapositiva al instante, en un solo frame.<div class="explicacion">Funciona, pero un corte seco en un fondo a pantalla completa es un destello de luz que tampoco es agradable, y el criterio de los destellos de WCAG va en la misma dirección. Un fundido breve es mejor que un salto.</div></li>
+  </ul>
+</div>
+
+<h2>La versión final</h2>
+<p>La etapa 4 más todo lo de la etapa 5 es <a href="proyecto-final/index.html">proyecto-final/index.html</a>. No es un playground: es una página de verdad, con sus propios archivos y sin nada del curso, pensada para que copies la carpeta entera y la conviertas en tu portada.</p>
+<table class="m7-reglas">
+  <thead><tr><th>Archivo</th><th>Qué contiene</th></tr></thead>
+  <tbody>
+    <tr><td><a href="proyecto-final/index.html">index.html</a></td><td>El contenido y las cuatro capas. Sin JavaScript ya es una página completa. Scripts clásicos al final del <code>body</code>, en orden: <code>motor.js</code>, <code>shaders.js</code>, <code>hero.js</code>.</td></tr>
+    <tr><td><a href="proyecto-final/estilos.css">estilos.css</a></td><td>El diseño con <code>clamp()</code>, la alternativa sin WebGL, el velo del contraste, el móvil y las reglas de movimiento reducido.</td></tr>
+    <tr><td><a href="proyecto-final/motor.js">motor.js</a></td><td>El esqueleto reutilizable: GL mínimo, <code>Reloj</code>, <code>Muelle</code>, <code>Puntero</code>, <code>Calidad</code>, <code>crearBucle</code> y <code>crearCapaGL</code>.</td></tr>
+    <tr><td><a href="proyecto-final/shaders.js">shaders.js</a></td><td>El vertex y el fragment shader, en siete pasos comentados: espacio, remolino, flujo, paletas y transición, halo, brillo y dither.</td></tr>
+    <tr><td><a href="proyecto-final/hero.js">hero.js</a></td><td>Este hero, en ocho secciones: referencias, datos, estado, animaciones del DOM, eventos, bucle, dibujo y capa WebGL.</td></tr>
+  </tbody>
+</table>
+<p>Para hacerla tuya: los textos están en el HTML; los colores, en <code>PALETAS</code> (<code>hero.js</code>) y en las dos capas de la alternativa (<code>estilos.css</code>), que conviene mantener a juego; el carácter del fondo, en tres números de <code>shaders.js</code>: la escala del ruido (1,6), la velocidad (0,07) y la fuerza de la deformación (2,6). Y cuando cambies algo, prueba los tres parámetros de la URL y un móvil: <a href="proyecto-final/index.html?depurar">?depurar</a> enseña el tamaño del búfer, la calidad, los fps, el tiempo del reloj y los frames dibujados, y tiene botones para perder y recuperar el contexto y para la cámara lenta.</p>
+
+<div class="callout cuidado">
+  <p>Los parámetros de URL funcionan también con <code>file://</code>: <code>index.html?depurar</code> abre el mismo archivo con <code>location.search</code> igual a <code>"?depurar"</code>. Lo que no funcionaría con <code>file://</code> es partir el código en módulos ES (<code>type="module"</code>) o cargar los shaders con <code>fetch</code> (<a href="../01-web/07-herramientas.html">1.7</a>). Si mañana lo sirves con un servidor y un empaquetador, puedes hacer ambas cosas sin cambiar la arquitectura.</p>
+</div>
+
+<h2>Revisión de la arquitectura</h2>
+<p>Un frame del hero, de principio a fin. Es el orden de <a href="01-arquitectura.html">7.1</a> (leer, actualizar, escribir en el DOM, dibujar), con los nombres concretos de este proyecto:</p>
+
+<svg class="diagrama" viewBox="0 0 760 250" width="760" role="img" aria-label="Un frame del hero: leer, actualizar, escribir el DOM, dibujar la GPU; después el navegador pinta el DOM y el canvas juntos">
+  <defs><marker id="l76-fl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <text x="12" y="22" class="texto-tenue" style="font-size:12px">requestAnimationFrame(ms) → reloj.avanzar(ms)</text>
+  <rect class="caja" x="12" y="36" width="170" height="150" rx="10"/>
+  <text x="97" y="58" text-anchor="middle" style="font-weight:700">1 · leer</text>
+  <text x="24" y="82" style="font-size:11px">rect de la sección</text>
+  <text x="24" y="100" style="font-size:11px">rect del canvas</text>
+  <text x="24" y="118" style="font-size:11px">rect del botón</text>
+  <text x="24" y="136" style="font-size:11px">puntero.actualizar</text>
+  <text x="24" y="170" class="texto-tenue" style="font-size:11px">layout limpio: barato</text>
+  <path d="M184 110 L200 110" stroke="currentColor" stroke-width="2" marker-end="url(#l76-fl2)"/>
+  <rect class="caja acento" x="202" y="36" width="170" height="150" rx="10"/>
+  <text x="287" y="58" text-anchor="middle" style="font-weight:700">2 · actualizar</text>
+  <text x="214" y="82" style="font-size:11px">scroll y remolino suaves</text>
+  <text x="214" y="100" style="font-size:11px">muelle del progreso</text>
+  <text x="214" y="118" style="font-size:11px">¿algo se mueve?</text>
+  <text x="214" y="136" style="font-size:11px">→ pedirFrame()</text>
+  <text x="214" y="170" class="texto-tenue" style="font-size:11px">sin DOM ni GL</text>
+  <path d="M374 110 L390 110" stroke="currentColor" stroke-width="2" marker-end="url(#l76-fl2)"/>
+  <rect class="caja acento" x="392" y="36" width="170" height="150" rx="10"/>
+  <text x="477" y="58" text-anchor="middle" style="font-weight:700">3 · escribir DOM</text>
+  <text x="404" y="82" style="font-size:11px">currentTime = t · 1000</text>
+  <text x="404" y="100" style="font-size:11px">diapositivas con p</text>
+  <text x="404" y="118" style="font-size:11px">alternativa, parallax</text>
+  <text x="404" y="136" style="font-size:11px">inert, aria-pressed</text>
+  <text x="404" y="170" class="texto-tenue" style="font-size:11px">solo lo que cambia</text>
+  <path d="M564 110 L580 110" stroke="currentColor" stroke-width="2" marker-end="url(#l76-fl2)"/>
+  <rect class="caja acento" x="582" y="36" width="170" height="150" rx="10"/>
+  <text x="667" y="58" text-anchor="middle" style="font-weight:700">4 · dibujar GPU</text>
+  <text x="594" y="82" style="font-size:11px">capa.dibujar(estado)</text>
+  <text x="594" y="100" style="font-size:11px">¿viva? tamaño, viewport</text>
+  <text x="594" y="118" style="font-size:11px">13 uniforms</text>
+  <text x="594" y="136" style="font-size:11px">1 draw call</text>
+  <text x="594" y="170" class="texto-tenue" style="font-size:11px">si no vive, no hace nada</text>
+  <rect class="caja" x="12" y="204" width="740" height="36" rx="10" style="stroke-dasharray:6 4"/>
+  <text x="382" y="227" text-anchor="middle" style="font-size:12px">el navegador: estilo, layout, pintado y composición; el DOM y el canvas salen en el mismo frame</text>
+</svg>
+
+<table class="m7-reglas">
+  <thead><tr><th>Quién</th><th>Lee</th><th>Escribe</th></tr></thead>
+  <tbody>
+    <tr><td>eventos</td><td>el evento</td><td><code>estado.objetivo</code>, <code>estado.pausa</code>, <code>reloj.pausado</code>/<code>escala</code>, el puntero crudo; y llaman a <code>pedirFrame()</code></td></tr>
+    <tr><td>actualizar</td><td>rectángulos, puntero crudo, <code>dtReal</code></td><td>el resto del estado: scroll, remolino, muelle</td></tr>
+    <tr><td>dibujar</td><td>el estado y el reloj</td><td>el DOM (estilos, <code>currentTime</code>, atributos) y llama a <code>capa.dibujar</code></td></tr>
+    <tr><td>capa</td><td>el estado, su <code>ResizeObserver</code></td><td>el tamaño del búfer, uniforms, el dibujo</td></tr>
+  </tbody>
+</table>
+
+<p>Y las decisiones discutibles, con su porqué. Un senior no es quien no toma decisiones discutibles, sino quien sabe cuáles son:</p>
+<ul>
+  <li><strong>El muelle usa <code>dtReal</code>.</strong> Con la pausa pulsada, cambiar de diapositiva sigue animando la transición. Alternativa: usar <code>dt</code> y cambiar de golpe en pausa. Elegimos respetar la petición del usuario.</li>
+  <li><strong>La pausa congela la entrada si se pulsa durante el primer segundo y medio</strong>, con el texto a medio aparecer, como un vídeo en pausa. Alternativa: dar a la entrada su propio tiempo, inmune a la pausa, a cambio de dos relojes.</li>
+  <li><strong><code>dprMax: 1</code>.</strong> Un diseñador puede pedir el fondo a resolución retina. Las cifras de la etapa 1 son tu argumento: cuatro veces el coste por una diferencia que casi nadie ve.</li>
+  <li><strong>Las animaciones del DOM en el hilo principal.</strong> Sincronía total con el shader a cambio de depender del rAF (caja «El precio de la sincronía»).</li>
+  <li><strong>Compilación síncrona al cargar.</strong> <code>crearPrograma</code> pregunta <code>LINK_STATUS</code> y espera: entre 43 y 78 ms la primera vez en el M1, 2 o 3 ms con el programa ya en caché. Para este shader es aceptable; para uno grande, la compilación en paralelo de 7.1.</li>
+  <li><strong><code>u_time</code> sin envolver.</strong> El flujo usa el tiempo directamente, que en float32 pierde resolución tras horas (etapa 3). Lo periódico (el latido) se calcula en JavaScript.</li>
+</ul>
+
+<div class="callout senior" data-titulo="Si el hero vive en una aplicación de una sola página">
+  <p>En una web con React, Vue o similar, el hero se monta y se desmonta al navegar. Montarlo es lo que ya tienes. Desmontarlo es la parte que se olvida: <code>bucle.destruir()</code> para el rAF, desconecta su <code>IntersectionObserver</code> y quita su listener de <code>visibilitychange</code>; <code>capa.destruir()</code> desconecta el <code>ResizeObserver</code> y libera la GPU con <code>loseContext()</code>. Y los listeners que añadió <code>hero.js</code> (el <code>scroll</code> de la ventana, el <code>change</code> de <code>matchMedia</code>) también: la forma limpia es pasar a todos la misma señal, <code>addEventListener('scroll', f, { passive: true, signal })</code>, y llamar a <code>controlador.abort()</code> al desmontar. Si no, cada visita a la portada deja un contexto WebGL vivo más, y al llegar a unos 16 el navegador empieza a matar los viejos (<a href="../05-webgl/01-contexto.html#m5-demasiados-contextos">5.1</a>).</p>
+</div>
+
+<h2>Checklist de rendimiento</h2>
+<p>La lista con la que revisar este hero o cualquier otro efecto a pantalla completa antes de publicarlo. Las cifras son del M1 con Chrome (ANGLE sobre Metal); en tu equipo cambiarán, pero no las proporciones.</p>
+<ul class="m7-checklist">
+  <li><strong>Búfer a la resolución que el efecto necesita, no a la de la pantalla.</strong> <code>dprMax: 1</code> para un fondo suave: 1440 × 900 px CSS en una pantalla retina pasan de unos 7 ms por frame a unos 2. Y un tope de área (<code>pixelesMax</code>) para monitores enormes.</li>
+  <li><strong>Calidad adaptativa con calentamiento.</strong> Mínimo 0,5 por lado (un cuarto de los píxeles) y 2 s sin decidir al arrancar.</li>
+  <li><strong>Un contexto sin extras.</strong> <code>alpha: false</code>, <code>antialias: false</code>, <code>depth: false</code>, <code>stencil: false</code>: un triángulo de pantalla completa no tiene bordes que suavizar ni profundidades que comparar, y el búfer por defecto tiene 4 muestras de MSAA y 24 bits de profundidad por píxel (<a href="../05-webgl/01-contexto.html">5.1</a>).</li>
+  <li><strong>El trabajo caro, una sola vez.</strong> El flujo se evalúa una vez y se pinta con dos paletas: la transición no duplica el coste. Cuatro octavas, las que un fondo suave necesita (<a href="../06-glsl/06-ruido.html">6.6</a>).</li>
+  <li><strong>Cero frames fuera de la pantalla.</strong> <code>IntersectionObserver</code> sobre la sección: 0 llamadas a rAF en 2 s con el hero fuera, medido.</li>
+  <li><strong>Cero frames cuando nada se mueve.</strong> Bucle bajo demanda: 0 llamadas a rAF en 2 s de reposo con movimiento reducido, medido. Los eventos despiertan al bucle; al despertar, <code>dt = 0</code>.</li>
+  <li><strong>Leer antes de escribir.</strong> Todos los <code>getBoundingClientRect()</code> en <code>actualizar</code>, todas las escrituras en <code>dibujar</code>. Ninguna lectura de layout después de escribir un estilo.</li>
+  <li><strong>Escribir solo lo que cambia.</strong> Los estilos pasan por una caché (<code>estilo(el, prop, valor)</code>); <code>inert</code> y <code>aria-pressed</code>, solo cuando cambia el objetivo.</li>
+  <li><strong>Animar propiedades baratas.</strong> <code>opacity</code> y <code>transform</code>, que no provocan layout. Colocar una docena de animaciones en pausa en cada frame costó menos de 0,1 ms.</li>
+  <li><strong>Canvas dentro del contenido.</strong> El compositor lo desplaza junto al texto; solo el parallax interno va un frame tarde, y no se ve. <code>will-change: transform</code> en el contenido que mueve el parallax.</li>
+  <li><strong>Contraste medido, no supuesto.</strong> Ocultamos el texto de la página final y medimos la luminancia del fondo detrás de cada bloque (percentil 99, con el shader en marcha y el velo encima): 13,6:1 para el titular de Tinta, 7,7:1 para el de Brasas y más de 10:1 para las entradillas. El mínimo para texto normal es 4,5:1 (<a href="02-interaccion.html">7.2</a>).</li>
+  <li><strong>Nada de destellos.</strong> El latido es cada 3 s; nada parpadea más de tres veces por segundo (<a href="02-interaccion.html">7.2</a>).</li>
+  <li><strong>Arranque sin hueco negro.</strong> Canvas invisible hasta su primer frame y la alternativa debajo. Primera compilación de este shader: entre 43 y 78 ms en el M1; ya en caché, 2 o 3 ms.</li>
+  <li><strong>Liberar al destruir.</strong> <code>loseContext()</code> y listeners fuera, o cada montaje deja un contexto vivo.</li>
+</ul>
+<p>Para comprobarlo en tu navegador: el panel de rendimiento de DevTools (grábate moviendo el puntero, cambiando de diapositiva y haciendo scroll, y busca frames largos y layouts forzados), la pestaña de capas (<em>Layers</em>) para ver qué sube al compositor y <a href="proyecto-final/index.html?depurar">?depurar</a> para el contador de frames: con movimiento reducido o en pausa y el puntero quieto, debe dejar de subir.</p>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 7.6.1 — La transición que deja manchas</h3>
+  <p>Esta transición entre dos «diapositivas» (dos degradados) tiene los dos fallos del <a href="03-transiciones-shader.html#m7-3-transicion-no-limpia">bestiario de 7.3</a>, con un umbral más ruidoso que el del hero para que se vean bien. Con el progreso en 1 quedan islas azules a la derecha que no se van; con el progreso en 0, los píxeles de la izquierda con el umbral más bajo ya han empezado a cambiar, aunque a simple vista apenas se note. Para verlo, el shader trae un <em>chivato</em> en falso color (la técnica de <a href="../05-webgl/10-depuracion.html">5.10</a>): con la casilla marcada y el progreso exactamente en 0 o en 1, pinta de magenta cada píxel que no está entero en su diapositiva. Arregla el cálculo de <code>n</code> y de <code>mezcla</code> para que no quede ni un píxel magenta en los dos extremos y el frente siga barriendo de izquierda a derecha con el borde irregular.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 7.6.1" data-altura="300" data-apilado
+       data-uniforms='{"u_progreso":{"tipo":"float","min":0,"max":1,"valor":1,"etiqueta":"progreso"},"u_chivato":{"tipo":"bool","valor":true,"etiqueta":"marcar los píxeles que no cumplen"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_progreso;
+uniform bool u_chivato;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruido(vec2 p) {                       // gradient noise: más o menos en [-0.7, 0.7]
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f), b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1)), d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  vec3 A = mix(vec3(0.04, 0.05, 0.18), vec3(0.20, 0.50, 0.90), uv.y);   // diapositiva A
+  vec3 B = mix(vec3(0.25, 0.04, 0.06), vec3(0.95, 0.50, 0.20), uv.y);   // diapositiva B
+  float n = 0.5 * uv.x + 0.5 * (0.5 + 1.3 * ruido(p * 3.0 + 11.0));      // umbral de este píxel
+  const float ANCHO = 0.15;
+  float mezcla = smoothstep(n, n + ANCHO, u_progreso);
+  vec3 col = mix(A, B, mezcla);
+  float frente = 4.0 * mezcla * (1.0 - mezcla);
+  col += 0.6 * frente * frente * vec3(1.0, 0.85, 0.7);
+  // Chivato: en los extremos, cada píxel debe estar entero en su diapositiva
+  bool mal = (u_progreso == 0.0 && mezcla > 0.0) || (u_progreso == 1.0 && mezcla < 1.0);
+  if (u_chivato && mal) col = vec3(1.0, 0.0, 1.0);
+  fragColor = vec4(col, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_progreso;
+uniform bool u_chivato;
+out vec4 fragColor;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 gradiente(vec2 e) { float a = 6.2831853 * hash12(e); return vec2(cos(a), sin(a)); }
+float ruido(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  float a = dot(gradiente(i), f), b = dot(gradiente(i + vec2(1, 0)), f - vec2(1, 0));
+  float c = dot(gradiente(i + vec2(0, 1)), f - vec2(0, 1)), d = dot(gradiente(i + vec2(1, 1)), f - vec2(1, 1));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  vec3 A = mix(vec3(0.04, 0.05, 0.18), vec3(0.20, 0.50, 0.90), uv.y);
+  vec3 B = mix(vec3(0.25, 0.04, 0.06), vec3(0.95, 0.50, 0.20), uv.y);
+  // 1. El umbral, recortado a [0, 1]: nadie empieza antes de 0 ni termina después de 1
+  float n = clamp(0.5 * uv.x + 0.5 * (0.5 + 1.3 * ruido(p * 3.0 + 11.0)), 0.0, 1.0);
+  const float ANCHO = 0.15;
+  // 2. El progreso, estirado a [0, 1 + ANCHO]: con 1, hasta el umbral 1 ha terminado su frente
+  float mezcla = smoothstep(n, n + ANCHO, u_progreso * (1.0 + ANCHO));
+  vec3 col = mix(A, B, mezcla);
+  float frente = 4.0 * mezcla * (1.0 - mezcla);
+  col += 0.6 * frente * frente * vec3(1.0, 0.85, 0.7);
+  // Chivato: en los extremos, cada píxel debe estar entero en su diapositiva
+  bool mal = (u_progreso == 0.0 && mezcla > 0.0) || (u_progreso == 1.0 && mezcla < 1.0);
+  if (u_chivato && mal) col = vec3(1.0, 0.0, 1.0);
+  fragColor = vec4(col, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Calcula el rango de <code>n</code>: <code>uv.x</code> va de 0 a 1 y <code>ruido</code> de −0,7 a 0,7 más o menos. ¿Qué valores extremos puede tomar <code>n</code>? ¿Qué pasa con <code>smoothstep(n, n + ANCHO, 0.0)</code> si <code>n</code> es negativo?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con <code>u_progreso = 1</code>, un píxel con <code>n = 0.95</code> está en <code>smoothstep(0.95, 1.1, 1.0)</code>: a medias. Para que todos terminen, el tercer argumento tiene que llegar a <code>1 + ANCHO</code> cuando el progreso vale 1.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Con los valores extremos del ruido, <code>n</code> va aproximadamente de 0,5 · 0 + 0,5 · (0,5 − 1,3 · 0,7) = −0,2 a 0,5 · 1 + 0,5 · (0,5 + 1,3 · 0,7) = 1,2. Los píxeles con <code>n &lt; 0</code> tienen <code>smoothstep(n, n + 0.15, 0.0) &gt; 0</code>: con el progreso en 0 ya han empezado a cambiar (el chivato los marca a la izquierda, donde el ruido es más bajo; sin él, se confunden con el azul porque apenas han empezado). Y con el progreso en 1, todos los píxeles con <code>n &gt; 0,85</code> están a medias o sin empezar: las islas azules de la derecha. El <code>clamp</code> a [0, 1] resuelve la primera mitad: ningún umbral por debajo de 0 ni por encima de 1.</p>
+    <p>La segunda mitad es el estiramiento. Con <code>u_progreso * (1.0 + ANCHO)</code>, el progreso 1 se convierte en 1,15, que supera <code>n + 0.15</code> para cualquier <code>n ≤ 1</code>: han terminado todos. Y el progreso 0 sigue siendo 0, que no supera ningún umbral ≥ 0. Recorre el deslizador: el frente entra por la izquierda justo al salir de 0 y termina de salir por la derecha justo al llegar a 1, y en los dos extremos el chivato no encuentra nada. Es la comprobación que debes hacer con cualquier transición por umbral: los dos extremos, y mejor con un chivato que con los ojos, porque un píxel a medio cambiar al 2 % no se ve pero existe (y en otra pantalla, o sobre otra imagen, puede verse).</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.6.2 — El título que no aparece</h3>
+  <p>Tres copias del mismo mini-hero: una normal, una con movimiento reducido y otra sin WebGL (simulado con el truco del contexto <code>'2d'</code>). Solo en la normal aparece el título. Arregla <code>montarHero</code> para que, a los 2,5 s, las tres pruebas de la consola digan ✓: con movimiento reducido el título debe estar ya en su sitio (sin animación de entrada) y sin WebGL debe hacer su entrada normal sobre la alternativa.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.6.2" data-altura="200" data-apilado data-incluir="motor" data-fondo="oscuro" data-consola-altura="110">
+<script type="text/x-html">
+<div class="fila">
+  <section class="hero" data-modo="normal"><canvas></canvas><h2>Normal</h2></section>
+  <section class="hero" data-modo="reducido"><canvas></canvas><h2>Reducido</h2></section>
+  <section class="hero" data-modo="sinwebgl"><canvas></canvas><h2>Sin WebGL</h2></section>
+</div>
+</script>
+<script type="text/x-css">
+html, body { height: 100%; margin: 0; }
+.fila { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; height: 100%; }
+.hero { position: relative; overflow: hidden; background: linear-gradient(135deg, #1b1f5e, #b8467a); }  /* la alternativa */
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+h2 { position: relative; margin: 0; padding: 18px 12px; color: #fff; font: 700 20px system-ui; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 col = 0.5 + 0.5 * cos(u_time * 0.8 + uv.xyx * 3.0 + vec3(0.0, 2.0, 4.0));
+  fragColor = vec4(col * col * 0.45, 1.0);
+}`;
+
+function montarHero(raiz, { reducir, sinWebGL }) {
+  const lienzo = raiz.querySelector('canvas');
+  const titulo = raiz.querySelector('h2');
+  const entrada = titulo.animate([{ opacity: 0, transform: 'translateY(16px)' }, { opacity: 1, transform: 'none' }],
+    { duration: 800, delay: 300, easing: 'ease-out', fill: 'backwards' });
+  entrada.pause();
+
+  const bucle = Motor.crearBucle({
+    observar: raiz,
+    dibujar(b) { capa.dibujar(null, b.reloj.intervaloMs); },
+  });
+  bucle.reloj.escala = reducir ? 0 : 1;            // movimiento reducido: el tiempo no corre
+
+  if (sinWebGL) lienzo.getContext('2d');            // simulación: getContext('webgl2') dará null
+  const capa = Motor.crearCapaGL(lienzo, {
+    contexto: { alpha: false, antialias: false, depth: false },
+    iniciar(gl, capa) {
+      const p = Motor.crearPrograma(gl, VS, FS);
+      capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+    },
+    dibujar(gl, e, capa) {
+      entrada.currentTime = bucle.reloj.t * 1000;   // el título, con el reloj
+      gl.useProgram(capa.gpu.p);
+      Motor.ponerUniform(gl, capa.gpu.u.u_resolution, [capa.ancho, capa.alto]);
+      Motor.ponerUniform(gl, capa.gpu.u.u_time, bucle.reloj.t);
+      gl.bindVertexArray(capa.gpu.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    },
+    fallar() { lienzo.remove(); },                   // queda el degradado de la sección
+  });
+  return titulo;
+}
+
+const titulos = [...document.querySelectorAll('.hero')].map((raiz) =>
+  montarHero(raiz, { reducir: raiz.dataset.modo === 'reducido', sinWebGL: raiz.dataset.modo === 'sinwebgl' }));
+
+// ---------- pruebas (no las toques) ----------
+setTimeout(() => {
+  titulos.forEach((h, i) => {
+    const op = getComputedStyle(h).opacity;
+    console.log((op === '1' ? '✓ ' : '✗ ') + ['normal', 'movimiento reducido', 'sin WebGL'][i] + ': opacidad del título = ' + op);
+  });
+}, 2500);
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+out vec4 fragColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 col = 0.5 + 0.5 * cos(u_time * 0.8 + uv.xyx * 3.0 + vec3(0.0, 2.0, 4.0));
+  fragColor = vec4(col * col * 0.45, 1.0);
+}`;
+
+function montarHero(raiz, { reducir, sinWebGL }) {
+  const lienzo = raiz.querySelector('canvas');
+  const titulo = raiz.querySelector('h2');
+  const entrada = titulo.animate([{ opacity: 0, transform: 'translateY(16px)' }, { opacity: 1, transform: 'none' }],
+    { duration: 800, delay: 300, easing: 'ease-out', fill: 'backwards' });
+  entrada.pause();
+  const FIN = entrada.effect.getComputedTiming().endTime;    // 300 + 800 = 1100 ms
+
+  const bucle = Motor.crearBucle({
+    observar: raiz,
+    dibujar(b) {
+      // 1. El DOM, en el bucle de la PÁGINA: se ejecuta haya o no WebGL
+      entrada.currentTime = reducir ? FIN : b.reloj.t * 1000;   // 2. reducido: ya terminada
+      capa.dibujar(null, b.reloj.intervaloMs);
+    },
+  });
+  bucle.reloj.escala = reducir ? 0 : 1;
+
+  if (sinWebGL) lienzo.getContext('2d');
+  const capa = Motor.crearCapaGL(lienzo, {
+    contexto: { alpha: false, antialias: false, depth: false },
+    iniciar(gl, capa) {
+      const p = Motor.crearPrograma(gl, VS, FS);
+      capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+    },
+    dibujar(gl, e, capa) {                           // la capa solo dibuja la GPU
+      gl.useProgram(capa.gpu.p);
+      Motor.ponerUniform(gl, capa.gpu.u.u_resolution, [capa.ancho, capa.alto]);
+      Motor.ponerUniform(gl, capa.gpu.u.u_time, bucle.reloj.t);
+      gl.bindVertexArray(capa.gpu.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    },
+    fallar() { lienzo.remove(); },
+  });
+  return titulo;
+}
+
+const titulos = [...document.querySelectorAll('.hero')].map((raiz) =>
+  montarHero(raiz, { reducir: raiz.dataset.modo === 'reducido', sinWebGL: raiz.dataset.modo === 'sinwebgl' }));
+
+// ---------- pruebas (no las toques) ----------
+setTimeout(() => {
+  titulos.forEach((h, i) => {
+    const op = getComputedStyle(h).opacity;
+    console.log((op === '1' ? '✓ ' : '✗ ') + ['normal', 'movimiento reducido', 'sin WebGL'][i] + ': opacidad del título = ' + op);
+  });
+}, 2500);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Quién llama al <code>dibujar</code> de la capa cuando no hay WebGL2? Mira qué hace <code>capa.dibujar</code> si la capa no está viva. ¿Y en qué función se coloca ahora la animación del título?</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con <code>reloj.escala = 0</code>, <code>reloj.t</code> se queda en 0 para siempre. La animación tiene un instante en el que ya ha terminado: <code>entrada.effect.getComputedTiming().endTime</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>Dos fallos, los dos del bestiario del texto invisible. Sin WebGL, <code>crearCapaGL</code> falla al crearse y <code>capa.dibujar</code> vuelve sin hacer nada en cada frame: la línea que colocaba el título estaba <em>dentro</em> del dibujo de la capa, así que nunca se ejecutaba, y una animación en pausa en el instante 0 con <code>fill: 'backwards'</code> muestra su primer fotograma, invisible. La solución la saca al <code>dibujar</code> del bucle, que es de la página: el DOM se escribe siempre, y la capa, si vive, dibuja la GPU después. Es la separación de toda la lección en una línea movida de sitio.</p>
+    <p>Con movimiento reducido, el reloj tiene escala 0 y <code>t</code> no pasa de 0: el título se quedaba en su primer fotograma aunque el bucle funcionara. La solución coloca la animación en su final (<code>endTime</code> = retardo + duración = 1100 ms), donde <code>fill: 'backwards'</code> ya no aplica nada y manda el estilo normal: el título está en su sitio desde el primer frame, sin movimiento. Fíjate en que no hemos tocado el fondo: en el mini-hero reducido sigue quieto, que es lo que pedía el usuario.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 7.6.3 — Dormir cuando nada se mueve</h3>
+  <p>Un mini-hero en modo bajo demanda, con el movimiento reducido activado (el tiempo no corre) y una transición guiada por un muelle. Hoy <code>algoSeMueve</code> devuelve siempre <code>true</code> y el bucle nunca se duerme. Escríbela de verdad. Las pruebas pulsan el botón a los 0,8 s y cuentan los frames dibujados en tres tramos: en reposo antes del clic (como mucho 2), durante la transición (al menos 20) y en reposo después (como mucho 2). Ojo: cuando <code>algoSeMueve</code> funcione, aparecerá un segundo problema.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.6.3" data-altura="200" data-apilado data-incluir="motor" data-fondo="oscuro" data-consola-altura="120">
+<script type="text/x-html">
+<section id="hero"><canvas></canvas><button id="cambiar">cambiar de diapositiva</button></section>
+</script>
+<script type="text/x-css">
+html, body { height: 100%; margin: 0; }
+#hero { position: relative; height: 100%; overflow: hidden; background: #05061a; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+button { position: absolute; left: 12px; top: 12px; font: 13px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_progreso;
+out vec4 fragColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float ondas = 0.5 + 0.5 * sin(uv.x * 9.0 + u_time) * sin(uv.y * 7.0 - u_time * 0.7);
+  vec3 a = mix(vec3(0.04, 0.05, 0.18), vec3(0.2, 0.5, 0.9), ondas);
+  vec3 b = mix(vec3(0.25, 0.04, 0.06), vec3(0.95, 0.5, 0.2), ondas);
+  fragColor = vec4(mix(a, b, smoothstep(uv.x, uv.x + 0.2, u_progreso * 1.2)), 1.0);
+}`;
+const hero = document.getElementById('hero');
+const estado = { objetivo: 0, progreso: new Motor.Muelle({ rigidez: 60, amortiguamiento: 15.5 }) };
+
+document.getElementById('cambiar').addEventListener('click', () => {
+  estado.objetivo = 1 - estado.objetivo;
+});
+
+function algoSeMueve(reloj) {
+  return true;   // ✗ el bucle nunca se duerme
+}
+
+const bucle = Motor.crearBucle({
+  observar: hero,
+  bajoDemanda: true,
+  actualizar(dt, b) {
+    estado.progreso.objetivo = estado.objetivo;
+    estado.progreso.actualizar(b.reloj.dtReal);
+    if (algoSeMueve(b.reloj)) b.pedirFrame();
+  },
+  dibujar(b) { capa.dibujar(estado, b.reloj.intervaloMs); },
+});
+bucle.reloj.escala = 0;                              // movimiento reducido: el tiempo no corre
+
+const capa = Motor.crearCapaGL(hero.querySelector('canvas'), {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1,
+  iniciar(gl, capa) {
+    const p = Motor.crearPrograma(gl, VS, FS);
+    capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, capa) {
+    gl.useProgram(capa.gpu.p);
+    Motor.ponerUniform(gl, capa.gpu.u.u_resolution, [capa.ancho, capa.alto]);
+    Motor.ponerUniform(gl, capa.gpu.u.u_time, bucle.reloj.t);
+    Motor.ponerUniform(gl, capa.gpu.u.u_progreso, Math.min(1, Math.max(0, e.progreso.x)));
+    gl.bindVertexArray(capa.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+// ---------- pruebas (no las toques) ----------
+const m = {};
+setTimeout(() => { m.a = bucle.frame; }, 200);
+setTimeout(() => { m.b = bucle.frame; document.getElementById('cambiar').click(); }, 800);
+setTimeout(() => { m.c = bucle.frame; }, 1500);
+setTimeout(() => { m.d = bucle.frame; }, 3000);
+setTimeout(() => {
+  m.e = bucle.frame;
+  const tramos = [['en reposo, antes del clic (0,2–0,8 s)', m.b - m.a, (n) => n <= 2, 'como mucho 2'],
+                  ['durante la transición (0,8–1,5 s)', m.c - m.b, (n) => n >= 20, 'al menos 20'],
+                  ['en reposo, después (3–5 s)', m.e - m.d, (n) => n <= 2, 'como mucho 2']];
+  for (const [nombre, n, ok, esperado] of tramos) console.log((ok(n) ? '✓ ' : '✗ ') + nombre + ': ' + n + ' frames (' + esperado + ')');
+}, 5000);
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_progreso;
+out vec4 fragColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float ondas = 0.5 + 0.5 * sin(uv.x * 9.0 + u_time) * sin(uv.y * 7.0 - u_time * 0.7);
+  vec3 a = mix(vec3(0.04, 0.05, 0.18), vec3(0.2, 0.5, 0.9), ondas);
+  vec3 b = mix(vec3(0.25, 0.04, 0.06), vec3(0.95, 0.5, 0.2), ondas);
+  fragColor = vec4(mix(a, b, smoothstep(uv.x, uv.x + 0.2, u_progreso * 1.2)), 1.0);
+}`;
+const hero = document.getElementById('hero');
+const estado = { objetivo: 0, progreso: new Motor.Muelle({ rigidez: 60, amortiguamiento: 15.5 }) };
+
+document.getElementById('cambiar').addEventListener('click', () => {
+  estado.objetivo = 1 - estado.objetivo;
+  bucle.pedirFrame();                                // 2. despertar al bucle dormido
+});
+
+function algoSeMueve(reloj) {
+  return (!reloj.pausado && reloj.escala > 0)        // 1. el tiempo corre: el fondo se mueve
+      || !estado.progreso.enReposo(1e-4);            //    o la transición no ha terminado
+}
+
+const bucle = Motor.crearBucle({
+  observar: hero,
+  bajoDemanda: true,
+  actualizar(dt, b) {
+    estado.progreso.objetivo = estado.objetivo;
+    estado.progreso.actualizar(b.reloj.dtReal);
+    if (algoSeMueve(b.reloj)) b.pedirFrame();
+  },
+  dibujar(b) { capa.dibujar(estado, b.reloj.intervaloMs); },
+});
+bucle.reloj.escala = 0;
+
+const capa = Motor.crearCapaGL(hero.querySelector('canvas'), {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1,
+  iniciar(gl, capa) {
+    const p = Motor.crearPrograma(gl, VS, FS);
+    capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, capa) {
+    gl.useProgram(capa.gpu.p);
+    Motor.ponerUniform(gl, capa.gpu.u.u_resolution, [capa.ancho, capa.alto]);
+    Motor.ponerUniform(gl, capa.gpu.u.u_time, bucle.reloj.t);
+    Motor.ponerUniform(gl, capa.gpu.u.u_progreso, Math.min(1, Math.max(0, e.progreso.x)));
+    gl.bindVertexArray(capa.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+// ---------- pruebas (no las toques) ----------
+const m = {};
+setTimeout(() => { m.a = bucle.frame; }, 200);
+setTimeout(() => { m.b = bucle.frame; document.getElementById('cambiar').click(); }, 800);
+setTimeout(() => { m.c = bucle.frame; }, 1500);
+setTimeout(() => { m.d = bucle.frame; }, 3000);
+setTimeout(() => {
+  m.e = bucle.frame;
+  const tramos = [['en reposo, antes del clic (0,2–0,8 s)', m.b - m.a, (n) => n <= 2, 'como mucho 2'],
+                  ['durante la transición (0,8–1,5 s)', m.c - m.b, (n) => n >= 20, 'al menos 20'],
+                  ['en reposo, después (3–5 s)', m.e - m.d, (n) => n <= 2, 'como mucho 2']];
+  for (const [nombre, n, ok, esperado] of tramos) console.log((ok(n) ? '✓ ' : '✗ ') + nombre + ': ' + n + ' frames (' + esperado + ')');
+}, 5000);
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>¿Qué puede moverse en este mini-hero? El fondo, si el reloj corre (pero aquí la escala es 0), y el muelle, mientras no esté en reposo. <code>Muelle</code> tiene un método para eso.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Con <code>algoSeMueve</code> bien escrita, el bucle se duerme en el primer frame. Cuando llega el clic, el manejador cambia <code>estado.objetivo</code>… y nadie lo lee, porque no hay frames. ¿Qué tiene que hacer el manejador, además de anotar?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p><code>algoSeMueve</code> devuelve <code>true</code> si el reloj corre (el fondo depende de <code>u_time</code>) o si el muelle no está en reposo. Con la escala a 0 y el muelle quieto, el primer frame no pide otro y el bucle se duerme: 0 frames en el primer tramo. Pero entonces el clic cambia el objetivo sin que nadie lo lea, y la transición no ocurre hasta que algo despierte al bucle (por eso el segundo tramo daba 0 frames). El manejador tiene que llamar a <code>bucle.pedirFrame()</code>: anota <em>y</em> despierta. En el hero final pasa lo mismo con el puntero, el scroll, el cambio de tamaño y la preferencia de movimiento.</p>
+    <p>¿Por qué el tercer tramo empieza a los 3 s y no nada más terminar la transición? Porque <code>enReposo(1e-4)</code> exige que la posición y la velocidad bajen de 10<sup>−4</sup>, y un muelle crítico con $\omega_0 \approx 7{,}7$ rad/s tarda en eso bastante más que en llegar «a la vista» al 99 % (0,86 s): su velocidad es $\omega_0^2\, t\, e^{-\omega_0 t}$ y baja de 10<sup>−4</sup> hacia los 1,8 s. Una tolerancia mayor dormiría antes, a riesgo de dejar el frente a una fracción de píxel de su sitio; la del hero es un compromiso.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 7.6.4 — Una tercera diapositiva</h3>
+  <p>Con dos diapositivas, el progreso del muelle <em>es</em> la diapositiva (0 o 1). Con tres, ya no: necesitas saber desde cuál y hacia cuál va la transición en curso. Reescribe el estado y <code>procesar(k)</code> para que el mini-hero maneje tres paletas con estas reglas: (1) en reposo, pedir otra diapositiva inicia una transición desde la actual; (2) durante una transición, pedir la de origen la da la vuelta con suavidad (el muelle cambia de objetivo), pedir la de destino no hace nada y pedir una tercera la <em>encola</em> para cuando termine; (3) al terminar, la de destino pasa a ser la actual. Las pruebas pulsan botones con un guion y leen los uniforms del programa con <code>gl.getUniform</code>.</p>
+  <div class="js-playground" data-titulo="Ejercicio 7.6.4" data-altura="220" data-apilado data-incluir="motor" data-fondo="oscuro" data-consola-altura="140">
+<script type="text/x-html">
+<section id="hero">
+  <canvas></canvas>
+  <div id="botones"><button data-ir="0">01 Tinta</button><button data-ir="1">02 Brasas</button><button data-ir="2">03 Musgo</button></div>
+</section>
+</script>
+<script type="text/x-css">
+html, body { height: 100%; margin: 0; }
+#hero { position: relative; height: 100%; overflow: hidden; background: #05061a; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#botones { position: absolute; left: 12px; top: 12px; display: flex; gap: 6px; }
+button { font: 13px system-ui; background: #1f2430; color: #e4e7ee; border: 1px solid #3a4256; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+</script>
+<script type="text/x-js">
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_progreso;     // 0 = paleta A, 1 = paleta B
+uniform vec3 u_colA[3];
+uniform vec3 u_colB[3];
+out vec4 fragColor;
+vec3 paleta(vec3 c[3], float v) { return mix(c[0], c[1], v) + c[2] * v * v * 0.5; }
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float v = 0.5 + 0.5 * sin(uv.x * 7.0 + u_time * 0.6) * sin(uv.y * 5.0 - u_time * 0.4);
+  float mezcla = smoothstep(uv.x, uv.x + 0.15, u_progreso * 1.15);
+  fragColor = vec4(mix(paleta(u_colA, v), paleta(u_colB, v), mezcla), 1.0);
+}`;
+const PALETAS = [
+  new Float32Array([0.03, 0.04, 0.12,  0.15, 0.13, 0.46,  0.22, 0.56, 0.90]),   // 01 · Tinta
+  new Float32Array([0.10, 0.02, 0.03,  0.46, 0.10, 0.16,  0.95, 0.50, 0.20]),   // 02 · Brasas
+  new Float32Array([0.02, 0.07, 0.05,  0.08, 0.32, 0.22,  0.45, 0.95, 0.60]),   // 03 · Musgo
+];
+const hero = document.getElementById('hero');
+
+// ---------- Estado: pensado para DOS diapositivas ----------
+const estado = {
+  peticion: null,                                    // lo que pidió el último clic (el evento solo anota)
+  objetivo: 0,
+  progreso: new Motor.Muelle({ rigidez: 60, amortiguamiento: 15.5 }),
+};
+function procesar(k) {                               // se llama desde actualizar
+  estado.objetivo = k;                               // ✗ con k = 2 el muelle va hacia 2…
+}
+function paletaA() { return PALETAS[0]; }            // ✗ …y solo existen A y B
+function paletaB() { return PALETAS[1]; }
+
+for (const b of document.querySelectorAll('[data-ir]')) b.addEventListener('click', () => { estado.peticion = Number(b.dataset.ir); });
+
+const bucle = Motor.crearBucle({
+  observar: hero,
+  actualizar(dt, b) {
+    if (estado.peticion !== null) { procesar(estado.peticion); estado.peticion = null; }
+    estado.progreso.objetivo = estado.objetivo;
+    estado.progreso.actualizar(b.reloj.dtReal);
+  },
+  dibujar(b) { capa.dibujar(estado, b.reloj.intervaloMs); },
+});
+const capa = Motor.crearCapaGL(hero.querySelector('canvas'), {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1,
+  iniciar(gl, capa) {
+    const p = Motor.crearPrograma(gl, VS, FS);
+    capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, capa) {
+    const u = capa.gpu.u;
+    gl.useProgram(capa.gpu.p);
+    Motor.ponerUniform(gl, u.u_resolution, [capa.ancho, capa.alto]);
+    Motor.ponerUniform(gl, u.u_time, bucle.reloj.t);
+    Motor.ponerUniform(gl, u.u_progreso, Math.min(1, Math.max(0, e.progreso.x)));
+    Motor.ponerUniform(gl, u.u_colA, paletaA());
+    Motor.ponerUniform(gl, u.u_colB, paletaB());
+    gl.bindVertexArray(capa.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+// ---------- pruebas (no las toques) ----------
+(function () {
+  const gl = capa.gl, clic = (k) => document.querySelector('[data-ir="' + k + '"]').click();
+  // La paleta que domina en pantalla: la B si el progreso pasa de 0,5, la A si no (comparamos su primer color)
+  function visible() {
+    const g = capa.gpu, p = gl.getUniform(g.p, g.u.u_progreso.loc);
+    const col = gl.getUniform(g.p, (p > 0.5 ? g.u.u_colB : g.u.u_colA).loc);
+    return PALETAS.findIndex((P) => Math.abs(P[0] - col[0]) + Math.abs(P[1] - col[1]) + Math.abs(P[2] - col[2]) < 1e-4);
+  }
+  // Continuidad: el color medio mostrado no debe saltar de un frame a otro
+  let previo = null, salto = 0;
+  (function vigilar() {
+    const g = capa.gpu;
+    if (g && capa.dibujados > 1) {                   // antes del primer dibujo, los uniforms valen 0
+      const p = gl.getUniform(g.p, g.u.u_progreso.loc), a = gl.getUniform(g.p, g.u.u_colA.loc), b = gl.getUniform(g.p, g.u.u_colB.loc);
+      const c = [0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * p);
+      if (previo) salto = Math.max(salto, Math.hypot(c[0] - previo[0], c[1] - previo[1], c[2] - previo[2]));
+      previo = c;
+    }
+    requestAnimationFrame(vigilar);
+  })();
+  const ok = (c, txt) => console.log((c ? '✓ ' : '✗ ') + txt);
+  setTimeout(() => clic(2), 300);
+  setTimeout(() => ok(visible() === 2, 'en reposo, «03» lleva a la tercera paleta (se ve: ' + (visible() + 1) + ')'), 2300);
+  setTimeout(() => clic(1), 2500);
+  setTimeout(() => clic(0), 2800);                   // a mitad de la transición 3 → 2: se encola
+  setTimeout(() => ok(visible() === 0, 'una tercera pedida a mitad se encola y llega al final (se ve: ' + (visible() + 1) + ')'), 6200);
+  setTimeout(() => clic(1), 6400);
+  setTimeout(() => clic(0), 6650);                   // a mitad de 1 → 2: pedir la de origen la da la vuelta
+  setTimeout(() => {
+    ok(visible() === 0, 'pedir la de origen a mitad da la vuelta (se ve: ' + (visible() + 1) + ')');
+    ok(salto < 0.08, 'sin saltos de color entre frames (el mayor fue ' + salto.toFixed(3) + ')');
+  }, 8400);
+})();
+</script>
+<script type="text/x-js" data-solucion>
+const VS = `#version 300 es
+void main() {
+  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_progreso;     // 0 = paleta A, 1 = paleta B
+uniform vec3 u_colA[3];
+uniform vec3 u_colB[3];
+out vec4 fragColor;
+vec3 paleta(vec3 c[3], float v) { return mix(c[0], c[1], v) + c[2] * v * v * 0.5; }
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  float v = 0.5 + 0.5 * sin(uv.x * 7.0 + u_time * 0.6) * sin(uv.y * 5.0 - u_time * 0.4);
+  float mezcla = smoothstep(uv.x, uv.x + 0.15, u_progreso * 1.15);
+  fragColor = vec4(mix(paleta(u_colA, v), paleta(u_colB, v), mezcla), 1.0);
+}`;
+const PALETAS = [
+  new Float32Array([0.03, 0.04, 0.12,  0.15, 0.13, 0.46,  0.22, 0.56, 0.90]),   // 01 · Tinta
+  new Float32Array([0.10, 0.02, 0.03,  0.46, 0.10, 0.16,  0.95, 0.50, 0.20]),   // 02 · Brasas
+  new Float32Array([0.02, 0.07, 0.05,  0.08, 0.32, 0.22,  0.45, 0.95, 0.60]),   // 03 · Musgo
+];
+const hero = document.getElementById('hero');
+
+// ---------- Estado: una transición es un par (desde, hacia) y un progreso de 0 a 1 ----------
+const estado = {
+  peticion: null,
+  actual: 0,          // la diapositiva en reposo
+  desde: 0, hacia: 0, // desde === hacia: no hay transición en curso
+  pendiente: null,    // una petición encolada para cuando termine la actual
+  progreso: new Motor.Muelle({ rigidez: 60, amortiguamiento: 15.5 }),
+};
+const enCurso = () => estado.desde !== estado.hacia;
+function procesar(k) {
+  const e = estado;
+  if (!enCurso()) {
+    if (k === e.actual) return;                      // ya estamos ahí
+    e.desde = e.actual; e.hacia = k;                 // regla 1: nueva transición desde la actual
+    e.progreso.fijar(0); e.progreso.objetivo = 1;
+  } else if (k === e.desde) {
+    e.progreso.objetivo = 0; e.pendiente = null;     // regla 2: volver (el muelle conserva la velocidad)
+  } else if (k === e.hacia) {
+    e.progreso.objetivo = 1; e.pendiente = null;     // seguir hacia el destino (por si iba de vuelta)
+  } else {
+    e.pendiente = k;                                 // una tercera: a la cola
+  }
+}
+function terminar() {                                // regla 3, cuando el muelle se para
+  const e = estado;
+  e.actual = e.progreso.objetivo === 1 ? e.hacia : e.desde;
+  e.desde = e.hacia = e.actual;
+  e.progreso.fijar(0);                               // A = B = actual: el salto de 1 a 0 no se ve
+  if (e.pendiente !== null) { const k = e.pendiente; e.pendiente = null; procesar(k); }
+}
+function paletaA() { return PALETAS[estado.desde]; }
+function paletaB() { return PALETAS[estado.hacia]; }
+
+for (const b of document.querySelectorAll('[data-ir]')) b.addEventListener('click', () => { estado.peticion = Number(b.dataset.ir); });
+
+const bucle = Motor.crearBucle({
+  observar: hero,
+  actualizar(dt, b) {
+    if (estado.peticion !== null) { procesar(estado.peticion); estado.peticion = null; }
+    estado.progreso.actualizar(b.reloj.dtReal);
+    if (enCurso() && estado.progreso.enReposo(1e-3)) terminar();
+  },
+  dibujar(b) { capa.dibujar(estado, b.reloj.intervaloMs); },
+});
+const capa = Motor.crearCapaGL(hero.querySelector('canvas'), {
+  contexto: { alpha: false, antialias: false, depth: false },
+  dprMax: 1,
+  iniciar(gl, capa) {
+    const p = Motor.crearPrograma(gl, VS, FS);
+    capa.gpu = { p, u: Motor.uniforms(gl, p), vao: gl.createVertexArray() };
+  },
+  dibujar(gl, e, capa) {
+    const u = capa.gpu.u;
+    gl.useProgram(capa.gpu.p);
+    Motor.ponerUniform(gl, u.u_resolution, [capa.ancho, capa.alto]);
+    Motor.ponerUniform(gl, u.u_time, bucle.reloj.t);
+    Motor.ponerUniform(gl, u.u_progreso, Math.min(1, Math.max(0, e.progreso.x)));
+    Motor.ponerUniform(gl, u.u_colA, paletaA());
+    Motor.ponerUniform(gl, u.u_colB, paletaB());
+    gl.bindVertexArray(capa.gpu.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+});
+
+// ---------- pruebas (no las toques) ----------
+(function () {
+  const gl = capa.gl, clic = (k) => document.querySelector('[data-ir="' + k + '"]').click();
+  function visible() {
+    const g = capa.gpu, p = gl.getUniform(g.p, g.u.u_progreso.loc);
+    const col = gl.getUniform(g.p, (p > 0.5 ? g.u.u_colB : g.u.u_colA).loc);
+    return PALETAS.findIndex((P) => Math.abs(P[0] - col[0]) + Math.abs(P[1] - col[1]) + Math.abs(P[2] - col[2]) < 1e-4);
+  }
+  let previo = null, salto = 0;
+  (function vigilar() {
+    const g = capa.gpu;
+    if (g && capa.dibujados > 1) {                   // antes del primer dibujo, los uniforms valen 0
+      const p = gl.getUniform(g.p, g.u.u_progreso.loc), a = gl.getUniform(g.p, g.u.u_colA.loc), b = gl.getUniform(g.p, g.u.u_colB.loc);
+      const c = [0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * p);
+      if (previo) salto = Math.max(salto, Math.hypot(c[0] - previo[0], c[1] - previo[1], c[2] - previo[2]));
+      previo = c;
+    }
+    requestAnimationFrame(vigilar);
+  })();
+  const ok = (c, txt) => console.log((c ? '✓ ' : '✗ ') + txt);
+  setTimeout(() => clic(2), 300);
+  setTimeout(() => ok(visible() === 2, 'en reposo, «03» lleva a la tercera paleta (se ve: ' + (visible() + 1) + ')'), 2300);
+  setTimeout(() => clic(1), 2500);
+  setTimeout(() => clic(0), 2800);
+  setTimeout(() => ok(visible() === 0, 'una tercera pedida a mitad se encola y llega al final (se ve: ' + (visible() + 1) + ')'), 6200);
+  setTimeout(() => clic(1), 6400);
+  setTimeout(() => clic(0), 6650);
+  setTimeout(() => {
+    ok(visible() === 0, 'pedir la de origen a mitad da la vuelta (se ve: ' + (visible() + 1) + ')');
+    ok(salto < 0.08, 'sin saltos de color entre frames (el mayor fue ' + salto.toFixed(3) + ')');
+  }, 8400);
+})();
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>El shader ya sabe mezclar dos paletas con un progreso de 0 a 1: lo que cambia es <em>cuáles</em> le mandas. Guarda en el estado <code>desde</code> y <code>hacia</code> (índices de diapositiva) y haz que <code>paletaA()</code> y <code>paletaB()</code> los usen. Una transición siempre lleva el muelle de 0 a 1 (o de vuelta a 0).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>¿Cómo sabes que una transición ha terminado? Cuando el muelle está en reposo y <code>desde ≠ hacia</code>. En ese momento, la diapositiva actual es <code>hacia</code> si el objetivo era 1 y <code>desde</code> si era 0; después, pon <code>desde = hacia = actual</code> y el muelle a 0 con <code>fijar(0)</code>. ¿Por qué ese salto del progreso de 1 a 0 no se ve?</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La idea clave es separar dos cosas que con dos diapositivas iban juntas: <em>qué</em> se mezcla (el par <code>desde</code>, <code>hacia</code>) y <em>cuánto</em> (el muelle, siempre de 0 a 1). <code>procesar</code> es una pequeña máquina de estados: en reposo inicia una transición; en curso, la de origen invierte el objetivo del muelle (y como el muelle conserva su velocidad, la vuelta es suave), la de destino lo reafirma y cualquier otra se guarda en <code>pendiente</code>. <code>terminar</code> se ejecuta cuando el muelle se para: fija la actual, deja <code>desde = hacia</code> (en el shader, A y B son la misma paleta) y pone el progreso a 0. Ese salto de 1 a 0 es invisible porque, con las dos paletas iguales, cualquier mezcla da el mismo color: es lo que comprueba la prueba de continuidad. Si hay algo encolado, arranca la siguiente transición en ese mismo frame.</p>
+    <p>¿Por qué encolar y no saltar directamente a la tercera? Porque a mitad de una transición lo que hay en pantalla es una mezcla de dos paletas; empezar otra desde una de ellas haría desaparecer la otra de golpe (un salto que la prueba de continuidad detectaría). Hay alternativas válidas: renderizar el estado mezclado a una textura con un framebuffer (<a href="../05-webgl/08-framebuffers.html">5.8</a>) y usarla como nueva paleta A, que es como lo resuelven las transiciones entre imágenes de <a href="03-transiciones-shader.html">7.3</a>, o acelerar la transición en curso antes de empezar la siguiente. Encolar es la más simple que no rompe nada. Y fíjate en que las pruebas leen el estado del programa con <code>gl.getUniform</code>: es una consulta síncrona que obliga a esperar a la GPU (<a href="../05-webgl/10-depuracion.html">5.10</a>), aceptable en una prueba y nunca en el bucle de una app.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li>Un hero son cuatro capas: la alternativa CSS (siempre debajo), el canvas WebGL (decorativo, sin eventos, invisible hasta su primer frame), un velo para el contraste y el contenido en el DOM. El puntero se escucha en la sección.</li>
+    <li>El bucle es de la página, no del canvas: <code>crearBucle</code> lleva el reloj, las pausas y el modo bajo demanda; <code>crearCapaGL</code> lleva el contexto, el tamaño, la pérdida y los fallos, y no hace nada si no vive. Así el DOM sigue animado sin WebGL, con el contexto perdido o con un shader que no compila.</li>
+    <li>El fondo es un fbm deformado por otros dos (48 hashes por píxel). Medido en el M1 con N pasadas por frame, unos 1,4 ms por megapíxel; el temporizador de GPU engaña cuando la GPU baja de marcha. Con <code>dprMax: 1</code> un fondo suave cuesta la cuarta parte en una pantalla retina.</li>
+    <li>Puntero y scroll con la tubería de 7.2: crudo en el evento, conversión en el frame, suavizado con <code>dtReal</code>, radio en px CSS con <code>u_escala</code>. El parallax suma el mismo desplazamiento al píxel y al puntero. Nunca <code>touch-action: none</code> en un hero de pantalla completa: atrapa al usuario.</li>
+    <li>El DOM bebe del mismo reloj: animaciones WAAPI (o CSS capturadas con <code>getAnimations()</code>) en pausa y colocadas con <code>currentTime = t · 1000</code>. Lo periódico (el latido) se calcula en JavaScript. El texto es visible por defecto: solo JavaScript lo oculta, y con movimiento reducido las entradas van a su final.</li>
+    <li>La transición: un umbral por píxel recortado a [0, 1], el progreso estirado a [0, 1 + W] y un muelle crítico (rigidez 60, amortiguamiento 15,5) que conserva la velocidad al interrumpirlo. Un número para el shader, el texto y la alternativa; <code>inert</code> y <code>aria-pressed</code> al cambiar el objetivo.</li>
+    <li>Robustez: <code>100svh</code>, calidad adaptativa con calentamiento, sin destello negro al cargar, cero frames fuera de la pantalla y en reposo (bajo demanda, con eventos que despiertan), botón de pausa (WCAG 2.2.2), movimiento reducido que congela lo autónomo y conserva lo que pide el usuario, y alternativa completa sin WebGL y sin JavaScript.</li>
+    <li>Revisa siempre la arquitectura con la lista de comprobación y conoce tus decisiones discutibles: son las que tendrás que defender.</li>
+  </ul>
+</div>
+
+<p>Con esto termina el recorrido del curso por la API cruda: todo lo que hace este hero lo has escrito tú, llamada por llamada. En la última lección, <a href="07-siguientes-pasos.html">7.7</a>, verás cómo se traduce lo que ya sabes a Three.js y a WebGPU, y qué te dan (y qué te esconden) cuando las uses.</p>
+
+<h3>Para profundizar</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Animation/currentTime">MDN: Animation.currentTime</a>, la propiedad con la que el reloj coloca las animaciones del DOM.</li>
+  <li><a href="https://www.w3.org/WAI/WCAG22/Understanding/pause-stop-hide.html">WCAG 2.2: Understanding Pause, Stop, Hide</a>, el criterio del botón de pausa y la regla de los 5 segundos.</li>
+  <li><a href="https://web.dev/blog/viewport-units">web.dev: The large, small, and dynamic viewport units</a>, sobre <code>svh</code>, <code>lvh</code> y <code>dvh</code>.</li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/HTML/Global_attributes/inert">MDN: inert</a>, el atributo que saca un bloque del foco y del árbol de accesibilidad.</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<!-- El motor del proyecto final: se registra para los playgrounds como data-incluir="motor" -->
+<script src="proyecto-final/motor.js"></script>
+</body>
+</html>

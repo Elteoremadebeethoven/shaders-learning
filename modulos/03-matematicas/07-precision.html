@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="es" data-root="../../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3.7 · Precisión numérica: floats en CPU y GPU — Shaders + Animación</title>
+<script>try{document.documentElement.dataset.theme=JSON.parse(localStorage.getItem("curso-tema"))||"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+<link rel="stylesheet" href="../../assets/vendor/vendor.bundle.css">
+<link rel="stylesheet" href="../../assets/css/curso.css">
+<link rel="stylesheet" href="recursos/m3.css">
+</head>
+<body data-leccion="03-matematicas/precision">
+<main class="leccion">
+
+<header class="leccion-cabecera">
+  <p class="modulo">Módulo 3 · Matemáticas para gráficos</p>
+  <h1>Precisión numérica: floats en CPU y GPU</h1>
+  <p class="resumen">«En mi portátil va bien, pero en el móvil el ruido sale a bloques.» «Tras dejar la página abierta una noche, la animación va a saltos.» «A diez kilómetros del origen, el personaje tiembla.» «Hay píxeles negros sueltos.» Todos son el mismo culpable: el formato de los números en coma flotante. Aquí lo desmontas bit a bit y aprendes a esquivar cada trampa.</p>
+  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 1.6, 3.1–3.6</span></div>
+  <div class="objetivos">
+    <h4>Al terminar esta lección</h4>
+    <ul>
+      <li>Leerás un float32 bit a bit (signo, exponente, mantisa) y sabrás qué es un ULP y por qué crece con la magnitud.</li>
+      <li>Distinguirás float32 de float64 (los números de JavaScript) y sabrás dónde se pierde precisión al hablar con la GPU.</li>
+      <li>Entenderás <code>highp</code>, <code>mediump</code> y <code>lowp</code>, y por qué hay bugs que solo aparecen en teléfonos.</li>
+      <li>Diagnosticarás y arreglarás los problemas clásicos: <code>u_time</code> que crece sin límite, el hash con <code>sin</code>, la cancelación catastrófica, el temblor lejos del origen, los NaN y las comparaciones con <code>==</code>.</li>
+    </ul>
+  </div>
+</header>
+
+<h2>Cuatro bugs, un solo culpable</h2>
+<p>Los números reales tienen infinitos decimales; la memoria de un ordenador, no. Tanto JavaScript como la GPU guardan los números con decimales en <strong>coma flotante</strong> (<em>floating point</em>): un formato que representa exactamente unos pocos miles de millones de valores y redondea todos los demás al más cercano. La mayor parte del tiempo, el redondeo es invisible. Pero en gráficos lo empujamos a sus límites constantemente: tiempos que crecen durante horas, coordenadas enormes, restas de números casi iguales, funciones que dan NaN, y GPU que usan formatos aún más pequeños que el de JavaScript. Esta lección es la caja de herramientas para esos momentos, y cierra el módulo: varios bichos de las lecciones anteriores (<code>acos</code> con NaN, el <code>lerp</code> que no llega, el seno con argumentos grandes) tienen aquí su explicación de fondo.</p>
+
+<h2>Anatomía de un float32</h2>
+<p>Ya lo desmontaste en la lección <a href="../01-web/06-binario.html">1.6</a>, mirando los bytes de un <code>Float32Array</code>; aquí lo repasamos con lupa, porque ahora lo que nos interesa son sus consecuencias. Un float de 32 bits (el <em>binary32</em> del estándar IEEE 754, el de la GPU y de <code>Float32Array</code>) es la notación científica en binario. Igual que $6.02\times10^{23}$ tiene un signo, unas cifras significativas y un exponente, un float32 reparte sus 32 bits así:</p>
+<ul>
+  <li><strong>1 bit de signo</strong> ($s$): 0 positivo, 1 negativo.</li>
+  <li><strong>8 bits de exponente</strong> ($e$, de 0 a 255), guardado con un <em>sesgo</em> de 127: el exponente real es $e - 127$, de −126 a 127.</li>
+  <li><strong>23 bits de mantisa</strong> ($m$): los dígitos binarios detrás de la coma. En binario, un número normalizado siempre empieza por 1 (1.0110… × 2³), así que ese 1 inicial <strong>no se guarda</strong>: es el «bit implícito», y la precisión efectiva es de 24 bits.</li>
+</ul>
+$$\text{valor} = (-1)^s \times 1.m_{(2)} \times 2^{\,e - 127}$$
+<p>Los dos valores extremos del exponente están reservados: $e = 0$ son el <strong>cero</strong> (con signo: existen +0 y −0) y los <strong>subnormales</strong> (números diminutos sin bit implícito, que rellenan el hueco entre 0 y el menor normal); $e = 255$ son <strong>±Infinito</strong> (mantisa 0) y <strong>NaN</strong> (cualquier otra mantisa). Pulsa los bits, escribe un número o prueba los ejemplos:</p>
+
+<div class="demo" id="demo-bits">
+  <div class="m3-bits"></div>
+  <div class="m3-bits-etq"><span style="--c:var(--c-bestiario)">signo</span><span style="--c:var(--c-nota)">exponente (8 bits)</span><span style="--c:var(--c-hack)">mantisa (23 bits)</span></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.7.1 — Qué se guarda de verdad cuando escribes 0.1</h3>
+  <p>Escribe 0.1 en el editor de bits. Aparece <code>0x3DCCCCCD</code>: signo 0, exponente 123, mantisa <code>0x4CCCCD</code>, los mismos números que obtuviste con operaciones de bits en el ejemplo 1.6.1. Ahora los desciframos a mano:</p>
+  <ol>
+    <li><strong>Exponente</strong>: $123 - 127 = -4$. El número es $1.\text{algo}\times2^{-4}$, es decir, algo entre $1/16 = 0.0625$ y $2/16 = 0.125$. Tiene sentido: 0.1 está en ese intervalo.</li>
+    <li><strong>Mantisa</strong>: 0.1 en binario es $0.000110011001100\ldots$, con el patrón <code>1100</code> repitiéndose para siempre (igual que 1/3 en decimal). Normalizado: $1.100110011001100\ldots\times2^{-4}$. Los 23 bits tras la coma son <code>10011001100110011001100</code> y el siguiente, un 1, obliga a redondear hacia arriba: la mantisa acaba en <code>…1101</code> (<code>0x4CCCCD</code> en hexadecimal).</li>
+    <li><strong>Valor</strong>: $1.6000000238418579\ldots\times 2^{-4} = 0.10000000149011612$. Ese es el número que realmente llega a la GPU cuando escribes <code>0.1</code> en un shader o en un <code>Float32Array</code>. El error es de $1.5\times10^{-9}$: la mitad de la separación entre dos floats consecutivos en esa zona, como máximo, porque se redondea al más cercano.</li>
+  </ol>
+  <p>La moraleja: la mayoría de los decimales «redondos» (0.1, 0.2, 0.3) <strong>no tienen representación exacta</strong> en binario. Los que sí la tienen son sumas de potencias de 2: 0.5, 0.25, 0.75, 0.375… y todos los enteros hasta $2^{24}$.</p>
+</section>
+
+<h2>El ULP: una rejilla que se va espaciando</h2>
+<p>Con la mantisa de 23 bits, entre dos potencias de 2 consecutivas (por ejemplo, entre 1 y 2) hay exactamente $2^{23} = 8\,388\,608$ floats, repartidos a partes iguales. Entre 2 y 4 hay otros tantos, pero el intervalo es el doble de largo, así que están el doble de separados. La distancia entre un float y el siguiente se llama <strong>ULP</strong> (<em>unit in the last place</em>, el valor del último bit de la mantisa):</p>
+$$\text{ULP}(x) = 2^{\,\lfloor\log_2|x|\rfloor - 23}$$
+<table class="m3-num">
+  <thead><tr><th>Cerca de</th><th>ULP en float32</th><th>Significado práctico</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>0.00000012</td><td>unos 7 decimales de precisión</td></tr>
+    <tr><td>1 000</td><td>0.000061</td><td>17 min en segundos: todavía sobra</td></tr>
+    <tr><td>86 400</td><td>0.0078</td><td>un día en segundos: medio frame a 60 fps</td></tr>
+    <tr><td>1 000 000</td><td>0.0625</td><td>coordenadas de 1000 km en metros: 6 cm de rejilla</td></tr>
+    <tr><td>16 777 216 = 2²⁴</td><td>2</td><td>los enteros impares ya no existen</td></tr>
+  </tbody>
+</table>
+<p>La <strong>precisión relativa</strong> es constante (unos 7 dígitos decimales significativos, $2^{-24} \approx 6\times10^{-8}$ de error relativo máximo), pero la <strong>precisión absoluta</strong> empeora con la magnitud. Y la gráfica no perdona lo absoluto: un píxel es un píxel, esté donde esté el objeto. En la demo, cada marca es un float32 representable dentro de una ventana de ancho fijo alrededor de la magnitud elegida; mueve el ratón para ver cómo se redondea un valor cualquiera al float más cercano.</p>
+
+<div class="demo" id="demo-recta">
+  <div class="demo-lienzo" style="height:200px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Una coordenada vale 1 000 000.3 y la guardas en un float32. ¿Qué número se guarda?</p>
+  <ul>
+    <li>1 000 000.3 exactamente: un float32 llega hasta 3.4 × 10³⁸<div class="explicacion">El <em>rango</em> llega hasta 10³⁸, pero la <em>precisión</em> son 24 bits: cerca del millón, los floats están separados 0.0625. 1 000 000.3 no es uno de ellos.</div></li>
+    <li data-correcta>1 000 000.3125, el múltiplo de 0.0625 más cercano<div class="explicacion">Correcto: <code>Math.fround(1000000.3)</code> da 1000000.3125. El error (0.0125) es menor que medio ULP. Si esa coordenada son metros, los vértices se colocan en una rejilla de 6 cm.</div></li>
+    <li>1 000 000, porque float32 no guarda decimales por encima del millón<div class="explicacion">Sí guarda algunos decimales: cerca del millón, los dieciséis valores 0, 0.0625, 0.125… 0.9375. Por encima de 2²⁴ (16.7 millones) es cuando ya no guarda ni siquiera todos los enteros.</div></li>
+  </ul>
+</div>
+
+<h2>float32 y float64: JavaScript habla en doble</h2>
+<p>Todos los números de JavaScript son <strong>float64</strong> (<em>binary64</em>, «doble precisión»): 1 bit de signo, 11 de exponente y 52 de mantisa. Unos 16 dígitos significativos, enteros exactos hasta $2^{53}$ (<code>Number.MAX_SAFE_INTEGER</code>) y un ULP en 1 de $2^{-52}$ (<code>Number.EPSILON</code>). La GPU trabaja en <strong>float32</strong>. La conversión ocurre en la frontera, en silencio, cada vez que:</p>
+<ul>
+  <li>escribes en un <code>Float32Array</code> (lección <a href="../01-web/06-binario.html">1.6</a>): el valor se redondea al float32 más cercano;</li>
+  <li>envías un uniform con <code>gl.uniform1f</code>, <code>uniform3fv</code>… o un buffer con <code>gl.bufferData</code>;</li>
+  <li>llamas a <code>Math.fround(x)</code>, que hace esa misma conversión y devuelve el resultado como double: la herramienta perfecta para simular en JavaScript lo que verá la GPU.</li>
+</ul>
+
+<div class="js-playground" data-titulo="Explorar float32 y float64" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+console.log('0.1 + 0.2 =', 0.1 + 0.2, '→ ¿=== 0.3?', 0.1 + 0.2 === 0.3);
+console.log('0.1 guardado en float32:', Math.fround(0.1));
+console.log('new Float32Array([0.1])[0] =', new Float32Array([0.1])[0]);
+
+// Los enteros: exactos hasta 2^24 en float32 y hasta 2^53 en float64
+console.log('fround(16777217) =', Math.fround(16777217), '(2^24 + 1 no existe en float32)');
+console.log('2^53 + 1 =', 2 ** 53 + 1, '(ni siquiera en float64)');
+
+// Sumar 0.1 un millón de veces: el error se acumula
+let s32 = 0, s64 = 0;
+for (let i = 0; i < 1e6; i++) { s32 = Math.fround(s32 + Math.fround(0.1)); s64 += 0.1; }
+console.log('suma de 0.1 × 1e6 → float32:', s32, '| float64:', s64);
+
+// Lo que vería un móvil con mediump (float16), si tu navegador tiene Math.f16round
+if (Math.f16round) {
+  console.log('f16round(0.1) =', Math.f16round(0.1), '| f16round(1000.3) =', Math.f16round(1000.3));
+  console.log('f16round(43758.5453) =', Math.f16round(43758.5453), '| f16round(70000) =', Math.f16round(70000));
+}
+</script>
+</div>
+
+<p>Fíjate en la suma: un millón de sumas de 0.1 en float32 dan 100 958.34, casi un 1&nbsp;% de error. En float64, 100 000.0000013. No es que float32 «sume mal»: cada suma es correcta hasta el último bit, pero cuando el acumulador ya vale 60 000, su ULP es 0.0039, y sumarle 0.1 redondea cada vez. Acumular muchos valores pequeños en un float32 grande es una receta para el error (también en la GPU, en un <em>ping-pong</em> de framebuffers que suma durante miles de frames, lección <a href="../05-webgl/08-framebuffers.html">5.8</a>).</p>
+
+<div class="callout senior" data-titulo="Lo que la GPU se permite (y la especificación permite)">
+  <p>La especificación de GLSL ES 3.00 exige que los float <code>highp</code> sean IEEE 754 de 32 bits, pero relaja muchas reglas que en la CPU damos por hechas. Los <strong>subnormales</strong> pueden convertirse en 0 (en nuestra prueba con un M1, <code>a * b</code> con <code>a = 1e-30</code> y <code>b = 1e-10</code> llegados como uniforms dio 0 exacto, no 1e-40; si escribes <code>1e-30 * 1e-10</code> con las dos constantes, el compilador lo calcula al compilar y sí conserva el subnormal). El <strong>modo de redondeo</strong> no está definido. La división puede sustituirse por multiplicar por el recíproco (2.5 ULP de error permitido). La suma y la multiplicación se consideran <strong>asociativas</strong>, así que el compilador puede reordenarlas: en nuestra prueba, <code>(x + D) - D</code> devolvió <code>x</code> exacto, sin la pérdida de precisión de la primera suma, porque el compilador simplificó la expresión. Parece un favor, pero significa que los trucos de precisión que dependen del orden de las operaciones (la suma compensada de Kahan, por ejemplo) pueden desaparecer al compilar. Y las funciones trigonométricas tienen <strong>precisión indefinida</strong>.</p>
+</div>
+
+<h2>highp, mediump y lowp</h2>
+<p>Desde la lección <a href="01-vectores.html">3.1</a> escribes <code>precision highp float;</code> sin explicación. Ha llegado el momento. GLSL ES permite declarar la precisión de cada float, y la especificación solo fija <strong>mínimos</strong>:</p>
+<table>
+  <thead><tr><th>Calificador</th><th>Rango mínimo</th><th>Precisión mínima</th><th>En la práctica</th></tr></thead>
+  <tbody>
+    <tr><td><code>highp</code></td><td>IEEE 754 32 bits (hasta ~10³⁸)</td><td>relativa 2⁻²⁴</td><td>float32 en todas partes</td></tr>
+    <tr><td><code>mediump</code></td><td>$(-2^{14}, 2^{14})$</td><td>relativa 2⁻¹⁰</td><td>float32 en escritorio; <strong>float16</strong> en muchos móviles</td></tr>
+    <tr><td><code>lowp</code></td><td>$(-2, 2)$</td><td>absoluta 2⁻⁸</td><td>pensado para colores de 8 bits; hoy casi siempre igual que mediump</td></tr>
+  </tbody>
+</table>
+<p>En el fragment shader no hay precisión por defecto para los float (hay que declararla, y por eso todos los shaders del curso empiezan así); en el vertex shader es <code>highp</code>. La precisión <em>real</em> se consulta con <code>gl.getShaderPrecisionFormat(tipoShader, gl.MEDIUM_FLOAT)</code>, que devuelve <code>rangeMin</code>, <code>rangeMax</code> (log₂ del rango) y <code>precision</code> (bits de mantisa). En el Chrome de nuestras pruebas, sobre un Apple M1, devuelve <code>127, 127, 23</code> para los tres calificadores: <strong><code>mediump</code> y <code>lowp</code> son float32 completos</strong>, y lo comprobamos también midiendo resultados dentro del shader. Pero en muchas GPU de móvil, <code>mediump</code> es un <strong>float16 real</strong> (<code>precision</code> = 10): 11 bits significativos, unos 3 decimales, y un máximo de 65 504. Ejecuta esto en tu teléfono:</p>
+
+<div class="js-playground" data-titulo="¿Qué precisión tiene mi GPU?" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+const gl = document.createElement('canvas').getContext('webgl2');
+if (!gl) console.log('Sin WebGL2');
+else {
+  for (const sh of ['VERTEX_SHADER', 'FRAGMENT_SHADER']) {
+    for (const tipo of ['LOW_FLOAT', 'MEDIUM_FLOAT', 'HIGH_FLOAT']) {
+      const f = gl.getShaderPrecisionFormat(gl[sh], gl[tipo]);
+      console.log(sh.padEnd(16), tipo.padEnd(13), 'rango ±2^' + f.rangeMax, ' bits de mantisa:', f.precision,
+        f.precision >= 23 ? '(float32)' : f.precision >= 10 ? '(≈ float16)' : '');
+    }
+  }
+}
+</script>
+</div>
+
+<div class="callout bestiario" data-id="m3-mediump-movil" data-titulo="Funciona en el ordenador y falla en el móvil">
+  <p><strong>Síntoma:</strong> un shader perfecto en el escritorio se ve mal en un teléfono: el ruido sale a bloques o desaparece, las animaciones van a saltos, las coordenadas de textura tiemblan en imágenes grandes, aparecen franjas en los degradados o todo se vuelve negro a partir de cierto valor.</p>
+  <p><strong>Causa:</strong> <code>precision mediump float</code> (muy común en código antiguo y en tutoriales de WebGL1). En el escritorio es float32 y no se nota; en el móvil es float16: con 11 bits significativos, 1000.3 se guarda como 1000.5, <code>u_time</code> a los 10 minutos ya avanza a saltos de medio segundo (y a partir de los 17, de un segundo entero), y cualquier valor por encima de 65 504 es infinito.</p>
+  <p><strong>Solución:</strong> <code>precision highp float;</code> para todo lo que sean posiciones, coordenadas de textura, tiempo y hashes. <code>mediump</code> solo compensa en cálculos de color en GPU de móvil muy justas. Y prueba en un móvil de verdad, o simula el float16 (<code>Math.f16round</code> en JavaScript, o la función <code>fp16()</code> de los shaders de abajo).</p>
+</div>
+
+<div class="quiz">
+  <p class="pregunta">Un shader con <code>precision mediump float;</code> anima con <code>sin(u_time)</code>. En tu portátil va perfecto; en un móvil, a los cinco minutos, la animación va a saltos. ¿Qué pasa?</p>
+  <ul>
+    <li>El reloj del móvil es menos preciso y <code>u_time</code> llega con saltos<div class="explicacion">El tiempo se mide en JavaScript con doble precisión: llega bien. El problema está en cómo lo guarda el shader.</div></li>
+    <li data-correcta>En ese móvil <code>mediump</code> es float16: con <code>u_time</code> ≈ 300 s, dos valores consecutivos distan 0.25 s<div class="explicacion">Correcto. Con 11 bits significativos, entre 256 y 512 el ULP es 2⁸⁻¹⁰ = 0.25 s: el tiempo avanza a saltos de un cuarto de segundo, unos 15 frames. En el portátil, mediump es float32 y el problema no aparece hasta pasados días.</div></li>
+    <li>El móvil dibuja a menos fps y eso se ve como saltos<div class="explicacion">Menos fps harían la animación menos fluida desde el principio, no a partir de los cinco minutos. Que empeore con el tiempo es la firma de un problema de precisión.</div></li>
+  </ul>
+</div>
+
+<h2>El tiempo que crece: u_time tras horas</h2>
+<p>Ya lo anticipamos en <a href="03-trigonometria.html">3.3</a>. Un shader que usa <code>sin(u_time)</code> sufre dos degradaciones a medida que pasa el tiempo:</p>
+<ol>
+  <li><strong>La resolución del propio tiempo</strong>: el uniform es un float32. Tras un día (86 400 s), <code>u_time</code> solo puede avanzar en pasos de 0.0078 s; entre los 1.5 y los 3 días, de 0.016 s (un frame); pasados los 3 días y 1 hora (2¹⁸ = 262 144 s), de 0.031 s, casi dos frames; pasados los 12 días y medio (2²⁰ = 1 048 576 s), de 0.125 s. La animación va «a golpes» aunque se dibuje a 60 fps.</li>
+  <li><strong>La precisión del seno</strong>: la GPU reduce el argumento restándole múltiplos de 2π con precisión limitada. En el M1 medimos errores de 0.00002 con x = 1000, 0.0007 con x = 10 000 y 0.03 con x = 1 000 000; con x = 10 000 000, el seno devolvió 0.707 en lugar de 0.421. Otras GPU son mejores o peores: la especificación no promete nada.</li>
+</ol>
+<p>Este shader simula que la página lleva abierta las horas que elijas: suma ese tiempo a <code>u_time</code> dentro de la GPU, en float32, como lo haría una aplicación ingenua. Mira el péndulo y la onda con 0, 50 y 500 horas.</p>
+
+<div class="glsl-playground" data-titulo="u_time tras muchas horas" data-altura="280" data-apilado
+     data-uniforms='{"u_horas":{"tipo":"float","min":0,"max":500,"valor":0,"paso":1,"etiqueta":"horas abierta"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform float u_horas;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float t = u_time + u_horas * 3600.0;          // el tiempo "total" de la página, en float32
+  vec3 color = vec3(0.07, 0.08, 0.10);
+
+  // Una onda que avanza: y = 0.25·sin(8x − 3t) (a la izquierda)
+  float y = 0.25 * sin(8.0 * p.x - 3.0 * t) - 0.35;
+  if (p.x < 0.1 && abs(p.y - y) < 0.012) color = vec3(0.25, 0.8, 0.9);
+
+  // Un péndulo que oscila a 0.5 Hz (a la derecha)
+  float ang = 0.9 * sin(6.2832 * 0.5 * t);
+  vec2 pivote = vec2(0.9, 0.7), dir = vec2(sin(ang), -cos(ang));
+  float h = clamp(dot(p - pivote, dir), 0.0, 1.1);        // proyección sobre la varilla (3.2)
+  if (length(p - pivote - h * dir) < 0.01) color = vec3(0.8);
+  if (length(p - pivote - 1.1 * dir) < 0.08) color = vec3(0.55, 0.48, 1.0);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+</div>
+
+<p>Con 0 horas, todo es suave. Con 50 horas (180 000 s), el péndulo ya avanza a saltos de 1/64 de segundo y la onda es una escalera: <code>8x − 3t</code>, con <code>t</code> ≈ 180 000, solo puede tomar valores separados por 0.06 radianes, así que la curva se dibuja a peldaños (el mismo efecto que el <code>sin(x + D)</code> del graficador de 3.3). Con 500 horas, la onda es irreconocible y el péndulo da saltos erráticos.</p>
+
+<div class="callout bestiario" data-id="m3-tiempo-horas" data-titulo="La animación va a saltos tras horas con la página abierta">
+  <p><strong>Síntoma:</strong> una animación en shader (o en JavaScript, si pasa el tiempo por <code>Float32Array</code>) funciona perfectamente al cargar la página, pero tras varias horas o días se vuelve entrecortada, tiembla o se deforma. Recargar la página «lo arregla». Típico de pantallas de exposición, fondos animados y salvapantallas.</p>
+  <p><strong>Causa:</strong> el tiempo en segundos crece sin límite y, en float32, pierde resolución (ULP de 0.0078 s a las 24 h, 0.016 s a los 3 días, 0.031 s pasados los 3 días y 1 hora); además, <code>sin</code> y <code>cos</code> de argumentos grandes son imprecisos en la GPU. Con <code>mediump</code> en un móvil pasa en minutos (el bicho <a href="#m3-mediump-movil">«Funciona en el ordenador y falla en el móvil»</a>), y con la hora del sistema, desde el primer frame: <code>Date.now()</code> son milisegundos desde 1970, unos 1,8 billones, y en float32 sus valores representables están separados 2¹⁷ ms, más de dos minutos (lo mides en <a href="../05-webgl/04-uniforms-animacion.html#el-tiempo-en-segundos-y-por-que-pierde-precision">5.4</a>).</p>
+  <p><strong>Solución:</strong> envuelve el tiempo en JavaScript, donde es un double, antes de enviarlo: <code>gl.uniform1f(loc, (performance.now() / 1000) % PERIODO)</code>, con <code>PERIODO</code> múltiplo de todos los periodos de tu animación (para que el salto al envolver no se note). Si las frecuencias no tienen un múltiplo común razonable, acumula la fase de cada oscilación en JavaScript (<code>fase = (fase + 2π·f·dt) % (2π)</code>) y envía las fases. Es el ejemplo siguiente. Y manda siempre segundos desde el arranque de la animación, nunca <code>Date.now()</code>.</p>
+</div>
+
+<section class="ejemplo">
+  <h3>Ejemplo 3.7.2 — Envolver el tiempo sin que se note</h3>
+  <p>Simulamos en JavaScript, con <code>Math.fround</code>, lo que recibe la GPU, y comparamos tres estrategias tras 500 horas.</p>
+  <div class="js-playground" data-titulo="Tres formas de enviar el tiempo" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+const HORAS = 500;
+const inicio = HORAS * 3600;                 // segundos que lleva la página abierta
+const dt = 1 / 60;                           // un frame a 60 fps
+const f = 0.5;                               // una oscilación de 0.5 Hz (periodo 2 s)
+
+// 1) Ingenua: enviar el tiempo tal cual (float32 en la GPU)
+const ingenua = (t) => Math.fround(t);
+// 2) Envuelto con un periodo que es múltiplo del de la animación (aquí 2 s × 30 = 60 s)
+const PERIODO = 60;
+const envuelta = (t) => Math.fround(t % PERIODO);     // el % se hace en double, en la CPU
+// 3) Fase acumulada en la CPU y envuelta a [0, 2π)
+let fase = (2 * Math.PI * f * inicio) % (2 * Math.PI);
+
+console.log('Diez frames consecutivos tras', HORAS, 'h: valor enviado → incremento');
+let prevI = ingenua(inicio), prevE = envuelta(inicio);
+for (let k = 1; k <= 10; k++) {
+  const t = inicio + k * dt;
+  const i = ingenua(t), e = envuelta(t);
+  fase = (fase + 2 * Math.PI * f * dt) % (2 * Math.PI);
+  console.log('frame', String(k).padStart(2), '| ingenua +' + (i - prevI).toFixed(4),
+    '| envuelta +' + (e - prevE).toFixed(4), '| fase', Math.fround(fase).toFixed(4));
+  prevI = i; prevE = e;
+}
+console.log('Cada frame dura 0.0167 s. La ingenua avanza a saltos de 0.125 o 0; las otras dos, suaves.');
+// ¿Y el valor? sin(2π·f·t) en t = inicio + 0.3 s, calculado de tres formas
+const tP = inicio + 0.3, w = 2 * Math.PI * f;
+console.log('sin(2π·f·t): exacto', Math.sin(w * tP).toFixed(4), '| con t en float32', Math.sin(w * ingenua(tP)).toFixed(4), '| envuelto', Math.sin(w * envuelta(tP)).toFixed(4));
+</script>
+  </div>
+  <ol>
+    <li><strong>La ingenua</strong> manda <code>t</code> ≈ 1 800 000: su ULP es 0.125 s, así que la GPU ve el tiempo parado durante 7 u 8 frames y luego un salto de 0.125 s. Y no solo se mueve a saltos: en el instante de la última línea, la onda vale 0.7071 en lugar de 0.8090, porque <code>t</code> se ha redondeado 0.05 s.</li>
+    <li><strong>La envuelta</strong> hace el <code>%</code> en JavaScript, con doble precisión, y manda un número entre 0 y 60 (ULP de 0.0000038 s). El salto al volver a 0 cada 60 s es invisible porque 60 es múltiplo del periodo de la animación (2 s): $\sin(2\pi f\,t)$ vale lo mismo en $t$ y en $t - 60$.</li>
+    <li><strong>La fase acumulada</strong> es la solución general cuando hay varias frecuencias sin múltiplo común, o cuando la frecuencia cambia en vivo (el bicho de la fase de <a href="03-trigonometria.html">3.3</a>): cada oscilación guarda su propia fase entre 0 y 2π.</li>
+  </ol>
+</section>
+
+<h2>El hash clásico y por qué se rompe</h2>
+<p>Si has leído shaders ajenos, has visto esta línea mil veces. Genera un número «aleatorio» entre 0 y 1 a partir de una posición, sin estado, y es la semilla de muchos ruidos (lección <a href="../06-glsl/06-ruido.html">6.6</a>):</p>
+<script type="text/plain" class="codigo" data-lang="glsl" data-titulo="El hash de una línea más copiado de internet">
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+</script>
+<p>Cómo funciona: <code>dot</code> mezcla las dos coordenadas en un solo número; <code>sin</code> lo lleva a $[-1, 1]$ de forma muy irregular; multiplicar por 43 758 amplifica las cifras decimales más bajas del seno, y <code>fract</code> se queda solo con ellas. Esas cifras bajas cambian de forma caótica entre celdas vecinas: parece aleatorio. Pero el hash vive de las <strong>cifras menos significativas</strong> de un cálculo en float32, y eso es exactamente lo primero que se pierde:</p>
+<ul>
+  <li><strong>Con coordenadas grandes</strong>, el argumento del seno vale millones: su ULP crece (0.5 hacia los 5 millones) y el seno de la GPU pierde precisión con argumentos grandes. Aparecen rayas, bloques y repeticiones.</li>
+  <li><strong>Con <code>mediump</code> en float16</strong>, 43 758.5453 se guarda como 43 744, y un producto del orden de decenas de miles tiene ULP de 16 o 32: <code>fract</code> de eso es siempre 0. <strong>El ruido desaparece</strong>.</li>
+  <li><strong>En GPU distintas</strong>, el seno da resultados distintos en las cifras bajas: el mismo hash produce patrones diferentes en cada tarjeta. Si necesitas el mismo ruido en todas partes (una semilla reproducible), este hash no sirve.</li>
+</ul>
+
+<div class="glsl-playground" data-titulo="El hash clásico: coordenadas grandes y float16" data-altura="300" data-apilado
+     data-uniforms='{"u_desplazamiento":{"tipo":"float","min":0,"max":200000,"valor":0,"paso":1000,"etiqueta":"desplazamiento"},"u_fp16":{"tipo":"bool","valor":false,"etiqueta":"simular mediump (float16)"},"u_entero":{"tipo":"bool","valor":false,"etiqueta":"hash de enteros (PCG)"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_desplazamiento;
+uniform bool u_fp16;
+uniform bool u_entero;
+out vec4 fragColor;
+
+// Redondea como un float16: 23 bits de mantisa → 10 (con redondeo), máximo ±65504
+float fp16(float x) {
+  uint u = floatBitsToUint(x);
+  u = (u + 0x1000u) & 0xFFFFE000u;             // suma medio "último bit" y borra 13 bits
+  return clamp(uintBitsToFloat(u), -65504.0, 65504.0);
+}
+
+float hashClasico(vec2 p) {
+  if (!u_fp16) return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+  p = vec2(fp16(p.x), fp16(p.y));             // cada paso, redondeado como en un móvil
+  float d = fp16(fp16(p.x * fp16(12.9898)) + fp16(p.y * fp16(78.233)));
+  return fract(fp16(fp16(sin(d)) * fp16(43758.5453)));
+}
+
+// Hash de enteros PCG (Jarzynski y Olano, 2020): solo operaciones exactas con uint
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+float hashEntero(vec2 celda) {
+  uvec2 q = uvec2(ivec2(celda));               // negativos incluidos: se conserva el patrón de bits
+  return float(pcg(q.x + pcg(q.y))) / 4294967295.0;
+}
+
+void main() {
+  vec2 celda = floor(gl_FragCoord.xy / 6.0) + u_desplazamiento;   // celdas de 6 px
+  float v = u_entero ? hashEntero(celda) : hashClasico(celda);
+  fragColor = vec4(vec3(v), 1.0);
+}
+</script>
+</div>
+
+<p>Con desplazamiento 0, el hash clásico da un ruido aceptable. Sube el desplazamiento: hacia 5 000 aparecen diagonales, hacia 20 000 son rayas evidentes, hacia 60 000 el ruido solo tiene unos pocos niveles de gris y hacia 150 000 es un patrón de rayas. Lo medimos: en un bloque de 64 × 64 celdas, el hash dio 955 valores distintos sin desplazamiento, 351 con 1 000, 65 con 5 000 y solo 17 con 20 000 (sumando el mismo desplazamiento a x y a y, como hace el editor); y a partir de 2 000 ningún valor superó 0.985 (lo verás en el ejercicio 3.7.3). Activa «simular mediump» con desplazamiento 0: la pantalla se queda casi negra. Y el hash de enteros, basado solo en multiplicaciones, desplazamientos y XOR de <code>uint</code> (operaciones exactas en cualquier GPU con GLSL ES 3.00), da el mismo ruido perfecto con cualquier desplazamiento, en cualquier tarjeta.</p>
+
+<p>La simulación de float16 del editor es un buen ejemplo de hack con bits:</p>
+<div class="anotado" data-lang="glsl">
+<script type="text/plain">
+float fp16(float x) {
+  uint u = floatBitsToUint(x);
+  u = (u + 0x1000u) & 0xFFFFE000u;
+  return clamp(uintBitsToFloat(u), -65504.0, 65504.0);
+}
+</script>
+<ol>
+  <li data-l="2"><code>floatBitsToUint</code> (GLSL ES 3.00) devuelve los 32 bits del float como un entero sin signo, sin convertir el valor: lo mismo que ver un <code>Float32Array</code> a través de un <code>Uint32Array</code> en JavaScript.</li>
+  <li data-l="3">Un float16 guarda 10 bits de mantisa; un float32, 23: hay que quitar los 13 más bajos. <code>&amp; 0xFFFFE000u</code> los pone a cero, y sumar antes <code>0x1000u</code> (un 1 en el bit 12, la mitad del último bit que se conserva) convierte el truncado en un redondeo al más cercano. Si la mantisa se desborda al sumar, el acarreo pasa al exponente y el número sube a la siguiente potencia de 2, que es justo el redondeo correcto (la misma propiedad del ejercicio 3.7.1).</li>
+  <li data-l="4">De vuelta a float, y recortado al máximo de float16 (uno de verdad daría infinito). Lo que no simula: el rango de exponentes, más pequeño en float16 (por debajo de 6.1·10⁻⁵ los valores pierden precisión o se hacen 0).</li>
+</ol>
+</div>
+
+<div class="callout bestiario" data-id="m3-hash-roto" data-titulo="El ruido se convierte en rayas o bloques (o desaparece en el móvil)">
+  <p><strong>Síntoma:</strong> un efecto con ruido (grano, estrellas, disolución) se ve bien cerca del origen y se llena de rayas o repeticiones al desplazarte lejos; o se ve distinto en cada ordenador; o en el móvil el ruido es un color plano.</p>
+  <p><strong>Causa:</strong> el hash <code>fract(sin(…) * 43758.5453)</code> depende de las cifras menos significativas de un float32 y de un seno de precisión indefinida. Con argumentos grandes o con float16, esas cifras no existen.</p>
+  <p><strong>Solución:</strong> mantén pequeñas las coordenadas que entran al hash (envuélvelas con <code>mod</code> a un periodo de unos cientos de celdas: en nuestras pruebas la calidad ya caía hacia la celda 500), usa <code>highp</code>, o mejor, cambia a un hash de enteros: con GLSL ES 3.00 tienes <code>uint</code>, desplazamientos y XOR, y hashes como PCG son exactos, rápidos y reproducibles. Más en <a href="../06-glsl/06-ruido.html">6.6</a>.</p>
+</div>
+
+<h2>Cancelación catastrófica</h2>
+<p>Restar dos números casi iguales es la operación más peligrosa del cálculo con floats. Cada número trae su error de redondeo en la última cifra; al restar, las cifras iguales se anulan, las buenas desaparecen y el resultado se queda solo con el ruido. Un ejemplo que parece inofensivo:</p>
+$$\frac{1 - \cos x}{x^2} \;\xrightarrow{\;x\to0\;}\; \frac12$$
+<p>Cerca de 0, $\cos x$ se parece muchísimo a 1: con $x = 0.001$, $\cos x = 0.9999995$, y en float32 solo quedan un par de cifras significativas de la diferencia $1 - \cos x$. En la GPU medimos $0.64$ con $x = 0.001$ y $1.73$ con $x = 0.0003$ (los números exactos dependen de la GPU y de cómo calcule <code>cos</code>), cuando la respuesta es $0.5$. La solución es <strong>reescribir la fórmula para no restar números casi iguales</strong>: como $1 - \cos x = 2\sin^2(x/2)$, la versión $2\sin^2(x/2)/x^2$ da 0.4999998 en los mismos puntos. El graficador lo evalúa en la GPU; acerca el zoom al centro. (Fíjate en que el cuadrado del seno está escrito como un producto y no con <code>pow(…, 2.0)</code>: con senos negativos, <code>pow</code> sería indefinido, y en el graficador la mitad izquierda desaparecería. Es la lección de <a href="04-funciones-forma.html">3.4</a>.)</p>
+
+<div class="graficador" data-x="-0.03,0.03" data-y="-0.2,1.6" data-titulo="Cancelación catastrófica en float32 (evaluado en la GPU)">
+<script type="text/x-exprs">
+(1.0 - cos(x)) / (x * x)
+2.0 * sin(x * 0.5) * sin(x * 0.5) / (x * x)
+</script>
+</div>
+
+<p>La misma trampa aparece en gráficos constantemente, disfrazada: la distancia entre dos puntos muy lejanos del origen y muy cercanos entre sí (<code>length(a - b)</code> con <code>a</code> y <code>b</code> en torno a un millón), la diferencia de dos tiempos grandes, $\sqrt{x^2 + 1} - x$ para $x$ grande, la fórmula de la ecuación de segundo grado cuando $b^2 \gg 4ac$. La regla: <strong>resta los números grandes antes de perder la precisión</strong>, en una zona donde todavía son exactos (o en doble precisión, en JavaScript), o reescribe la expresión algebraicamente.</p>
+
+<h2>Temblores lejos del origen</h2>
+<p>La versión más famosa de la cancelación está en los juegos de mundo abierto. Si el mundo mide decenas de kilómetros y las posiciones se guardan en float32, un personaje a 10 km del origen tiene sus coordenadas redondeadas a 1 mm; a 1000 km, a 6 cm. El vertex shader calcula <code>posicionMundo - posicionCamara</code> (dentro de la matriz de vista) con dos números enormes casi iguales, y el resultado, que debería ser pequeño y preciso, sale redondeado a esa rejilla: al moverse la cámara, los vértices saltan de un punto de la rejilla al siguiente y todo <strong>tiembla</strong>.</p>
+
+<div class="demo" id="demo-temblor">
+  <div class="demo-lienzo" style="height:260px"></div>
+  <div class="demo-controles"></div>
+  <div class="demo-info"></div>
+</div>
+
+<div class="callout hack" data-titulo="Renderizado relativo a la cámara">
+  <p>La solución estándar: <strong>resta la posición de la cámara en JavaScript, en doble precisión</strong>, y envía a la GPU solo posiciones relativas a la cámara, que son pequeñas y precisas. La matriz de vista pierde su traslación (la cámara queda siempre en el origen) y la de modelo recibe <code>posObjeto − posCamara</code> calculado en double. Es lo que hace la columna derecha de la demo. Otra variante, el <strong>origen flotante</strong> (<em>floating origin</em>), recoloca periódicamente el origen del mundo cerca del jugador; <em>Kerbal Space Program</em> lo popularizó para poder volar entre planetas sin que la nave temblara.</p>
+</div>
+
+<div class="callout bestiario" data-id="m3-temblor-mundo-grande" data-titulo="El personaje tiembla lejos del origen">
+  <p><strong>Síntoma:</strong> cerca del centro del mundo todo va bien; a medida que te alejas, los objetos vibran al mover la cámara, las mallas se «descomponen» con vértices que saltan, las sombras y las texturas parpadean.</p>
+  <p><strong>Causa:</strong> las posiciones de mundo en float32 tienen una rejilla de precisión que crece con la distancia al origen (0.0625 a un millón de unidades), y la resta mundo − cámara en la GPU se hace con esos números ya redondeados.</p>
+  <p><strong>Solución:</strong> resta la cámara en la CPU con doble precisión (renderizado relativo a la cámara) u origen flotante. Y elige unidades sensatas: si tu mundo cabe en ±10 000 unidades, trabajas con precisión submilimétrica.</p>
+</div>
+
+<h2>NaN e infinito en los shaders</h2>
+<p>En la GPU, un NaN nace de las mismas operaciones que en JavaScript: <code>0.0 / 0.0</code>, <code>sqrt</code> o <code>log</code> de un negativo, <code>pow</code> con base negativa (<a href="04-funciones-forma.html">3.4</a>), <code>normalize(vec2(0.0))</code> (<a href="01-vectores.html">3.1</a>), <code>acos(1.0000001)</code> (<a href="02-producto-punto-cruz.html">3.2</a>). Dividir un número distinto de cero por cero da <strong>±infinito</strong>: eso sí lo garantiza la especificación para <code>highp</code>. Y los NaN se <strong>contagian</strong>: cualquier operación con un NaN suele dar NaN.</p>
+<p>¿Qué se ve en pantalla? Al escribir el color en un framebuffer de 8 bits por canal, el NaN se convierte en algo: en el M1 medimos <strong>0</strong> (negro), y +∞ se convirtió en 1. Es la causa de los típicos <strong>píxeles negros sueltos</strong>. Pero hay algo peor: un solo píxel NaN en una textura intermedia se extiende. Un desenfoque (<a href="../06-glsl/08-texturas-efectos.html">6.8</a>) promedia cada píxel con sus vecinos, así que el NaN contamina todos los píxeles de su alrededor, y en la pasada siguiente, los de alrededor de esos: un punto negro que crece.</p>
+
+<div class="callout bestiario" data-id="m3-nan-pixel-negro" data-titulo="Píxeles negros sueltos o manchas negras que crecen">
+  <p><strong>Síntoma:</strong> aparecen píxeles negros aislados (a menudo en el centro exacto de algo, en un borde o en una esquina), o una mancha negra que crece con los frames en un efecto de varias pasadas.</p>
+  <p><strong>Causa:</strong> un NaN (o un infinito) en el cálculo de esos píxeles: una normalización de un vector nulo, una raíz de un negativo, una división por una distancia que vale 0. Al escribirse, NaN se convierte en negro (en nuestra GPU); en efectos que leen el frame anterior o promedian vecinos, se propaga.</p>
+  <p><strong>Solución:</strong> protege las operaciones peligrosas: <code>max(x, 0.0)</code> antes de <code>sqrt</code> y <code>pow</code>, <code>clamp</code> antes de <code>acos</code>, <code>max(length(v), 1e-6)</code> antes de dividir, y comprueba el vector nulo antes de normalizar. Para localizar el NaN, pinta de un color chillón los píxeles donde <code>isnan()</code> sea verdadero (<code>any(isnan(v)) ? vec4(1.0, 0.0, 1.0, 1.0) : color</code>; lo practicarás en <a href="../05-webgl/10-depuracion.html#ver-lo-que-calcula-la-gpu">5.10</a>)… pero lee antes la caja siguiente.</p>
+</div>
+
+<h3>El compilador supone que no hay NaN</h3>
+<p>La especificación dice que las GPU <em>no están obligadas a generar NaN</em> y que las operaciones con un NaN <em>no tienen por qué devolver NaN</em>; solo pide que <code>isnan()</code> funcione si los NaN existen. Los compiladores aprovechan esa libertad con optimizaciones del tipo «<em>fast math</em>», que suponen que nunca habrá NaN ni infinitos. En Chrome sobre Metal (el de nuestras pruebas en un M1) medimos, con un NaN auténtico enviado como uniform:</p>
+<table>
+  <thead><tr><th>Expresión (con <code>n</code> = NaN)</th><th>IEEE 754 diría</th><th>Resultado en la GPU</th></tr></thead>
+  <tbody>
+    <tr><td><code>n != n</code></td><td>true (la forma clásica de detectar NaN)</td><td><strong>false</strong></td></tr>
+    <tr><td><code>n * 0.0</code></td><td>NaN</td><td><strong>0</strong></td></tr>
+    <tr><td><code>n - n</code></td><td>NaN</td><td><strong>0</strong></td></tr>
+    <tr><td><code>x / x</code> con <code>x = 0</code></td><td>NaN</td><td><strong>1</strong></td></tr>
+    <tr><td><code>max(n, 0.0)</code>, <code>clamp(n, 0.0, 1.0)</code></td><td>depende de la función</td><td>0 y 0</td></tr>
+    <tr><td><code>isnan(n)</code></td><td>true</td><td>true</td></tr>
+  </tbody>
+</table>
+<p>Y el detalle más desconcertante de toda la lección: en esa misma configuración, <strong>basta con que el shader use <code>isnan()</code> o <code>isinf()</code> en cualquier sitio</strong> (aunque sea sobre otra variable) para que todas las filas de la tabla pasen a comportarse según IEEE 754: <code>n != n</code> da true, <code>0/0</code> da NaN, y también cambian cálculos que no tienen nada que ver, como <code>pow(x, 2.0)</code> con <code>x</code> negativo, que pasa de dar $x^2$ a dar NaN. Todo indica que ANGLE compila los shaders con las optimizaciones <em>fast math</em> de Metal y las desactiva cuando el shader contiene <code>isnan</code> o <code>isinf</code>, porque con ellas no funcionarían. Compruébalo: los dos editores siguientes son idénticos salvo por la última línea del segundo, un <code>isnan</code> sobre un uniform que nunca es NaN.</p>
+
+<div class="m3-dos">
+<div class="glsl-playground" data-titulo="Sin isnan" data-altura="300" data-apilado data-editor="oculto">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_otro;
+out vec4 fragColor;
+
+void main() {
+  float x = gl_FragCoord.x / u_resolution.x * 2.0 - 1.0;   // de -1 a 1
+  float v = pow(x, 2.0);             // base negativa en la mitad izquierda: indefinido
+  fragColor = vec4(vec3(v), 1.0);
+}
+</script>
+</div>
+<div class="glsl-playground" data-titulo="Con un isnan que no hace nada" data-altura="300" data-apilado data-editor="oculto">
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_otro;
+out vec4 fragColor;
+
+void main() {
+  float x = gl_FragCoord.x / u_resolution.x * 2.0 - 1.0;   // de -1 a 1
+  float v = pow(x, 2.0);             // base negativa en la mitad izquierda: indefinido
+  fragColor = vec4(vec3(v), 1.0);
+  if (isnan(u_otro)) fragColor = vec4(1.0, 0.0, 1.0, 1.0);   // u_otro vale 0: nunca se cumple
+}
+</script>
+</div>
+</div>
+
+<p>En el primero, la parábola $x^2$ sale completa (el compilador ha convertido <code>pow(x, 2.0)</code> en <code>x * x</code>). En el segundo, la mitad izquierda es negra: <code>pow</code> se calcula de verdad, da NaN, y el NaN se escribe como negro. (Pulsa «Ver código» en cada uno para comprobar que son iguales.) Otro navegador, otra GPU u otra versión de Chrome pueden comportarse distinto: lo único seguro es no depender de lo indefinido.</p>
+
+<div class="callout bestiario" data-id="m3-isnan-heisenbug" data-titulo="Añadir isnan() para depurar cambia el resultado">
+  <p><strong>Síntoma:</strong> un shader tiene un problema visual; añades una comprobación con <code>isnan()</code> para encontrar el NaN y… el problema cambia de forma, desaparece o aparece en otro sitio. O bien <code>x != x</code> nunca detecta nada, aunque hay NaN a la vista.</p>
+  <p><strong>Causa:</strong> el compilador optimiza suponiendo que no existen NaN ni infinitos (<em>fast math</em>): pliega <code>x != x</code> a false, <code>x * 0</code> a 0, <code>x / x</code> a 1. En Chrome sobre Metal, usar <code>isnan</code> o <code>isinf</code> desactiva esas optimizaciones en todo el shader, y con ellas cambian los resultados de todas las operaciones indefinidas.</p>
+  <p><strong>Solución:</strong> no dependas de comportamientos indefinidos: elimina la causa del NaN (bases negativas, divisiones por cero, raíces de negativos) en lugar de detectarlo después. Para detectar NaN, usa <code>isnan()</code>, nunca <code>x != x</code>, y ten presente que la versión con la comprobación puede comportarse distinto de la versión sin ella: verifica el arreglo con el código final.</p>
+</div>
+
+<h2>Comparar floats</h2>
+<p>Consecuencia de todo lo anterior: <strong>nunca compares con <code>==</code> dos floats calculados por caminos distintos</strong>. <code>0.1 + 0.2 == 0.3</code> es falso en JavaScript; en un shader, <code>if (uv.x == 0.5)</code> sobre una coordenada interpolada no se cumplirá casi nunca (recuerda que <code>gl_FragCoord</code> se mide en el centro del píxel, <a href="01-vectores.html">3.1</a>). Se compara con una tolerancia, y elegirla bien es un arte:</p>
+<ul>
+  <li><strong>Tolerancia absoluta</strong>, <code>Math.abs(a - b) &lt; 1e-6</code>: sirve cerca de 0, pero con números grandes es demasiado estricta (dos floats consecutivos cerca de un millón ya distan 0.0625) y con números diminutos demasiado laxa.</li>
+  <li><strong>Tolerancia relativa</strong>, <code>Math.abs(a - b) &lt;= rel * Math.max(Math.abs(a), Math.abs(b))</code>: escala con la magnitud, pero falla cerca de 0 (cualquier cosa comparada con 0 da una diferencia relativa del 100&nbsp;%).</li>
+  <li><strong>Las dos a la vez</strong>, que es lo que se hace en la práctica: iguales si la diferencia es menor que la tolerancia absoluta <em>o</em> que la relativa.</li>
+</ul>
+<p>Y un error frecuente: usar <code>Number.EPSILON</code> como tolerancia universal. Es el ULP de 1 en float64 ($2.2\times10^{-16}$): demasiado pequeño para casi cualquier cálculo con errores acumulados, y absurdo para comparar números que han pasado por float32, cuyo equivalente es $1.19\times10^{-7}$.</p>
+
+<div class="quiz">
+  <p class="pregunta">En un fragment shader escribes <code>if (x != x) color = vec3(1.0, 0.0, 1.0);</code> para marcar los NaN. ¿Qué puede pasar?</p>
+  <ul>
+    <li>Funciona siempre: por IEEE 754, NaN es el único valor distinto de sí mismo<div class="explicacion">Es cierto en IEEE 754 y en JavaScript, pero la especificación de GLSL permite al compilador suponer que no hay NaN. En nuestra prueba, <code>n != n</code> con un NaN auténtico dio false.</div></li>
+    <li data-correcta>Que nunca marque nada: el compilador puede simplificar <code>x != x</code> a <code>false</code>; hay que usar <code>isnan(x)</code><div class="explicacion">Correcto. <code>isnan</code> es la única forma que la especificación respalda. Y aun así, recuerda que en Chrome sobre Metal su presencia cambia cómo se compila todo el shader.</div></li>
+    <li>Error de compilación: no se pueden comparar floats con !=<div class="explicacion">Compila sin problemas: comparar floats es legal (otra cosa es que sea buena idea con valores calculados). El problema es silencioso.</div></li>
+  </ul>
+</div>
+
+<h2>El límite de 2²⁴</h2>
+<p>Con 24 bits de precisión, float32 representa exactamente todos los enteros hasta $2^{24} = 16\,777\,216$. A partir de ahí, solo los pares; a partir de $2^{25}$, los múltiplos de 4. <code>Math.fround(16777217)</code> es 16 777 216, y sumarle 1 no lo cambia: un contador en float32 que llega a $2^{24}$ <strong>se congela</strong>. ¿Cuándo pasa en gráficos?</p>
+<ul>
+  <li>Un contador de frames guardado como float: $2^{24}$ frames a 60 fps son <strong>77.7 horas</strong>. Por eso el editor del curso declara <code>u_frame</code> como <code>int</code>.</li>
+  <li>Índices de píxel en texturas grandes: una textura de 4096 × 4096 tiene exactamente $2^{24}$ píxeles, así que sus índices lineales (<code>y * ancho + x</code>, de 0 a $2^{24} - 1$) caben justos en float32; en una de 8192 × 4096 (2²⁵ píxeles), los índices impares de la segunda mitad de la textura ya no son exactos.</li>
+  <li>Identificadores de objeto o de vértice guardados en un atributo float (para el <em>picking</em> por color, por ejemplo): por encima de 16 millones, dos objetos comparten número.</li>
+</ul>
+<p>GLSL ES 3.00 tiene <code>int</code> y <code>uint</code> de 32 bits exactos (y <code>gl_VertexID</code> es un <code>int</code>): úsalos para contar e indexar, y convierte a float solo para calcular.</p>
+
+<div class="callout bestiario" data-id="m3-contador-congelado" data-titulo="Un contador se queda congelado o avanza de dos en dos">
+  <p><strong>Síntoma:</strong> tras mucho tiempo, un contador de frames o de eventos deja de avanzar, o avanza a saltos de 2, 4, 8; los IDs de objetos muy numerosos se repiten.</p>
+  <p><strong>Causa:</strong> el contador es un float32 y ha superado $2^{24}$: <code>x + 1</code> se redondea a <code>x</code>.</p>
+  <p><strong>Solución:</strong> cuenta con enteros (<code>int</code>/<code>uint</code> en GLSL, números normales en JavaScript, que son exactos hasta $2^{53}$) y, si el valor llega a la GPU como float, envíalo envuelto (<code>frame % 1000000</code>).</p>
+</div>
+
+<h2>Ejercicios</h2>
+
+<section class="ejercicio" data-nivel="1">
+  <h3>Ejercicio 3.7.1 — El siguiente float</h3>
+  <p>Implementa <code>siguienteF32(x)</code>, el float32 inmediatamente mayor que <code>x</code> (para <code>x</code> positivo y finito), <strong>manipulando los bits</strong>: un <code>Float32Array</code> y un <code>Uint32Array</code> que comparten el mismo <code>ArrayBuffer</code> (lección <a href="../01-web/06-binario.html">1.6</a>). Después, <code>ulp(x)</code>. Compara con la fórmula $2^{\lfloor\log_2 x\rfloor - 23}$.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.7.1" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+const buf = new ArrayBuffer(4);
+const comoFloat = new Float32Array(buf);   // las mismas 4 bytes vistas como float…
+const comoEntero = new Uint32Array(buf);   // …y como entero sin signo
+
+function siguienteF32(x) {
+  // TODO: guarda x como float32, suma 1 a su patrón de bits y léelo como float
+  return x;
+}
+function ulp(x) {
+  // TODO: la distancia de fround(x) al siguiente float32
+  return 0;
+}
+
+// --- pruebas ---
+for (const x of [1, 0.1, 1000, 86400, 1e6, 16777216]) {
+  const formula = 2 ** (Math.floor(Math.log2(Math.fround(x))) - 23);
+  console.log(String(x).padStart(9), '→ siguiente', siguienteF32(x), '| ulp', ulp(x), ulp(x) === formula ? '✓' : '✗ fórmula: ' + formula);
+}
+</script>
+<script type="text/x-js" data-solucion>
+const buf = new ArrayBuffer(4);
+const comoFloat = new Float32Array(buf);
+const comoEntero = new Uint32Array(buf);
+
+function siguienteF32(x) {
+  comoFloat[0] = x;          // se redondea al float32 más cercano y se guardan sus bits
+  comoEntero[0] += 1;        // el siguiente patrón de bits…
+  return comoFloat[0];       // …es el siguiente float (para positivos finitos)
+}
+function ulp(x) {
+  const f = Math.fround(x);
+  return siguienteF32(f) - f; // la resta es exacta en float64
+}
+
+for (const x of [1, 0.1, 1000, 86400, 1e6, 16777216]) {
+  const formula = 2 ** (Math.floor(Math.log2(Math.fround(x))) - 23);
+  console.log(String(x).padStart(9), '→ siguiente', siguienteF32(x), '| ulp', ulp(x), ulp(x) === formula ? '✓' : '✗ fórmula: ' + formula);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Escribe <code>x</code> en <code>comoFloat[0]</code>, incrementa <code>comoEntero[0]</code> y vuelve a leer <code>comoFloat[0]</code>.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para <code>ulp</code>, redondea primero <code>x</code> a float32 (<code>Math.fround</code>): el ULP se mide desde un float, no desde un número cualquiera.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>El truco funciona gracias al diseño de IEEE 754: para números positivos, el orden de los patrones de bits (leídos como enteros) coincide con el orden de los valores. La mantisa está en los bits bajos y el exponente justo encima, así que sumar 1 al entero incrementa la mantisa en su último bit, y cuando la mantisa se desborda (<code>0x7FFFFF + 1</code>), el acarreo pasa al exponente: el número salta exactamente a la siguiente potencia de 2. Por eso el «siguiente float» es el siguiente entero.</p>
+    <p>El ULP es la diferencia, calculada en float64 (exacta, porque los dos float32 caben de sobra en un double) y coincide con la fórmula en todos los casos. Casos que no cubrimos y que una versión completa trataría: los negativos (el orden de los enteros se invierte: hay que restar 1), el 0 (el siguiente es el menor subnormal, <code>1.4e-45</code>), el máximo finito (el siguiente es infinito) y NaN. Es la función <code>Math.nextUp</code> que tienen otros lenguajes.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.7.2 — casiIgual</h3>
+  <p>Implementa <code>casiIgual(a, b, rel = 1e-6, abs = 1e-9)</code> combinando tolerancia relativa y absoluta. Todas las pruebas deben dar el resultado esperado. Después, piensa qué pasa con <code>NaN</code> y con los infinitos.</p>
+  <div class="js-playground" data-titulo="Ejercicio 3.7.2" data-altura="40" data-fondo="oscuro" data-apilado>
+<script type="text/x-js">
+function casiIgual(a, b, rel = 1e-6, abs = 1e-9) {
+  // TODO
+  return a === b;
+}
+
+// --- pruebas: [a, b, esperado] ---
+const casos = [
+  [0.1 + 0.2, 0.3, true],                   // redondeo típico
+  [1e6 + 0.0625, 1e6, true],                // grandes: la diferencia es 1 ULP de float32
+  [1e-12, 0, true],                         // cerca de 0: manda la tolerancia absoluta
+  [1e-3, 0, false],
+  [100, 100.01, false],                     // 1e-4 relativo: demasiado
+  [Math.fround(0.1), 0.1, true],            // float32 frente a float64: 1.5e-8 relativo
+  [Math.fround(0.1), 0.1, false, 1e-9, 1e-12],   // …pero no con tolerancias más estrictas
+  [Infinity, Infinity, true],
+  [NaN, NaN, false],
+];
+for (const [a, b, e, rel, abs] of casos) {
+  const r = casiIgual(a, b, rel, abs);
+  console.log((r === e ? '✓ ' : '✗ ') + 'casiIgual(' + a + ', ' + b + ') = ' + r + (r === e ? '' : '  (esperado ' + e + ')'));
+}
+</script>
+<script type="text/x-js" data-solucion>
+function casiIgual(a, b, rel = 1e-6, abs = 1e-9) {
+  if (a === b) return true;                       // iguales exactos, infinitos incluidos
+  const d = Math.abs(a - b);                      // con NaN, d es NaN y todo lo que sigue es false
+  if (d <= abs) return true;                      // cerca de 0: tolerancia absoluta
+  return d <= rel * Math.max(Math.abs(a), Math.abs(b));   // lejos de 0: relativa
+}
+
+const casos = [
+  [0.1 + 0.2, 0.3, true],                   // redondeo típico
+  [1e6 + 0.0625, 1e6, true],                // grandes: la diferencia es 1 ULP de float32
+  [1e-12, 0, true],                         // cerca de 0: manda la tolerancia absoluta
+  [1e-3, 0, false],
+  [100, 100.01, false],                     // 1e-4 relativo: demasiado
+  [Math.fround(0.1), 0.1, true],            // float32 frente a float64: 1.5e-8 relativo
+  [Math.fround(0.1), 0.1, false, 1e-9, 1e-12],   // …pero no con tolerancias más estrictas
+  [Infinity, Infinity, true],
+  [NaN, NaN, false],
+];
+for (const [a, b, e, rel, abs] of casos) {
+  const r = casiIgual(a, b, rel, abs);
+  console.log((r === e ? '✓ ' : '✗ ') + 'casiIgual(' + a + ', ' + b + ') = ' + r + (r === e ? '' : '  (esperado ' + e + ')'));
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Iguales si la diferencia es menor que la tolerancia absoluta, <em>o</em> si es menor que la relativa multiplicada por el mayor de los dos valores absolutos.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p><code>Infinity - Infinity</code> es NaN: trata primero la igualdad exacta. Y fíjate en que <code>casiIgual(a, b, undefined, undefined)</code> usa los valores por defecto: así las pruebas pueden pasar tolerancias distintas solo cuando lo necesitan.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La tolerancia absoluta resuelve la zona cercana a 0 (donde la relativa no sirve) y la relativa escala con la magnitud (donde la absoluta sería demasiado estricta). La igualdad exacta al principio cubre los infinitos, porque <code>Infinity − Infinity</code> es NaN. Y NaN nunca es «casi igual» a nada: cualquier comparación con NaN es <code>false</code>, así que la función lo rechaza sola.</p>
+    <p>Los dos casos de <code>Math.fround(0.1)</code> frente a <code>0.1</code> enseñan lo importante: difieren en $1.5\times10^{-9}$, un error relativo de $1.5\times10^{-8}$. Con la tolerancia relativa por defecto ($10^{-6}$) son «casi iguales»; con $10^{-9}$ ya no. <strong>No hay una tolerancia universal</strong>: depende de cuánto error puede haber acumulado tu cálculo (un valor que ha pasado por float32 arrastra errores relativos del orden de $10^{-7}$, así que una tolerancia de $10^{-9}$ sería demasiado estricta para él), y hay que razonarla caso por caso.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="2">
+  <h3>Ejercicio 3.7.3 — Un hash que no se rompa</h3>
+  <p>Este shader dibuja un «cielo estrellado» con el hash clásico: un 1.5&nbsp;% de las celdas, las que tienen un hash mayor que 0.985, son estrellas. El desplazamiento simula que la cámara se ha movido lejos del origen, y con el valor de partida (20 000) el cielo se ha quedado <strong>sin ninguna estrella</strong>. Pon el desplazamiento a 0 para ver cómo debería ser. Arréglalo de dos formas y compara el resultado con el de desplazamiento 0: (a) manteniendo pequeñas las coordenadas que entran al hash, (b) con un hash de enteros. ¿Conserva cada una la densidad de estrellas?</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.7.3" data-altura="280" data-apilado
+       data-uniforms='{"u_lejos":{"tipo":"float","min":0,"max":50000,"valor":20000,"paso":500,"etiqueta":"desplazamiento"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_lejos;
+out vec4 fragColor;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+void main() {
+  vec2 celda = floor(gl_FragCoord.xy / 4.0) + vec2(u_lejos, u_lejos * 0.5);
+  float h = hash(celda);
+  float estrella = step(0.985, h);                    // un 1.5 % de las celdas, encendidas
+  vec3 color = vec3(0.02, 0.03, 0.08) + estrella * vec3(1.0, 0.95, 0.8) * fract(h * 37.0);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_lejos;
+out vec4 fragColor;
+
+const bool USAR_PCG = true;    // true: solución (b). false: solución (a), para compararlas
+
+// (a) El hash clásico, pero con la celda envuelta a un rango pequeño
+float hashClasico(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// (b) Hash de enteros: operaciones exactas, sin seno, igual en todas las GPU
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+float hashPCG(vec2 celda) {
+  uvec2 q = uvec2(ivec2(celda));
+  return float(pcg(q.x + pcg(q.y))) / 4294967295.0;
+}
+
+void main() {
+  vec2 celda = floor(gl_FragCoord.xy / 4.0) + vec2(u_lejos, u_lejos * 0.5);
+  // (a) se repite cada 128 celdas (512 px) y, aun así, pierde algo de densidad (ver la solución)
+  float h = USAR_PCG ? hashPCG(celda) : hashClasico(mod(celda, 128.0));
+  float estrella = step(0.985, h);
+  vec3 color = vec3(0.02, 0.03, 0.08) + estrella * vec3(1.0, 0.95, 0.8) * fract(h * 37.0);
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Para (a): el problema son los argumentos grandes. <code>mod(celda, 128.0)</code> los devuelve a un rango pequeño. ¿Se notaría la repetición? Prueba también con 1024 y fíjate en cuántas estrellas hay.</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Para (b): copia el hash PCG del editor de la sección del hash. Convierte la celda a enteros con <code>uvec2(ivec2(celda))</code>.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>(a) <code>mod(celda, 128.0)</code> antes del hash clásico mantiene el argumento del seno por debajo de unas 12 000 (128 × 91). Lo medimos: la proporción de estrellas (celdas con hash mayor que 0.985) es del 1.5&nbsp;% en las celdas cercanas al origen, pero baja al 1.3&nbsp;% de media con un periodo de 128, al 0.9&nbsp;% con 512 y al 0.6&nbsp;% con 1024: con este hash, en nuestra GPU, la calidad ya se degrada con coordenadas de unos cientos. Y el cielo se repite cada 128 celdas (512 px), algo que en una pantalla grande empieza a notarse. Por cierto, <code>mod</code> sobre coordenadas grandes es exacto si <code>celda</code> es entera (lo es, por el <code>floor</code>), porque en float32 los enteros son exactos hasta 2²⁴. Conclusión: (a) es un apaño.</p>
+    <p>(b) El hash PCG trabaja con <code>uint</code>: multiplicaciones que se desbordan de forma definida (módulo 2³²), desplazamientos y XOR, todo exacto. Da el mismo resultado en cualquier GPU con GLSL ES 3.00 y no se degrada con la distancia (hasta que la propia <code>celda</code>, que es un float, supera 2²⁴ y deja de ser exacta; para mundos aún más grandes, pasa las coordenadas enteras desde JavaScript). Y la densidad de estrellas vuelve a ser un 1.5&nbsp;% en cualquier zona del cielo, porque PCG da valores uniformes entre 0 y 1 con cualquier entrada: (b) es la solución de verdad.</p>
+  </details>
+</section>
+
+<section class="ejercicio" data-nivel="3">
+  <h3>Ejercicio 3.7.4 — Caza el NaN (y lo que no lo es)</h3>
+  <p>Este shader dibuja una esfera iluminada con un halo a su alrededor, y tiene dos zonas negras que no deberían estar ahí: las <strong>esquinas</strong> del lienzo (donde debería verse el fondo) y el <strong>lado oscuro</strong> de la esfera (donde debería verse la luz ambiente). Escribe una función <code>depurar(float v)</code> que devuelva magenta si <code>v</code> es NaN, blanco si es infinito, azul si es negativo y gris (el propio valor) en otro caso; úsala para averiguar qué le pasa a cada zona y arregla las dos, sin dejar la depuración en la versión final.</p>
+  <div class="glsl-playground" data-titulo="Ejercicio 3.7.4" data-altura="300" data-apilado
+       data-uniforms='{"u_halo":{"tipo":"float","min":1,"max":4,"valor":2.5,"etiqueta":"dureza del halo"}}'>
+<script type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_halo;
+out vec4 fragColor;
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = length(p);
+  // Halo: intenso junto a la esfera, se apaga hacia r = 1.2
+  float halo = pow(1.0 - r / 1.2, u_halo);
+  vec3 color = vec3(0.12, 0.15, 0.28) + vec3(0.35, 0.25, 0.1) * halo;
+  if (r < 0.7) {
+    // Esfera de radio 0.7 iluminada desde arriba a la izquierda (Lambert, lección 3.2)
+    vec3 N = vec3(p, sqrt(0.49 - r * r)) / 0.7;
+    float luz = dot(N, normalize(vec3(-0.5, 0.6, 0.6)));
+    color = vec3(0.95, 0.7, 0.3) * (0.15 + 0.85 * luz);   // 0.15 = luz ambiente
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+<script type="x-shader/x-fragment" data-solucion>
+#version 300 es
+precision highp float;
+uniform vec2 u_resolution;
+uniform float u_halo;
+out vec4 fragColor;
+
+// Durante la depuración (y solo entonces):
+//   vec3 depurar(float v) {
+//     if (isnan(v)) return vec3(1.0, 0.0, 1.0);   // NaN: magenta
+//     if (isinf(v)) return vec3(1.0);             // ±infinito: blanco
+//     if (v < 0.0) return vec3(0.2, 0.4, 1.0);    // negativo: azul
+//     return vec3(v);                             // normal: gris
+//   }
+// fragColor = vec4(depurar(halo), 1.0);  → esquinas magenta: pow con base negativa
+// fragColor = vec4(depurar(luz), 1.0);   → lado oscuro azul: luz negativa (no es NaN)
+
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float r = length(p);
+  float halo = pow(max(1.0 - r / 1.2, 0.0), u_halo);      // 1) base de pow nunca negativa
+  vec3 color = vec3(0.12, 0.15, 0.28) + vec3(0.35, 0.25, 0.1) * halo;
+  if (r < 0.7) {
+    vec3 N = vec3(p, sqrt(0.49 - r * r)) / 0.7;
+    float luz = max(dot(N, normalize(vec3(-0.5, 0.6, 0.6))), 0.0);   // 2) la luz no resta
+    color = vec3(0.95, 0.7, 0.3) * (0.15 + 0.85 * luz);
+  }
+  fragColor = vec4(color, 1.0);
+}
+</script>
+  </div>
+  <details class="pista"><summary>Pista 1</summary><p>Escribe la función con <code>isnan</code>, <code>isinf</code> y una comparación con 0, y sustituye temporalmente la última línea por <code>fragColor = vec4(depurar(halo), 1.0);</code>. Después, prueba con <code>luz</code> (dentro del <code>if</code>).</p></details>
+  <details class="pista"><summary>Pista 2</summary><p>Las esquinas están a más de 1.2 del centro: ¿qué vale la base de <code>pow</code> allí? Y en el lado oscuro de la esfera, ¿qué signo tiene <code>luz</code>? No todo lo negro es NaN.</p></details>
+  <details class="solucion"><summary>Solución explicada</summary>
+    <p>La función de depuración separa los dos problemas. En las esquinas, <code>depurar(halo)</code> sale <strong>magenta</strong>: para $r > 1.2$, la base <code>1 − r/1.2</code> es negativa, y <code>pow</code> con base negativa y exponente variable (un uniform) da NaN, que se escribe como negro. En la esfera, <code>depurar(luz)</code> sale <strong>azul</strong> en el lado oscuro: no es NaN, sino una luz negativa (la luz llega por detrás), y <code>0.15 + 0.85 · luz</code> baja de 0 y se recorta a negro al escribir el color. Es el bicho de Lambert de <a href="02-producto-punto-cruz.html">3.2</a>: sin el <code>max</code>, la luz «resta» y se come la luz ambiente.</p>
+    <p>Los arreglos eliminan las causas: <code>max(…, 0.0)</code> en la base de <code>pow</code> y en la luz. La versión final no contiene <code>isnan</code>, lo que importa por partida doble: no gasta instrucciones en comprobaciones y, en Chrome sobre Metal, se compila con las mismas optimizaciones que el resto de tus shaders (recuerda la caja del <em>heisenbug</em>: la versión con <code>isnan</code> podría comportarse distinto en otras operaciones indefinidas). Y la lección de fondo: ante una zona negra, pregúntate primero si es NaN, infinito, negativo o solo cero, porque cada uno tiene una causa distinta.</p>
+  </details>
+</section>
+
+<div class="callout resumen">
+  <ul>
+    <li><strong>float32</strong> = 1 bit de signo + 8 de exponente (sesgo 127) + 23 de mantisa (con un 1 implícito: 24 bits de precisión). Valores especiales: ±0, subnormales, ±∞ y NaN. 0.1 no es exacto: se guarda 0.10000000149.</li>
+    <li>El <strong>ULP</strong> (separación entre floats consecutivos) crece con la magnitud: 1.2·10⁻⁷ cerca de 1, 0.0625 cerca de un millón, 2 cerca de 2²⁴. Precisión relativa constante, absoluta decreciente.</li>
+    <li>JavaScript usa <strong>float64</strong>; la GPU, float32. La conversión ocurre en <code>Float32Array</code>, uniforms y buffers; <code>Math.fround</code> la simula (y <code>Math.f16round</code>, el float16).</li>
+    <li><code>highp</code> = float32. <code>mediump</code> es float32 en escritorio pero <strong>float16</strong> en muchos móviles: usa highp para posiciones, uv, tiempo y hashes.</li>
+    <li><strong>No mandes a la GPU números que crecen sin límite</strong>: envuelve el tiempo en JavaScript (con un periodo múltiplo de tus ciclos) o acumula fases. <code>sin</code> y <code>cos</code> tienen precisión indefinida con argumentos grandes.</li>
+    <li>El hash <code>fract(sin(…) * 43758.5453)</code> se rompe con coordenadas grandes y con float16: envuelve la entrada o usa un <strong>hash de enteros</strong> (PCG).</li>
+    <li><strong>Cancelación catastrófica</strong>: restar números casi iguales destruye cifras. Reescribe la fórmula o resta antes en doble precisión: <strong>renderizado relativo a la cámara</strong> contra el temblor lejos del origen.</li>
+    <li><strong>NaN</strong>: 0/0, sqrt/log de negativos, pow con base negativa, normalize del vector nulo, acos fuera de [−1, 1]. Se ve como negro y se contagia. El compilador puede suponer que no existen (<code>x != x</code> no sirve; usa <code>isnan</code>) y, en Chrome sobre Metal, usar <code>isnan</code> cambia cómo se compila todo el shader: elimina las causas en vez de detectarlas.</li>
+    <li>Compara floats con <strong>tolerancia absoluta y relativa</strong>, nunca con <code>==</code>; <code>Number.EPSILON</code> no es una tolerancia universal. Los enteros en float32 son exactos solo hasta <strong>2²⁴ = 16 777 216</strong>: cuenta con <code>int</code>/<code>uint</code>.</li>
+  </ul>
+</div>
+
+<h2>Para profundizar</h2>
+<ul>
+  <li><a href="https://floating-point-gui.de/">The Floating-Point Guide</a>: la introducción más clara a la coma flotante, con ejemplos en muchos lenguajes.</li>
+  <li><a href="https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html">David Goldberg — What Every Computer Scientist Should Know About Floating-Point Arithmetic</a>: el clásico, para cuando quieras el fondo matemático.</li>
+  <li><a href="https://jcgt.org/published/0009/03/02/">Jarzynski y Olano — Hash Functions for GPU Rendering (JCGT, 2020)</a>: comparativa de hashes para GPU, de donde sale PCG.</li>
+  <li><a href="https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf">Especificación de GLSL ES 3.00</a>, sección 4.5 (rango y precisión, NaN, calificadores de precisión).</li>
+</ul>
+
+</main>
+<script src="../../assets/vendor/vendor.bundle.js"></script>
+<script src="../../assets/js/manifest.js"></script>
+<script src="../../assets/js/curso.js"></script>
+<script src="../../assets/js/texturas.js"></script>
+<script src="../../assets/js/glkit.js"></script>
+<script src="../../assets/js/playground-glsl.js"></script>
+<script src="../../assets/js/playground-js.js"></script>
+<script src="../../assets/js/graficador.js"></script>
+<script src="../../assets/js/widgets.js"></script>
+<script src="recursos/m3.js"></script>
+<script src="recursos/demos-07.js"></script>
+</body>
+</html>
