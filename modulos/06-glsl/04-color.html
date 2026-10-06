@@ -16,7 +16,7 @@
   <p class="modulo">Módulo 6 · GLSL y fragment shaders</p>
   <h1>Color: espacios, gamma y paletas</h1>
   <p class="resumen">En un shader, un color es un <code>vec3</code> de 0 a 1. Pero ¿0.5 de qué? La respuesta (media luz, o un número codificado para el ojo) decide si tus degradados salen limpios o embarrados, si tus mezclas se parecen a la realidad y si tu iluminación convence. Aquí aprendes a mezclar y transformar colores, a fabricar paletas con cuatro vectores, y la regla de oro del color en tiempo real: calcular en luz lineal y mostrar en sRGB.</p>
-  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 6.2, 2.4, 5.5</span></div>
+  <div class="meta"><span class="chip">⏱ 110 min</span><span class="chip">Requisitos: 6.2, 6.3, 2.4, 5.5</span></div>
   <div class="objetivos">
     <h4>Al terminar esta lección</h4>
     <ul>
@@ -618,6 +618,7 @@ void main() {
 <script type="x-shader/x-fragment">
 #version 300 es
 precision highp float;
+precision highp int;     // PCG necesita enteros de 32 bits de verdad (6.6)
 uniform vec2 u_resolution;
 uniform float u_bits;
 uniform int u_ruido;     // 0 sin ruido · 1 uniforme · 2 triangular
@@ -653,7 +654,7 @@ void main() {
 <p>Con 5 bits (32 niveles, para exagerar) y sin ruido, el degradado es una escalera de siete peldaños. Con ruido uniforme (modo 1: entre −0.5 y +0.5 niveles, como en el párrafo de arriba), los peldaños desaparecen y queda grano. Con ruido triangular (modo 2: la suma de dos números aleatorios menos 1, entre −1 y +1 nivel y más probable cerca de 0), el grano es algo más visible pero uniforme: el ruido uniforme deja un rastro de las bandas (el grano es más intenso en unas zonas que en otras) y el triangular lo elimina. Sube a 8 bits: sin ruido, las bandas de un nivel todavía se ven en una buena pantalla si te fijas; con ruido, desaparecen y el grano es imperceptible. Como el ruido cambia en cada frame (<code>u_frame</code> en la semilla), el ojo además lo promedia en el tiempo.</p>
 
 <div class="callout hack" data-titulo="Dithering en una línea">
-  <p>Para cualquier shader que escriba degradados suaves en el canvas, basta con una línea antes de la salida: <code>color += (azar(uvec2(gl_FragCoord.xy), uint(u_frame)) - 0.5) / 255.0;</code>. Sumar un ruido uniforme de hasta medio nivel de 8 bits arriba o abajo (entre −0.5/255 y +0.5/255) cuesta un hash por píxel y elimina las bandas de cielos, viñetas y fondos. Funciona porque sabes exactamente qué hace la máquina al escribir: redondear al nivel más cercano de 1/255.</p>
+  <p>Para cualquier shader que escriba degradados suaves en el canvas, basta con una línea antes de la salida: <code>color += (azar(uvec2(gl_FragCoord.xy), uint(u_frame)) - 0.5) / 255.0;</code>. Sumar un ruido uniforme de hasta medio nivel de 8 bits arriba o abajo (entre −0.5/255 y +0.5/255) cuesta un hash por píxel y elimina las bandas de cielos, viñetas y fondos. Funciona porque sabes exactamente qué hace la máquina al escribir: redondear al nivel más cercano de 1/255. La función <code>azar</code> es la del editor de arriba: PCG, con <code>precision highp int;</code> para que sus enteros sean de 32 bits también en un móvil (<a href="06-ruido.html#hashes-de-enteros-exactos-en-cualquier-gpu">6.6</a>).</p>
 </div>
 
 <h2>Ejercicios</h2>
@@ -884,6 +885,7 @@ void main() {
 <script type="x-shader/x-fragment">
 #version 300 es
 precision highp float;
+precision highp int;     // PCG necesita enteros de 32 bits de verdad (6.6)
 uniform vec2 u_resolution;
 uniform float u_ev;
 uniform int u_frame;
@@ -913,6 +915,7 @@ void main() {
 <script type="x-shader/x-fragment" data-solucion>
 #version 300 es
 precision highp float;
+precision highp int;     // PCG necesita enteros de 32 bits de verdad (6.6)
 uniform vec2 u_resolution;
 uniform float u_ev;
 uniform int u_frame;

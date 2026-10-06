@@ -101,7 +101,7 @@
 
     /* ---------------------------------------------------------------
        crearApp (7.1): el esqueleto completo.
-       o = { contexto, estado, dprMax, pixelesMax, calidad, bajoDemanda,
+       o = { contexto, estado, dprMax, pixelesMax, calidad, bajoDemanda, dtMax,
              iniciar(gl, app), redimensionar(gl, app),
              actualizar(estado, dt, app), dibujar(gl, estado, app),
              fallar(motivo, app), alPerder(app) }
@@ -221,6 +221,7 @@
       }
       function destruir() {
         destruido = true; revisar();
+        if (!gl) return;                     // sin WebGL2 no se llegó a crear nada más (y ro/io aún no existen)
         ro.disconnect(); io.disconnect();
         document.removeEventListener("visibilitychange", alVisibilidad);
         const ext = gl.getExtension("WEBGL_lose_context");

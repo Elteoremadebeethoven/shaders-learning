@@ -104,10 +104,11 @@ void main() {
   float luz = smoothstep(0.25, 0.85, length(q) * 1.6 + 0.5 * v);
 
   // 4. Dos paletas sobre el MISMO flujo (se calcula una vez) y la transición entre ellas.
-  //    Cada píxel tiene un umbral n en [0, 1]: la mitad es su posición x (la transición barre de
-  //    izquierda a derecha) y la otra mitad, ruido (el borde es irregular). El píxel cambia cuando
-  //    el progreso, estirado a [0, 1 + ANCHO], supera su umbral: así en 0 no ha cambiado nadie y en
-  //    1 han terminado todos (bestiario de la lección 7.6).
+  //    Cada píxel tiene un umbral n en [0, 1]: un 55 % es su posición x (la transición barre de
+  //    izquierda a derecha) y un 45 %, ruido (el borde es irregular). El píxel cambia cuando el
+  //    progreso, estirado a [0, 1 + ANCHO], supera su umbral: así en 0 no ha cambiado nadie y en 1
+  //    han terminado todos (bestiario de 7.3 y ejercicio 7.6.1). El clamp no sobra: 0.5 + ruido se
+  //    sale de [0, 1] por los dos lados.
   vec3 colA = paleta(u_colA, v, luz);
   vec3 colB = paleta(u_colB, v, luz);
   float n = clamp(0.55 * uv.x + 0.45 * (0.5 + ruido(p * 3.0 + 11.0)), 0.0, 1.0);
