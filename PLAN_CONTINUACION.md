@@ -1,11 +1,22 @@
-# Plan de continuación del curso (estado al 2026-10-07 — sesión 5 TERMINADA: curso completo y verificado)
+# Plan de continuación del curso (estado al 2026-10-07 — CURSO TERMINADO: el dueño empieza a estudiarlo)
 
 Las sesiones 4 y 5 corrieron en el **Mac del dueño (Apple M1, Chrome 154.0.8037.98, ANGLE/Metal)**. La sesión 5 fue
 la auditoría de aceptación final («que todo funcione y que el proyecto esté terminado al 100 %»): informe del lead
 `herramientas/estado/informes/sesion5-lead-cierre.md`; informes de los agentes `sesion5-{opus-a,opus-b,sonnet}.md`.
 No queda ningún proceso del curso en marcha (vigilante y servidor local parados, turnos libres, cola vacía). Todo
-está en el commit «Sesiones 4 y 5: medidas en el M1 y auditoría de aceptación final» de la rama local
-`sesiones-4-5` (sale de `master`; sin fusionar ni subir: §3.6).
+está en `master` (commit «Sesiones 4 y 5: medidas en el M1 y auditoría de aceptación final», fusionado por avance
+rápido; sin subir a GitHub).
+
+**Lo siguiente es estudiar.** El dueño empieza el curso (README → «Cómo estudiarlo»). Si al estudiar encuentra un
+error o algo confuso, el procedimiento de una sesión de mantenimiento es:
+1. Leer este plan, `CLAUDE.md` y lo pertinente de `herramientas/GUIA_AUTORES.md`; reproducir el problema
+   (servir con `python3 -m http.server 8765 --bind 127.0.0.1` si se usa la extensión Claude in Chrome, que no abre
+   `file://`; o `verificar.mjs` headless).
+2. Corregir la lección (cifras nuevas: medidas en el M1, con método; GUIA §5.6 tiene las trampas de medida).
+3. `node herramientas/indexar.mjs`, `node herramientas/enlaces.mjs` y, con turno,
+   `node herramientas/turnos.mjs --agente lead --motivo "…" -- node herramientas/verificar.mjs <lección> --soluciones`
+   (y `--tema light`, `movil.mjs` si cambió el aspecto). Arrancar antes el vigilante (§2).
+4. Commit solo si el dueño lo pide.
 
 ## 0. Sesión 5 (2026-10-06/07) — resumen
 - Agentes: 2 Opus 5.5 + 1 Sonnet 5.5 xhigh EN TOTAL (límite del dueño; **prohibido que los agentes creen subagentes,
@@ -88,7 +99,8 @@ Sesión 4: capturas headless de página entera. Sesión 5: en el Chrome del due�
 proyecto final, 6.9, 1.1 y 4.1.
 
 ### 3.5 Decisiones del dueño (no bloquean)
-- Longitud: 7.3 (~21 000 palabras) y 7.7 (~16 000) no se partieron ni recortaron.
+- ✅ DECIDIDO (2026-10-07): 7.3 (~21 000 palabras) y 7.7 (~16 000) se quedan enteras: no se parten ni se recortan
+  temas.
 - Glosario de 604 términos: si sobra, lo más prescindible es lo de HTML/CSS/JS básico (`informe-glosario.md` §5).
 - Decimales: m3, 6.1–6.5 y las chuletas escriben los de la prosa con punto (como el código); el resto, con coma.
   Coherente dentro de cada lección; unificarlo serían cientos de cifras.
@@ -99,8 +111,8 @@ proyecto final, 6.9, 1.1 y 4.1.
   «lo más probable» en 7.4 y 7.6).
 
 ### 3.6 Cierre
-✅ Commit de las sesiones 4 y 5 hecho (2026-10-07) en la rama local `sesiones-4-5`. Falta, si el dueño lo pide,
-fusionarla en `master` y/o subirla a GitHub (el repositorio usa PR: #1 fue la sesión 3).
+✅ Commit de las sesiones 4 y 5 hecho y fusionado en `master` (2026-10-07). Sin subir a GitHub (si el dueño lo pide:
+`git push`; la sesión 3 entró por el PR #1).
 
 ## 4. Hallazgos de la sesión 4 a recordar (medidos en el M1, Chrome 154, ANGLE/Metal)
 - **isnan y la caché**: la versión que sale de la caché de programas tiene fast math (mod: 0 → 2 071 fallos; hash

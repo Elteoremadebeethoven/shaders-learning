@@ -14,6 +14,22 @@ Curso web (en español) de shaders y animación con JavaScript, de nivel básico
 
 Navegador recomendado: Chrome, Edge o Firefox recientes (hace falta WebGL2).
 
+## Cómo estudiarlo
+
+- **Empieza por 0.1 «Cómo usar este curso»** y sigue el orden del menú (los botones anterior/siguiente del final de
+  cada lección siguen ese orden). Busca con la tecla `/`.
+- **Progreso**: al final de cada lección, «Marcar lección como completada». Se guarda en el navegador
+  (`localStorage`), igual que tus cambios en los editores, **por separado según cómo abras el curso**: con doble clic
+  (`file://`) y con `http://localhost:8000` son dos sitios distintos para el navegador. Elige una forma y no la
+  cambies; borrar los datos del sitio borra el progreso.
+- **Ejercicios**: intenta cada uno antes de pulsar «Ver solución»; las soluciones que se pueden comprobar imprimen
+  ✓/✗ en la consola del editor. **Restaurar** devuelve el editor al código original.
+- **Algo raro?** El anexo A.1 (Bestiario) reúne los comportamientos extraños del curso con su causa y su arreglo.
+- **Módulo 4 (Python)**: el entorno ya está preparado en `python/.venv` (ver `python/README.md`). Para ejecutar un
+  ejemplo: `cd python && source .venv/bin/activate && python moderngl/01_triangulo.py` (o el que cite la lección).
+- Las cifras medidas del curso son de un MacBook Air Apple M1 con Chrome 154 (ANGLE/Metal): en otro equipo, el orden
+  de magnitud se mantiene, los números exactos no.
+
 ## Contenido
 
 | Módulo | Tema |
