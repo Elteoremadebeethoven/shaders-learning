@@ -455,7 +455,7 @@ void main() {
 <div class="callout bestiario" data-id="m6b-rm-normales" data-titulo="La superficie sale granulada, o las aristas salen redondeadas">
   <p><strong>Síntoma:</strong> la iluminación tiene un grano o ruido fino sobre las superficies, sobre todo lejos de la cámara; o, al revés, las aristas de las cajas se ven biseladas y los detalles finos, desdibujados.</p>
   <p><strong>Causa:</strong> el paso <code>e</code> de las diferencias de la normal. Muy pequeño (del orden de 0,0000001 con objetos a unas pocas unidades del origen), la diferencia de dos distancias casi iguales se queda sin cifras significativas en float32 y la normal es ruido, o directamente el vector cero; muy grande (0,1), la derivada promedia una zona amplia y suaviza la geometría.</p>
-  <p><strong>Solución:</strong> un valor intermedio del orden de 0,001 para escenas de unas pocas unidades, o mejor, proporcional a la distancia (<code>e = 0.0005 * t</code>): lejos de la cámara un píxel abarca más espacio y la normal no necesita más detalle que ese.</p>
+  <p><strong>Solución:</strong> un valor intermedio del orden de 0,001 para escenas de unas pocas unidades, o mejor, proporcional a la distancia (<code>e = 0.0005 * t</code>): lejos de la cámara un píxel abarca más espacio y la normal no necesita más detalle que ese. En 7.4 aparece el mismo problema en las normales de una malla deformada en el vertex shader: <a href="../07-integracion/04-vertex-animacion.html#m7-4-epsilon">«Las normales por diferencias finitas salen con granulado o chispas (o empeoran con el tiempo)»</a>.</p>
 </div>
 
 <h2>Rendimiento y artefactos</h2>
@@ -608,7 +608,7 @@ vec3 normal(vec3 p) {
 
 void main() {
   vec2 uv = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
-  vec3 ro = vec3(0.3 * u_celda, 0.4 * u_celda, -u_time * 1.5);   // avanzando por un pasillo
+  vec3 ro = vec3(0.5 * u_celda, 0.5 * u_celda, -u_time * 1.5);   // por el pasillo entre cuatro filas de esferas
   vec3 rd = normalize(vec3(uv, -1.6));
   float t = 0.0; vec2 h = vec2(0.0); bool choca = false;
   for (int i = 0; i < 128; i++) {
@@ -631,7 +631,7 @@ void main() {
 }
 </script>
 </div>
-<p>Sube el radio por encima de la mitad de la celda (por ejemplo, celda 2 y radio 1,2): las esferas aparecen cortadas por planos, con caras planas extrañas. Es el bicho de abajo: la esfera sobresale de su celda y la función, que solo mira la celda actual, no sabe que la de al lado está más cerca.</p>
+<p>Sube el radio por encima de la mitad de la celda (por ejemplo, celda 2 y radio 1,2): las esferas aparecen cortadas por planos, con caras planas extrañas. Es el bicho de abajo: la esfera sobresale de su celda y la función, que solo mira la celda actual, no sabe que la de al lado está más cerca. (Con radios de más de 0,7 celdas, la cámara, que avanza por el pasillo entre cuatro filas de esferas, acaba dentro de alguna y la pantalla entera se pinta de un color: el rayo «choca» en <code>t = 0</code>.)</p>
 
 <div class="callout bestiario" data-id="m6b-rm-repeticion" data-titulo="Con la repetición, los objetos salen cortados por planos">
   <p><strong>Síntoma:</strong> al repetir un objeto con <code>mod</code>, las copias aparecen cortadas en seco, con caras planas o trozos que faltan, justo en las fronteras de las celdas.</p>

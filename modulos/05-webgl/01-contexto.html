@@ -1103,7 +1103,7 @@ setTimeout(() => { log('→ restoreContext()'); ext.restoreContext(); }, 3000);
 <div class="callout bestiario" data-id="m5-contexto-perdido" data-titulo="Al volver de otra pestaña (o tras suspender el equipo) el canvas queda en blanco">
   <p><strong>Síntoma:</strong> la demo funcionaba, cambias de pestaña, suspendes el portátil o abres otra página con mucho WebGL, y al volver el canvas está vacío para siempre. Normalmente sin ningún error en la consola: con el contexto perdido, las llamadas de WebGL no hacen nada y no se quejan.</p>
   <p><strong>Causa:</strong> el navegador te quitó el contexto y tu código no lo gestiona: no llamó a <code>preventDefault()</code> en <code>webglcontextlost</code> (así que no se restaurará) o no recrea los recursos en <code>webglcontextrestored</code>.</p>
-  <p><strong>Solución:</strong> separa la creación de recursos (buffers, texturas, programas, estado) en una función que puedas volver a llamar; en <code>webglcontextlost</code>, <code>preventDefault()</code> y deja de dibujar; en <code>webglcontextrestored</code>, llama otra vez a esa función. Prueba el camino completo con <code>WEBGL_lose_context</code> antes de publicar.</p>
+  <p><strong>Solución:</strong> separa la creación de recursos (buffers, texturas, programas, estado) en una función que puedas volver a llamar; en <code>webglcontextlost</code>, <code>preventDefault()</code> y deja de dibujar; en <code>webglcontextrestored</code>, llama otra vez a esa función. Prueba el camino completo con <code>WEBGL_lose_context</code> antes de publicar. Si el contexto vuelve pero la escena sale negra, algo de la GPU se creó fuera de esa función: <a href="../07-integracion/01-arquitectura.html#m7-locations-viejas">«Tras recuperar el contexto, la escena sale negra (o transparente)»</a> (7.1).</p>
 </div>
 
 <section class="ejercicio" data-nivel="3">
@@ -1355,7 +1355,7 @@ gl.getExtension('WEBGL_lose_context').loseContext();   // liberar
 </section>
 
 <div class="callout senior" data-titulo="¿Cuánto cuesta preguntar?">
-  <p>La mayor parte de <code>getParameter</code> se responde sin salir del proceso de la página, porque la implementación guarda una copia del estado: 2000 llamadas a <code>getParameter(gl.VIEWPORT)</code> tardaron 1,2 ms en total (las que devuelven un array tipado, como <code>VIEWPORT</code>, crean uno nuevo en cada llamada; con valores simples, como <code>CURRENT_PROGRAM</code> o <code>MAX_TEXTURE_SIZE</code>, medimos 0,1 µs por llamada). Pero la copia no lo cubre todo: <code>getParameter(gl.COLOR_CLEAR_VALUE)</code> costó 36 µs por llamada, lo mismo que un <code>getError</code>, porque esa pregunta sí viaja al proceso de la GPU. Y hay consultas que nunca se resuelven en local: <code>getError</code>, <code>readPixels</code> o <code>getShaderParameter</code> siempre preguntan al proceso de la GPU y esperan la respuesta, como muestra el diagrama del principio. Consultar los límites una vez al arrancar es gratis; hacerlo en el bucle de dibujo, no siempre.</p>
+  <p>La mayor parte de <code>getParameter</code> se responde sin salir del proceso de la página, porque la implementación guarda una copia del estado: 2000 llamadas a <code>getParameter(gl.VIEWPORT)</code> tardaron menos de 1 ms en total (0,5 µs cada una: las que devuelven un array tipado, como <code>VIEWPORT</code>, crean uno nuevo en cada llamada; con valores simples, como <code>CURRENT_PROGRAM</code> o <code>MAX_TEXTURE_SIZE</code>, medimos 0,07 µs por llamada). Pero la copia no lo cubre todo: <code>getParameter(gl.COLOR_CLEAR_VALUE)</code> costó 36 µs por llamada, lo mismo que un <code>getError</code>, porque esa pregunta sí viaja al proceso de la GPU. Y hay consultas que nunca se resuelven en local: <code>getError</code>, <code>readPixels</code> o <code>getShaderParameter</code> siempre preguntan al proceso de la GPU y esperan la respuesta, como muestra el diagrama del principio. Consultar los límites una vez al arrancar es gratis; hacerlo en el bucle de dibujo, no siempre.</p>
 </div>
 
 <h2>getError: errores que se quedan pegados</h2>
@@ -1427,22 +1427,28 @@ WebGL: INVALID_OPERATION: bufferData: no buffer
 <script type="text/x-js">
 const gl = document.createElement('canvas').getContext('webgl2');
 const N = 2000;
+const medir = (f) => { const t = performance.now(); f(); return performance.now() - t; };
+const tandaEstado = () => { for (let i = 0; i < N; i++) gl.clearColor(i / N, 0, 0, 1); };
+const tandaError = () => { for (let i = 0; i < N; i++) gl.getError(); };
 
-let t = performance.now();
-for (let i = 0; i < N; i++) gl.clearColor(i / N, 0, 0, 1);
-const msEstado = performance.now() - t;
+// 1) Sin calentar: si la CPU venía de reposo, tiene el reloj bajo y esta tanda sale más lenta
+const msFria = medir(tandaError);
 
-t = performance.now();
-for (let i = 0; i < N; i++) gl.getError();
-const msError = performance.now() - t;
+// 2) Calentamos ~0,2 s con trabajo de verdad y medimos con la CPU a pleno rendimiento
+let basura = 0;
+for (const t0 = performance.now(); performance.now() - t0 < 200; ) for (let i = 0; i < 1e5; i++) basura += Math.sin(i);
+const msEstado = medir(tandaEstado);
+const msError = medir(tandaError);
 
 console.log(N + ' × clearColor:', msEstado.toFixed(2), 'ms');
 console.log(N + ' × getError:  ', msError.toFixed(2), 'ms  →', (msError / N * 1000).toFixed(1), 'µs por llamada');
+console.log('(la primera tanda de getError, sin calentar:', msFria.toFixed(2), 'ms)');
 console.log('Un frame a 60 fps dura 16,7 ms: con ' + Math.round(16.7 / (msError / N)) + ' getError se acabaría el frame.');
+if (basura === 42) console.log(basura);   // para que el calentamiento no se pueda descartar
 gl.getExtension('WEBGL_lose_context').loseContext();
 </script>
 </div>
-<p>En el equipo de pruebas, 2000 llamadas a <code>clearColor</code> tardaron 0,1 ms y 2000 llamadas a <code>getError</code>, unos 74 ms: cerca de 37 µs cada una (en otras ejecuciones, y en la tabla de <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>, entre 30 y 60 µs, según lo ocupado que esté el equipo). Es un viaje de ida y vuelta entre procesos, y además obliga a procesar todas las órdenes pendientes. Poner un <code>getError</code> después de cada llamada en producción puede comerse el frame entero. Úsalo para depurar y quítalo (o desactívalo) después.</p>
+<p>En el equipo de pruebas, 2000 llamadas a <code>clearColor</code> tardaron 0,1 ms y 2000 llamadas a <code>getError</code>, unos 74 ms: cerca de 37 µs cada una (el doble si la CPU viene de estar en reposo: lo cuenta <a href="../04-gpu/01-cpu-vs-gpu.html#m4-cpu-en-frio">4.1</a>; por eso el playground calienta ~0,2 s antes de medir y enseña aparte la primera tanda, la que puede salir más lenta). Es un viaje de ida y vuelta entre procesos, y además obliga a procesar todas las órdenes pendientes. Poner un <code>getError</code> después de cada llamada en producción puede comerse el frame entero. Úsalo para depurar y quítalo (o desactívalo) después.</p>
 
 <div class="quiz">
   <p class="pregunta">Llamas a <code>gl.viewport(0, 0, -1, -1)</code> tres veces seguidas y después a <code>gl.getError()</code> en un bucle hasta <code>NO_ERROR</code>. ¿Cuántas veces sale <code>INVALID_VALUE</code>?</p>

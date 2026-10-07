@@ -980,7 +980,7 @@ G.mostrar(fb, document.getElementById('c'));
   <details class="pista"><summary>Pista 2</summary><p>Entre dibujo y dibujo cambian solo dos cosas: <code>estado.viewport</code> (el hueco de 128 × 128 donde cae el cubo NDC) y <code>prog.uniforms.u_angulo</code>.</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
     <p>Un uniform es un dato que vale lo mismo para todos los vértices (y fragmentos) de <em>un</em> dibujo. Por eso se asigna entre dibujos: el bucle hace cuatro draw calls y antes de cada uno cambia el valor de <code>u_angulo</code> y el viewport. El VBO y el VAO no cambian nunca: los mismos 60 bytes producen cuatro triángulos distintos. Es la idea que hay detrás de dibujar muchos objetos con una malla y distintas matrices.</p>
-    <p>Dos detalles. El viewport no recorta los vértices, pero la rasterización no genera fragmentos fuera de él: el triángulo girado $\pi/6$ tiene un vértice un poco fuera de su hueco de 128 × 128 y aparece recortado, sin invadir el vecino. Y el orden importa: si asignaras el uniform <em>después</em> del <code>dibujarArrays</code>, cada triángulo usaría el ángulo del anterior (el primero, 0).</p>
+    <p>Dos detalles. El viewport no recorta los vértices, pero la rasterización no genera fragmentos fuera de él: los triángulos girados $\pi/6$ y $\pi/3$ tienen dos vértices un poco fuera de su hueco de 128 × 128 (a 1,02 en NDC: un par de píxeles) y aparecen recortados, sin invadir el vecino. Y el orden importa: si asignaras el uniform <em>después</em> del <code>dibujarArrays</code>, cada triángulo usaría el ángulo del anterior (el primero, 0).</p>
   </details>
 </section>
 

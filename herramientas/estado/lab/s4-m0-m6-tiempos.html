@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Tiempos complementarios (sesión 4, m0-m6)</title></head>
+<body>
+<p>Página de laboratorio para <code>s4-m0-m6-tiempos.mjs</code> (no se abre a mano).</p>
+<script>
+"use strict";
+/* Complementa pend-m0-m5-tiempos.html con los montajes que allí no coincidían con el texto:
+   · 4.2, hack «Ocultar objetos desde el vertex shader»: el discard para ocultar va AL PRINCIPIO del shader
+     (en pend-m0-m5 iba después del bucle caro, así que las capas ocultas seguían pagando el bucle).
+   · 5.8: readPixels de 1 px sin nada pendiente y tras un dibujo trivial, PROMEDIADO sobre muchas llamadas
+     (performance.now() tiene una resolución de 0,1 ms en una página sin aislamiento entre orígenes:
+     una sola muestra de 0,03 ms no se puede medir).
+   · 5.8, hack del picking: dibujo pesado completo contra scissor de 1 px, por pasadas y entre barreras.
+   Método «pasadas»: cada repetición en su propia pasada (dos FBO alternos, clear al empezar), readPixels al
+   final de la tanda, mediana de 5 tandas. «barreras»: readPixels → t0 → (clear +) escena → readPixels, mediana de 5. */
+const LAB = (window.LAB = {});
+const lienzo = document.createElement("canvas");
+lienzo.width = lienzo.height = 16;
+const gl = lienzo.getContext("webgl2", { antialias: false, alpha: false, depth: true, powerPreference: "high-performance" });
+let uid = 0;
+const sesion = Math.random().toString(36).slice(2, 8);
+function compilar(vs, fs) {
+  const i = fs.indexOf("\n");
+  fs = fs.slice(0, i + 1) + "// lab " + sesion + " " + uid++ + "\n" + fs.slice(i + 1);
+  const sh = (tipo, src) => { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const locs = {}; p.u = (n) => (n in locs ? locs[n] : (locs[n] = gl.getUniformLocation(p, n))); return p;
+}
+const cacheFBO = {};
+function fbos(w, h, prof) {
+  const k = w + "x" + h + (prof ? "d" : ""); if (cacheFBO[k]) return cacheFBO[k];
+  const r = [];
+  for (let i = 0; i < 2; i++) {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h);
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    if (prof) { const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb); }
+    r.push(f);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); return (cacheFBO[k] = r);
+}
+const px1 = new Uint8Array(4);
+const esperar = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px1);
+const mediana = (a) => { const b = a.slice().sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
+function estadoLimpio() { gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.SCISSOR_TEST); gl.depthMask(true); gl.depthFunc(gl.LESS); }
+function pasadas(escena, { w, h, prof = false, tandas = 5 } = {}) {
+  const F = fbos(w, h, prof);
+  const pasada = (k) => { gl.bindFramebuffer(gl.FRAMEBUFFER, F[k % 2]); gl.viewport(0, 0, w, h); estadoLimpio();
+    gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | (prof ? gl.DEPTH_BUFFER_BIT : 0)); escena(k); };
+  for (let i = 0; i < 3; i++) pasada(i); esperar();
+  const t0 = performance.now(); pasada(0); esperar(); const t1 = performance.now() - t0;
+  const reps = Math.max(3, Math.min(30, Math.round(120 / Math.max(t1, 0.05))));
+  const res = [];
+  for (let t = 0; t < tandas; t++) { const a = performance.now(); for (let i = 0; i < reps; i++) pasada(i); esperar(); res.push((performance.now() - a) / reps); }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); estadoLimpio();
+  return { ms: +mediana(res).toFixed(3), min: +Math.min(...res).toFixed(3), max: +Math.max(...res).toFixed(3), reps };
+}
+function barreras(escena, { w, h, prof = false, veces = 5 } = {}) {
+  const F = fbos(w, h, prof); gl.bindFramebuffer(gl.FRAMEBUFFER, F[0]); gl.viewport(0, 0, w, h);
+  const una = () => { estadoLimpio(); esperar(); const t0 = performance.now();
+    gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | (prof ? gl.DEPTH_BUFFER_BIT : 0)); escena(0); esperar(); return performance.now() - t0; };
+  una(); const r = []; for (let i = 0; i < veces; i++) r.push(una());
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); estadoLimpio();
+  return { ms: +mediana(r).toFixed(3), min: +Math.min(...r).toFixed(3), max: +Math.max(...r).toFixed(3) };
+}
+const vaoVacio = gl.createVertexArray();
+
+/* ---------- 4.2: ocultar con discard (al principio) o desde el vertex shader ---------- */
+const VS_42 = `#version 300 es
+uniform float u_z;
+uniform bool u_oculto;
+uniform bool u_ocultarEnVS;
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  gl_Position = vec4(p * 2.0 - 1.0, u_z, 1.0);
+  if (u_ocultarEnVS && u_oculto) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+}`;
+const CARO = `vec2 p = gl_FragCoord.xy * 0.001; float a = u_z;
+  for (int i = 0; i < 60; i++) a = sin(a * 1.3 + p.x) + cos(a * 0.7 - p.y);`;
+LAB["4.2-hack"] = () => {
+  const w = 1024, h = 1024, N = 32;
+  const opaco = compilar(VS_42, `#version 300 es
+precision highp float; uniform float u_z; uniform bool u_oculto; out vec4 o;
+void main() { ${CARO} o = vec4(fract(a), u_z, 0.0, 1.0); }`);
+  const conDiscard = compilar(VS_42, `#version 300 es
+precision highp float; uniform float u_z; uniform bool u_oculto; out vec4 o;
+void main() { if (u_oculto) discard; ${CARO} o = vec4(fract(a), u_z, 0.0, 1.0); }`);
+  const escena = (prog, oculto, enVS, capas = N) => () => {
+    gl.useProgram(prog); gl.bindVertexArray(vaoVacio); gl.enable(gl.DEPTH_TEST);
+    gl.uniform1i(prog.u("u_oculto"), oculto ? 1 : 0); gl.uniform1i(prog.u("u_ocultarEnVS"), enVS ? 1 : 0);
+    for (let i = 0; i < capas; i++) { gl.uniform1f(prog.u("u_z"), -0.9 + 1.8 * (capas - 1 - i) / capas); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+  };
+  const casos = {
+    "1 capa opaca": escena(opaco, false, false, 1),
+    "32 opacas sin ocultación": escena(opaco, false, false),
+    "discard al principio: visibles": escena(conDiscard, false, false),
+    "discard al principio: ocultas": escena(conDiscard, true, false),
+    "vertex shader: visibles": escena(opaco, false, true),
+    "vertex shader: ocultas": escena(opaco, true, true),
+    "no dibujar nada (solo clear)": () => {},
+  };
+  const r = {};
+  for (const k in casos) r[k] = { pasadas: pasadas(casos[k], { w, h, prof: true }), barreras: barreras(casos[k], { w, h, prof: true }) };
+  return r;
+};
+
+/* ---------- 5.8: readPixels promediado ---------- */
+const VS_PANTALLA = `#version 300 es
+void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+LAB["5.8-readpixels"] = () => {
+  const w = 512, h = 512, F = fbos(w, h, false);
+  const p = compilar(VS_PANTALLA, `#version 300 es
+precision mediump float; out vec4 o; void main() { o = vec4(1.0, 0.5, 0.2, 1.0); }`);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, F[0]); gl.viewport(0, 0, w, h); estadoLimpio();
+  const triv = () => { gl.useProgram(p); gl.bindVertexArray(vaoVacio); gl.drawArrays(gl.TRIANGLES, 0, 3); };
+  triv(); esperar(); esperar();
+  const res = { libre: [], trasTrivial: [], dibujoJS: [] };
+  for (let t = 0; t < 5; t++) {
+    esperar();
+    let t0 = performance.now(); for (let i = 0; i < 200; i++) esperar(); res.libre.push((performance.now() - t0) / 200);
+    let js = 0; t0 = performance.now();
+    for (let i = 0; i < 100; i++) { const a = performance.now(); triv(); js += performance.now() - a; esperar(); }
+    res.trasTrivial.push((performance.now() - t0 - js) / 100); res.dibujoJS.push(js / 100);
+  }
+  // tanda de 1000 dibujos triviales sin esperar, para el coste en JS de un drawArrays
+  esperar(); const t0 = performance.now(); for (let i = 0; i < 1000; i++) triv(); const js1000 = (performance.now() - t0) / 1000; esperar();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { libre_ms: +mediana(res.libre).toFixed(4), trasTrivial_ms: +mediana(res.trasTrivial).toFixed(4),
+           dibujoJS_ms_en_bucle_con_espera: +mediana(res.dibujoJS).toFixed(4), dibujoJS_ms_1000_seguidos: +js1000.toFixed(4) };
+};
+
+/* ---------- 5.8: picking con scissor de 1 px ---------- */
+LAB["5.8-scissor"] = () => {
+  const w = 1024, h = 1024;
+  const p = compilar(VS_PANTALLA, `#version 300 es
+precision highp float; uniform int u_n; out vec4 o;
+void main() { float a = gl_FragCoord.x * 0.001;
+  for (int i = 0; i < u_n; i++) a = sin(a * 1.1 + float(i));
+  o = vec4(fract(a)); }`);
+  const d = () => { gl.useProgram(p); gl.uniform1i(p.u("u_n"), 600); gl.bindVertexArray(vaoVacio); gl.drawArrays(gl.TRIANGLES, 0, 3); };
+  const s = () => { gl.enable(gl.SCISSOR_TEST); gl.scissor(w >> 1, h >> 1, 1, 1); d(); gl.disable(gl.SCISSOR_TEST); };
+  // ojo: con el scissor activo, el clear de la pasada también se recorta en «barreras» si se deja puesto; aquí se apaga en cada escena
+  return { completo: { pasadas: pasadas(d, { w, h }), barreras: barreras(d, { w, h }) },
+           scissor: { pasadas: pasadas(s, { w, h }), barreras: barreras(s, { w, h }) },
+           vacio: { pasadas: pasadas(() => {}, { w, h }), barreras: barreras(() => {}, { w, h }) } };
+};
+
+/* ---------- 5.8: readPixels a un PIXEL_PACK_BUFFER + fenceSync, tras el mismo dibujo pesado ---------- */
+LAB["5.8-pbo"] = async () => {
+  const w = 1024, h = 1024, F = fbos(w, h, false);
+  const p = compilar(VS_PANTALLA, `#version 300 es
+precision highp float; uniform int u_n; out vec4 o;
+void main() { float a = gl_FragCoord.x * 0.001;
+  for (int i = 0; i < u_n; i++) a = sin(a * 1.1 + float(i));
+  o = vec4(fract(a), 0.25, 0.5, 1.0); }`);
+  const d = (n = 600) => { gl.bindFramebuffer(gl.FRAMEBUFFER, F[0]); gl.viewport(0, 0, w, h); estadoLimpio();
+    gl.useProgram(p); gl.uniform1i(p.u("u_n"), n); gl.bindVertexArray(vaoVacio); gl.drawArrays(gl.TRIANGLES, 0, 3); };
+  d(); esperar();
+  const pbo = gl.createBuffer(); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo); gl.bufferData(gl.PIXEL_PACK_BUFFER, 4, gl.STREAM_READ);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  const res = [];
+  for (let k = 0; k < 5; k++) {
+    // síncrono
+    esperar(); d(); let t0 = performance.now();
+    const ref = new Uint8Array(4); gl.readPixels(512, 512, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, ref); const sinc = performance.now() - t0;
+    // asíncrono: varios dibujos pesados por delante («trabajo pesado por delante») y la lectura al PBO
+    esperar(); d(); d(); d();
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+    t0 = performance.now(); gl.readPixels(512, 512, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, 0); const asinc = performance.now() - t0;
+    const valla = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    let frames = 0; const tv = performance.now();
+    while (gl.getSyncParameter(valla, gl.SYNC_STATUS) !== gl.SIGNALED && frames < 120) { await new Promise((r) => requestAnimationFrame(r)); frames++; }
+    const msValla = performance.now() - tv;
+    gl.deleteSync(valla);
+    const dst = new Uint8Array(4); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dst); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    res.push({ sincrono_ms: +sinc.toFixed(2), pbo_readPixels_ms: +asinc.toFixed(3), frames_hasta_la_valla: frames, ms_hasta_la_valla: +msValla.toFixed(1),
+               datos_iguales: Array.from(dst).join(",") === Array.from(ref).join(","), datos: Array.from(dst).join(",") });
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteBuffer(pbo);
+  return res;
+};
+
+/* ---------- 6.6: ¿de dónde hay que leer el píxel final? (propuesta de m7b) ----------
+   20 pasadas pesadas que solo escriben en FBO; después, un readPixels de 1 px del CANVAS o del FBO de la última pasada. */
+LAB["6.6-leer"] = () => {
+  const w = 1024, h = 1024, F = fbos(w, h, false);
+  const p = compilar(VS_PANTALLA, `#version 300 es
+precision highp float; uniform int u_n; out vec4 o;
+void main() { float a = gl_FragCoord.x * 0.001;
+  for (int i = 0; i < u_n; i++) a = sin(a * 1.1 + float(i));
+  o = vec4(fract(a)); }`);
+  const pasada = (k) => { gl.bindFramebuffer(gl.FRAMEBUFFER, F[k % 2]); gl.viewport(0, 0, w, h); estadoLimpio();
+    gl.clear(gl.COLOR_BUFFER_BIT); gl.useProgram(p); gl.uniform1i(p.u("u_n"), 600); gl.bindVertexArray(vaoVacio); gl.drawArrays(gl.TRIANGLES, 0, 3); };
+  const N = 10, r = { delCanvas: [], delUltimoFBO: [], delCanvasTrasDibujarEnEl: [] };
+  for (let i = 0; i < 3; i++) pasada(i); esperar();
+  for (let t = 0; t < 5; t++) {
+    // a) leer del canvas (framebuffer por defecto) tras N pasadas que solo escriben en FBO
+    let t0 = performance.now(); for (let i = 0; i < N; i++) pasada(i);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); esperar(); r.delCanvas.push((performance.now() - t0) / N);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, F[1]); esperar();   // vaciar lo pendiente antes de la siguiente prueba
+    // b) leer del FBO de la última pasada
+    t0 = performance.now(); for (let i = 0; i < N; i++) pasada(i); esperar(); r.delUltimoFBO.push((performance.now() - t0) / N);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const m = (a) => +mediana(a).toFixed(3);
+  return { N, ms_por_pasada_leyendo_del_canvas: m(r.delCanvas), ms_por_pasada_leyendo_del_ultimo_FBO: m(r.delUltimoFBO) };
+};
+
+LAB.gpu = () => { const dbg = gl.getExtension("WEBGL_debug_renderer_info"); return dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER); };
+</script>
+</body></html>

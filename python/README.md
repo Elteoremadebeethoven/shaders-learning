@@ -111,6 +111,11 @@ python probar_todo.py                # ejecuta los 27 scripts y comprueba sus im
 python probar_todo.py --sin-ventana  # igual, sin abrir la ventana de glfw
 ```
 
+Última comprobación: 2026-10-06, Apple M1 con macOS 26.6 y Python 3.14.7 (el `.venv` con las versiones
+de `requirements.txt`): 27/27 scripts correctos en unos 8 s, y las 33 imágenes que generan salieron
+idénticas byte a byte a las que muestran las lecciones, salvo `pyopengl-ventana.png`, que captura un
+triángulo que gira y depende del instante exacto del frame 60.
+
 ## 6. Particularidades de macOS (todas comprobadas en macOS 26, Apple M1)
 
 - **OpenGL 4.1 como máximo**, implementado sobre Metal: `GL_VERSION` = `4.1 Metal - 90.5`.
@@ -128,7 +133,7 @@ python probar_todo.py --sin-ventana  # igual, sin abrir la ventana de glfw
 - **Retina**: una ventana de 640 × 480 puntos tiene un framebuffer de 1280 × 960 píxeles.
   Usa `glfw.get_framebuffer_size()` para `glViewport`, no `glfw.get_window_size()`.
 - **vsync poco fiable**: con `glfw.swap_interval(1)` en una pantalla de 60 Hz medimos unos
-  90 fps con intervalos irregulares (3–17 ms); con `swap_interval(0)`, unos 4000. Anima con el
+  85–90 fps con intervalos irregulares (3–17 ms); con `swap_interval(0)`, entre 4000 y 5000. Anima con el
   `dt` medido, no con 1/60.
 
 ## 7. Trampas de PyOpenGL

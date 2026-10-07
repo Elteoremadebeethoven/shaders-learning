@@ -276,7 +276,7 @@ const w = gl.drawingBufferWidth / 3, h = gl.drawingBufferHeight, lado = Math.min
   <ul>
     <li>Invertida, como con cualquier otra fuente.<div class="explicacion">Con canvas, <code>ImageData</code> o <code>&lt;img&gt;</code> sí. Pero con <code>ImageBitmap</code> WebGL ignora los flags de volteo y premultiplicado.</div></li>
     <li data-correcta>Sin invertir: con <code>ImageBitmap</code> el flag se ignora; la orientación se elige al crear el bitmap con <code>imageOrientation: 'flipY'</code>.<div class="explicacion">Correcto, y lo comprobamos. La razón de diseño: un <code>ImageBitmap</code> está pensado para subirse sin procesar nada más, así que cualquier transformación se hace al decodificarlo.</div></li>
-    <li>Da <code>INVALID_OPERATION</code> porque no se puede combinar el flag con un bitmap.<div class="explicacion">No hay ningún error: el flag, simplemente, no se aplica.</div></li>
+    <li>Da <code>INVALID_OPERATION</code> porque no se puede combinar el flag con un bitmap.<div class="explicacion">No hay ningún error: el flag no se aplica.</div></li>
   </ul>
 </div>
 
@@ -287,7 +287,7 @@ const w = gl.drawingBufferWidth / 3, h = gl.drawingBufferHeight, lado = Math.min
   <li><strong>Es float y la filtras linealmente sin la extensión.</strong> <code>RGBA32F</code> con <code>LINEAR</code> sin haber pedido <code>OES_texture_float_linear</code>: negro (comprobado; con la extensión pedida, la misma textura se filtró bien). <code>RGBA16F</code> sí es filtrable sin extensión.</li>
   <li><strong>(Solo WebGL1) No es potencia de dos</strong> y usa <code>REPEAT</code> o mipmaps. En WebGL2 esa restricción desapareció: una textura de 3×5 con <code>REPEAT</code> y mipmaps funcionó; en un contexto WebGL1, salió negra.</li>
 </ol>
-<p>Un caso que despista mucho: una textura de <strong>1×1</strong> es completa con el filtro por defecto, porque un único nivel de 1×1 ya es una cadena de mipmaps completa. Tus pruebas con una textura de un píxel funcionan… y la imagen de verdad sale negra.</p>
+<p>Un caso que despista mucho: una textura de <strong>1×1</strong> en un formato filtrable (<code>RGBA8</code>, <code>RGBA16F</code>) es completa con el filtro por defecto, porque un único nivel de 1×1 ya es una cadena de mipmaps completa (lo comprobamos: se lee bien). Tus pruebas con una textura de un píxel funcionan… y la imagen de verdad sale negra. La excepción es el caso 2: una <code>RGBA32F</code> de 1×1 sin <code>OES_texture_float_linear</code> sigue saliendo negra con el filtro por defecto, porque ese filtro mezcla niveles (también lo comprobamos).</p>
 
 <div class="callout bestiario" data-id="m5-textura-negra" data-titulo="La textura sale negra">
   <p><strong>Síntoma:</strong> el objeto texturizado se ve negro opaco (o del color que resulte de multiplicar por negro). Nada en la consola, <code>getError()</code> = 0.</p>
@@ -428,7 +428,7 @@ requestAnimationFrame(frame);
     <tr><td>lo mismo con <code>CLAMP_TO_EDGE</code></td><td>rojo</td><td>Fuera del borde se repite el texel del borde.</td></tr>
   </tbody>
 </table>
-<p>Para leer un texel exacto sin pensar en coordenadas ni filtros, GLSL ES 3.00 tiene <code>texelFetch(sampler, ivec2(i, j), nivel)</code>: índices enteros de texel, sin filtrado, sin wrap. Fuera de rango, GLSL ES 3.00 dice que el resultado es indefinido, pero <strong>WebGL 2.0 lo concreta</strong>: por seguridad (para que un shader no pueda leer memoria ajena), las lecturas que en OpenGL ES serían indefinidas <em>deben devolver cero</em> (especificación de WebGL 2.0, «Texel Fetches»; lo comprobamos en la GPU de pruebas: <code>(0, 0, 0, 0)</code> con coordenadas mayores que el tamaño, con coordenadas negativas y con un nivel de mipmap que no existe). Y <code>textureSize(sampler, nivel)</code> devuelve el tamaño en texels como <code>ivec2</code> (comprobado: 2×2 en el nivel 0 y 1×1 en el nivel 1). Son las herramientas para usar texturas como tablas de datos.</p>
+<p>Para leer un texel exacto sin pensar en coordenadas ni filtros, GLSL ES 3.00 tiene <code>texelFetch(sampler, ivec2(i, j), nivel)</code>: índices enteros de texel, sin filtrado, sin wrap. Fuera de rango, GLSL ES 3.00 dice que el resultado es indefinido, pero <strong>WebGL 2.0 lo concreta</strong>: por seguridad (para que un shader no pueda leer memoria ajena), las lecturas que en OpenGL ES serían indefinidas <em>deben devolver cero</em> (especificación de WebGL 2.0, «Texel Fetches»; lo comprobamos en la GPU de pruebas, un Apple M1 con Chrome 154: <code>(0, 0, 0, 0)</code> con coordenadas mayores que el tamaño, con coordenadas negativas y con un nivel de mipmap que no existe, tanto mayor que el último como negativo). Ojo con lo último: no todas las implementaciones lo cumplen. Con SwiftShader, el render por software que usa Chrome cuando no hay GPU, las coordenadas fuera de rango sí dieron cero, pero un nivel inexistente devolvió el texel del nivel existente más cercano (más en <a href="../06-glsl/08-texturas-efectos.html#texture-frente-a-texelfetch">6.8</a>). El código correcto nunca lee fuera. Y <code>textureSize(sampler, nivel)</code> devuelve el tamaño en texels como <code>ivec2</code> (comprobado: 2×2 en el nivel 0 y 1×1 en el nivel 1). Son las herramientas para usar texturas como tablas de datos.</p>
 
 <div class="callout bestiario" data-id="m5-borde-repeat" data-titulo="Una línea de otro color en el borde del sprite">
   <p><strong>Síntoma:</strong> al dibujar una imagen con <code>LINEAR</code>, en su borde aparece una línea fina del color del borde <em>opuesto</em> (arriba se ve un poco del color de abajo, a la izquierda un poco del de la derecha).</p>
@@ -1153,7 +1153,7 @@ for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
 }
 const textura = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, textura);
-// Plan B: RGBA16F es filtrable sin extensión (a costa de precisión: 11 bits de mantisa)
+// Plan B: RGBA16F es filtrable sin extensión (a costa de precisión: 10 bits de mantisa)
 const formatoInterno = filtrableFloat ? gl.RGBA32F : gl.RGBA16F;
 gl.texImage2D(gl.TEXTURE_2D, 0, formatoInterno, N, N, 0, gl.RGBA, gl.FLOAT, datos);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -1289,7 +1289,7 @@ dibujar();
     <li>Crear: <code>createTexture</code> → <code>bindTexture</code> → <code>texImage2D</code> (fuente del DOM o array tipado con ancho, alto y borde 0) → filtros y wrap con <code>texParameteri</code>. Leer en GLSL con <code>texture(sampler, uv)</code>, UV de 0 a 1.</li>
     <li>Formato interno (cómo se guarda) + formato y tipo (cómo son tus datos): <code>RGBA/RGBA8</code> con bytes, <code>R8</code> se lee (r, 0, 0, 1), <code>RGBA16F</code> filtrable, <code>RGBA32F</code> sin recortar pero con <code>LINEAR</code> solo con <code>OES_texture_float_linear</code>.</li>
     <li><code>pixelStorei</code> es global: <code>FLIP_Y</code> (las imágenes guardan primero la fila de arriba), <code>PREMULTIPLY_ALPHA</code> (5.7), <code>UNPACK_ALIGNMENT</code> = 4 (filas RGB/R8 de ancho impar: error o imagen torcida). Con <code>ImageBitmap</code>, los dos primeros se ignoran: se eligen en <code>createImageBitmap</code>.</li>
-    <li>Textura incompleta = negra y en silencio: el <code>MIN_FILTER</code> por defecto pide mipmaps; floats con <code>LINEAR</code> sin extensión; unidad vacía. Una textura de 1×1 siempre es completa.</li>
+    <li>Textura incompleta = negra y en silencio: el <code>MIN_FILTER</code> por defecto pide mipmaps; floats con <code>LINEAR</code> sin extensión; unidad vacía. Una textura de 1×1 <code>RGBA8</code> o <code>RGBA16F</code> es completa aun con el filtro por defecto.</li>
     <li>Filtros: <code>NEAREST</code> (datos, pixel art), <code>LINEAR</code> (suave), mipmaps contra el muaré, anisotropía para superficies de canto.</li>
     <li>Centro del texel <em>i</em>: <code>(i + 0.5) / N</code>. <code>texelFetch</code> para leer texels exactos, <code>textureSize</code> para el tamaño.</li>
     <li>Wrap: <code>REPEAT</code> (por defecto; mezcla bordes opuestos con <code>LINEAR</code>), <code>MIRRORED_REPEAT</code>, <code>CLAMP_TO_EDGE</code>. Sin restricciones de tamaño en WebGL2.</li>

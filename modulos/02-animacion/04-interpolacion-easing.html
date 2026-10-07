@@ -724,7 +724,7 @@ rafSim(bucle);
   </div>
   <details class="pista"><summary>Pista</summary><p>En cada frame, la distancia que queda debe multiplicarse por <code>2 ** (-dt / semivida)</code>. Escríbelo como «objetivo más la distancia restante multiplicada por ese factor».</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
-    <p>Con la semivida de 0,1 s, la distancia restante se reduce a la mitad cada 0,1 s, sea cual sea el tamaño de los frames: tras $n$ frames de duración $dt$, el factor total es $2^{-n\,dt/h} = 2^{-T/h}$, que solo depende del tiempo total $T$. El 90 % se alcanza cuando queda un 10 %: $2^{-T/h} = 0{,}1$, es decir, $T = h \log_2 10 \approx 0{,}332$ s. La consola lo confirma con cualquier <code>HZ</code> (con pequeñas diferencias porque la comprobación solo ocurre en los frames: a 30 Hz se detecta en múltiplos de 33 ms).</p>
+    <p>Con la semivida de 0,1 s, la distancia restante se reduce a la mitad cada 0,1 s, sea cual sea el tamaño de los frames: tras $n$ frames de duración $dt$, el factor total es $2^{-n\,dt/h} = 2^{-T/h}$, que solo depende del tiempo total $T$. El 90 % se alcanza cuando queda un 10 %: $2^{-T/h} = 0{,}1$, es decir, $T = h \log_2 10 \approx 0{,}332$ s. La consola lo confirma con cualquier <code>HZ</code>, con una pequeña diferencia: en nuestra prueba salió 0,300 s a 30 Hz, 0,317 a 60 y 0,326 a 144. La cifra queda justo un frame por debajo de 0,332 porque el cronómetro arranca en el frame del salto, que ya da el primer paso, y la comprobación solo ocurre en los frames (a 30 Hz, un frame son 33 ms).</p>
     <p>Con el <code>k = 0.15</code> original, el tiempo es de unos 14 frames: 0,47 s a 30 Hz, 0,23 s a 60 Hz y 0,1 s a 144 Hz.</p>
   </details>
 </section>

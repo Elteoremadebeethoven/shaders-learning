@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Lab 7.5 (s4-m7b) · tiempos de GPU de las partículas</title>
+<!--
+  Copia ampliada de rev-m7-5-medir.html (sesión 3) por el agente m7b (sesión 4), para medir en el M1
+  (Apple M1, Chrome 154, ANGLE/Metal) las cifras de 7.5. MÉTODO FIABLE (GUIA §5.6): cada iteración es una
+  pasada propia (dos FBO alternos, o el FBO de simulación y el canvas), con clear al empezar; readPixels de un
+  píxel al final; mediana de 5 tandas de 20.
+  Además de lo de la sesión 3 (frame completo, simulación sola, dibujo solo en FBO y en el canvas, 16F + tono):
+    - frame completo también con 16 K, 65 K y 262 K (filas de la tabla de la comparativa);
+    - 1 M dibujados con todos los puntos FUERA de la pantalla, sin mezcla, con puntos de 2 y 8 px;
+    - quads instanciados de 2 px frente a puntos de 2 px (programas propios, mismo estado);
+    - antialiasing multimuestra: el canvas de un contexto con antialias:true frente a uno con antialias:false,
+      cada dibujo en el canvas seguido de una pasada de 1 × 1 en un FBO (para cerrar la pasada del canvas);
+    - ejercicio 7.5.4 como FRAMES completos: simular + dibujar en el canvas (brillo 0,0015) frente a simular +
+      acumular en RGBA16F + tono al canvas.
+  Uso: page.evaluate(() => medirTodo()). Con ?rapido mide 16 K y 65 K (prueba de humo; cifras sin valor).
+-->
+<style>body{font:14px system-ui;background:#111;color:#ddd;margin:16px} canvas{width:500px;height:300px;display:block;margin:8px 0;background:#000} pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<canvas id="c" width="1000" height="600"></canvas>
+<canvas id="c2" width="1000" height="600"></canvas>
+<pre id="out"></pre>
+<script src="../../../assets/js/glkit.js"></script>
+<script src="../../../modulos/07-integracion/recursos/l75-particulas.js"></script>
+<script>
+"use strict";
+const RAPIDO = location.search.includes("rapido");
+const W = 1000, H = 600, ASPECTO = W / H;
+const NS = RAPIDO ? [16384, 65536] : [1048576, 4194304];
+const NS_TABLA = RAPIDO ? [4096] : [16384, 65536, 262144];
+const K_POR_TANDA = RAPIDO ? 5 : 20, TANDAS = RAPIDO ? 3 : 5;
+function mediana(a) { const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; }
+
+function crearEntorno(canvas, antialias) {
+  const gl = canvas.getContext("webgl2", { antialias, alpha: false, powerPreference: "high-performance" });
+  gl.getExtension("EXT_color_buffer_float");
+  const px = new Uint8Array(4);
+  const E = { gl, px };
+  // SINCRONIZAR CON LO ÚLTIMO QUE SE HIZO. Leer un píxel del canvas NO espera al trabajo que solo escribió en
+  // un FBO o en un buffer de transform feedback (ANGLE solo espera a quien escribió lo que se lee: medido,
+  // «simular 1 M» salía en 0,08 ms). Así que se anota el destino de cada dibujo y se lee de ahí.
+  const o = { bfb: gl.bindFramebuffer.bind(gl), bbb: gl.bindBufferBase.bind(gl), da: gl.drawArrays.bind(gl), dai: gl.drawArraysInstanced.bind(gl), cl: gl.clear.bind(gl) };
+  let fbActual = null, tfBuf = null, destino = { tipo: "fb", fb: null };
+  gl.bindFramebuffer = (t, fb) => { if (t !== gl.READ_FRAMEBUFFER) fbActual = fb; o.bfb(t, fb); };
+  gl.bindBufferBase = (t, i, b) => { if (t === gl.TRANSFORM_FEEDBACK_BUFFER && i === 0) tfBuf = b; o.bbb(t, i, b); };
+  const anotar = () => { destino = gl.isEnabled(gl.RASTERIZER_DISCARD) ? { tipo: "tf", buf: tfBuf } : { tipo: "fb", fb: fbActual }; };
+  gl.drawArrays = (...a) => { anotar(); o.da(...a); };
+  gl.drawArraysInstanced = (...a) => { anotar(); o.dai(...a); };
+  gl.clear = (m) => { if (!gl.isEnabled(gl.RASTERIZER_DISCARD)) destino = { tipo: "fb", fb: fbActual }; o.cl(m); };
+  const f4 = new Float32Array(4), u4 = new Uint16Array(4);
+  E.esperarGPU = () => {
+    if (destino.tipo === "tf") {
+      gl.bindBuffer(gl.COPY_READ_BUFFER, destino.buf); gl.getBufferSubData(gl.COPY_READ_BUFFER, 0, f4, 0, 1); gl.bindBuffer(gl.COPY_READ_BUFFER, null);
+    } else {
+      o.bfb(gl.FRAMEBUFFER, destino.fb);
+      const tipo = gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE), fmt = gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT);
+      if (tipo === gl.UNSIGNED_BYTE) gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      else if (tipo === gl.FLOAT) gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, f4);
+      else if (tipo === gl.HALF_FLOAT) gl.readPixels(0, 0, 1, 1, fmt, gl.HALF_FLOAT, u4);
+      else gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, f4);
+      o.bfb(gl.FRAMEBUFFER, fbActual);
+    }
+    const e = gl.getError(); if (e) E.errores = (E.errores || 0) + 1;
+  };
+  E.medir = (iteracion, K = K_POR_TANDA, tandas = TANDAS) => {
+    iteracion(0); E.esperarGPU();
+    const t = [];
+    for (let j = 0; j < tandas; j++) {
+      const t0 = performance.now();
+      for (let k = 1; k <= K; k++) iteracion(j * K + k);
+      E.esperarGPU();
+      t.push((performance.now() - t0) / K);
+    }
+    return +mediana(t).toFixed(2);
+  };
+  E.preparar = (destino) => {             // destino: null (canvas) o un FBO de GLKit
+    gl.bindFramebuffer(gl.FRAMEBUFFER, destino ? destino.fbo : null);
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(0.03, 0.035, 0.05, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  };
+  E.terminar = () => gl.disable(gl.BLEND);
+  const opc8 = { filtro: gl.NEAREST, formatoInterno: gl.RGBA8, formato: gl.RGBA, tipo: gl.UNSIGNED_BYTE };
+  E.fbo8 = [GLKit.crearFBO(gl, W, H, opc8), GLKit.crearFBO(gl, W, H, opc8)];
+  E.mini = GLKit.crearFBO(gl, 1, 1, opc8);
+  // Cierra la pasada del canvas con otra pasada diminuta: así cada dibujo en el canvas es una pasada propia
+  E.cerrarCanvas = () => { gl.bindFramebuffer(gl.FRAMEBUFFER, E.mini.fbo); gl.viewport(0, 0, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT); };
+  return E;
+}
+const E1 = crearEntorno(document.getElementById("c"), false);
+const gl = E1.gl;
+const CAB = "#version 300 es\nprecision highp float;\nprecision highp int;\n";
+const VS_PANT = CAB + "void main(){ vec2 P[3]=vec2[3](vec2(-1.,-1.),vec2(3.,-1.),vec2(-1.,3.)); gl_Position=vec4(P[gl_VertexID],0.,1.); }";
+const FS_TONO = CAB + "uniform highp sampler2D u_hdr; out vec4 o; void main(){ vec3 a = texelFetch(u_hdr, ivec2(gl_FragCoord.xy), 0).rgb; o = vec4(1.0 - exp(-a * 40.0), 1.0); }";
+const tono = GLKit.crearPrograma(gl, VS_PANT, FS_TONO), uTono = GLKit.uniforms(gl, tono);
+const vaoVacio = gl.createVertexArray();
+const opc16 = { filtro: gl.NEAREST, formatoInterno: gl.RGBA16F, formato: gl.RGBA, tipo: gl.HALF_FLOAT };
+const fbo16 = [GLKit.crearFBO(gl, W, H, opc16), GLKit.crearFBO(gl, W, H, opc16)];
+
+function medirMetodo(metodo, n, soloFrame) {
+  const m = L75.crearMotor(gl, metodo);
+  m.iniciar(n, ASPECTO);
+  const u = { aspecto: ASPECTO, tamPunto: 1.5, brillo: Math.min(1, 60 / Math.sqrt(n)) };
+  const paso = (k) => m.paso({ dt: 1 / 60, t: k / 60, aspecto: ASPECTO, raton: [0, 0, 0] });
+  const dib = (destino, uu) => { E1.preparar(destino); m.dibujar(uu); E1.terminar(); };
+  const r = {};
+  // 1) frame completo, como la tabla de la lección y el botón «medir GPU»: simular + limpiar el canvas + dibujar
+  r.frameCanvas = E1.medir((k) => { paso(k); dib(null, u); });
+  if (soloFrame || NS_TABLA.includes(n)) { m.liberar(); return r; }
+  // 2) solo simular (la salida de cada paso es la entrada del siguiente: nada que ahorrarse)
+  r.soloSimular = E1.medir((k) => paso(k));
+  // 3) solo dibujar, cada dibujo en su propia pasada (dos FBO RGBA8 alternos con clear)
+  r.soloDibujarFBO8 = E1.medir((k) => dib(E1.fbo8[k & 1], u));
+  // 4) solo dibujar en el canvas, repetido sobre el MISMO framebuffer (el método que la guía desaconseja)
+  r.soloDibujarCanvasRepetido = E1.medir(() => dib(null, u));
+  // 4b) solo dibujar en el canvas, cerrando cada pasada con otra de 1 × 1 (método fiable para el canvas)
+  r.soloDibujarCanvasCerrado = E1.medir(() => { dib(null, u); E1.cerrarCanvas(); });
+  if (n === NS[0]) {
+    // 5) variantes del dibujo (FBO alternos)
+    r.dibujarFuera = E1.medir((k) => dib(E1.fbo8[k & 1], { aspecto: 1e-7, tamPunto: 1.5, brillo: u.brillo }));
+    r.dibujarSinMezcla = E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); gl.disable(gl.BLEND); m.dibujar(u); });
+    r.dibujar2px = E1.medir((k) => dib(E1.fbo8[k & 1], { ...u, tamPunto: 2 }));
+    r.dibujar8px = E1.medir((k) => dib(E1.fbo8[k & 1], { ...u, tamPunto: 8 }));
+    // 6) ejercicio 7.5.4: brillo 0,0015
+    const u2 = { aspecto: ASPECTO, tamPunto: 1.5, brillo: 0.0015 };
+    const aTono = (f) => {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H);
+      gl.useProgram(tono); gl.bindVertexArray(vaoVacio);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, f.textura);
+      GLKit.ponerUniform(gl, uTono.u_hdr, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3); gl.bindVertexArray(null);
+    };
+    // 6a) sin simular (lo de la sesión 3)
+    r.acumular16F_mas_tono = E1.medir((k) => { const f = fbo16[k & 1]; dib(f, u2); aTono(f); });
+    r.directoCanvasRepetido_0015 = E1.medir(() => dib(null, u2));
+    r.directoCanvasCerrado_0015 = E1.medir(() => { dib(null, u2); E1.cerrarCanvas(); });
+    r.solo16F = E1.medir((k) => dib(fbo16[k & 1], u2));
+    r.solo8_0015 = E1.medir((k) => dib(E1.fbo8[k & 1], u2));
+    // 6b) frames completos, como en el ejercicio: simular + (canvas) o (16F + tono)
+    r.frameDirecto_0015 = E1.medir((k) => { paso(k); dib(null, u2); });
+    r.frame16F_tono = E1.medir((k) => { paso(k); const f = fbo16[k & 1]; dib(f, u2); aTono(f); });
+  }
+  m.liberar();
+  return r;
+}
+
+// ---- Programas propios: puntos y quads instanciados desde una textura de estado (para comparar formas y MSAA)
+function crearDibujantes(glX, n, texExterna, datos) {   // texExterna: función que devuelve la textura de estado
+  const COLOR = "vec3 colorPorRapidez(vec2 v){ float k = clamp(length(v) * 4.0, 0.0, 1.0); return mix(vec3(0.25, 0.45, 1.0), vec3(1.0, 0.45, 0.75), k); }";
+  const FS = CAB + "in vec3 v_color; out vec4 o; void main(){ o = vec4(v_color, 1.0); }";
+  const VS_P = CAB + `uniform highp sampler2D u_estado; uniform float u_aspecto, u_tam, u_brillo; out vec3 v_color; ${COLOR}
+void main(){ int a = textureSize(u_estado, 0).x; vec4 s = texelFetch(u_estado, ivec2(gl_VertexID % a, gl_VertexID / a), 0);
+  gl_Position = vec4(s.x / u_aspecto, s.y, 0.0, 1.0); gl_PointSize = u_tam; v_color = colorPorRapidez(s.zw) * u_brillo; }`;
+  const VS_Q = CAB + `uniform highp sampler2D u_estado; uniform float u_aspecto, u_brillo; uniform vec2 u_radio; out vec3 v_color; ${COLOR}
+void main(){ int a = textureSize(u_estado, 0).x; vec4 s = texelFetch(u_estado, ivec2(gl_InstanceID % a, gl_InstanceID / a), 0);
+  vec2 esq = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.0 - 1.0;   // TRIANGLE_STRIP: (-1,-1) (1,-1) (-1,1) (1,1)
+  gl_Position = vec4(s.x / u_aspecto + esq.x * u_radio.x, s.y + esq.y * u_radio.y, 0.0, 1.0); v_color = colorPorRapidez(s.zw) * u_brillo; }`;
+  const pp = GLKit.crearPrograma(glX, VS_P, FS), pq = GLKit.crearPrograma(glX, VS_Q, FS);
+  const up = GLKit.uniforms(glX, pp), uq = GLKit.uniforms(glX, pq);
+  const lado = Math.round(Math.sqrt(n));
+  let tex = null;
+  if (!texExterna) {
+    tex = glX.createTexture(); glX.bindTexture(glX.TEXTURE_2D, tex);
+    glX.texParameteri(glX.TEXTURE_2D, glX.TEXTURE_MIN_FILTER, glX.NEAREST); glX.texParameteri(glX.TEXTURE_2D, glX.TEXTURE_MAG_FILTER, glX.NEAREST);
+    glX.texImage2D(glX.TEXTURE_2D, 0, glX.RGBA32F, lado, lado, 0, glX.RGBA, glX.FLOAT, datos || L75.estadoInicial(n, ASPECTO));
+  }
+  const laTex = () => (texExterna ? texExterna() : tex);
+  const vao = glX.createVertexArray();
+  const brillo = Math.min(1, 60 / Math.sqrt(n));
+  return {
+    puntos(tam) {
+      glX.useProgram(pp); glX.activeTexture(glX.TEXTURE0); glX.bindTexture(glX.TEXTURE_2D, laTex());
+      GLKit.ponerUniform(glX, up.u_estado, 0); GLKit.ponerUniform(glX, up.u_aspecto, ASPECTO); GLKit.ponerUniform(glX, up.u_tam, tam); GLKit.ponerUniform(glX, up.u_brillo, brillo);
+      glX.bindVertexArray(vao); glX.drawArrays(glX.POINTS, 0, n); glX.bindVertexArray(null);
+    },
+    quads(ladoPx) {
+      glX.useProgram(pq); glX.activeTexture(glX.TEXTURE0); glX.bindTexture(glX.TEXTURE_2D, laTex());
+      GLKit.ponerUniform(glX, uq.u_estado, 0); GLKit.ponerUniform(glX, uq.u_aspecto, ASPECTO); GLKit.ponerUniform(glX, uq.u_brillo, brillo);
+      GLKit.ponerUniform(glX, uq.u_radio, [ladoPx / W, ladoPx / H]);   // medio lado en px × (2 / tamaño) = lado / tamaño
+      glX.bindVertexArray(vao); glX.drawArraysInstanced(glX.TRIANGLE_STRIP, 0, 4, n); glX.bindVertexArray(null);
+    },
+    liberar() { glX.deleteProgram(pp); glX.deleteProgram(pq); if (tex) glX.deleteTexture(tex); glX.deleteVertexArray(vao); },
+  };
+}
+
+function medirFormasYMSAA(n) {
+  const R = {};
+  const D1 = crearDibujantes(gl, n);
+  R.puntos2px_FBO8 = E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); D1.puntos(2); E1.terminar(); });
+  R.quads2px_FBO8 = E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); D1.quads(2); E1.terminar(); });
+  R.puntos1_5px_FBO8 = E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); D1.puntos(1.5); E1.terminar(); });
+  // MSAA: el canvas de cada contexto, cerrando la pasada con otra de 1 × 1
+  R.canvas_aaFalse_1_5px = E1.medir(() => { E1.preparar(null); D1.puntos(1.5); E1.terminar(); E1.cerrarCanvas(); });
+  R.canvas_aaFalse_2px = E1.medir(() => { E1.preparar(null); D1.puntos(2); E1.terminar(); E1.cerrarCanvas(); });
+  D1.liberar();
+  const E2 = crearEntorno(document.getElementById("c2"), true);
+  R.aa2_samples = E2.gl.getParameter(E2.gl.SAMPLES), R.aa1_samples = gl.getParameter(gl.SAMPLES);
+  R.aa2_contextAttributes = E2.gl.getContextAttributes().antialias;
+  const D2 = crearDibujantes(E2.gl, n);
+  R.canvas_aaTrue_1_5px = E2.medir(() => { E2.preparar(null); D2.puntos(1.5); E2.terminar(); E2.cerrarCanvas(); });
+  R.canvas_aaTrue_2px = E2.medir(() => { E2.preparar(null); D2.puntos(2); E2.terminar(); E2.cerrarCanvas(); });
+  // repetir el contexto sin MSAA al final (por si la GPU cambió de marcha entre medidas)
+  const D1b = crearDibujantes(gl, n);
+  R.canvas_aaFalse_1_5px_bis = E1.medir(() => { E1.preparar(null); D1b.puntos(1.5); E1.terminar(); E1.cerrarCanvas(); });
+  D1b.liberar(); D2.liberar();
+  return R;
+}
+
+// Tercera tanda: ¿cuesta lo mismo dibujar el estado inicial (al azar) que el estado tras simular?
+// Simulación propia (la de L75.crearMotor('texturas'), con la textura a la vista) para poder dibujar el MISMO
+// estado con puntos, con quads y en un contexto con antialias.
+function crearSim(n) {
+  const lado = Math.round(Math.sqrt(n));
+  const FS_SIM = CAB + L75.RUIDO + L75.PASO + "\nuniform highp sampler2D u_estado;\nout vec4 fragColor;\nvoid main() { vec4 s = texelFetch(u_estado, ivec2(gl_FragCoord.xy), 0); vec2 p = s.xy, v = s.zw; avanzar(p, v); fragColor = vec4(p, v); }";
+  const ps = GLKit.crearPrograma(gl, VS_PANT, FS_SIM), us = GLKit.uniforms(gl, ps);
+  const opc = { filtro: gl.NEAREST, formatoInterno: gl.RGBA32F, formato: gl.RGBA, tipo: gl.FLOAT };
+  let A = GLKit.crearFBO(gl, lado, lado, opc), B = GLKit.crearFBO(gl, lado, lado, opc);
+  gl.bindTexture(gl.TEXTURE_2D, A.textura); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, lado, lado, gl.RGBA, gl.FLOAT, L75.estadoInicial(n, ASPECTO));
+  return {
+    textura: () => A.textura,
+    paso(k) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, B.fbo); gl.viewport(0, 0, lado, lado); gl.disable(gl.BLEND);
+      gl.useProgram(ps); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, A.textura);
+      GLKit.ponerUniform(gl, us.u_estado, 0); GLKit.ponerUniform(gl, us.u_dt, 1 / 60); GLKit.ponerUniform(gl, us.u_time, k / 60);
+      GLKit.ponerUniform(gl, us.u_aspecto, ASPECTO); GLKit.ponerUniform(gl, us.u_raton, [0, 0, 0]);
+      gl.bindVertexArray(vaoVacio); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.bindVertexArray(null);
+      const t = A; A = B; B = t;
+    },
+    leer() { const d = new Float32Array(n * 4); gl.bindFramebuffer(gl.FRAMEBUFFER, A.fbo); gl.readPixels(0, 0, lado, lado, gl.RGBA, gl.FLOAT, d); gl.bindFramebuffer(gl.FRAMEBUFFER, null); return d; },
+  };
+}
+function apelotonamiento(d, n) {   // partículas por píxel del lienzo de 1000 × 600 (solo las que caen dentro)
+  const c = new Uint16Array(W * H);
+  for (let i = 0; i < n; i++) {
+    const x = Math.floor((d[4 * i] / ASPECTO * 0.5 + 0.5) * W), y = Math.floor((d[4 * i + 1] * 0.5 + 0.5) * H);
+    if (x >= 0 && x < W && y >= 0 && y < H && c[y * W + x] < 65535) c[y * W + x]++;
+  }
+  let ocupados = 0, max = 0; const hist = [];
+  for (let i = 0; i < c.length; i++) if (c[i]) { ocupados++; max = Math.max(max, c[i]); hist.push(c[i]); }
+  hist.sort((a, b) => a - b);
+  // ¿cuántas partículas caen en píxeles con 8 o más?
+  let enDensos = 0; for (const v of hist) if (v >= 8) enDensos += v;
+  return { pixelesOcupados: ocupados, mediaPorOcupado: +(n / ocupados).toFixed(2), p99: hist[Math.floor(hist.length * 0.99)], max, fraccionEnPixelesCon8oMas: +(enDensos / n).toFixed(3) };
+}
+function medirTercera() {
+  const n = NS[0], R = { n };
+  const sim = crearSim(n), D = crearDibujantes(gl, n, sim.textura);
+  const medidas = (et) => {
+    R[et] = {
+      puntos1_5px_FBO8: E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); D.puntos(1.5); E1.terminar(); }),
+      puntos2px_FBO8: E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); D.puntos(2); E1.terminar(); }),
+      quads2px_FBO8: E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); D.quads(2); E1.terminar(); }),
+      canvas_aaFalse_1_5px: E1.medir(() => { E1.preparar(null); D.puntos(1.5); E1.terminar(); E1.cerrarCanvas(); }),
+      apelotonamiento: apelotonamiento(sim.leer(), n),
+    };
+  };
+  medidas("paso0");
+  for (let k = 1; k <= 600; k++) sim.paso(k);          // 10 s de simulación
+  E1.esperarGPU();
+  medidas("paso600");
+  // antialias con el estado tras simular (copiado al otro contexto)
+  const datos = sim.leer();
+  const E2 = crearEntorno(document.getElementById("c2"), true);
+  const D2 = crearDibujantes(E2.gl, n, null, datos);
+  R.paso600.canvas_aaTrue_1_5px = E2.medir(() => { E2.preparar(null); D2.puntos(1.5); E2.terminar(); E2.cerrarCanvas(); });
+  R.paso600.canvas_aaTrue_2px = E2.medir(() => { E2.preparar(null); D2.puntos(2); E2.terminar(); E2.cerrarCanvas(); });
+  R.paso600.canvas_aaFalse_1_5px_bis = E1.medir(() => { E1.preparar(null); D.puntos(1.5); E1.terminar(); E1.cerrarCanvas(); });
+  // y el motor de la lección, al principio y tras 600 pasos (el dibujo solo, en FBO alternos)
+  const m = L75.crearMotor(gl, "texturas"); m.iniciar(n, ASPECTO);
+  const u = { aspecto: ASPECTO, tamPunto: 1.5, brillo: Math.min(1, 60 / Math.sqrt(n)) };
+  R.motor_paso0 = E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); m.dibujar(u); E1.terminar(); });
+  for (let k = 1; k <= 600; k++) m.paso({ dt: 1 / 60, t: k / 60, aspecto: ASPECTO, raton: [0, 0, 0] });
+  E1.esperarGPU();
+  R.motor_paso600 = E1.medir((k) => { E1.preparar(E1.fbo8[k & 1]); m.dibujar(u); E1.terminar(); });
+  m.liberar();
+  R.erroresGL = (E1.errores || 0) + (E2.errores || 0);
+  return R;
+}
+function medirTodo() {
+  if (location.search.includes("tercera")) return medirTercera();
+  if (location.search.includes("segunda")) return medirSegunda();
+  const R = { renderer: gl.getParameter(gl.RENDERER), buffer: [gl.drawingBufferWidth, gl.drawingBufferHeight] };
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info"); if (dbg) R.gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+  for (const n of NS_TABLA.concat(NS)) for (const metodo of ["texturas", "tf"]) {
+    R[metodo + "_" + n] = medirMetodo(metodo, n);
+    document.getElementById("out").textContent = JSON.stringify(R, null, 2);
+  }
+  R.formas_y_msaa_1M = medirFormasYMSAA(NS[0]);
+  // repetir el frame completo de 1 M al final: ¿cambió la GPU de marcha (calor) durante la medida?
+  R.repeticion_texturas_1M = medirMetodo("texturas", NS[0], true).frameCanvas;
+  document.getElementById("out").textContent = JSON.stringify(R, null, 2);
+  window.__R = R;
+  return R;
+}
+// Segunda tanda (sesión 4): solo lo que la primera midió mal (todo lo que no terminaba en el canvas) y una
+// repetición de las cifras válidas para ver que el arreglo de la sincronización no las cambia.
+function medirSegunda() {
+  const R = { gpu: (() => { const d = gl.getExtension("WEBGL_debug_renderer_info"); return d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : ""; })() };
+  for (const n of NS) for (const metodo of ["texturas", "tf"]) R[metodo + "_" + n] = medirMetodo(metodo, n);
+  R.formas_y_msaa_1M = medirFormasYMSAA(NS[0]);
+  R.erroresGL = E1.errores || 0;
+  window.__R = R;
+  return R;
+}
+window.medirTodo = medirTodo;
+</script>
+</body>
+</html>

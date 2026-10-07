@@ -422,7 +422,7 @@ gl.generateMipmap(gl.TEXTURE_2D);
 <div class="callout bestiario" data-id="m6a-doble-gamma" data-titulo="Todo se ve lavado y sin contraste (o demasiado oscuro y saturado)">
   <p><strong>Síntoma:</strong> tras «arreglar la gamma», la imagen sale pálida, con los negros grisáceos (o, al revés, oscurísima y con los colores quemados).</p>
   <p><strong>Causa:</strong> la conversión se aplica dos veces, o ninguna en un sitio donde hacía falta: codificas en el shader y además escribes en un framebuffer <code>SRGB8_ALPHA8</code> que vuelve a codificar (lavado); o decodificas a mano una textura que ya era <code>SRGB8_ALPHA8</code> (demasiado oscuro); o codificas en un shader intermedio cuyo resultado lee otro shader que también codifica.</p>
-  <p><strong>Solución:</strong> dibuja la cadena completa y marca en cada paso en qué espacio están los valores. Una sola decodificación a la entrada (a mano o por el formato de la textura), una sola codificación a la salida (a mano en el último shader o por el formato del framebuffer). Todo lo intermedio, en lineal.</p>
+  <p><strong>Solución:</strong> dibuja la cadena completa y marca en cada paso en qué espacio están los valores. Una sola decodificación a la entrada (a mano o por el formato de la textura), una sola codificación a la salida (a mano en el último shader o por el formato del framebuffer). Todo lo intermedio, en lineal. En Three.js, la misma confusión tiene su ficha: <a href="../07-integracion/07-siguientes-pasos.html#m7-7-textura-oscura">«En un ShaderMaterial, la textura sale más oscura (o, en un material de Three.js, más clara y lavada)»</a> (7.7).</p>
 </div>
 
 <h3>Lineal en 8 bits: el banding</h3>
@@ -639,7 +639,7 @@ float azar(uvec2 q, uint semilla) {
 void main() {
   vec2 uv = gl_FragCoord.xy / u_resolution;
   float v = mix(0.1, 0.3, uv.x);                 // un degradado oscuro y lento
-  float N = exp2(u_bits) - 1.0;                  // niveles: 7 con 3 bits ... 255 con 8
+  float N = exp2(u_bits) - 1.0;                  // nivel máximo: 7 con 3 bits ... 255 con 8
   uvec2 q = uvec2(gl_FragCoord.xy);
   uint f = uint(u_frame);
   float n = 0.0;                                 // desplazamiento, en niveles

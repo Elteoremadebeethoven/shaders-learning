@@ -243,7 +243,7 @@ requestAnimationFrame(frame);
   <ul>
     <li>Lo correcto: el test de profundidad está activado.<div class="explicacion"><code>isEnabled(gl.DEPTH_TEST)</code> dirá <code>true</code>, pero no hay búfer contra el que comparar: <code>DEPTH_BITS</code> vale 0.</div></li>
     <li data-correcta>El cubo dibujado en segundo lugar tapa al primero, esté delante o detrás.<div class="explicacion">Correcto: sin búfer de profundidad el test siempre pasa, como si no existiera (comprobado). Y como <code>getContext</code> no se puede repetir con otros atributos (5.1), la solución es crear el contexto con <code>depth: true</code> desde el principio, o dibujar en un framebuffer con su propio búfer de profundidad (5.8).</div></li>
-    <li>Nada: <code>INVALID_OPERATION</code> por activar un test sin búfer.<div class="explicacion">No hay ningún error: activar el test es legal, simplemente no tiene efecto.</div></li>
+    <li>Nada: <code>INVALID_OPERATION</code> por activar un test sin búfer.<div class="explicacion">No hay ningún error: activar el test es legal, pero no tiene efecto.</div></li>
   </ul>
 </div>
 
@@ -381,7 +381,7 @@ function frame(ms) {
 requestAnimationFrame(frame);
 </script>
   </div>
-  <p>Mira la zona iluminada: en la esfera derecha, toda la cara de arriba, que mira hacia la luz, está iluminada, como corresponde a una forma aplastada. La izquierda queda casi entera en penumbra: al transformar las normales con la misma escala que la forma, se han inclinado hacia las puntas (el eje largo) en lugar de hacia arriba (el eje aplastado), justo lo contrario de lo que les pasa a las normales de verdad. Otro detalle del fragment shader: <code>normalize(v_normal)</code>. Aunque las normales de los vértices sean unitarias, su interpolación lineal no lo es (el punto medio entre dos vectores unitarios es más corto), y un producto punto con un vector corto da una luz más débil de la debida.</p>
+  <p>Mira la zona iluminada: en la esfera derecha, toda la cara de arriba, que mira hacia la luz, está iluminada, como corresponde a una forma aplastada. La izquierda queda mucho más oscura, con solo un reflejo apagado arriba: al transformar las normales con la misma escala que la forma, se han inclinado hacia las puntas (el eje largo) en lugar de hacia arriba (el eje aplastado), justo lo contrario de lo que les pasa a las normales de verdad. Otro detalle del fragment shader: <code>normalize(v_normal)</code>. Aunque las normales de los vértices sean unitarias, su interpolación lineal no lo es (el punto medio entre dos vectores unitarios es más corto), y un producto punto con un vector corto da una luz más débil de la debida.</p>
 </section>
 
 <div class="callout bestiario" data-id="m5-matriz-normal" data-titulo="Tras escalar un objeto, la iluminación sale mal">

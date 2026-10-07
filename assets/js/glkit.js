@@ -9,6 +9,11 @@
      vec3  — utilidades mínimas de vectores
 
    En los playgrounds JS se inyecta con  data-incluir="glkit"
+
+   isnan()/isinf(): crearPrograma compila el texto tal cual (sin el comentario único que añaden los
+   playgrounds GLSL), así que Chrome puede devolverlo de su caché compilado CON fast math y el
+   resultado de las operaciones indefinidas cambia (3.7, 5.10); isnan sigue detectando los NaN.
+   Si importa, añade al fuente un comentario distinto en cada ejecución: + '\n// ' + Math.random()
    ===================================================================== */
 (function () {
   "use strict";

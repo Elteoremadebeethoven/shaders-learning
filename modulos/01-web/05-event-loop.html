@@ -200,7 +200,7 @@ console.log("7");
   <div class="demo-controles"></div>
   <div class="demo-info"></div>
 </div>
-<p>Pulsa el botón con la animación de JavaScript «basada en el tiempo»: la bola azul se congela y, al terminar, salta a donde debería estar, porque su posición se calcula a partir del instante del frame. Cambia a «basada en frames» (<code>x += paso</code> en cada frame) y repite: al terminar el bloqueo, continúa desde donde se paró, con 1,5 s de retraso para siempre. La lección <a href="../02-animacion/03-raf.html">2.3</a> explica por qué la primera es casi siempre la buena.</p>
+<p>Pulsa el botón con la animación de JavaScript «basada en el tiempo»: la bola cian se congela y, al terminar, salta a donde debería estar, porque su posición se calcula a partir del instante del frame. Cambia a «basada en frames» (<code>x += paso</code> en cada frame) y repite: al terminar el bloqueo, continúa desde donde se paró, con 1,5 s de retraso para siempre. La lección <a href="../02-animacion/03-raf.html">2.3</a> explica por qué la primera es casi siempre la buena.</p>
 
 <div class="callout bestiario" data-id="m1-tarea-larga" data-titulo="La página se congela y la animación se para">
   <p><strong>Síntoma:</strong> durante un momento (al cargar datos, al generar una malla, al procesar una imagen) la animación se detiene, los botones no responden y después todo da un salto.</p>
@@ -306,10 +306,12 @@ prueba();
     <tr><td>vueltas de <code>setInterval(fn, 100)</code></td><td>20</td><td>4, separadas ~1000 ms: como mucho una por segundo</td></tr>
   </tbody>
 </table>
-<p>Según la documentación de Chrome, si la pestaña sigue oculta más de cinco minutos, las cadenas de temporizadores pueden limitarse todavía más (a una vez por minuto). Para tu bucle de animación, lo importante es esto:</p>
+<p>Según la documentación de Chrome, si la pestaña sigue oculta más de cinco minutos, las cadenas de temporizadores pueden limitarse todavía más (a una vez por minuto).</p>
+<p>Y no solo se frenan los temporizadores: el propio JavaScript de una pestaña oculta corre bastante más despacio. El playground «El mismo cálculo en tu CPU y en tu GPU» de la lección <a href="../04-gpu/01-cpu-vs-gpu.html">4.1</a>, que con la ventana a la vista tarda 0,9–1,2 s, tardó 2,4–3,0 s con la ventana minimizada (Chrome 154 en un Apple M1), y más de 5 s en un Chrome de uso diario con la ventana detrás de otras. No lo hemos aislado; lo más probable es que Chrome baje la prioridad del proceso de una pestaña oculta y el sistema operativo le dé menos CPU. Moraleja: no midas rendimiento con la pestaña en segundo plano.</p>
+<p>Para tu bucle de animación, lo importante es esto:</p>
 <div class="callout bestiario" data-id="m1-segundo-plano" data-titulo="Al volver a la pestaña, la animación da un salto enorme">
   <p><strong>Síntoma:</strong> cambias de pestaña, vuelves al cabo de un rato y los objetos aparecen de golpe muy lejos, la física explota o un contador ha avanzado de golpe.</p>
-  <p><strong>Causa:</strong> mientras la pestaña estaba oculta, rAF no se ejecutó. En el primer frame al volver, el tiempo transcurrido desde el frame anterior (<code>dt</code>) son decenas de segundos, y la simulación lo aplica de una vez.</p>
+  <p><strong>Causa:</strong> mientras la pestaña estaba oculta, rAF no se ejecutó. En el primer frame al volver, el tiempo transcurrido desde el frame anterior (<code>dt</code>) son decenas de segundos, y la simulación lo aplica de una vez. (La misma causa en un bucle que se duerme cuando nada se mueve: <a href="../07-integracion/03-transiciones-shader.html#m7-3-salto-al-despertar">«Cada transición empieza con un salto (en un bucle que se duerme)»</a>, 7.3.)</p>
   <p><strong>Solución:</strong> limita <code>dt</code> (por ejemplo, <code>Math.min(dt, 0.1)</code>, como hacen las demos de este curso) o pausa la animación en el evento <code>visibilitychange</code> y reinicia el reloj al volver. Y nunca uses temporizadores para llevar la cuenta del tiempo: en segundo plano se ralentizan.</p>
 </div>
 
@@ -646,7 +648,7 @@ setTimeout(() => {
     <li>Un frame: callbacks de rAF (todos con el mismo instante; los pedidos durante el frame, al siguiente), estilo, layout, <code>ResizeObserver</code>, pintado y composición (en el hilo del compositor).</li>
     <li>El orden entre <code>setTimeout(0)</code> y rAF no está garantizado. <code>setTimeout(0)</code> tiene un mínimo de 4 ms cuando se anida más de cinco niveles (desde la séptima vuelta de una cadena); <code>MessageChannel</code> y <code>scheduler.yield()</code> no.</li>
     <li>Una tarea larga congela las animaciones de JavaScript, pero no las de CSS sobre <code>transform</code>/<code>opacity</code> en el compositor. Trocea el trabajo cediendo con una tarea; un bucle de microtareas no cede nada.</li>
-    <li><code>performance.now()</code> es monótono (resolución de 0,1 ms sin aislamiento); <code>Date.now()</code> es para fechas. En segundo plano rAF se detiene y los intervalos bajan a uno por segundo: limita <code>dt</code>.</li>
+    <li><code>performance.now()</code> es monótono (resolución de 0,1 ms sin aislamiento); <code>Date.now()</code> es para fechas. En segundo plano rAF se detiene, los intervalos bajan a uno por segundo y hasta el cálculo va más lento: limita <code>dt</code> y no midas tiempos así.</li>
     <li>Leer una medida justo después de escribir un estilo fuerza un layout síncrono: primero todas las lecturas, después todas las escrituras.</li>
   </ul>
 </div>
@@ -727,8 +729,8 @@ Curso.alListo(() => {
   cargar();
 });
 
-/* Demo 2: bloquear el hilo principal. La bola roja la anima CSS (compositor);
-   la azul, JavaScript con requestAnimationFrame. */
+/* Demo 2: bloquear el hilo principal. La bola de arriba (rosa) la anima CSS (compositor);
+   la de abajo (cian), JavaScript con requestAnimationFrame. */
 Curso.alListo(() => {
   const raiz = document.getElementById("demo-bloqueo");
   const esc = raiz.querySelector(".m1-escenario");

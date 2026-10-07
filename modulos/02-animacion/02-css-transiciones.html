@@ -350,7 +350,7 @@ function cubicBezier(x1, y1, x2, y2) {
   <li data-l="1">Un nombre global para la secuencia. Si hay dos <code>@keyframes</code> con el mismo nombre, gana el último (no se mezclan).</li>
   <li data-l="2">Los selectores son porcentajes de la duración; <code>from</code> = <code>0%</code> y <code>to</code> = <code>100%</code>. Puedes agrupar varios con comas.</li>
   <li data-l="3-4">Detalle de senior: <code>animation-timing-function</code> dentro de un fotograma clave se aplica al <strong>tramo que empieza en ese fotograma</strong> (aquí, de 30 % a 60 %). La función de tiempo nunca se aplica a la animación completa: se aplica tramo a tramo, entre fotogramas clave consecutivos. Lo verificamos con un tramo <code>steps(2)</code> seguido de uno lineal.</li>
-  <li data-l="8-9">La duración de <em>una</em> iteración.</li>
+  <li data-l="8-9">Qué <code>@keyframes</code> se reproducen (por su nombre) y la duración de <em>una</em> iteración.</li>
   <li data-l="10">La función de tiempo por defecto para cada tramo (la del fotograma la sustituye en su tramo).</li>
   <li data-l="11">Retardo antes de la primera iteración. Negativo = empezar «ya avanzada» (enseguida verás el truco).</li>
   <li data-l="12">Número de iteraciones: un número (¡admite decimales! con <code>2.5</code> termina a mitad de la tercera), o <code>infinite</code>.</li>
@@ -852,21 +852,21 @@ document.getElementById('go').onclick = async () => {
 <script type="text/x-js" data-solucion>
 function esperarTransicion(el, propiedad, margen = 1000) {
   return new Promise((resolver) => {
-    let hecho = false;
+    let hecho = false, vista = false;     // vista: ya llegó el transitionrun de NUESTRA transición
+    const tipos = ['transitionrun', 'transitionend', 'transitioncancel'];
     const terminar = (motivo) => {
       if (hecho) return;
       hecho = true;
-      el.removeEventListener('transitionend', alEvento);
-      el.removeEventListener('transitioncancel', alEvento);
+      tipos.forEach((t) => el.removeEventListener(t, alEvento));
       clearTimeout(reloj);
       resolver(motivo);
     };
     function alEvento(e) {
       if (e.target !== el || e.propertyName !== propiedad) return;   // hijos y otras propiedades fuera
-      terminar(e.type);                                                 // 'transitionend' o 'transitioncancel'
+      if (e.type === 'transitionrun') vista = true;                    // nace la transición que esperamos
+      else if (vista) terminar(e.type);                                // 'transitionend' o 'transitioncancel'
     }
-    el.addEventListener('transitionend', alEvento);
-    el.addEventListener('transitioncancel', alEvento);
+    tipos.forEach((t) => el.addEventListener(t, alEvento));
     // plan B: duración + retardo actuales + margen (por si no hay transición en absoluto)
     const cs = getComputedStyle(el);
     const seg = (v) => Math.max(...v.split(',').map((x) => parseFloat(x) * (x.includes('ms') ? 1 : 1000)));
@@ -886,7 +886,8 @@ document.getElementById('go').onclick = async () => {
   <details class="pista"><summary>Pista 2</summary><p>Una promesa solo se resuelve una vez, pero los manejadores siguen registrados y se acumulan en cada clic: quítalos al terminar. Y escucha también <code>transitioncancel</code>, o el <code>await</code> puede quedarse colgado si el usuario pulsa dos veces seguidas.</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
     <p>La versión ingenua «funciona» porque una promesa ignora las resoluciones posteriores a la primera, pero se resuelve con el primer evento que llegue, que es el del <code>padding</code> (0,3 s) o el del hijo, no el del <code>transform</code> (0,6 s); y además cada clic deja un manejador más colgado del elemento.</p>
-    <p>La solución filtra por <code>e.target === el</code> (descarta lo que burbujea desde el hijo) y por <code>e.propertyName</code> (descarta las cuatro de <code>padding-*</code>), resuelve también con <code>transitioncancel</code> (si pulsas dos veces, la primera transición se cancela: sin esto, el primer <code>await</code> esperaría para siempre), quita los manejadores al terminar y tiene un temporizador de seguridad calculado con la duración y el retardo reales (<code>getComputedStyle</code> devuelve las listas en segundos, por ejemplo <code>"0.6s, 0.3s"</code>). Así también funciona si la transición no llega a crearse (por ejemplo, con <code>prefers-reduced-motion</code> y duración 0).</p>
+    <p>La solución filtra por <code>e.target === el</code> (descarta lo que burbujea desde el hijo) y por <code>e.propertyName</code> (descarta las cuatro de <code>padding-*</code>), resuelve también con <code>transitioncancel</code> (si pulsas dos veces, la primera transición se cancela: sin esto, el primer <code>await</code> solo terminaría por el temporizador, y sin temporizador, nunca), quita los manejadores al terminar y tiene un temporizador de seguridad calculado con la duración y el retardo reales (<code>getComputedStyle</code> devuelve las listas en segundos, por ejemplo <code>"0.6s, 0.3s"</code>). Así también funciona si la transición no llega a crearse (por ejemplo, con <code>prefers-reduced-motion</code> y duración 0).</p>
+    <p>Queda un caso fino, que apareció al probar el doble clic: el <code>transitioncancel</code> de la primera transición llega <em>después</em> de que el segundo clic haya registrado su manejador, así que el segundo <code>await</code> se resolvería con la cancelación de la transición anterior (en nuestra prueba, sin la variable <code>vista</code>, los dos «terminó» salían a la vez y los dos con <code>transitioncancel</code>). Por eso la solución solo acepta el final de una transición que haya visto nacer: espera su <code>transitionrun</code> (en Chrome llega justo detrás de la cancelación de la anterior, en el mismo frame) y solo entonces atiende <code>transitionend</code> o <code>transitioncancel</code>. Con dos clics separados 150 ms, la consola muestra «terminó transform (transitioncancel)» para el primero y, unos 250 ms después, «terminó transform (transitionend)» para el segundo: la vuelta dura menos que 0,6 s porque se acorta en proporción a lo recorrido (la caja senior «interrumpir una transición»).</p>
   </details>
 </section>
 

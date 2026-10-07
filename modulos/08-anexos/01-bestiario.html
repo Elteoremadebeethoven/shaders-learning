@@ -51,13 +51,14 @@
   <a href="#s-nan">Píxeles negros (NaN)</a>
   <a href="#s-velocidad">Otra velocidad</a>
   <a href="#s-saltos">Saltos</a>
+  <a href="#s-transiciones">Transiciones</a>
   <a href="#s-rendimiento">Tirones y lentitud</a>
   <a href="#s-otro-equipo">Solo en otro equipo</a>
   <a href="#s-geometria">Geometría rota</a>
   <a href="#s-luz">Iluminación</a>
   <a href="#s-costuras">Costuras y cortes</a>
   <a href="#s-angulos">Ángulos y ratón</a>
-  <a href="#s-webgl">Mensajes de WebGL</a>
+  <a href="#s-webgl">Mensajes de WebGL o WebGPU</a>
   <a href="#s-compilador">El shader no compila</a>
   <a href="#s-desaparece">Desaparece sin error</a>
   <a href="#s-css-anim">Animaciones CSS</a>
@@ -83,6 +84,8 @@
       <li><a href="#m6a-division-entera">Una división entera en el shader</a> deja todo a 0</li>
       <li><a href="#m3-lookat-degenerado">La cámara mira justo hacia arriba o hacia abajo</a> (<code>lookAt</code> degenerado)</li>
       <li><a href="#m6b-rm-nada">Un raymarcher que solo pinta el fondo</a>: rayo hacia atrás o cámara dentro de un objeto</li>
+      <li><a href="#m7-7-version-duplicada">Un shader copiado a un <code>ShaderMaterial</code> de Three.js no compila</a>: Three.js no lanza ninguna excepción; escribe el error en la consola y deja de dibujar ese objeto</li>
+      <li><a href="#m7-5-aditivo-invisible">Muchas partículas muy tenues con mezcla aditiva</a>: en un búfer de 8 bits, cada aportación menor que medio escalón se redondea a 0</li>
     </ul>
   </section>
 
@@ -90,11 +93,12 @@
     <h3>El canvas se queda vacío o deja de dibujar</h3>
     <ul>
       <li><a href="#m5-contexto-perdido">El contexto se perdió</a> (pestaña en segundo plano, suspensión) y no se gestiona</li>
-      <li><a href="#m5-demasiados-contextos">Hay más de 16 contextos WebGL vivos</a> y el navegador elimina el más antiguo</li>
+      <li><a href="#m5-demasiados-contextos">Hay más de 16 contextos WebGL vivos</a> y el navegador pierde el que lleva más tiempo sin usarse</li>
       <li><a href="#m7-locations-viejas">Tras recuperar el contexto se usan locations u objetos del contexto anterior</a></li>
       <li><a href="#m5-captura-vacia">Sin <code>preserveDrawingBuffer</code></a>, el búfer se borra al presentarse: capturas vacías y dibujos que desaparecen</li>
       <li><a href="#m5-getcontext-null"><code>getContext('webgl2')</code> devuelve <code>null</code></a></li>
       <li><a href="#m1-getcontext-null">El canvas es <code>null</code></a>: el script corrió antes que el parser, o el id no coincide</li>
+      <li><a href="#m7-5-rasterizer-discard"><code>RASTERIZER_DISCARD</code> se quedó activado tras el transform feedback</a>: no se dibuja nada, ni siquiera <code>clear</code></li>
     </ul>
   </section>
 
@@ -105,8 +109,11 @@
       <li><a href="#m5-sampler-unidad">Dos samplers leen la misma unidad de textura</a> (los dos valen 0)</li>
       <li><a href="#m5-imagen-securityerror">La imagen es de otro origen</a>, o <a href="#m1-textura-file">la página está abierta con <code>file://</code></a></li>
       <li><a href="#m5-unpack-alignment">Filas que no son múltiplo de 4 bytes con <code>UNPACK_ALIGNMENT = 4</code></a>: la imagen sale en diagonal</li>
+      <li><a href="#m4-pack-alignment">Al leer con <code>glReadPixels</code> en RGB, la imagen sale inclinada</a>: <code>GL_PACK_ALIGNMENT</code> rellena cada fila (Python)</li>
       <li><a href="#m5-objeto-borrado">Se sigue usando una textura borrada</a></li>
       <li><a href="#m4-bind-para-editar">Se editó otra textura</a> porque había otra enlazada en esa unidad</li>
+      <li><a href="#m7-4-heightmap-plano">En el vertex shader, la textura se lee como 0 y el terreno sale plano</a>: textura incompleta, float filtrada sin extensión o unidad vacía</li>
+      <li><a href="#m7-5-todas-en-el-centro">Todas las partículas amontonadas en el centro</a>: la textura de estado <code>RGBA32F</code> con filtro <code>LINEAR</code> está incompleta y se lee como 0</li>
     </ul>
   </section>
 
@@ -118,10 +125,10 @@
       <li><a href="#m1-raton-invertido">El ratón va al revés en vertical en el shader</a>: el DOM crece hacia abajo y <code>gl_FragCoord</code> hacia arriba (<a href="#m3-raton-y-invertida">variante</a>)</li>
       <li><a href="#m3-rotacion-inversa-shader">En el shader todo se mueve al revés</a>: transformas las coordenadas, no el dibujo</li>
       <li><a href="#m3-rotacion-inversa-shader">La lupa encoge en vez de ampliar</a>: el mismo caso (escalar las coordenadas por 2 encoge el dibujo a la mitad; nota en <a href="../06-glsl/08-texturas-efectos.html#m6b-distorsion-invertida">6.8</a>)</li>
-      <li><a href="#m3-matriz-traspuesta">La matriz está traspuesta</a>: gira al revés y no traslada</li>
-      <li><a href="#m3-rotacion-inversa-shader">Una rotación copiada de otro shader gira al revés</a></li>
+      <li><a href="#m3-matriz-traspuesta">La matriz está traspuesta</a>: gira al revés y no traslada (también una rotación copiada de Shadertoy que gira al revés: allí se usa como <code>p *= rot(a)</code>; nota en <a href="../06-glsl/10-codigo-ajeno.html#m6b-rot-al-reves">6.10</a>)</li>
       <li><a href="#m3-winding-pantalla">Izquierda y derecha salen al revés en Canvas 2D</a></li>
       <li><a href="#m6b-rueda-atras">Algo que gira rápido parece ir hacia atrás</a> (aliasing temporal)</li>
+      <li><a href="#m7-7-y-invertida-webgpu">Un shader portado a WebGPU sale boca abajo (y el ratón, al revés)</a>: <code>@builtin(position)</code> tiene la y hacia abajo, al contrario que <code>gl_FragCoord</code></li>
     </ul>
   </section>
 
@@ -134,7 +141,8 @@
       <li><a href="#m2-linea-medio-pixel">Una línea de 1 px centrada en un entero</a> ocupa dos columnas al 50 %</li>
       <li><a href="#m6a-borde-fijo">El borde suave está en unidades de la escena, no en píxeles</a></li>
       <li><a href="#m6a-escala-sdf">Una SDF escalada sin corregir la distancia</a></li>
-      <li><a href="#m6b-ruido-textura-escalones">Datos leídos de una textura RGBA8 que hacen escalones al ampliarlos</a></li>
+      <li><a href="#m6b-ruido-textura-escalones">Datos leídos de una textura RGBA8 que hacen escalones al ampliarlos</a> (<a href="#m7-4-heightmap-escalones">un terreno en terrazas</a>: un mapa de alturas de 8 bits solo tiene 256 alturas)</li>
+      <li><a href="#m7-6-dpr-emulado">Solo en la emulación de móvil de DevTools, el fondo WebGL sale borroso</a>: con un DPR emulado, <code>devicePixelContentBoxSize</code> y <code>devicePixelRatio</code> no cuentan lo mismo</li>
     </ul>
   </section>
 
@@ -142,12 +150,14 @@
     <h3>Estirado, en una esquina o recortado</h3>
     <ul>
       <li><a href="#m3-aspecto">La proyección no usa el aspecto de la imagen</a> (<a href="#m6a-circulo-estirado">en un fragment shader</a>, <a href="#m6b-imagen-estirada">con una textura</a>, <a href="#m6b-rotar-deforma">al girar</a>)</li>
+      <li><a href="#m7-7-aspecto-sin-actualizar">En Three.js, se cambió <code>camera.aspect</code> sin llamar a <code>updateProjectionMatrix()</code></a></li>
       <li><a href="#m5-viewport-olvidado">El viewport no se actualizó al redimensionar</a></li>
       <li><a href="#m5-viewport-fbo">Se dibujó en un framebuffer con el viewport del canvas</a></li>
       <li><a href="#m4-retina-viewport">En una pantalla Retina, el viewport se dio en puntos</a> (Python y glfw)</li>
       <li><a href="#m6a-fragcoord-viewport"><code>gl_FragCoord</code> no es relativo al viewport</a></li>
       <li><a href="#m1-canvas-crece">Un canvas sin tamaño CSS crece en cada frame</a></li>
       <li><a href="#m1-canvas-flex">Un canvas no encoge dentro de un flex</a></li>
+      <li><a href="#m2-contexto-reseteado">Tras redimensionar un canvas 2D, el dibujo sale pequeño, negro o sin estilos</a>: asignar <code>width</code> reinicia todo el estado del contexto</li>
     </ul>
   </section>
 
@@ -161,6 +171,9 @@
       <li><a href="#m6b-rm-agujeros">Una escena de raymarching que no es una distancia exacta</a></li>
       <li><a href="#m3-temblor-mundo-grande">Todo tiembla lejos del origen</a> (float32)</li>
       <li><a href="#m7-calidad-oscila">La calidad adaptativa oscila</a> y cambia la nitidez cada pocos segundos</li>
+      <li><a href="#m7-4-epsilon">Normales por diferencias finitas con un ε demasiado pequeño</a>: granulado y chispas que empeoran con el tiempo o lejos del origen</li>
+      <li><a href="#m7-6-destello-negro">Al cargar la página, el fondo WebGL sale un instante negro</a>: un canvas <code>alpha: false</code> sin dibujar es negro mientras compila el shader</li>
+      <li>En una transición: ver <a href="#s-transiciones">transiciones que no empiezan o no terminan limpias</a></li>
     </ul>
   </section>
 
@@ -177,10 +190,15 @@
       <li><a href="#m6a-recorte-tono">Las luces fuertes se vuelven amarillas o blancas y planas</a>: valores mayores que 1 recortados</li>
       <li><a href="#m6a-bandas-lineales">Franjas en los degradados oscuros</a>: luz lineal guardada en 8 bits</li>
       <li><a href="#m4-sin-normalizar">Colores en bytes sin normalizar</a>: todo sale blanco o saturado</li>
+      <li><a href="#m4-uno-de-diferencia">La GPU escribe 229 donde tu cálculo da 230</a>: el shader calcula en float32 y JavaScript en float64</li>
       <li><a href="#m1-desbordamiento">Lo más claro se vuelve oscuro</a>: un <code>Uint8Array</code> que da la vuelta</li>
       <li><a href="#m2-alfa-premultiplicado"><code>getImageData</code> no devuelve lo que escribiste</a> con transparencia</li>
       <li><a href="#m2-estela-fantasma">Una estela que nunca desaparece del todo</a></li>
       <li><a href="#m6a-depurar-saturado">El valor que depuras sale todo blanco o todo negro</a>: está fuera de 0…1</li>
+      <li><a href="#m7-3-muelle-quema">Con un muelle que rebota, la imagen de llegada se quema un instante</a>: con un progreso mayor que 1, <code>mix</code> extrapola</li>
+      <li><a href="#m7-5-aditivo-invisible">Mezcla aditiva de muchas partículas tenues</a>: no se ve nada, o 0,002 brilla el doble que 0,0019 (cada aportación se redondea a 1/255)</li>
+      <li><a href="#m7-7-textura-oscura">En Three.js, una textura sale más oscura en un <code>ShaderMaterial</code></a> (o más clara y lavada en un material de Three.js): el <code>colorSpace</code> de la textura y la codificación de la salida no cuadran</li>
+      <li><a href="#m7-7-onbeforecompile-cache">Dos materiales de Three.js con <code>onBeforeCompile</code> distinto salen iguales</a>: comparten programa porque la clave de la caché es el texto de la función</li>
     </ul>
   </section>
 
@@ -195,7 +213,7 @@
       <li><a href="#m6a-smin-k-cero"><code>smin</code> con <code>k = 0</code></a></li>
       <li><a href="#m3-smoothstep-invertido"><code>smoothstep</code> con los bordes al revés</a></li>
       <li><a href="#m6a-out-a-cero">Un parámetro <code>out</code> que se lee antes de escribirlo</a></li>
-      <li><a href="#m3-isnan-heisenbug">Añadir <code>isnan</code> cambia el resultado</a> (fast math)</li>
+      <li><a href="#m3-isnan-heisenbug">Añadir <code>isnan</code> cambia el resultado</a> (fast math), <a href="#m6b-hash-fastmath">pero solo la primera vez que se compila ese texto exacto</a>: al recargar, el programa sale de la caché de Chrome compilado con fast math</li>
     </ul>
   </section>
 
@@ -208,6 +226,8 @@
       <li><a href="#m2-emision-por-frame">Las partículas se emiten por frame</a></li>
       <li><a href="#m2-setinterval-tirones">La animación usa <code>setInterval</code></a></li>
       <li><a href="#m7-camara-lenta-parcial">Hay más de un reloj</a>: con la pausa o la cámara lenta, unas partes se paran y otras no</li>
+      <li><a href="#m7-ondas-otro-reloj">Las ondas del clic no aparecen, salen ya terminadas o no obedecen a la pausa</a>: el instante del clic viene de otro reloj que el <code>u_time</code></li>
+      <li><a href="#m7-5-half-congeladas">Con <code>RGBA16F</code>, unas partículas se congelan y otras van más despacio</a>: el paso de cada frame es menor que la resolución de un half float</li>
     </ul>
   </section>
 
@@ -223,6 +243,22 @@
       <li><a href="#m3-contador-congelado">Un contador float32 pasó de 2²⁴</a> y se congela</li>
       <li><a href="#m3-salto-frecuencia">Cambiar la frecuencia de una onda en vivo</a> desplaza toda su fase</li>
       <li><a href="#m6b-bucle-salta">Un bucle que salta al reiniciar</a>: algún periodo no divide a la duración</li>
+      <li><a href="#m7-3-salto-al-despertar">En un bucle que se duerme, cada animación empieza con un salto</a>: el primer <code>dt</code> mide el tiempo dormido (el tope lo limita, pero no evita el salto)</li>
+    </ul>
+  </section>
+
+  <section class="ax-sintoma" id="s-transiciones">
+    <h3>Transiciones que no empiezan o no terminan limpias</h3>
+    <p>Restos de la imagen vieja al final, un velo de la nueva al principio, un salto o un ritmo extraño. Casi siempre falla el contrato de una transición: en p = 0 debe verse exactamente la imagen de partida, y en p = 1 exactamente la de llegada.</p>
+    <ul>
+      <li><a href="#m7-3-transicion-no-limpia">La cortinilla empieza con un velo de la imagen nueva o termina con una franja de la vieja</a>: el recorrido del borde no cuenta su anchura</li>
+      <li><a href="#m7-3-circulo-esquinas">El revelado circular termina y las esquinas siguen con la imagen vieja</a>: el radio final no llega a la esquina más lejana</li>
+      <li><a href="#m7-3-disolucion-atascada">La disolución no hace nada al principio ni al final</a>: los valores del ruido no se reparten por igual entre 0 y 1</li>
+      <li><a href="#m7-3-vuelta-de-golpe">Al invertir una transición a medias, la vuelta arranca parada y llega de golpe</a>: se recorre al revés la misma curva de easing</li>
+      <li><a href="#m7-3-salto-al-interrumpir">Al pulsar «siguiente» a mitad de una transición, la imagen salta</a>: hay tres imágenes en juego y el shader solo mezcla dos</li>
+      <li><a href="#m7-3-muelle-quema">Con un muelle que rebota, la imagen de llegada se quema</a>: el progreso pasa de 1</li>
+      <li><a href="#m7-3-salto-al-despertar">Cada transición empieza con un salto en un bucle que se duerme</a></li>
+      <li><a href="#m6b-desfase-fract">Al arrancar una entrada escalonada, algunas celdas ya están a mitad</a>: <code>fract</code> de un tiempo negativo (es para bucles)</li>
     </ul>
   </section>
 
@@ -241,6 +277,8 @@
       <li><a href="#m4-tiron-primer-dibujo">Un tirón la primera vez que se usa un estado nuevo</a></li>
       <li><a href="#m4-drawcall-0ms">Se mide el tiempo de la CPU y no el de la GPU</a> (<a href="#m5-finish-no-espera"><code>finish</code> tampoco espera</a>)</li>
       <li><a href="#m5-memoria-sin-liberar">Recursos de WebGL que nunca se borran</a></li>
+      <li><a href="#m7-3-bajo-demanda-insomne">El bucle bajo demanda no se duerme nunca</a>: algo pide un frame en cada frame (una comparación exacta con el objetivo de un suavizado)</li>
+      <li><a href="#m7-calidad-oscila">La calidad adaptativa sube y baja sin parar</a>, con un tirón en cada cambio: le falta histéresis</li>
     </ul>
   </section>
 
@@ -249,11 +287,13 @@
     <ul>
       <li><a href="#m3-mediump-movil"><code>mediump</code> es float16 en el móvil</a></li>
       <li><a href="#m6a-indefinido-portabilidad">El shader depende de un comportamiento indefinido</a></li>
-      <li><a href="#m3-hash-roto">El hash del seno</a> depende de la precisión de cada GPU (<a href="#m6b-hash-fastmath">y de si el shader usa <code>isnan</code></a>)</li>
+      <li><a href="#m3-hash-roto">El hash del seno</a> depende de la precisión de cada GPU (<a href="#m3-isnan-heisenbug">y de si el shader usa <code>isnan</code></a>, <a href="#m6b-hash-fastmath">e incluso de la caché de programas</a>)</li>
       <li><a href="#m1-raton-desplazado">La conversión de coordenadas del ratón olvida <code>devicePixelRatio</code></a> o el borde del canvas</li>
       <li><a href="#m1-100vw"><code>100vw</code> incluye la barra de scroll</a>, que no todos los sistemas muestran</li>
       <li><a href="#m5-atributos-ignorados">Los atributos de <code>getContext</code> se ignoran</a>: el canvas ya tenía contexto</li>
       <li><a href="#m4-contexto-21">En macOS, OpenGL sin perfil core es la versión 2.1</a> (Python)</li>
+      <li><a href="#m7-4-puntos-dpr">Los puntos cambian de tamaño según la pantalla</a> (o al bajar la calidad): <code>gl_PointSize</code> está en píxeles del búfer</li>
+      <li><a href="#m7-6-texto-invisible">El texto de la portada no aparece sin JavaScript, sin WebGL o con movimiento reducido</a>: su estado inicial invisible depende de un script que no llegó a ejecutarse</li>
     </ul>
   </section>
 
@@ -268,11 +308,13 @@
       <li><a href="#m5-cubo-del-reves">No hay test de profundidad</a>: las caras de atrás tapan a las de delante</li>
       <li><a href="#m4-escala-negativa">Una escala negativa invierte el winding</a> y el culling se come el objeto</li>
       <li><a href="#m5-divisor-olvidado">Todas las instancias en el mismo sitio</a>: falta el divisor</li>
+      <li><a href="#m7-5-divisor-colapso">Tras el primer frame, todas las partículas saltan al mismo sitio</a>: el VAO de la simulación conserva el divisor 1 de los quads instanciados</li>
       <li><a href="#m3-orden-transformaciones">Orbita en vez de girar sobre sí mismo</a>: orden de las transformaciones (en un shader: <a href="#m3-rotacion-inversa-shader">rotar las coordenadas es la transformación inversa</a>)</li>
       <li><a href="#m3-detras-camara">Una proyección hecha a mano que no recorta</a> lo que queda detrás de la cámara</li>
-      <li><a href="#m5-linewidth"><code>lineWidth</code> no hace nada</a> (en ninguna plataforma actual)</li>
+      <li><a href="#m5-linewidth"><code>lineWidth</code> no hace nada</a> (en prácticamente ninguna plataforma actual: el rango de anchos es <code>[1, 1]</code>)</li>
       <li><a href="#m4-clear-no-borra"><code>clear</code> no borra toda la pantalla</a>: respeta el scissor y las máscaras</li>
       <li><a href="#m4-offset-entero">En PyOpenGL, un <code>offset</code> entero</a> deja un atributo a cero</li>
+      <li><a href="#m7-4-aliasing-malla">Con olas cortas, la malla dibuja otra ola</a>, más larga, torcida o que avanza hacia atrás: la malla muestrea por debajo del límite de Nyquist</li>
     </ul>
   </section>
 
@@ -284,8 +326,11 @@
       <li><a href="#m3-reflect-sin-normalizar"><code>reflect</code> con una normal no unitaria</a></li>
       <li><a href="#m6a-luz-codificada">Luz sumada sobre valores sRGB</a>: transiciones duras y focos que deslumbran</li>
       <li><a href="#m6b-rm-acne">Acné de sombra en raymarching</a>: el rayo de sombra choca con su propia superficie</li>
-      <li><a href="#m6b-rm-normales">Normales por diferencias con un paso mal elegido</a></li>
+      <li><a href="#m6b-rm-normales">Normales por diferencias con un paso mal elegido</a> (<a href="#m7-4-epsilon">en el vertex shader: granulado que empeora con el tiempo</a>)</li>
       <li><a href="#m6b-rm-halo">Halos en las siluetas y horizonte cortado</a>: pocos pasos</li>
+      <li><a href="#m7-4-normal-plana">La malla ondula, pero la luz no cambia</a>: el vertex shader movió las posiciones y dejó la normal del plano</li>
+      <li><a href="#m7-4-normal-invertida">Oscuro donde mira a la luz y claro donde le da la espalda</a>: la normal apunta hacia dentro (orden del producto cruz o un signo perdido)</li>
+      <li><a href="#m7-4-cara-trasera">Una tela se ve negra por detrás</a>: la normal solo apunta hacia la cara de delante (falta <code>gl_FrontFacing</code>)</li>
     </ul>
   </section>
 
@@ -301,6 +346,8 @@
       <li><a href="#m6b-fbm-origen">Una mancha o una costura en el origen del fbm</a></li>
       <li><a href="#m5-borde-repeat">Una línea del color del borde opuesto</a> (<a href="#m6b-borde-desenfoque">en un desenfoque</a>): el wrap es <code>REPEAT</code></li>
       <li><a href="#m3-mod-negativos">El patrón se rompe al cruzar el cero</a>: se truncó donde había que redondear hacia abajo</li>
+      <li><a href="#m7-7-mod-wgsl">Un patrón portado a WGSL se rompe en la mitad izquierda (o en la de abajo)</a>: <code>%</code> no es <code>mod</code> con números negativos</li>
+      <li><a href="#m7-5-costura-hilos">Con curl noise, hilos densos de partículas que nacen en los bordes</a>: el mundo da la vuelta, pero el ruido no es periódico</li>
     </ul>
   </section>
 
@@ -319,14 +366,15 @@
   </section>
 
   <section class="ax-sintoma" id="s-webgl">
-    <h3>Mensajes de WebGL en la consola</h3>
+    <h3>Mensajes de WebGL o WebGPU en la consola</h3>
     <ul>
       <li><code>Vertex buffer is not big enough for the draw call</code>: <a href="#m5-bufferdata-array-normal">buffer vacío</a> o <a href="#m5-instancias-buffer-corto">más instancias de las que caben</a></li>
       <li><code>Must have element array buffer bound</code>: <a href="#m4-ebo-vao-equivocado">el EBO no está en el VAO enlazado</a></li>
       <li><code>Vertex shader input type does not match…</code>: <a href="#m4-tipo-atributo">atributo entero configurado como float, o al revés</a></li>
       <li><code>Stride must be a multiple of the passed in datatype</code>: <a href="#m4-stride-en-elementos">stride en elementos</a></li>
-      <li><code>location is not from the associated program</code>: <a href="#m5-uniform-otro-programa">otro programa en uso</a></li>
-      <li><code>Feedback loop formed between Framebuffer and active Texture</code>: <a href="#m5-bucle-realimentacion">leer y escribir la misma textura</a></li>
+      <li><code>location is not from the associated program</code>: <a href="#m5-uniform-otro-programa">otro programa en uso</a>, o <a href="#m7-locations-viejas">locations del contexto anterior tras recuperarlo</a></li>
+      <li><code>Feedback loop formed between Framebuffer and active Texture</code>: <a href="#m5-bucle-realimentacion">leer y escribir la misma textura</a> (<a href="#m7-5-no-avanza">en una simulación, el ping-pong no intercambia</a>)</li>
+      <li><code>A transform feedback buffer that would be written to is also bound to a non-transform-feedback target</code>: <a href="#m7-5-tf-dos-sitios">el buffer de salida sigue enlazado en <code>ARRAY_BUFFER</code></a></li>
       <li><code>INVALID_FRAMEBUFFER_OPERATION</code>: <a href="#m5-fbo-incompleto">framebuffer incompleto</a></li>
       <li><code>attempt to use a deleted object</code>: <a href="#m5-objeto-borrado">objeto borrado</a></li>
       <li><code>Sampler uniform value out of range</code>: <a href="#m5-sampler-unidad"><code>gl.TEXTURE1</code> en lugar de 1</a></li>
@@ -336,13 +384,14 @@
       <li><code>too many errors, no more errors will be reported</code>: <a href="#m5-demasiados-errores">Chrome dejó de avisar</a></li>
       <li><code>SecurityError</code> al subir una imagen: <a href="#m5-imagen-securityerror">imagen de otro origen</a></li>
       <li><code>getError</code> acusa a una línea inocente: <a href="#m5-geterror-pegajoso">el error es de antes</a></li>
+      <li>WebGPU, <code>Binding size … is smaller than the minimum binding size</code> (o uniforms que llegan cambiados de sitio): <a href="#m7-7-struct-desalineado">el struct de WGSL tiene huecos de alineación</a></li>
     </ul>
   </section>
 
   <section class="ax-sintoma" id="s-compilador">
     <h3>El shader no compila o el programa no enlaza</h3>
     <ul>
-      <li><code>#version directive must occur on the first line</code>: <a href="#m5-version-primera-linea">hay algo antes, aunque sea un salto de línea</a></li>
+      <li><code>#version directive must occur on the first line</code>: <a href="#m5-version-primera-linea">hay algo antes, aunque sea un salto de línea</a> (en Three.js, <code>THREE.WebGLProgram: Shader Error</code> con <code>0:69: 'version'</code>: <a href="#m7-7-version-duplicada">un <code>ShaderMaterial</code> ya pone su <code>#version</code></a>)</li>
       <li>El error señala una línea que está bien: <a href="#m5-error-linea-siguiente">el fallo está en la anterior</a></li>
       <li><code>'?' : syntax error</code>: <a href="#m6a-enie-identificador">una ñ o una tilde en un nombre</a></li>
       <li><code>Precisions of uniform … differ</code>: <a href="#m4-precision-uniform">el mismo uniform con otra precisión en cada shader</a></li>
@@ -365,6 +414,8 @@
       <li><a href="#m2-fuerza-infinita">Una fuerza 1/d² sin suavizar</a> dispara la partícula</li>
       <li><a href="#m1-bufferdata-array">Un <code>Array</code> normal en <code>bufferData</code></a></li>
       <li><a href="#m4-uniform-silencioso">Un uniform que no cambia nada</a>: location <code>null</code> o función del tipo equivocado</li>
+      <li><a href="#m7-7-culling-desplazado">Una malla que el vertex shader desplaza, unas partículas o unas instancias desaparecen al mover la cámara</a>: el frustum culling usa la esfera envolvente original</li>
+      <li><a href="#m7-4-heightmap-plano">El terreno sale plano</a> o <a href="#m7-5-todas-en-el-centro">las partículas, en el centro</a>: una textura que se lee como 0</li>
     </ul>
   </section>
 
@@ -377,6 +428,7 @@
       <li><a href="#m2-fill-forwards-pegado">Tras <code>fill: 'forwards'</code>, el elemento ignora los estilos</a></li>
       <li><a href="#m2-abort-error"><code>AbortError</code> sin ninguna petición de red</a></li>
       <li><a href="#m2-animacion-congelada">Una animación CSS también se congela</a> cuando el hilo principal está ocupado</li>
+      <li><a href="#m7-camara-lenta-parcial">Con la pausa o la cámara lenta de tu escena, las animaciones CSS siguen a su ritmo</a>: van con el reloj del documento, no con el tuyo</li>
     </ul>
   </section>
 
@@ -388,6 +440,11 @@
       <li><a href="#m1-tecla-atascada">Una tecla se queda pulsada</a> al perder el foco</li>
       <li><a href="#m2-flick-falso">Al soltar, el objeto no sale lanzado</a> (o sale aunque estaba quieto)</li>
       <li><a href="#m1-raton-desplazado">El dibujo sale desplazado del ratón</a>, más cerca del borde</li>
+      <li><a href="#m7-puntero-despegado">El efecto se despega del puntero al hacer scroll o zoom sin mover el ratón</a>: guardaste la posición en coordenadas que cambian sin eventos del puntero</li>
+      <li><a href="#m7-barrido-inicial">Al entrar el ratón, el efecto llega volando desde una esquina</a>: el valor suavizado arranca en (0, 0) o donde salió el puntero</li>
+      <li><a href="#m7-canvas-fijo-retraso">Con scroll rápido, un canvas de fondo fijo va por detrás de los elementos</a>: el compositor desplaza el DOM un frame antes</li>
+      <li><a href="#m7-canvas-sin-teclado">El canvas no recibe el teclado aunque hagas clic en él</a>: sin <code>tabindex</code> no es enfocable</li>
+      <li><a href="#m7-6-hero-atrapa-scroll">En el móvil, el dedo no desplaza la página sobre una portada a pantalla completa</a>: <code>touch-action: none</code></li>
     </ul>
   </section>
 
@@ -419,6 +476,7 @@
       <li><a href="#m1-orden-timeout-raf"><code>setTimeout</code> unas veces antes que el rAF y otras después</a></li>
       <li><a href="#m1-alineacion"><code>start offset of Float32Array should be a multiple of 4</code></a>: alineación</li>
       <li><a href="#m1-dataview-endian"><code>DataView</code> lee números absurdos</a>: big-endian por defecto</li>
+      <li><a href="#m7-7-onbeforerender-uniform">En Three.js, un uniform cambiado en <code>onBeforeRender</code> sale con el valor del primer objeto</a>: si los objetos comparten material, no se reenvían los uniforms</li>
     </ul>
   </section>
 

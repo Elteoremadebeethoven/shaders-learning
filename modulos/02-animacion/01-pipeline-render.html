@@ -393,7 +393,7 @@ medir('Agrupado', agrupado);
 </script>
 </div>
 
-<p>Las dos funciones hacen exactamente lo mismo con las 500 barras. En nuestra máquina, la versión intercalada tardó unos 50 ms (tres frames enteros perdidos) y la agrupada, menos de 1 ms: entre 50 y 80 veces menos según la ejecución. La diferencia crece con el número de elementos y con la complejidad de la página, porque cada layout forzado recorre todo lo que esté sucio.</p>
+<p>Las dos funciones hacen exactamente lo mismo con las 500 barras. En nuestra máquina (Apple M1, Chrome 154), la versión intercalada tardó unos 50 ms (tres frames enteros perdidos) y la agrupada, alrededor de 1 ms: unas 50 veces menos. Si repites la medida con los botones tras un rato sin tocar nada, la primera puede salir bastante más lenta (hasta 90 ms en nuestras pruebas): la CPU viene de reposo y tarda un momento en ir a toda velocidad, como verás en la caja <a href="../04-gpu/01-cpu-vs-gpu.html#m4-cpu-en-frio">«Una medida corta de JavaScript sale el doble o el triple de lenta»</a> de la 4.1. La diferencia crece con el número de elementos y con la complejidad de la página, porque cada layout forzado recorre todo lo que esté sucio.</p>
 
 <p>¿Qué lecturas fuerzan layout? Lo comprobamos midiendo el mismo bucle con distintas lecturas (300 elementos, escribiendo <code>style.width</code> en cada vuelta):</p>
 <table class="m2-medidas">
@@ -640,7 +640,7 @@ medir();
   <details class="pista"><summary>Pista 2</summary><p>Necesitas tres bucles: escribir <code>auto</code> en todas, leer todas y escribir el máximo en todas.</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
     <p>En el original, cada vuelta escribe <code>height = 'auto'</code> (ensucia el layout) y a continuación lee <code>offsetHeight</code> (lo fuerza): 300 layouts. Separando en tres fases, la primera lectura fuerza un único layout con todas las alturas en <code>auto</code>; las 299 lecturas siguientes encuentran el layout al día y son casi gratis. El último bucle solo escribe, y el layout que provoca lo hace el navegador una vez, al final del frame (o nuestra medida con <code>document.body.offsetWidth</code>).</p>
-    <p>Nosotros medimos, fuera del playground, 36 ms contra 2,6 ms con 300 tarjetas, y 399 ms contra 8 ms con 1000: el coste del thrashing crece mucho más deprisa que el número de elementos, porque cada layout forzado recorre una página cada vez más grande. Y la pregunta de senior: ¿hace falta JavaScript? Con <code>display: grid; grid-auto-rows: 1fr</code> en el contenedor, todas las filas miden lo que la más alta, sin medir nada.</p>
+    <p>Nosotros medimos, fuera del playground, 36 ms contra 2,6 ms con 300 tarjetas, y 399 ms contra 8 ms con 1000 (en el playground, la medida que se hace al pulsar «Ejecutar» sale más alta, unos 50 y 7 ms, porque incluye el primer layout de las tarjetas recién creadas y la CPU viene de reposo; repite con «Medir otra vez»): el coste del thrashing crece mucho más deprisa que el número de elementos, porque cada layout forzado recorre una página cada vez más grande. Y la pregunta de senior: ¿hace falta JavaScript? Con <code>display: grid; grid-auto-rows: 1fr</code> en el contenedor, todas las filas miden lo que la más alta, sin medir nada.</p>
   </details>
 </section>
 

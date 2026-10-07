@@ -1,0 +1,67 @@
+<!doctype html><html><head><meta charset="utf-8"><title>s4-anexos pipeline</title></head><body>
+<script>
+/* createRenderPipeline(Async) en el M1, con shaders que de verdad cambian (una constante distinta en cada uno:
+   un comentario distinto no sirve, porque Tint lo quita y el MSL que llega a Metal sería el mismo). */
+(async () => {
+  const R = {};
+  try {
+    const a = await navigator.gpu.requestAdapter();
+    const d = await a.requestDevice();
+    const fmt = navigator.gpu.getPreferredCanvasFormat();
+    const wgsl = (k) => `struct U { res: vec2f, raton: vec2f, t: f32 };
+@group(0) @binding(0) var<uniform> u: U;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) q: vec4f) -> @location(0) vec4f {
+  let uv = q.xy / u.res;
+  return vec4f(uv, 0.5 + 0.5 * sin(u.t * ${k}), 1.0);
+}`;
+    const desc = (m) => ({ layout: "auto", vertex: { module: m, entryPoint: "vs" }, fragment: { module: m, entryPoint: "fs", targets: [{ format: fmt }] }, primitive: { topology: "triangle-list" } });
+    const K = () => (1 + Math.random()).toFixed(9);
+    // 1) el primer pipeline del dispositivo, asíncrono
+    let t0 = performance.now();
+    await d.createRenderPipelineAsync(desc(d.createShaderModule({ code: wgsl(K()) })));
+    R.asyncPrimero = +(performance.now() - t0).toFixed(2);
+    // 2) más pipelines asíncronos, cada uno con su constante
+    const as = [];
+    for (let j = 0; j < 9; j++) { t0 = performance.now(); await d.createRenderPipelineAsync(desc(d.createShaderModule({ code: wgsl(K()) }))); as.push(+(performance.now() - t0).toFixed(2)); }
+    R.asyncNuevos = as;
+    // 3) síncrono: lo que tarda en volver y lo que tarda el primer uso (submit + onSubmittedWorkDone)
+    const tex = d.createTexture({ size: [64, 64], format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    const ubo = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const sy = [];
+    for (let j = 0; j < 9; j++) {
+      t0 = performance.now();
+      const p = d.createRenderPipeline(desc(d.createShaderModule({ code: wgsl(K()) })));
+      const t1 = performance.now();
+      const g = d.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }] });
+      const e = d.createCommandEncoder();
+      const pase = e.beginRenderPass({ colorAttachments: [{ view: tex.createView(), loadOp: "clear", clearValue: [0, 0, 0, 1], storeOp: "store" }] });
+      pase.setPipeline(p); pase.setBindGroup(0, g); pase.draw(3); pase.end();
+      d.queue.submit([e.finish()]);
+      await d.queue.onSubmittedWorkDone();
+      sy.push({ vuelve: +(t1 - t0).toFixed(2), primerUso: +(performance.now() - t1).toFixed(2) });
+    }
+    R.sync = sy;
+    // 4) referencia: un dibujo con un pipeline ya usado
+    const p0 = d.createRenderPipeline(desc(d.createShaderModule({ code: wgsl("1.0") })));
+    const g0 = d.createBindGroup({ layout: p0.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }] });
+    const ref = [];
+    for (let j = 0; j < 6; j++) {
+      t0 = performance.now();
+      const e = d.createCommandEncoder();
+      const pase = e.beginRenderPass({ colorAttachments: [{ view: tex.createView(), loadOp: "clear", clearValue: [0, 0, 0, 1], storeOp: "store" }] });
+      pase.setPipeline(p0); pase.setBindGroup(0, g0); pase.draw(3); pase.end();
+      d.queue.submit([e.finish()]);
+      await d.queue.onSubmittedWorkDone();
+      ref.push(+(performance.now() - t0).toFixed(2));
+    }
+    R.dibujoConPipelineUsado = ref;
+    const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+    R.medianas = { asyncNuevos: med(as), syncVuelve: med(sy.map(x => x.vuelve)), syncPrimerUso: med(sy.map(x => x.primerUso)), dibujoUsado: med(ref) };
+  } catch (e) { R.exc = e.message; }
+  window.__res = R;
+})();
+</script></body></html>

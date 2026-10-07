@@ -335,6 +335,7 @@ vec3 porNegro(vec2 uv, float p) {
 <div class="anotado" data-lang="glsl">
 <script type="text/plain">
 vec3 cortinilla(vec2 uv, float p, float w) {
+  w = max(w, 1e-4);
   vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
   vec2 dir = vec2(cos(radians(25.0)), sin(radians(25.0)));
   float h = 0.5 * dot(abs(dir), a);
@@ -344,11 +345,12 @@ vec3 cortinilla(vec2 uv, float p, float w) {
 }
 </script>
 <ol>
-  <li data-l="2">El aspecto del lienzo. Sin él, una dirección de 25° se vería con otro ángulo en un lienzo que no sea cuadrado (el bicho del aspecto de <a href="../03-matematicas/06-espacios-coordenadas.html#m3-aspecto">3.6</a>).</li>
-  <li data-l="3">La dirección en la que avanza el borde, como vector unitario. Con 0° sería una cortinilla de izquierda a derecha.</li>
-  <li data-l="4-5">Proyectamos el píxel sobre la dirección con un producto escalar (<a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>), con el origen en el centro y las distancias en alturas del lienzo. Sobre un rectángulo de $A \times 1$, esa proyección va de $-h$ a $h$ con $h = \tfrac12(A\,|\cos\theta| + |\sin\theta|)$: es la media diagonal medida en esa dirección. Al dividir por $2h$ y sumar 0,5, $x$ vale 0 en la esquina por la que entra el borde y 1 en la esquina por la que sale, sea cual sea el ángulo.</li>
-  <li data-l="6">La línea importante. El <code>smoothstep</code> ocupa desde $e - w$ hasta $e + w$, así que para que el borde esté entero fuera del lienzo al principio necesitamos $e + w \le 0$, y al final, $e - w \ge 1$. Por eso el borde no recorre de 0 a 1: recorre de $-w$ a $1 + w$.</li>
-  <li data-l="7">Detrás del borde ($x$ menor que $e$) el <code>smoothstep</code> vale 0 y se ve B; delante vale 1 y se ve A.</li>
+  <li data-l="2"><code>w</code> es la semianchura del borde suave, y aquí no puede valer 0: con <code>w = 0</code>, la última línea sería <code>smoothstep(e, e, x)</code>, y la especificación de GLSL ES 3.00 deja el resultado indefinido cuando el primer borde no es menor que el segundo (lo verás en el ejercicio 7.3.1). Una diezmilésima del recorrido no se ve y da un borde tan nítido como el corte duro. Los parámetros de una función de GLSL son copias, así que reasignarlo no cambia nada fuera.</li>
+  <li data-l="3">El aspecto del lienzo. Sin él, una dirección de 25° se vería con otro ángulo en un lienzo que no sea cuadrado (el bicho del aspecto de <a href="../03-matematicas/06-espacios-coordenadas.html#m3-aspecto">3.6</a>).</li>
+  <li data-l="4">La dirección en la que avanza el borde, como vector unitario. Con 0° sería una cortinilla de izquierda a derecha.</li>
+  <li data-l="5-6">Proyectamos el píxel sobre la dirección con un producto escalar (<a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>), con el origen en el centro y las distancias en alturas del lienzo. Sobre un rectángulo de $A \times 1$, esa proyección va de $-h$ a $h$ con $h = \tfrac12(A\,|\cos\theta| + |\sin\theta|)$: es la media diagonal medida en esa dirección. Al dividir por $2h$ y sumar 0,5, $x$ vale 0 en la esquina por la que entra el borde y 1 en la esquina por la que sale, sea cual sea el ángulo.</li>
+  <li data-l="7">La línea importante. El <code>smoothstep</code> ocupa desde $e - w$ hasta $e + w$, así que para que el borde esté entero fuera del lienzo al principio necesitamos $e + w \le 0$, y al final, $e - w \ge 1$. Por eso el borde no recorre de 0 a 1: recorre de $-w$ a $1 + w$.</li>
+  <li data-l="8">Detrás del borde ($x$ menor que $e$) el <code>smoothstep</code> vale 0 y se ve B; delante vale 1 y se ve A.</li>
 </ol>
 </div>
 
@@ -363,6 +365,7 @@ vec3 cortinilla(vec2 uv, float p, float w) {
 <div class="anotado" data-lang="glsl">
 <script type="text/plain">
 vec3 radial(vec2 uv, float p, float w, vec2 c) {
+  w = max(w, 1e-4);
   vec2 a = vec2(u_resolution.x / u_resolution.y, 1.0);
   float d = length((uv - c) * a);
   float R = length(max(c, 1.0 - c) * a);
@@ -371,9 +374,10 @@ vec3 radial(vec2 uv, float p, float w, vec2 c) {
 }
 </script>
 <ol>
-  <li data-l="3">La distancia del píxel al centro <code>c</code> (en uv, de 0 a 1), con el aspecto corregido para que sea un círculo y no una elipse.</li>
-  <li data-l="4">El radio máximo: la distancia a la esquina <em>más lejana</em>. En cada eje, la esquina más lejana está a <code>max(c, 1 - c)</code>; por ejemplo, con el centro en (0,3; 0,8), a 0,7 en horizontal y a 0,8 en vertical. Con el aspecto aplicado, su longitud es el radio con el que el círculo cubre el lienzo entero.</li>
-  <li data-l="5">El mismo truco de la cortinilla: el radio recorre de $-w$ a $R + w$ para que el borde suave empiece y termine fuera.</li>
+  <li data-l="2">Lo mismo que en la cortinilla: con <code>w = 0</code>, <code>smoothstep(r, r, d)</code> estaría indefinido.</li>
+  <li data-l="4">La distancia del píxel al centro <code>c</code> (en uv, de 0 a 1), con el aspecto corregido para que sea un círculo y no una elipse.</li>
+  <li data-l="5">El radio máximo: la distancia a la esquina <em>más lejana</em>. En cada eje, la esquina más lejana está a <code>max(c, 1 - c)</code>; por ejemplo, con el centro en (0,3; 0,8), a 0,7 en horizontal y a 0,8 en vertical. Con el aspecto aplicado, su longitud es el radio con el que el círculo cubre el lienzo entero.</li>
+  <li data-l="6">El mismo truco de la cortinilla: el radio recorre de $-w$ a $R + w$ para que el borde suave empiece y termine fuera.</li>
 </ol>
 </div>
 
@@ -521,6 +525,7 @@ vec3 porNegro(vec2 uv, float p) {
   return mix(c, hacia(uv), tramo(p, 0.5, 1.0));
 }
 vec3 cortinilla(vec2 uv, float p, float w) {
+  w = max(w, 1e-4);              // borde 0: smoothstep(e, e, x) está indefinido
   vec2 dir = vec2(cos(radians(25.0)), sin(radians(25.0)));
   float h = 0.5 * dot(abs(dir), aspecto());
   float x = dot((uv - 0.5) * aspecto(), dir) / (2.0 * h) + 0.5;
@@ -528,6 +533,7 @@ vec3 cortinilla(vec2 uv, float p, float w) {
   return mix(desde(uv), hacia(uv), 1.0 - smoothstep(e - w, e + w, x));
 }
 vec3 radial(vec2 uv, float p, float w, vec2 c) {
+  w = max(w, 1e-4);              // borde 0: smoothstep(r, r, d) está indefinido
   float d = length((uv - c) * aspecto());
   float R = length(max(c, 1.0 - c) * aspecto());
   float r = mix(-w, R + w, p);
@@ -963,7 +969,7 @@ const app = M7.crearApp(canvas, {
 </section>
 
 <div class="callout senior" data-titulo="Veinte imágenes con hover: un canvas, no veinte">
-  <p>En una rejilla de proyectos, la tentación es un canvas WebGL por tarjeta. Con más de unos 16 contextos vivos, Chrome empieza a destruir los más antiguos (<a href="../05-webgl/01-contexto.html#m5-demasiados-contextos">5.1</a>), y cada contexto sube sus propias texturas y compila sus propios shaders. Las alternativas, de más simple a más ambiciosa: crear el contexto solo para la tarjeta que tiene el puntero encima (y liberarlo con <code>WEBGL_lose_context</code> al salir); un único canvas fijo detrás de la página, como el del ejemplo 7.2.5, que lee el rectángulo de cada tarjeta y dibuja su imagen ahí con <code>gl.viewport</code> (como los dos paneles del ejemplo 7.3.2; añade <code>gl.scissor</code> si además borras cada rectángulo), asumiendo el frame de retraso respecto al scroll (<a href="02-interaccion.html#m7-canvas-fijo-retraso">7.2</a>); o, si el efecto es un zoom o un cambio de brillo, CSS puro (<code>transform</code>, <code>filter</code>), que no gasta ni un contexto.</p>
+  <p>En una rejilla de proyectos, la tentación es un canvas WebGL por tarjeta. Con más de unos 16 contextos vivos, Chrome empieza a perder a la fuerza el que lleva más tiempo sin usarse (<a href="../05-webgl/01-contexto.html#m5-demasiados-contextos">5.1</a>), y cada contexto sube sus propias texturas y compila sus propios shaders. Las alternativas, de más simple a más ambiciosa: crear el contexto solo para la tarjeta que tiene el puntero encima (y liberarlo con <code>WEBGL_lose_context</code> al salir); un único canvas fijo detrás de la página, como el del ejemplo 7.2.5, que lee el rectángulo de cada tarjeta y dibuja su imagen ahí con <code>gl.viewport</code> (como los dos paneles del ejemplo 7.3.2; añade <code>gl.scissor</code> si además borras cada rectángulo), asumiendo el frame de retraso respecto al scroll (<a href="02-interaccion.html#m7-canvas-fijo-retraso">7.2</a>); o, si el efecto es un zoom o un cambio de brillo, CSS puro (<code>transform</code>, <code>filter</code>), que no gasta ni un contexto.</p>
 </div>
 
 <div class="callout hack" data-titulo="Efectos que solo existen en movimiento">
@@ -1135,7 +1141,7 @@ setTimeout(() => { if (app.estado.fase === 'quieta') app.estado.pedida = 'proyec
 </section>
 
 <div class="callout senior" data-titulo="¿Y la View Transitions API?">
-  <p>Para transiciones entre estados del DOM, Chrome ofrece una API nativa: <code>document.startViewTransition(() =&gt; cambiarDOM())</code> hace una captura de la página, aplica tu cambio y anima entre la captura y el estado nuevo con animaciones CSS que tú personalizas (en el Chrome de pruebas, <code>typeof document.startViewTransition</code> es <code>'function'</code>). Es la opción correcta para fundidos, deslizamientos y morfismos de elementos, y no necesita ni un contexto WebGL: el fundido por defecto es una animación de <code>opacity</code>, que puede ejecutar el compositor (según la especificación, el morfismo de un elemento que cambia de tamaño anima además <code>width</code> y <code>height</code>, que el compositor no puede animar). Lo que no te da es acceso a los píxeles de esas capturas desde un shader: si quieres una disolución con ruido o una tinta, vuelves al overlay de este ejemplo. Y se pueden combinar: el overlay WebGL para la cortina, la API para los elementos que cambian de sitio debajo.</p>
+  <p>Para transiciones entre estados del DOM, Chrome ofrece una API nativa: <code>document.startViewTransition(() =&gt; cambiarDOM())</code> hace una captura de la página, aplica tu cambio y anima entre la captura y el estado nuevo con animaciones CSS que tú personalizas (la presentamos en <a href="../02-animacion/07-waapi-flip.html#view-transitions-en-una-mencion">2.7</a>; en el Chrome de pruebas, <code>typeof document.startViewTransition</code> es <code>'function'</code>). Es la opción correcta para fundidos, deslizamientos y morfismos de elementos, y no necesita ni un contexto WebGL: el fundido por defecto es una animación de <code>opacity</code>, que puede ejecutar el compositor (según la especificación, el morfismo de un elemento que cambia de tamaño anima además <code>width</code> y <code>height</code>, que el compositor no puede animar). Lo que no te da es acceso a los píxeles de esas capturas desde un shader: si quieres una disolución con ruido o una tinta, vuelves al overlay de este ejemplo. Y se pueden combinar: el overlay WebGL para la cortina, la API para los elementos que cambian de sitio debajo.</p>
 </div>
 
 <h2>Encadenar uniforms: una línea de tiempo</h2>
@@ -1301,7 +1307,7 @@ deslizador.oninput = () => { linea.velocidad = 0; linea.cabezal = deslizador.val
 </section>
 
 <div class="callout porque">
-  <p>Porque un sistema de tweens encadenados con <code>alTerminar</code> (como el de 2.4) sabe ir hacia delante, pero no sabe dar marcha atrás ni saltar: su estado es «qué tween está activo y desde cuándo», y la historia se pierde a medida que avanza. Una línea de tiempo evaluada desde el cabezal no tiene historia que perder. Es la diferencia entre un vídeo que solo se puede reproducir y uno que se puede rebobinar.</p>
+  <p>Porque un sistema de tweens encadenados con <code>alTerminar</code> (como el de <a href="../02-animacion/04-interpolacion-easing.html#un-mini-sistema-de-tweens">2.4</a>) sabe ir hacia delante, pero no sabe dar marcha atrás ni saltar: su estado es «qué tween está activo y desde cuándo», y la historia se pierde a medida que avanza. Una línea de tiempo evaluada desde el cabezal no tiene historia que perder. Es la diferencia entre un vídeo que solo se puede reproducir y uno que se puede rebobinar, y es lo mismo que ya te daba el <code>currentTime</code> de una animación WAAPI en el <a href="../02-animacion/07-waapi-flip.html#ejercicio-2-7-2-una-linea-de-tiempo-que-puedes-rebobinar">ejercicio 2.7.2</a>: el navegador calcula el estado de la animación a partir del instante, sin historia. Aquí lo construimos para valores que no son estilos del DOM, como los uniforms.</p>
 </div>
 
 <h2>Rendimiento: dibujar solo mientras algo se mueve</h2>
@@ -1313,7 +1319,7 @@ deslizador.oninput = () => { linea.velocidad = 0; linea.cabezal = deslizador.val
     <tr><td>Bajo demanda, en reposo</td><td class="num">0</td><td class="num">0 ms por segundo</td><td class="num">0,1 ms por segundo</td></tr>
   </tbody>
 </table>
-<p>Unos 46 ms de CPU por segundo (casi un 5 % de un núcleo), y eso sin contar el trabajo de la propia GPU, que no aparece en esas cifras: en cada frame, el fragment shader vuelve a calcular el ruido, las lecturas de textura y las mezclas de los casi 1,3 millones de píxeles del lienzo para obtener exactamente la misma imagen. Cuánto tarda la GPU en eso no se averigua dividiendo el tiempo de muchos dibujos seguidos sobre el mismo búfer: en una GPU de teselas como la del M1, el hardware se ahorra el trabajo de los dibujos que el siguiente tapa por completo y la cifra sale varias veces menor que la real (el método fiable, un dibujo por pasada, es el de <a href="../06-glsl/06-ruido.html#medir-coste-shader">6.6</a>). En un portátil potente puede ser poco; en un móvil, con la batería y la temperatura de por medio, y multiplicado por cada pestaña que el usuario deja abierta con tu web, no lo es. La regla de un senior: <strong>si nada se mueve, no se dibuja</strong>.</p>
+<p>Unos 46 ms de CPU por segundo (casi un 5 % de un núcleo), y eso sin contar el trabajo de la propia GPU, que no aparece en esas cifras: en cada frame, el fragment shader vuelve a calcular el ruido, las lecturas de textura y las mezclas de los casi 1,3 millones de píxeles del lienzo para obtener exactamente la misma imagen. Cuánto tarda la GPU en eso no se averigua dividiendo el tiempo de muchos dibujos seguidos sobre el mismo búfer: en una GPU de teselas como la del M1, el hardware se ahorra el trabajo de los dibujos que el siguiente tapa por completo y la cifra sale varias veces menor que la real (el método fiable, un dibujo por pasada, es el de <a href="../06-glsl/06-ruido.html#medir-coste-shader">6.6</a>). Con ese método (cada dibujo en su propia pasada, mediana de 7 tandas de 10), en la misma máquina, un frame de esta disolución a 1440 × 900 le cuesta a la GPU unos 0,6 ms; las demás transiciones del catálogo, entre 0,2 y 0,4 ms, y un shader trivial que solo escribe un color, 0,17 ms. Dividir diez dibujos seguidos sobre el mismo búfer daba 0,12 ms para la disolución: casi cinco veces menos. Por frame es poco, pero a 60 frames por segundo para pintar siempre la misma imagen son unos 35 ms de GPU cada segundo, que se suman a los 46 de CPU. En un portátil potente puede ser poco; en un móvil, con la batería y la temperatura de por medio, y multiplicado por cada pestaña que el usuario deja abierta con tu web, no lo es. La regla de un senior: <strong>si nada se mueve, no se dibuja</strong>.</p>
 
 <p><code>M7.crearApp</code> lo trae preparado con la opción <code>bajoDemanda: true</code> (<a href="01-arquitectura.html">7.1</a>). En ese modo, al terminar cada frame el bucle solo pide el siguiente si alguien llamó a <code>app.pedirFrame()</code> durante este; si no, se duerme. Tres detalles de su implementación que comprobamos:</p>
 <ul>
@@ -1337,7 +1343,7 @@ deslizador.oninput = () => { linea.velocidad = 0; linea.cabezal = deslizador.val
 
 <div class="callout bestiario" data-id="m7-3-salto-al-despertar" data-titulo="Cada transición empieza con un salto (en un bucle que se duerme)">
   <p><strong>Síntoma:</strong> en una app que deja de dibujar cuando está quieta, todas las transiciones empiezan con un pequeño salto: el primer frame ya muestra la transición bastante avanzada. Si esperas poco entre una y otra, el salto es menor; si esperas mucho, se queda en un tamaño fijo.</p>
-  <p><strong>Causa:</strong> el bucle calcula <code>dt</code> como la diferencia con el <em>último frame dibujado</em>, que fue hace segundos. El tope de <code>dt</code> (0,1 s en el reloj de 7.1) evita el desastre, pero no el salto: el primer frame avanza 0,1 s de golpe. Con el muelle por defecto de m7kit, simulamos ese primer paso: la posición pasa de 0 a 0,39 en un solo frame, cuando a 60 Hz debería haber avanzado hasta 0,026.</p>
+  <p><strong>Causa:</strong> el bucle calcula <code>dt</code> como la diferencia con el <em>último frame dibujado</em>, que fue hace segundos. El tope de <code>dt</code> (0,1 s en el reloj de 7.1) evita el desastre, pero no el salto: el primer frame avanza 0,1 s de golpe. Con el muelle por defecto de m7kit, simulamos ese primer paso: la posición pasa de 0 a 0,39 en un solo frame, cuando a 60 Hz debería haber avanzado hasta 0,026. Es el bicho de <a href="../01-web/05-event-loop.html#m1-segundo-plano">«Al volver a la pestaña, la animación da un salto enorme»</a> (1.5) en pequeño: el tope de <code>dt</code> evita el desastre, pero el salto de 0,1 s que deja se ve aquí en cada transición, que arranca desde el reposo justo cuando el usuario mira.</p>
   <p><strong>Solución:</strong> al despertar, olvida la referencia del frame anterior para que el primer <code>dt</code> sea 0 (<code>reloj.reiniciarReferencia()</code>). <code>M7.crearApp</code> lo hace dentro de <code>pedirFrame</code>; si escribes tu propio bucle bajo demanda, es la línea que no puede faltar.</p>
 </div>
 
@@ -1395,7 +1401,7 @@ function tarjeta(canvas, info, bajoDemanda, fuente) {
       puntero.actualizar(dtr);
       muelle.actualizar(dtr);
       if (muelle.enReposo()) muelle.fijar(muelle.objetivo);
-      const persigue = puntero.visto && Math.abs(puntero.sx - puntero.x) + Math.abs(puntero.sy - puntero.y) > 0.05;   // px CSS
+      const persigue = Math.abs(puntero.sx - puntero.x) + Math.abs(puntero.sy - puntero.y) > 0.05;   // px CSS
       if (!muelle.enReposo() || persigue) app.pedirFrame();            // ¿queda algo por mover?
     },
     dibujar(gl, e, app) {
@@ -1423,7 +1429,7 @@ tarjeta(document.getElementById('c1'), document.getElementById('i1'), false, L73
 tarjeta(document.getElementById('c2'), document.getElementById('i2'), true, L73.imagen('bosque'));
 </script>
   </div>
-  <p>Todo el modo bajo demanda cabe en tres sitios del código. Los eventos llaman a <code>despertar()</code>: entrar, salir, tocar y mover el puntero (la lupa lo sigue, así que cada movimiento es un cambio visible). <code>actualizar</code> pide otro frame mientras quede algo en movimiento: el muelle fuera de reposo o el puntero suavizado todavía persiguiendo al real (con una tolerancia de 0,05 px CSS, nunca con <code>!==</code>, y solo si ya ha llegado algún evento: antes del primero, <code>M7.Puntero</code> calcula <code>x</code> e <code>y</code> con <code>clientX</code> y <code>clientY</code> a 0, sus valores iniciales, así que valen menos la posición de la caja en la ventana, mientras que <code>sx</code> y <code>sy</code> se quedan en 0 sin suavizar: la distancia no se anula nunca y la app no se dormía; nos pasó preparando este ejemplo). Y al llegar al reposo, <code>fijar</code> deja el muelle exacto, el último frame dibuja la imagen sin efecto y la app se duerme. El contador usa un <code>setInterval</code> que solo escribe texto: si lo pusieras en <code>dibujar</code>, se dormiría con la app y nunca mostraría el 0.</p>
+  <p>Todo el modo bajo demanda cabe en tres sitios del código. Los eventos llaman a <code>despertar()</code>: entrar, salir, tocar y mover el puntero (la lupa lo sigue, así que cada movimiento es un cambio visible). <code>actualizar</code> pide otro frame mientras quede algo en movimiento: el muelle fuera de reposo o el puntero suavizado todavía persiguiendo al real (con una tolerancia de 0,05 px CSS, nunca con <code>!==</code>). Antes del primer evento esa distancia es 0: <code>M7.Puntero</code> calcula <code>x</code> e <code>y</code> con <code>clientX</code> y <code>clientY</code> a 0, sus valores iniciales (así que valen menos la posición de la caja en la ventana), y mantiene <code>sx</code> y <code>sy</code> pegados a ellos. Si escribes tu propio puntero, haz lo mismo: con <code>sx</code> y <code>sy</code> en 0, la distancia sería la posición de la caja, no se anularía nunca y la app no se dormiría (nos pasó preparando este ejemplo; por eso <code>M7.Puntero</code> lo hace así). Y al llegar al reposo, <code>fijar</code> deja el muelle exacto, el último frame dibuja la imagen sin efecto y la app se duerme. El contador usa un <code>setInterval</code> que solo escribe texto: si lo pusieras en <code>dibujar</code>, se dormiría con la app y nunca mostraría el 0.</p>
 </section>
 
 <div class="quiz">
@@ -1528,13 +1534,13 @@ void main() {
   <details class="solucion"><summary>Solución explicada</summary>
     <p>Hay dos problemas independientes. El de la dirección se resuelve proyectando: el producto escalar con el vector unitario de la dirección mide cuánto ha avanzado el píxel en esa dirección. Multiplicar por el aspecto antes de proyectar hace que las distancias horizontales y verticales se midan en la misma unidad, y por eso un ángulo de 30° se ve de 30° en un lienzo panorámico. Para que el recorrido sea de 0 a 1 en cualquier ángulo, se divide por la longitud total de la proyección, $2h$, con $h = \tfrac12(A\,|\cos\theta| + |\sin\theta|)$ (la proyección de la media diagonal que más sobresale en esa dirección).</p>
     <p>El del contrato es el del bestiario de la lección: el borde suave ocupa $2w$, así que tiene que empezar en $-w$ y terminar en $1 + w$. Con <code>e = p</code>, el magenta aparece en dos franjas: en la esquina de entrada (en $p = 0$ ya se mezcla B) y en la de salida (en $p = 1$ queda A). Fíjate en que la comprobación funciona evaluando la propia función <code>transicion</code> con $p = 0$ y $p = 1$ en cada píxel, a la vez que dibuja el $p$ del deslizador: es una prueba automática dentro del shader, y puedes copiarla a cualquier transición que escribas.</p>
-    <p>Un detalle de senior con <code>borde</code> a 0: la línea se convierte en <code>smoothstep(e, e, x)</code>, y la especificación de GLSL ES 3.00 dice que el resultado está indefinido si el primer borde no es menor que el segundo. En la máquina de pruebas se comporta como un escalón (0 si $x \le e$ y 1 si $x > e$; lo medimos con $e$ en un uniform para que el compilador no pudiera precalcularlo), así que la comprobación no pinta nada. Pero otra GPU puede calcular $(x - e)/0$ por dentro y devolver un NaN en el píxel que caiga justo en el borde. Si quieres un borde nítido que no dependa de eso, usa <code>float w = max(u_ancho, 1e-4);</code>: una décima de milésima del recorrido no se ve.</p>
+    <p>Un detalle de senior con <code>borde</code> a 0: la línea se convierte en <code>smoothstep(e, e, x)</code>, y la especificación de GLSL ES 3.00 dice que el resultado está indefinido si el primer borde no es menor que el segundo. En la máquina de pruebas se comporta como un escalón (0 si $x \le e$ y 1 si $x > e$; lo medimos con $e$ en un uniform para que el compilador no pudiera precalcularlo), así que la comprobación no pinta nada. Pero otra GPU puede calcular $(x - e)/0$ por dentro y devolver un NaN en el píxel que caiga justo en el borde. Si quieres un borde nítido que no dependa de eso, usa <code>float w = max(u_ancho, 1e-4);</code>: una décima de milésima del recorrido no se ve. Es lo que hacen la cortinilla y el revelado radial del catálogo.</p>
   </details>
 </section>
 
 <section class="ejercicio" data-nivel="2">
   <h3>Ejercicio 7.3.2 — Disolución con borde de fuego</h3>
-  <p>La disolución de partida es un corte duro con el ruido tal cual: se atasca al principio y al final y no tiene borde. Mejórala en cuatro pasos: (1) estira el ruido con los percentiles medidos en la lección (0,24 y 0,80); (2) suaviza el corte con una anchura <code>s = 0.01</code>; (3) añade una franja de fuego de anchura <code>borde</code> delante de lo revelado, amarilla junto a B y roja en el frente; (4) cumple el contrato con cualquier <code>borde</code> (la casilla <code>comprobar</code> te avisa en magenta).</p>
+  <p>La disolución de partida es un corte duro con el ruido tal cual: se atasca al principio y al final y no tiene borde. Mejórala en cuatro pasos: (1) estira el ruido con los percentiles medidos en la lección (0,24 y 0,80); (2) suaviza el corte con una anchura <code>s = 0.01</code>; (3) añade una franja de fuego de anchura <code>borde</code> delante de lo revelado, amarilla junto a B y roja en el frente; (4) cumple el contrato con cualquier <code>borde</code> (la casilla <code>comprobar</code> te avisa en magenta). Ojo con el paso (4): el código de partida ya cumple el contrato (no verás magenta), pero por casualidad: el ruido sin estirar nunca llega a 0 ni a 1, y el corte no tiene anchura. En cuanto estires el ruido (el <code>clamp</code> deja píxeles en 1 exacto, que con <code>n &lt; p</code> no se revelan ni en $p = 1$) o añadas la franja de fuego, el umbral tendrá que recorrer algo más que de 0 a 1.</p>
   <div class="glsl-playground" data-titulo="Ejercicio 7.3.2" data-altura="320" data-apilado data-texturas="paisaje:clamp,texto:clamp"
        data-uniforms='{"u_progreso":{"tipo":"float","min":0,"max":1,"valor":0.5,"etiqueta":"progreso"},"u_ancho":{"tipo":"float","min":0,"max":0.3,"valor":0.08,"etiqueta":"borde"},"u_comprobar":{"tipo":"bool","valor":true,"etiqueta":"comprobar"}}'>
 <script type="x-shader/x-fragment">
@@ -2005,7 +2011,7 @@ app = M7.crearApp(canvas, {
     muelle.actualizar(app.reloj.dtReal);
     // 3. Tolerancia, no igualdad exacta; y al llegar, clavar el valor
     if (muelle.enReposo()) muelle.fijar(muelle.objetivo);
-    const persigue = puntero.visto && Math.abs(puntero.sx - puntero.x) + Math.abs(puntero.sy - puntero.y) > 0.05;
+    const persigue = Math.abs(puntero.sx - puntero.x) + Math.abs(puntero.sy - puntero.y) > 0.05;
     if (!muelle.enReposo() || persigue) app.pedirFrame();
   },
   dibujar(gl, e, app) {
@@ -2049,7 +2055,7 @@ function simularPuntero(tipo) {
   <details class="pista"><summary>Pista 2</summary><p>Cuando la segunda prueba pase, fallará la tercera: la app no vuelve a dormirse. Mira la condición de <code>actualizar</code> y el bestiario del insomnio. ¿Llega un muelle alguna vez a valer exactamente su objetivo? Usa <code>enReposo()</code> y <code>fijar()</code>. Y no olvides el puntero suavizado: mientras persigue a la posición real, también hay algo que mover.</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
     <p>Hay tres problemas encadenados, y cada uno se destapa al arreglar el anterior. Primero, el modo: con <code>bajoDemanda: false</code> el bucle es continuo y la condición de <code>actualizar</code> no importa. Segundo, los eventos: con el modo activado, la app se duerme tras el primer frame y el <code>pointerenter</code> cambia el objetivo del muelle sin que nadie lo dibuje; hasta que algo despierta la app (un cambio de tamaño, por ejemplo) no pasa nada. Los tres eventos que cambian lo que se ve (entrar, salir y mover) deben llamar a <code>pedirFrame</code>.</p>
-    <p>Tercero, el insomnio: <code>muelle.x !== muelle.objetivo</code> es verdadero para siempre en la práctica, porque hacia 0 el muelle no llega nunca a 0 exacto en un tiempo razonable: medido en Chrome con este mismo muelle, a los 4 s de salir todavía vale $-1{,}2 \cdot 10^{-8}$, y sigue encogiendo durante minutos (el bestiario del insomnio tiene las cifras). La solución compara con la tolerancia de <code>enReposo()</code> y, al cumplirla, clava el muelle con <code>fijar</code>: el último frame dibuja exactamente la imagen sin lupa y la última prueba ve un 0 exacto. El puntero suavizado necesita lo mismo: mientras <code>sx, sy</code> persiguen a <code>x, y</code> hay que seguir dibujando, con una tolerancia en píxeles CSS y solo si ya ha llegado algún evento (<code>puntero.visto</code>): antes del primero, <code>x</code> e <code>y</code> se calculan con <code>clientX = clientY = 0</code> (valen menos la posición de la caja en la ventana) mientras <code>sx, sy</code> siguen en 0. Aquí el canvas empieza justo en la esquina del iframe y las dos cosas coinciden por casualidad (comprobado: sin <code>puntero.visto</code>, las cuatro pruebas pasan igual), pero basta con que la caja no esté en (0, 0), como las tarjetas del ejemplo 7.3.8 (a 12 px del borde del iframe), para que la distancia no se anule nunca y la app no se duerma. El orden de <code>let app = null</code> y los eventos no es casual: los manejadores usan <code>app</code>, que existe cuando se ejecutan (tras la creación), aunque se registren antes.</p>
+    <p>Tercero, el insomnio: <code>muelle.x !== muelle.objetivo</code> es verdadero para siempre en la práctica, porque hacia 0 el muelle no llega nunca a 0 exacto en un tiempo razonable: medido en Chrome con este mismo muelle, a los 4 s de salir todavía vale $-1{,}2 \cdot 10^{-8}$, y sigue encogiendo durante minutos (el bestiario del insomnio tiene las cifras). La solución compara con la tolerancia de <code>enReposo()</code> y, al cumplirla, clava el muelle con <code>fijar</code>: el último frame dibuja exactamente la imagen sin lupa y la última prueba ve un 0 exacto. El puntero suavizado necesita lo mismo: mientras <code>sx, sy</code> persiguen a <code>x, y</code> hay que seguir dibujando, con una tolerancia en píxeles CSS. Antes del primer evento no hay nada que perseguir: <code>M7.Puntero</code> mantiene <code>sx, sy</code> iguales a <code>x, y</code> (que salen de <code>clientX = clientY = 0</code> y no significan nada; para saber si ya hay una posición está <code>puntero.visto</code>), así que la distancia es 0 y la app puede dormirse esté donde esté la caja (lo explica el ejemplo 7.3.8). El orden de <code>let app = null</code> y los eventos no es casual: los manejadores usan <code>app</code>, que existe cuando se ejecutan (tras la creación), aunque se registren antes.</p>
   </details>
 </section>
 

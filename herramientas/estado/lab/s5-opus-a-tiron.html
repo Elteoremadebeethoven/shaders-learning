@@ -1,0 +1,37 @@
+<!doctype html><meta charset="utf-8"><title>tirón primer dibujo</title><canvas id="c" width="512" height="512"></canvas><script>
+const gl = document.getElementById('c').getContext('webgl2', { antialias: false });
+const px = new Uint8Array(4);
+const esperar = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+const ocupar = (ms) => { const t = performance.now(); let x = 0; while (performance.now() - t < ms) x += Math.sqrt(x + 1); return x; };
+const VS = '#version 300 es\nvoid main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }';
+let semilla = Math.floor(Math.random() * 1e6);
+function nuevo() {
+  const k = (++semilla) * 1e-7;
+  const FS = `#version 300 es\nprecision highp float; out vec4 o; void main(){ float a = gl_FragCoord.x * ${k.toFixed(9)}; for (int i = 0; i < 8; i++) a = sin(a * 1.1 + ${(k * 3).toFixed(9)}); o = vec4(fract(a), 0.5, 0.25, 0.6); }`;
+  const t0 = performance.now();
+  const p = gl.createProgram();
+  for (const [t, s] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, FS]]) { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); gl.attachShader(p, sh); }
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return [p, performance.now() - t0];
+}
+function dibujo() { esperar(); const t = performance.now(); gl.drawArrays(gl.TRIANGLES, 0, 3); esperar(); return performance.now() - t; }
+gl.bindVertexArray(gl.createVertexArray());
+window.medir = function () {
+  const R = [];
+  for (let r = 0; r < 6; r++) {
+    ocupar(300);
+    gl.disable(gl.BLEND); gl.viewport(0, 0, 512, 512);
+    const [p, tLink] = nuevo(); gl.useProgram(p);
+    const d1 = dibujo(), d2 = dibujo();
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, (r % 2) ? gl.ONE : gl.ZERO, gl.ONE_MINUS_SRC_ALPHA + 0 * r);
+    const b1 = dibujo(), b2 = dibujo();
+    gl.disable(gl.BLEND);
+    const [q] = nuevo(); gl.useProgram(q);
+    gl.viewport(0, 0, 0, 0); const pre = dibujo();
+    gl.viewport(0, 0, 512, 512); const tras = dibujo(), tras2 = dibujo();
+    R.push({ tLink, d1, d2, b1, b2, pre, tras, tras2 });
+  }
+  return R;
+};
+</script>

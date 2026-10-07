@@ -53,3 +53,9 @@ herramientas/             scripts de mantenimiento
 ## Mantenimiento
 
 - `node herramientas/indexar.mjs` regenera el índice del buscador (`assets/js/indice-busqueda.js`) y los datos del Bestiario (`assets/js/datos-bestiario.js`). Ejecútalo después de editar lecciones.
+- `node herramientas/enlaces.mjs [archivos…]` comprueba enlaces internos y anclas sin abrir Chrome.
+- Verificación en Chrome headless con GPU real (`cd herramientas && npm install` una vez; el parche de `herramientas/estado/PuppeteerNode.parcheado.js` va sobre `node_modules/puppeteer-core/lib/puppeteer/node/PuppeteerNode.js`):
+  - `node herramientas/verificar.mjs <lección.html> --soluciones [--tema light] [--capturas dir]`: errores de shaders, excepciones, consola, KaTeX, enlaces y soluciones (incluidas sus pruebas ✓/✗).
+  - `node herramientas/movil.mjs <lección.html>`: desbordamiento horizontal a 390 px.
+  - `node herramientas/verificar-todo.mjs [--movil] [--tema light] [--solo "05-webgl"]`: todo el curso por tandas.
+  - Procesos pesados (Chrome headless, medidas de GPU): como mucho dos a la vez, pidiendo turno a `herramientas/turnos.mjs` (`node herramientas/turnos.mjs --estado`); el puppeteer parcheado ya lo hace solo.

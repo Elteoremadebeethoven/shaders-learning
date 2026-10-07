@@ -81,6 +81,15 @@
   <li>Entre los dos mundos solo hay unos pocos canales: <strong>buffers</strong> (datos por vértice), <strong>uniforms</strong> (constantes que valen lo mismo en todo el dibujo), <strong>texturas</strong> (tablas de datos) y la orden de dibujar. Dominar esos canales es dominar los gráficos en tiempo real.</li>
 </ul>
 
+<div class="quiz">
+  <p class="pregunta">Cada vértice de una malla tiene su propio color, y además quieres oscurecer el objeto entero, poco a poco, mientras el ratón está encima. ¿Por qué canal viaja cada dato?</p>
+  <ul>
+    <li>Los dos en uniforms: así JavaScript los controla directamente.<div class="explicacion">Un uniform vale lo mismo para todo el dibujo: sirve para el oscurecimiento, pero no puede dar un color distinto a cada vértice.</div></li>
+    <li data-correcta>El color de cada vértice en un buffer; el oscurecimiento, en un uniform.<div class="explicacion">Exacto: lo que cambia de un vértice a otro va en un buffer (se sube una vez); lo que vale lo mismo para todo el objeto y cambia con el tiempo va en un uniform, que cuesta una llamada por frame. Lo verás a fondo en <a href="../04-gpu/05-uniforms-varyings.html">4.5</a>.</div></li>
+    <li>Los dos en el buffer, que JavaScript vuelve a subir en cada frame.<div class="explicacion">Funcionaría, pero volver a subir todos los vértices cada frame para cambiar un solo número es justo el trabajo que los uniforms te ahorran.</div></li>
+  </ul>
+</div>
+
 <h2>La ruta del curso</h2>
 <table>
   <thead><tr><th>Módulo</th><th>Qué resuelve</th><th>Si ya sabes…</th></tr></thead>
@@ -272,6 +281,18 @@ void main() {
 <h3>Ejemplos resueltos y ejercicios</h3>
 <p>Los <strong>ejemplos resueltos</strong> explican un problema de principio a fin. Los <strong>ejercicios</strong> son para ti: traen un editor con el código de partida, pistas plegadas y un botón <em>Ver solución</em> que carga la solución en el editor sin borrar tu intento.</p>
 
+<section class="ejemplo">
+  <h3>Ejemplo 0.1.1 — Predice el color de un píxel antes de mirarlo</h3>
+  <p>El editor del ejercicio de abajo empieza con el shader del código anotado: <code>fragColor = vec4(uv.x, uv.y, 0.0, 1.0)</code>. Sin ejecutarlo, solo con cuentas, ¿de qué color sale el píxel de la esquina inferior izquierda, el de la esquina superior derecha y uno del centro?</p>
+  <ol>
+    <li><strong>Esquina inferior izquierda.</strong> Su centro es <code>gl_FragCoord.xy = (0.5, 0.5)</code>. Dividido por un lienzo de, digamos, 700 × 480 píxeles físicos, <code>uv ≈ (0.0007, 0.001)</code>: rojo y verde prácticamente 0. Color: <code>(0, 0, 0)</code>, negro.</li>
+    <li><strong>Esquina superior derecha.</strong> Centro en <code>(699.5, 479.5)</code>, así que <code>uv ≈ (0.9993, 0.999)</code>: rojo y verde al máximo, azul 0. Color: amarillo, <code>(1, 1, 0)</code>.</li>
+    <li><strong>El centro.</strong> <code>uv ≈ (0.5, 0.5)</code>: la mitad de rojo y la mitad de verde, un verde oliva oscuro.</li>
+    <li><strong>Compruébalo.</strong> Pasa el ratón por el lienzo del ejercicio: la barra inferior muestra <code>gl_FragCoord</code> y el color de ese píxel. En las esquinas verás <code>rgb(0.000, 0.000, 0.000)</code> y <code>rgb(1.000, 1.000, 0.000)</code>. Cerca del centro, <code>0.498</code> o <code>0.502</code>, nunca <code>0.500</code>: el lienzo guarda cada canal en un byte, de 0 a 255, y 0,5 × 255 = 127,5 tiene que redondearse a 127 o a 128 (127/255 = 0,498; 128/255 = 0,502). Es el primer detalle «de hacker» del curso; lo desmontarás en <a href="../04-gpu/03-gpu-de-juguete.html">4.3</a>.</li>
+  </ol>
+  <p>Esa es la forma de trabajar de todo el curso: predecir con números lo que hará la máquina y comprobarlo con una medida.</p>
+</section>
+
 <section class="ejercicio" data-nivel="1">
   <h3>Ejercicio 0.1 — Invierte el degradado</h3>
   <p>Modifica el shader para que el rojo sea intenso en el borde <strong>izquierdo</strong> (y se apague hacia la derecha) y el verde sea intenso <strong>abajo</strong> (y se apague hacia arriba). La esquina inferior izquierda debe quedar amarilla.</p>
@@ -319,7 +340,12 @@ void main() {
 <h2>Fórmulas</h2>
 <p>Las matemáticas aparecen escritas como en un libro, por ejemplo la interpolación lineal $\operatorname{mix}(a, b, t) = a + (b - a)\,t$ o el producto punto:</p>
 $$\vec a \cdot \vec b = a_x b_x + a_y b_y = |\vec a|\,|\vec b| \cos\theta$$
-<p>Pero siempre irán acompañadas de una demo o de código que puedas tocar. Una fórmula que no puedes tocar se olvida.</p>
+<p>Pero siempre irán acompañadas de una demo o de código que puedas tocar, como esta: arrastra las puntas de los dos vectores y comprueba que las dos expresiones de la fórmula dan siempre lo mismo (el producto punto lo desmontarás en <a href="../03-matematicas/02-producto-punto-cruz.html">3.2</a>). Una fórmula que no puedes tocar se olvida.</p>
+
+<div class="demo" id="demo-punto">
+  <div class="demo-lienzo" style="height:300px"></div>
+  <div class="demo-info"></div>
+</div>
 
 <h2>Convenciones del curso</h2>
 <ul>
@@ -360,5 +386,29 @@ $$\vec a \cdot \vec b = a_x b_x + a_y b_y = |\vec a|\,|\vec b| \cos\theta$$
 <script src="../../assets/js/playground-js.js"></script>
 <script src="../../assets/js/graficador.js"></script>
 <script src="../../assets/js/widgets.js"></script>
+<script>
+/* Demo de la sección «Fórmulas»: dos vectores arrastrables y el producto punto calculado de las dos maneras. */
+Curso.alListo(() => {
+  const raiz = document.getElementById("demo-punto");
+  const info = raiz.querySelector(".demo-info");
+  Curso.plano(raiz.querySelector(".demo-lienzo"), {
+    x: [-5, 5],
+    puntos: { a: { x: 3, y: 1, etiqueta: "a", color: "acento" }, b: { x: 1, y: 2.5, etiqueta: "b", color: "acento2" } },
+    dibujar(p, pts) {
+      const { a, b } = pts;
+      p.flecha([0, 0], a, { color: "acento" });
+      p.flecha([0, 0], b, { color: "acento2" });
+      const la = Math.hypot(a.x, a.y), lb = Math.hypot(b.x, b.y);
+      const ang = Math.atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y);   // ángulo de a a b, con signo
+      if (la > 0.3 && lb > 0.3) p.arco([0, 0], 0.8, Math.atan2(a.y, a.x), Math.atan2(a.y, a.x) + ang, { color: "tenue" });
+      const porComponentes = a.x * b.x + a.y * b.y;
+      const porAngulo = la * lb * Math.cos(ang);
+      info.textContent = "a = (" + a.x.toFixed(2) + ", " + a.y.toFixed(2) + ")   b = (" + b.x.toFixed(2) + ", " + b.y.toFixed(2) + ")\n" +
+        "ax·bx + ay·by = " + porComponentes.toFixed(3) + "\n" +
+        "|a|·|b|·cos θ = " + la.toFixed(3) + " · " + lb.toFixed(3) + " · cos(" + (Math.abs(ang) * 180 / Math.PI).toFixed(1) + "°) = " + porAngulo.toFixed(3);
+    },
+  });
+});
+</script>
 </body>
 </html>

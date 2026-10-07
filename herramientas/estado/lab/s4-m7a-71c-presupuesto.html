@@ -1,0 +1,66 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;overflow:hidden;background:#000}canvas{position:fixed;left:0;top:0;width:100vw;height:100vh;display:block}</style></head>
+<body><canvas id="c"></canvas>
+<script src="/Users/alex/Projects/shaders/modulos/07-integracion/recursos/m7kit.js"></script>
+<script src="/Users/alex/Projects/shaders/assets/js/glkit.js"></script>
+<script>
+// El shader del ejemplo 7.1.7 (ITERACIONES por #define), a pantalla completa (1440 × 900 px CSS, DPR 1).
+const VS = "#version 300 es\nvoid main() {\n  vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));\n  gl_Position = vec4(P[gl_VertexID], 0.0, 1.0);\n}";
+const FS = `#version 300 es
+precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+out vec4 fragColor;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolution) / u_resolution.y;
+  float a = 0.0;
+  for (int i = 0; i < ITERACIONES; i++) {
+    float k = 6.2831853 * float(i) / float(ITERACIONES);
+    vec2 c = 0.45 * vec2(cos(u_time * 0.7 + k), sin(u_time * 0.9 + 2.0 * k));
+    a += sin(length(p - c) * 9.0 - u_time * 2.0);
+  }
+  a /= float(ITERACIONES);
+  vec3 col = 0.5 + 0.5 * cos(3.0 * a + vec3(0.0, 0.8, 1.6) + 3.0);
+  fragColor = vec4(col * col, 1.0);
+}`;
+const canvas = document.getElementById('c');
+// Parte 1: escala fija, un dibujo por frame; intervalos entre callbacks de rAF y tiempo de JavaScript
+window.fija = (iteraciones, escala, frames) => new Promise((res, rej) => {
+  window.onerror = (m) => rej(new Error(m));
+  const gl = canvas.getContext('webgl2', { antialias: false });
+  canvas.width = Math.round(canvas.clientWidth * escala); canvas.height = Math.round(canvas.clientHeight * escala);
+  const p = GLKit.crearPrograma(gl, VS, M7.conDefines(FS, { ITERACIONES: iteraciones }));
+  const u = GLKit.uniforms(gl, p); const vao = gl.createVertexArray();
+  const iv = [], js = []; let previo = null, n = 0;
+  function frame(ms) {
+    if (previo !== null) iv.push(ms - previo); previo = ms;
+    const t0 = performance.now();
+    gl.viewport(0, 0, canvas.width, canvas.height); gl.useProgram(p);
+    GLKit.ponerUniform(gl, u.u_time, ms / 1000); GLKit.ponerUniform(gl, u.u_resolution, [canvas.width, canvas.height]);
+    gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    js.push(performance.now() - t0);
+    if (++n < frames) requestAnimationFrame(frame); else { gl.deleteProgram(p); const m = (v) => v.slice(5).sort((a, b) => a - b)[(v.length - 5) >> 1];
+      res({ iteraciones, escala, bufer: canvas.width + '×' + canvas.height, intervaloMediana: +m(iv).toFixed(1), jsMediana: +m(js).toFixed(2), intervalos: iv.slice(5).map((x) => Math.round(x)).join(',') }); }
+  }
+  // dos frames de calentamiento (compilar y estrenar) antes de medir
+  requestAnimationFrame(() => requestAnimationFrame(frame));
+});
+// Parte 2: crearApp con calidad adaptativa (como el ejemplo 7.1.7), registrando cada cambio
+window.adaptativa = (iteraciones, segundos) => new Promise((res) => {
+  const cambios = [], fpsT = []; let t0 = null;
+  const app = M7.crearApp(canvas, {
+    calidad: { min: 0.25, max: 1 },
+    iniciar(gl, app) { const p = GLKit.crearPrograma(gl, VS, M7.conDefines(FS, { ITERACIONES: iteraciones })); app.gpu = { p, u: GLKit.uniforms(gl, p), vao: gl.createVertexArray() }; },
+    dibujar(gl, e, app) {
+      const ahora = performance.now(); if (t0 === null) t0 = ahora;
+      const g = app.gpu; gl.useProgram(g.p);
+      GLKit.ponerUniform(gl, g.u.u_time, app.reloj.t); GLKit.ponerUniform(gl, g.u.u_resolution, [app.ancho, app.alto]);
+      gl.bindVertexArray(g.vao); gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const c = app.calidad;
+      if (!cambios.length || cambios[cambios.length - 1].bufer !== app.ancho + '×' + app.alto) cambios.push({ t: +((ahora - t0) / 1000).toFixed(2), escala: +c.escala.toFixed(3), bufer: app.ancho + '×' + app.alto });
+      fpsT.push([+((ahora - t0) / 1000).toFixed(2), Math.round(app.fps)]);
+    },
+  });
+  setTimeout(() => { app.destruir(); res({ iteraciones, cambios, fps: fpsT.filter((x, i) => i % 15 === 0).map((x) => x.join(':')).join(' ') }); }, segundos * 1000);
+});
+</script></body></html>

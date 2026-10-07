@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>sem m4</title><body><script>
+const R = {};
+const gl = document.createElement('canvas').getContext('webgl2');
+const P = (n) => { const v = gl.getParameter(gl[n]); return v && v.length !== undefined ? Array.from(v) : v; };
+for (const n of ['ALIASED_POINT_SIZE_RANGE','ALIASED_LINE_WIDTH_RANGE','SUBPIXEL_BITS','MAX_SAMPLES','MAX_VERTEX_ATTRIBS','MAX_VERTEX_UNIFORM_VECTORS','MAX_FRAGMENT_UNIFORM_VECTORS','MAX_VARYING_VECTORS','MAX_TEXTURE_IMAGE_UNITS','MAX_UNIFORM_BLOCK_SIZE','MAX_CLIENT_WAIT_TIMEOUT_WEBGL','MAX_TEXTURE_SIZE']) R[n] = P(n);
+const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+R.renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null;
+R.ext = ['WEBGL_provoking_vertex','NV_shader_noperspective_interpolation','EXT_depth_clamp','WEBGL_debug_shaders','KHR_parallel_shader_compile','EXT_disjoint_timer_query_webgl2'].map(e => e + ':' + !!gl.getExtension(e));
+const log = (tipo, src) => { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); return gl.getShaderParameter(s, gl.COMPILE_STATUS) ? 'OK' : gl.getShaderInfoLog(s).trim(); };
+const F = gl.FRAGMENT_SHADER;
+R.recursion = log(F, '#version 300 es\nprecision highp float; out vec4 o;\nfloat f(float x) { return x < 1.0 ? x : f(x - 1.0); }\nvoid main() { o = vec4(f(3.0)); }');
+R.arrayVar = log(F, '#version 300 es\nprecision highp float; uniform int u_n; out vec4 o;\nvoid main() { float a[u_n]; o = vec4(1.0); }');
+R.double = log(F, '#version 300 es\nprecision highp float; out vec4 o;\nvoid main() { double d = 1.0; o = vec4(1.0); }');
+R.outEn100 = log(F, 'precision highp float;\nout vec4 o;\nvoid main() { o = vec4(1.0); }');
+// uniform sin programa
+const vs = '#version 300 es\nvoid main(){ gl_Position = vec4(0.0); }';
+const p = gl.createProgram();
+for (const [t, s] of [[gl.VERTEX_SHADER, vs], [F, '#version 300 es\nprecision highp float; uniform float u_x; out vec4 o; void main(){ o = vec4(u_x); }']]) { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); gl.attachShader(p, sh); }
+gl.linkProgram(p);
+const loc = gl.getUniformLocation(p, 'u_x');
+gl.useProgram(null); gl.getError();
+gl.uniform1f(loc, 2.0); R.uniformSinPrograma = gl.getError();
+gl.useProgram(p); gl.uniform1f(loc, 2.0); R.uniformConPrograma = gl.getError();
+R.CULL_FACE = gl.getParameter(gl.CULL_FACE);
+window.__R = R;
+</script>

@@ -193,8 +193,12 @@
         const r = this.el.getBoundingClientRect();
         this.ancho = r.width || 1; this.alto = r.height || 1;
         this.x = this.cx - r.left; this.y = this.cy - r.top;
-        if (!this.visto) return;
-        if (this.fresco) {                  // primera vez o tras salir: sin «barrido» desde otro sitio
+        // Sin eventos todavía, x e y no significan nada (salen de clientX/Y = 0) y cambian con el
+        // scroll: la suavizada las copia para que enReposo() diga «quieto» y el bucle pueda dormir (7.2).
+        if (!this.visto) { this.sx = this.x; this.sy = this.y; return; }
+        // Primera vez, o al VOLVER a entrar (fresco + un evento nuevo): sin «barrido» desde donde salió.
+        // Sin el && dentro, la marca se gastaría en el primer frame tras el pointerleave (7.2).
+        if (this.fresco && this.dentro) {
           this.sx = this.x; this.sy = this.y; this.vx = this.vy = 0; this.fresco = false;
           return;
         }
@@ -227,22 +231,38 @@
         this.objetivoMs = o.objetivoMs || 1000 / 60;  // presupuesto por frame
         this.paso = o.paso || 0.85;                   // factor de cada bajada (su inverso al subir)
         this.paciencia = o.paciencia || 2000;         // ms holgados antes de subir
+        this.descartarMs = o.descartarMs || 250;      // intervalo «largo»: suelto no cuenta (tirón, pestaña que vuelve)
+        this.largos = 0;                              // intervalos largos seguidos (ver filtrar)
         this.escala = this.max;
         this.mediaMs = this.objetivoMs;
         this.enfriar = o.calentamiento !== undefined ? o.calentamiento : 1000;
         this.holgura = 0;
         this.cambios = 0;
       }
+      /* El intervalo que cuenta para la media, o 0 si no cuenta (la misma
+         regla que M7.Calidad de 7.1):
+         · 0 (primer frame tras dormir o pausar): no dice nada del rendimiento.
+         · Hasta descartarMs: cuenta tal cual, y la racha de largos vuelve a 0.
+         · Más largo: el 1.º y el 2.º seguidos son un tirón suelto (no cuentan);
+           del 3.º en adelante el equipo va así de lento de verdad (por debajo
+           de 1000/descartarMs fps, 4 fps): cuentan, recortados a descartarMs. */
+      filtrar(intervaloMs) {
+        if (!(intervaloMs > 0)) return 0;
+        if (intervaloMs <= this.descartarMs) { this.largos = 0; return intervaloMs; }
+        this.largos++;
+        return this.largos >= 3 ? this.descartarMs : 0;
+      }
       medir(intervaloMs) {
-        if (!(intervaloMs > 0) || intervaloMs > 250) return false;   // pausa o pestaña: no es rendimiento
-        this.mediaMs += 0.1 * (intervaloMs - this.mediaMs);
-        if (this.enfriar > 0) { this.enfriar -= intervaloMs; return false; }
+        const iv = this.filtrar(intervaloMs);
+        if (!iv) return false;
+        this.mediaMs += 0.1 * (iv - this.mediaMs);
+        if (this.enfriar > 0) { this.enfriar -= iv; return false; }
         const antes = this.escala;
         if (this.mediaMs > this.objetivoMs * 1.25) {
           this.escala = Math.max(this.min, this.escala * this.paso);
           this.holgura = 0;
         } else if (this.mediaMs < this.objetivoMs * 1.1) {
-          this.holgura += intervaloMs;
+          this.holgura += iv;
           if (this.holgura > this.paciencia) { this.escala = Math.min(this.max, this.escala / this.paso); this.holgura = 0; }
         } else {
           this.holgura = 0;
@@ -276,6 +296,7 @@
       // Un booleano por motivo de pausa; nadie arranca ni para el bucle directamente (7.1).
       let visible = true, pestañaVisible = !document.hidden, porUsuario = true, detenido = false;
       let raf = 0, pendiente = true;
+      let largos = 0;                     // intervalos de más de 250 ms seguidos (para bucle.fps)
 
       const io = o.observar && "IntersectionObserver" in window
         ? new IntersectionObserver((ents) => { visible = ents[ents.length - 1].isIntersecting; revisar(); })
@@ -316,7 +337,9 @@
         pendiente = false;
         reloj.avanzar(ms);
         const iv = reloj.intervaloMs;
-        if (iv > 0 && iv < 250) { bucle.msFrame += 0.1 * (iv - bucle.msFrame); bucle.fps = 1000 / bucle.msFrame; }
+        if (iv > 250) largos++;             // la regla de Calidad.filtrar: un largo suelto no cuenta,
+        else if (iv > 0) largos = 0;        // tres seguidos sí (aquí sin recortar: son los fps reales)
+        if (iv > 0 && (iv <= 250 || largos >= 3)) { bucle.msFrame += 0.1 * (iv - bucle.msFrame); bucle.fps = 1000 / bucle.msFrame; }
         try {
           if (o.actualizar) o.actualizar(reloj.dt, bucle);
           if (o.dibujar) o.dibujar(bucle);

@@ -1,0 +1,77 @@
+<!doctype html><html><body><canvas id="c" width="200" height="100" style="width:200px;height:100px"></canvas>
+<script type="importmap">{"imports":{"three":"./three/three.module.js"}}</script>
+<script type="module">
+// 7.7 en el M1: (1) recuperación de contexto y onUpload, (2) memoria: remove frente a dispose.
+const proto = WebGL2RenderingContext.prototype;
+const cuenta = {};
+for (const k of ["createBuffer", "deleteBuffer", "createVertexArray", "deleteVertexArray"]) {
+  const f = proto[k];
+  proto[k] = function (...a) { cuenta[k] = (cuenta[k] || 0) + 1; return f.apply(this, a); };
+}
+const R = {};
+const etapa = (x) => console.log("ETAPA " + x);
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+try {
+  const THREE = await import("three");
+  R.revision = THREE.REVISION; etapa("cargado");
+  // ---------- (1) recuperación de contexto ----------
+  {
+    const canvas = document.createElement("canvas"); canvas.width = 64; canvas.height = 64;
+    const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true });
+    const escena = new THREE.Scene();
+    const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); cam.position.z = 1;
+    const malla = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: 0xff8000 }));
+    escena.add(malla);
+    const gl = renderer.getContext();
+    const leer = () => { const p = new Uint8Array(4); gl.readPixels(32, 32, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p); return [...p]; };
+    renderer.render(escena, cam); R.antes = leer();
+    const ext = gl.getExtension("WEBGL_lose_context");
+    const perdido = new Promise((r) => canvas.addEventListener("webglcontextlost", r, { once: true }));
+    etapa("pierdo 1"); ext.loseContext(); await Promise.race([perdido, esperar(3000)]); etapa("perdido 1"); await esperar(50);
+    const recuperado = new Promise((r) => canvas.addEventListener("webglcontextrestored", r, { once: true }));
+    ext.restoreContext(); await Promise.race([recuperado, esperar(3000)]); etapa("recuperado 1"); await esperar(50);
+    try { renderer.render(escena, cam); R.despues = leer(); } catch (e) { R.despuesExc = e.message; }
+    // con onUpload(this.array = null)
+    const geo = new THREE.PlaneGeometry(2, 2);
+    for (const nombre in geo.attributes) geo.attributes[nombre].onUpload(function () { this.array = null; });
+    geo.index && geo.index.onUpload(function () { this.array = null; });
+    const malla2 = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x0080ff }));
+    escena.remove(malla); escena.add(malla2);
+    renderer.render(escena, cam); R.onUploadAntes = leer();
+    const p2 = new Promise((r) => canvas.addEventListener("webglcontextlost", r, { once: true }));
+    ext.loseContext(); await Promise.race([p2, esperar(3000)]); etapa("perdido 2"); await esperar(50);
+    const r2 = new Promise((r) => canvas.addEventListener("webglcontextrestored", r, { once: true }));
+    ext.restoreContext(); await Promise.race([r2, esperar(3000)]); etapa("recuperado 2"); await esperar(50);
+    try { renderer.render(escena, cam); R.onUploadDespues = leer(); } catch (e) { R.onUploadExc = e.constructor.name + ": " + e.message; }
+    renderer.dispose();
+  }
+  // ---------- (2) memoria ----------
+  {
+    const canvas = document.getElementById("c");
+    const renderer = new THREE.WebGLRenderer({ canvas });
+    const escena = new THREE.Scene();
+    const cam = new THREE.PerspectiveCamera(50, 2, 0.1, 100); cam.position.z = 10;
+    const mat = new THREE.MeshNormalMaterial();
+    renderer.render(escena, cam);
+    R.geomInicio = renderer.info.memory.geometries;
+    for (const k in cuenta) cuenta[k] = 0;
+    const mallas = [];
+    for (let i = 0; i < 50; i++) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+      m.position.x = (i % 10) - 5; m.position.y = Math.floor(i / 10) - 2;
+      escena.add(m); mallas.push(m);
+    }
+    renderer.render(escena, cam);
+    for (const m of mallas) escena.remove(m);
+    renderer.render(escena, cam);
+    R.geomTrasQuitar = renderer.info.memory.geometries;
+    R.llamadasTrasQuitar = { ...cuenta };
+    for (const k in cuenta) cuenta[k] = 0;
+    for (const m of mallas) m.geometry.dispose();
+    R.geomTrasDispose = renderer.info.memory.geometries;
+    R.llamadasTrasDispose = { ...cuenta };
+    R.atributosBox = Object.keys(new THREE.BoxGeometry().attributes).concat(["index"]);
+  }
+} catch (e) { R.exc = e.message + "\n" + e.stack; }
+window.__R = R;
+</script></body></html>

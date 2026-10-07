@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Lab 7.6 (s4-m7b) · coste del fondo del hero</title>
+<!--
+  Agente m7b, sesión 4. Contrasta la tabla de capacidad de la etapa 1 de 7.6 con el MÉTODO FIABLE de la guía
+  (§5.6, __tiempo2 de rev-m6b-lab.mjs): cada dibujo en su propia pasada (dos FBO RGBA8 alternos con clear),
+  readPixels al final, mediana de las tandas. Shader: el fragmento COMPLETO de proyecto-final/shaders.js.
+  También mide: la pasada vacía (clear + guardar, sin dibujo) y el análogo del método de capacidad sin rAF
+  (N dibujos con mezcla aditiva ONE, ONE sobre el MISMO FBO, un solo clear: nada se tapa).
+  Uso: page.evaluate(() => medirTodo()) → objeto. ?rapido: menos repeticiones.
+-->
+</head>
+<body>
+<canvas id="c" width="64" height="64"></canvas>
+<script src="../../../modulos/07-integracion/proyecto-final/shaders.js"></script>
+<script>
+"use strict";
+const RAPIDO = location.search.includes("rapido");
+const gl = document.getElementById("c").getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
+const px = new Uint8Array(4);
+function programa(vs, fs) {
+  const p = gl.createProgram();
+  for (const [t, s] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+    const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+    gl.attachShader(p, sh);
+  }
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+const P = programa(ShadersHero.vertice, ShadersHero.fragmento);
+const vao = gl.createVertexArray();
+const loc = (n) => gl.getUniformLocation(P, n);
+function uniforms(w, h) {
+  gl.useProgram(P);
+  gl.uniform2f(loc("u_resolution"), w, h);
+  gl.uniform1f(loc("u_escala"), 1);
+  gl.uniform1f(loc("u_time"), 12.3);
+  gl.uniform1f(loc("u_entrada"), 1);
+  gl.uniform1f(loc("u_scroll"), 0);
+  gl.uniform2f(loc("u_mouse"), 0.62 * w, 0.48 * h);
+  gl.uniform1f(loc("u_raton"), 1);
+  gl.uniform1f(loc("u_progreso"), 0);
+  gl.uniform3fv(loc("u_colA"), [0.02, 0.03, 0.08, 0.12, 0.25, 0.55, 0.35, 0.55, 0.9]);
+  gl.uniform3fv(loc("u_colB"), [0.08, 0.02, 0.02, 0.55, 0.2, 0.08, 0.95, 0.55, 0.25]);
+  gl.uniform4f(loc("u_boton"), 0.1 * w, 0.3 * h, 0.14 * w, 0.06 * h);
+  gl.uniform1f(loc("u_pulso"), 0.3);
+  gl.uniform1f(loc("u_reducir"), 0);
+}
+const mediana = (a) => { const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; };
+function medirTamaño(w, h) {
+  const reps = RAPIDO ? 3 : 10, tandas = RAPIDO ? 3 : 7;
+  const fbs = [], texs = [];
+  for (let k = 0; k < 2; k++) {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h);
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    fbs.push(f); texs.push(t);
+  }
+  gl.viewport(0, 0, w, h);
+  uniforms(w, h);
+  gl.bindVertexArray(vao);
+  const serie = (iter) => {
+    for (let i = 0; i < 3; i++) iter(i);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const r = [];
+    for (let t = 0; t < tandas; t++) {
+      const t0 = performance.now();
+      for (let i = 0; i < reps; i++) iter(i);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      r.push((performance.now() - t0) / reps);
+    }
+    return { ms: +mediana(r).toFixed(3), min: +Math.min(...r).toFixed(3), max: +Math.max(...r).toFixed(3) };
+  };
+  const res = { w, h, mp: +(w * h / 1e6).toFixed(2) };
+  // 1) método fiable: cada dibujo en su pasada
+  res.fiable = serie((k) => { gl.bindFramebuffer(gl.FRAMEBUFFER, fbs[k & 1]); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLES, 0, 3); });
+  // 2) pasada vacía
+  res.vacia = serie((k) => { gl.bindFramebuffer(gl.FRAMEBUFFER, fbs[k & 1]); gl.clear(gl.COLOR_BUFFER_BIT); });
+  // 3) análogo de la capacidad: N dibujos aditivos sobre el mismo FBO (un clear), tiempo / N
+  const N = 8;
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  const aditivo = serie(() => { gl.bindFramebuffer(gl.FRAMEBUFFER, fbs[0]); gl.clear(gl.COLOR_BUFFER_BIT); for (let i = 0; i < N; i++) gl.drawArrays(gl.TRIANGLES, 0, 3); });
+  gl.disable(gl.BLEND);
+  res.aditivoPorDibujo = { ms: +(aditivo.ms / N).toFixed(3), min: +(aditivo.min / N).toFixed(3) };
+  // 4) el método engañoso, para comparar: N dibujos opacos sobre el mismo FBO
+  const opaco = serie(() => { gl.bindFramebuffer(gl.FRAMEBUFFER, fbs[0]); gl.clear(gl.COLOR_BUFFER_BIT); for (let i = 0; i < N; i++) gl.drawArrays(gl.TRIANGLES, 0, 3); });
+  res.opacoMismoFBOPorDibujo = { ms: +(opaco.ms / N).toFixed(3) };
+  res.msPorMP = +((res.fiable.ms - res.vacia.ms) / res.mp).toFixed(3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  fbs.forEach((f) => gl.deleteFramebuffer(f)); texs.forEach((t) => gl.deleteTexture(t));
+  return res;
+}
+// El método de CAPACIDAD de la lección, con requestAnimationFrame: cada frame dibuja el fondo N veces en el
+// canvas (mezcla ONE, ONE), y se mira si el intervalo mediano entre frames sigue en ~16,7 ms. Devuelve, para
+// cada N probado, la mediana del intervalo de 45 frames (tras descartar 15 de arranque).
+function capacidad(w, h, Ns) {
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h; cv.style.cssText = "width:360px;height:225px";
+  document.body.appendChild(cv);
+  const g = cv.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
+  const p = (() => { const pr = g.createProgram();
+    for (const [t, s] of [[g.VERTEX_SHADER, ShadersHero.vertice], [g.FRAGMENT_SHADER, ShadersHero.fragmento]]) { const sh = g.createShader(t); g.shaderSource(sh, s); g.compileShader(sh); g.attachShader(pr, sh); }
+    g.linkProgram(pr); return pr; })();
+  const l = (n) => g.getUniformLocation(p, n);
+  g.useProgram(p);
+  g.uniform2f(l("u_resolution"), w, h); g.uniform1f(l("u_escala"), 1); g.uniform1f(l("u_time"), 12.3); g.uniform1f(l("u_entrada"), 1);
+  g.uniform2f(l("u_mouse"), 0.62 * w, 0.48 * h); g.uniform1f(l("u_raton"), 1);
+  g.uniform3fv(l("u_colA"), [0.02, 0.03, 0.08, 0.12, 0.25, 0.55, 0.35, 0.55, 0.9]); g.uniform3fv(l("u_colB"), [0.08, 0.02, 0.02, 0.55, 0.2, 0.08, 0.95, 0.55, 0.25]);
+  g.uniform4f(l("u_boton"), 0.1 * w, 0.3 * h, 0.14 * w, 0.06 * h); g.uniform1f(l("u_pulso"), 0.3);
+  g.bindVertexArray(g.createVertexArray());
+  g.viewport(0, 0, w, h); g.enable(g.BLEND); g.blendFunc(g.ONE, g.ONE);
+  return new Promise((fin) => {
+    const res = {}; let i = 0, N = Ns[0], frames = [], prev = 0;
+    function frame(ms) {
+      if (prev) frames.push(ms - prev);
+      prev = ms;
+      g.clearColor(0, 0, 0, 1); g.clear(g.COLOR_BUFFER_BIT);
+      for (let k = 0; k < N; k++) { g.uniform1f(l("u_time"), 12.3 + k * 0.01); g.drawArrays(g.TRIANGLES, 0, 3); }
+      if (frames.length >= 75) {
+        const f = frames.slice(15), media = f.reduce((x, y) => x + y, 0) / f.length;
+        res[N] = { mediana: +mediana(f).toFixed(1), media: +media.toFixed(1), largos: Math.round(100 * f.filter((x) => x > 20).length / f.length) + " %" };
+        i++; frames = []; prev = 0;
+        if (i >= Ns.length) { cv.remove(); g.getExtension("WEBGL_lose_context").loseContext(); return fin(res); }
+        N = Ns[i];
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  });
+}
+async function medirCapacidad() {
+  const R = {};
+  // intervalo de base (sin dibujo): ¿va el rAF de este Chrome sin interfaz a 60 Hz?
+  const conTope = (pr, n) => Promise.race([pr, new Promise((r) => setTimeout(() => r({ error: "sin frames de rAF a tiempo" }), 4000 + 3000 * n))]);
+  R.base = await conTope(capacidad(720, 450, [0]), 1);
+  const lista = [[720, 450, [12, 16, 18, 20, 24, 28]], [1440, 900, [3, 4, 5, 6, 8]], [2160, 1350, [1, 2, 3]], [2880, 1800, [1, 2]]];
+  for (const [w, h, Ns] of lista) R[w + "x" + h] = await conTope(capacidad(w, h, Ns), Ns.length);
+  return R;
+}
+window.medirCapacidad = medirCapacidad;
+function medirTodo() {
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const R = { gpu: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), tamaños: [] };
+  const lista = [[720, 450], [1440, 900], [2160, 1350], [2880, 1800]];
+  for (const [w, h] of lista) R.tamaños.push(medirTamaño(w, h));
+  // 2.ª ronda en orden inverso (calentamiento / cambio de marcha)
+  R.ronda2 = [];
+  for (const [w, h] of lista.slice().reverse()) R.ronda2.push(medirTamaño(w, h));
+  // tope de pixelesMax: 2560 × 1440 (3,69 MP) frente al búfer reducido a 2,1 MP (factor 0,754 por lado)
+  R.pixelesMax = [medirTamaño(2560, 1440), medirTamaño(Math.round(2560 * Math.sqrt(2.1e6 / (2560 * 1440))), Math.round(1440 * Math.sqrt(2.1e6 / (2560 * 1440))))];
+  return R;
+}
+window.medirTodo = medirTodo;
+</script>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<!doctype html><html><head><meta charset="utf-8"><title>s4-anexos medidas</title></head><body>
+<canvas id="gpu" width="256" height="256"></canvas>
+<script>
+/* Medidas del agente «anexos» (sesión 4) en el M1:
+   1) mensajes de GLSL ES 1.00 con índices de array no constantes (A.2)
+   2) finish() frente a readPixels tras un dibujo pesado (A.3)
+   3) WebGPU: adaptador, límites, wgslLanguageFeatures, swizzle, createRenderPipeline(Async), getCurrentTexture (7.7) */
+const R = { ua: navigator.userAgent };
+function compilar(gl, tipo, src) {
+  const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s);
+  const ok = gl.getShaderParameter(s, gl.COMPILE_STATUS);
+  return { ok, log: (gl.getShaderInfoLog(s) || "").trim().split("\n")[0] };
+}
+function glslIndices() {
+  const casos = [
+    ["FS local a[n] (n uniform)", "fs", "precision highp float;\nuniform int n;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; gl_FragColor = vec4(a[n]); }"],
+    ["FS a[i+n] en bucle", "fs", "precision highp float;\nuniform int n;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; float b=0.0; for (int i = 0; i < 2; i++) b += a[i + n]; gl_FragColor = vec4(b); }"],
+    ["FS a[j] con j local no const", "fs", "precision highp float;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; int j = int(gl_FragCoord.x); gl_FragColor = vec4(a[j]); }"],
+    ["FS a[i] (índice de bucle)", "fs", "precision highp float;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; float b=0.0; for (int i = 0; i < 3; i++) b += a[i]; gl_FragColor = vec4(b); }"],
+    ["FS uniform u[n]", "fs", "precision highp float;\nuniform int n;\nuniform float u[3];\nvoid main(){ gl_FragColor = vec4(u[n]); }"],
+    ["VS local a[n]", "vs", "uniform int n;\nvoid main(){ float a[3]; a[0]=1.0; a[1]=1.0; a[2]=1.0; gl_Position = vec4(a[n]); }"],
+    ["VS uniform u[n]", "vs", "uniform int n;\nuniform float u[3];\nvoid main(){ gl_Position = vec4(u[n]); }"],
+  ];
+  const out = [];
+  for (const ctxName of ["webgl", "webgl2"]) {
+    const gl = document.createElement("canvas").getContext(ctxName);
+    if (!gl) { out.push(ctxName + ": sin contexto"); continue; }
+    for (const [nombre, t, src] of casos) {
+      const r = compilar(gl, t === "fs" ? gl.FRAGMENT_SHADER : gl.VERTEX_SHADER, src);
+      out.push((r.ok ? "OK  " : "ERR ") + ctxName.padEnd(7) + nombre.padEnd(32) + "| " + r.log);
+    }
+    const lose = gl.getExtension("WEBGL_lose_context"); if (lose) lose.loseContext();
+  }
+  return out;
+}
+function finishVsReadPixels() {
+  const c = document.createElement("canvas"); c.width = c.height = 1024;
+  const gl = c.getContext("webgl2", { preserveDrawingBuffer: false });
+  const vs = "#version 300 es\nvoid main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0-1.0,0,1); }";
+  const fsH = (n) => "#version 300 es\nprecision highp float;\nuniform float u_k;\nout vec4 o;\nvoid main(){ vec2 p = gl_FragCoord.xy/1024.0; float s = 0.0; for (int i = 0; i < " + n + "; i++) { s += sin(p.x*float(i)+u_k)*cos(p.y*float(i)); } o = vec4(fract(s)); }";
+  const prog = (fs) => { const p = gl.createProgram(); const a = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(a, vs); gl.compileShader(a); const b = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(b, fs); gl.compileShader(b); gl.attachShader(p, a); gl.attachShader(p, b); gl.linkProgram(p); return p; };
+  const p = prog(fsH(400));
+  gl.useProgram(p); const loc = gl.getUniformLocation(p, "u_k");
+  const px = new Uint8Array(4);
+  // calentar
+  gl.uniform1f(loc, 0.1); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const filas = [];
+  for (let k = 0; k < 7; k++) {
+    gl.uniform1f(loc, 0.2 + k);
+    const t0 = performance.now();
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const t1 = performance.now();
+    gl.finish();
+    const t2 = performance.now();
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const t3 = performance.now();
+    filas.push({ draw: +(t1 - t0).toFixed(2), finish: +(t2 - t1).toFixed(2), readPixels: +(t3 - t2).toFixed(2) });
+  }
+  // referencia: sin finish, readPixels directamente
+  const solo = [];
+  for (let k = 0; k < 7; k++) {
+    gl.uniform1f(loc, 10.2 + k);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const t2 = performance.now();
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    solo.push(+(performance.now() - t2).toFixed(2));
+  }
+  const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+  return { filas, mediana: { finish: med(filas.map(f => f.finish)), readPixelsTrasFinish: med(filas.map(f => f.readPixels)), readPixelsSinFinish: med(solo) } };
+}
+async function webgpu() {
+  const W = { gpu: !!navigator.gpu, secure: window.isSecureContext };
+  if (!navigator.gpu) return W;
+  const a = await navigator.gpu.requestAdapter();
+  W.adapter = !!a;
+  if (!a) return W;
+  const i = a.info || {};
+  W.info = { vendor: i.vendor, architecture: i.architecture, device: i.device, description: i.description, isFallbackAdapter: i.isFallbackAdapter, subgroupMinSize: i.subgroupMinSize, subgroupMaxSize: i.subgroupMaxSize };
+  W.preferido = navigator.gpu.getPreferredCanvasFormat();
+  W.features = [...a.features].sort();
+  W.adapterLimits = { maxComputeInvocationsPerWorkgroup: a.limits.maxComputeInvocationsPerWorkgroup, maxStorageBufferBindingSize: a.limits.maxStorageBufferBindingSize, maxBufferSize: a.limits.maxBufferSize, maxBindGroups: a.limits.maxBindGroups };
+  W.wgslLanguageFeatures = [...navigator.gpu.wgslLanguageFeatures].sort();
+  const d = await a.requestDevice();
+  W.deviceLimits = { maxComputeInvocationsPerWorkgroup: d.limits.maxComputeInvocationsPerWorkgroup, maxStorageBufferBindingSize: d.limits.maxStorageBufferBindingSize, maxBindGroups: d.limits.maxBindGroups };
+  const errores = async (code) => (await d.createShaderModule({ code }).getCompilationInfo()).messages.filter(m => m.type === "error").map(m => m.lineNum + ":" + m.linePos + " " + m.message.split("\n")[0]);
+  W.swizzle = await errores("fn f() -> vec4f { var c = vec4f(0.0); let p = vec2f(1.0); c.xy = p.xy; return c; }");
+  const fmt = W.preferido;
+  const wgsl = (tag) => `// ${tag}
+struct U { res: vec2f, raton: vec2f, t: f32 };
+@group(0) @binding(0) var<uniform> u: U;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) q: vec4f) -> @location(0) vec4f {
+  let uv = q.xy / u.res;
+  return vec4f(uv, 0.5 + 0.5 * sin(u.t), 1.0);
+}`;
+  const desc = (m) => ({ layout: "auto", vertex: { module: m, entryPoint: "vs" }, fragment: { module: m, entryPoint: "fs", targets: [{ format: fmt }] }, primitive: { topology: "triangle-list" } });
+  const sync = [], asyncNuevo = [], asyncRepetido = [];
+  const tag0 = "base-" + Math.random();
+  for (let k = 0; k < 7; k++) {
+    const m = d.createShaderModule({ code: wgsl("sync-" + Math.random()) });
+    const t0 = performance.now(); d.createRenderPipeline(desc(m)); sync.push(+(performance.now() - t0).toFixed(2));
+    await d.queue.onSubmittedWorkDone();
+  }
+  for (let k = 0; k < 7; k++) {
+    const m = d.createShaderModule({ code: wgsl("async-" + Math.random()) });
+    const t0 = performance.now(); await d.createRenderPipelineAsync(desc(m)); asyncNuevo.push(+(performance.now() - t0).toFixed(2));
+  }
+  const mRep = d.createShaderModule({ code: wgsl(tag0) });
+  for (let k = 0; k < 7; k++) {
+    const t0 = performance.now(); await d.createRenderPipelineAsync(desc(mRep)); asyncRepetido.push(+(performance.now() - t0).toFixed(2));
+  }
+  // texto fijo de la lección: el mismo en cada visita (puede venir de la caché de disco de Dawn)
+  const mFijo = d.createShaderModule({ code: wgsl("texto fijo s4-anexos") });
+  const t0f = performance.now(); await d.createRenderPipelineAsync(desc(mFijo)); W.asyncTextoFijoPrimero = +(performance.now() - t0f).toFixed(2);
+  const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+  W.createRenderPipeline_ms = { valores: sync, mediana: med(sync) };
+  W.createRenderPipelineAsync_textoNuevo_ms = { valores: asyncNuevo, mediana: med(asyncNuevo) };
+  W.createRenderPipelineAsync_mismoModulo_ms = { valores: asyncRepetido, mediana: med(asyncRepetido) };
+  // getCurrentTexture
+  const ctx = document.getElementById("gpu").getContext("webgpu");
+  ctx.configure({ device: d, format: fmt, alphaMode: "opaque" });
+  const t1 = ctx.getCurrentTexture(), t2 = ctx.getCurrentTexture();
+  W.getCurrentTexture_mismaTarea = t1 === t2;
+  const enc = d.createCommandEncoder(); const pase = enc.beginRenderPass({ colorAttachments: [{ view: t1.createView(), loadOp: "clear", clearValue: [0, 0, 0, 1], storeOp: "store" }] }); pase.end(); d.queue.submit([enc.finish()]);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const t3 = ctx.getCurrentTexture();
+  W.getCurrentTexture_otroFrame_distinta = t3 !== t1;
+  return W;
+}
+(async () => {
+  try { R.glsl100 = glslIndices(); } catch (e) { R.glslExc = e.message; }
+  try { R.finish = finishVsReadPixels(); } catch (e) { R.finishExc = e.message; }
+  try { R.webgpu = await webgpu(); } catch (e) { R.webgpuExc = e.message; }
+  window.__res = R;
+})();
+</script></body></html>

@@ -15,6 +15,8 @@
      M7.flotante     número de JS → literal float de GLSL (2 → "2.0")   (7.1)
      M7.suavizar     suavizado exponencial independiente de los fps     (2.4)
      M7.Muelle       muelle amortiguado con subpasos                    (2.5)
+     M7.parametrosMuelle  «rebote» y «asentamiento» → rigidez y
+                     amortiguamiento (con ζ y ω₀)                       (2.5)
      M7.easings      funciones de easing                                (2.4)
      M7.Puntero      puntero → px CSS, normalizado y px del búfer (GL)  (7.2)
 
@@ -67,24 +69,38 @@
         this.objetivoMs = o.objetivoMs || 1000 / 60;    // presupuesto por frame
         this.paso = o.paso || 0.85;                     // factor de cada bajada (y su inverso al subir)
         this.paciencia = o.paciencia || 2000;           // ms con margen antes de subir
-        this.descartarMs = o.descartarMs || 250;        // intervalos más largos no cuentan (tirón suelto, vuelta de una suspensión)
+        this.descartarMs = o.descartarMs || 250;        // intervalo «largo»: suelto no cuenta (tirón, vuelta de una suspensión)
+        this.largos = 0;                                // intervalos largos seguidos (ver filtrar)
         this.escala = this.max;
         this.mediaMs = this.objetivoMs;                 // media móvil exponencial (2.3)
         this.enfriar = o.calentamiento !== undefined ? o.calentamiento : 1000; // ms sin decidir: al arrancar y tras cada cambio
         this.holgura = 0;                               // ms seguidos por debajo del presupuesto
         this.cambios = 0;
       }
+      /* El intervalo que cuenta para la media, o 0 si no cuenta.
+         · 0 (el primer frame tras una pausa): no dice nada del rendimiento.
+         · Hasta descartarMs: cuenta tal cual, y la racha de largos vuelve a 0.
+         · Más largo: el 1.º y el 2.º seguidos son un tirón suelto (no cuentan);
+           del 3.º en adelante el equipo va así de lento de verdad (por debajo de
+           1000/descartarMs fps): cuentan, recortados a descartarMs. */
+      filtrar(intervaloMs) {
+        if (!(intervaloMs > 0)) return 0;
+        if (intervaloMs <= this.descartarMs) { this.largos = 0; return intervaloMs; }
+        this.largos++;
+        return this.largos >= 3 ? this.descartarMs : 0;
+      }
       /* Devuelve true si la escala ha cambiado. */
       medir(intervaloMs) {
-        if (!(intervaloMs > 0) || intervaloMs > this.descartarMs) return false;  // pausa (0) o tirón suelto: no es rendimiento
-        this.mediaMs += 0.1 * (intervaloMs - this.mediaMs);
-        if (this.enfriar > 0) { this.enfriar -= intervaloMs; return false; }
+        const iv = this.filtrar(intervaloMs);
+        if (!iv) return false;
+        this.mediaMs += 0.1 * (iv - this.mediaMs);
+        if (this.enfriar > 0) { this.enfriar -= iv; return false; }
         const antes = this.escala;
         if (this.mediaMs > this.objetivoMs * 1.25) {                // vamos tarde: bajar ya
           this.escala = Math.max(this.min, this.escala * this.paso);
           this.holgura = 0;
         } else if (this.mediaMs < this.objetivoMs * 1.1) {          // hay margen: subir sin prisa
-          this.holgura += intervaloMs;
+          this.holgura += iv;
           if (this.holgura > this.paciencia) {
             this.escala = Math.min(this.max, this.escala / this.paso);
             this.holgura = 0;
@@ -103,9 +119,20 @@
     /* ---------------------------------------------------------------
        crearApp (7.1): el esqueleto completo.
        o = { contexto, estado, dprMax, pixelesMax, calidad, bajoDemanda, dtMax,
+             esperaRestauracionMs,
              iniciar(gl, app), redimensionar(gl, app),
              actualizar(estado, dt, app), dibujar(gl, estado, app),
              fallar(motivo, app), alPerder(app) }
+       · o.bajoDemanda se consulta al final de CADA frame, no solo al crear
+         la app: si guardas el objeto de opciones y cambias su bajoDemanda,
+         el modo cambia en caliente (si la app ya dormía, despiértala con
+         app.pedirFrame()).
+       · Fallar es definitivo: tras llamar a o.fallar (que aún puede leer gl
+         para la telemetría), la app se destruye: suelta sus observadores y
+         libera la GPU (loseContext). destruir() se puede llamar otra vez.
+       · esperaRestauracionMs: si el contexto se pierde y no vuelve en ese
+         tiempo, fallar("el contexto no volvió…"). Sin la opción, se espera
+         siempre.
        --------------------------------------------------------------- */
     function crearApp(canvas, opciones) {
       const o = opciones || {};
@@ -129,6 +156,8 @@
       let visible = true, pestañaVisible = !document.hidden, porUsuario = true;
       let perdido = false, fallado = false, destruido = false;
       let raf = 0, pendiente = true, dormido = false;
+      let largos = 0;                    // intervalos de más de 250 ms seguidos (para app.fps)
+      let esperaContexto = 0;            // temporizador de esperaRestauracionMs
       if (!gl) { fallar("sin WebGL2" + (motivo ? " (" + motivo + ")" : "")); return app; }
       app.gl = gl;
 
@@ -155,9 +184,16 @@
 
       function tamañoObjetivo() {
         const dpr = window.devicePixelRatio || 1;
+        let dw = dispAncho, dh = dispAlto;
+        // El observador y devicePixelRatio deberían contar lo mismo. Con el DPR emulado
+        // (modo dispositivo de DevTools) no: el observador sigue dando px CSS. Si
+        // discrepan más de un 5 %, caja CSS × DPR (si no, el búfer sale 1/DPR de pequeño).
+        if (app.anchoCSS > 0 && Math.abs(dw / app.anchoCSS - dpr) > 0.05 * dpr) {
+          dw = Math.round(app.anchoCSS * dpr); dh = Math.round(app.altoCSS * dpr);
+        }
         let f = Math.min(1, (o.dprMax || 2) / dpr);          // límite de DPR
         if (calidad) f *= calidad.escala;                     // calidad adaptativa
-        let w = dispAncho * f, h = dispAlto * f;
+        let w = dw * f, h = dh * f;
         const max = o.pixelesMax || Infinity;                 // límite de píxeles totales
         if (w * h > max) { const k = Math.sqrt(max / (w * h)); w *= k; h *= k; }
         return [Math.max(1, Math.round(w)), Math.max(1, Math.round(h))];
@@ -196,36 +232,51 @@
       function reanudar() { porUsuario = true; revisar(); }
 
       // 4) Pérdida de contexto (5.1): todo lo de la GPU se recrea con iniciar().
-      canvas.addEventListener("webglcontextlost", function (e) {
+      const alPerderContexto = function (e) {
         if (destruido) return;
         e.preventDefault();                  // sin esto, el navegador no lo devolverá nunca
         perdido = true; revisar();
+        if (o.esperaRestauracionMs > 0) {    // ¿y si no vuelve? (7.1, «Cuando algo falla»)
+          esperaContexto = setTimeout(function () {
+            fallar("el contexto no volvió en " + o.esperaRestauracionMs + " ms");
+          }, o.esperaRestauracionMs);
+        }
         if (o.alPerder) o.alPerder(app);
-      });
-      canvas.addEventListener("webglcontextrestored", function () {
+      };
+      const alRestaurarContexto = function () {
         if (destruido) return;
+        clearTimeout(esperaContexto);
         perdido = false;
         app.ancho = app.alto = 0;            // fuerza redimensionar() en el próximo frame
         iniciarGL();
         revisar(); pedirFrame();
-      });
+      };
+      canvas.addEventListener("webglcontextlost", alPerderContexto);
+      canvas.addEventListener("webglcontextrestored", alRestaurarContexto);
 
       function iniciarGL() {
         try { if (o.iniciar) o.iniciar(gl, app); }
         catch (err) { fallar("error al iniciar: " + err.message, err); }
       }
+      /* Definitivo: se informa una vez, la página muestra su alternativa y la app se destruye. */
       function fallar(m, err) {
+        if (fallado || destruido) return;
         fallado = true; app.motivoFallo = m;
         if (app.activo) revisar();
         if (err) console.error(err); else console.warn("[M7] " + m);
-        if (o.fallar) o.fallar(m, app);
+        try { if (o.fallar) o.fallar(m, app); }   // gl sigue vivo aquí (telemetría: logs, UNMASKED_RENDERER)
+        finally { destruir(); }                   // y después, fuera observadores y GPU
       }
       function destruir() {
+        if (destruido) return;
         destruido = true; revisar();
         if (!gl) return;                     // sin WebGL2 no se llegó a crear nada más (y ro/io aún no existen)
+        clearTimeout(esperaContexto);
         ro.disconnect(); io.disconnect();
         document.removeEventListener("visibilitychange", alVisibilidad);
-        const ext = gl.getExtension("WEBGL_lose_context");
+        canvas.removeEventListener("webglcontextlost", alPerderContexto);
+        canvas.removeEventListener("webglcontextrestored", alRestaurarContexto);
+        const ext = gl.getExtension("WEBGL_lose_context");   // null si el contexto ya estaba perdido
         if (ext) ext.loseContext();          // libera la memoria de la GPU ya, sin esperar al recolector
       }
 
@@ -236,7 +287,9 @@
         pendiente = false;
         reloj.avanzar(ms);
         const iv = reloj.intervaloMs;
-        if (iv > 0 && iv < 250) { app.msFrame += 0.1 * (iv - app.msFrame); app.fps = 1000 / app.msFrame; }
+        if (iv > 250) largos++;              // la regla de Calidad.filtrar: un largo suelto no cuenta,
+        else if (iv > 0) largos = 0;         // tres seguidos sí (aquí sin recortar: son los fps reales)
+        if (iv > 0 && (iv <= 250 || largos >= 3)) { app.msFrame += 0.1 * (iv - app.msFrame); app.fps = 1000 / app.msFrame; }
         if (calidad) calidad.medir(iv);
         aplicarTamaño();
         gl.viewport(0, 0, app.ancho, app.alto);
@@ -344,6 +397,9 @@
          vx, vy    velocidad suavizada (px CSS/s)
          nx, ny    0..1 con el origen ABAJO a la izquierda (como v_uv)
          aGL(c)    px del búfer de un canvas, origen abajo (como gl_FragCoord)
+         visto     ¿ha llegado algún evento? Antes, x, y no significan nada
+                   (salen de clientX/Y = 0) y sx, sy los copian: la distancia
+                   entre los dos es 0 y un bucle bajo demanda puede dormir.
        --------------------------------------------------------------- */
     class Puntero {
       constructor(elemento, opciones) {
@@ -373,7 +429,7 @@
         const r = this.el.getBoundingClientRect();
         this.ancho = r.width || 1; this.alto = r.height || 1;
         this.x = this.cx - r.left; this.y = this.cy - r.top;
-        if (!this.visto) return;
+        if (!this.visto) { this.sx = this.x; this.sy = this.y; return; }   // sin eventos: nada que perseguir (7.3)
         if (this.fresco && this.dentro) {      // primera vez (o al volver a entrar): sin «barrido» desde donde salió
           this.sx = this.x; this.sy = this.y; this.vx = this.vy = 0; this.fresco = false;
           return;

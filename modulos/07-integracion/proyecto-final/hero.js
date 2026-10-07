@@ -64,7 +64,7 @@
     for (const el of hero.querySelectorAll(selector)) {
       const a = el.animate(
         [{ opacity: 0, transform: "translateY(22px)" }, { opacity: 1, transform: "none" }],
-        // fill: 'backwards' aplica el primer fotograma durante el retardo; al terminar no deja nada
+        // fill: 'backwards' aplica el primer fotograma clave durante el retardo; al terminar no deja nada
         // «pegado» (el estilo normal manda otra vez: bestiario de fill: forwards, 2.7).
         { duration: 800, delay: retardoMs, easing: "cubic-bezier(.2, .7, .2, 1)", fill: "backwards" });
       a.pause();

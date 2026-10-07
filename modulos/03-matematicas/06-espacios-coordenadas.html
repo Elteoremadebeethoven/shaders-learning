@@ -163,7 +163,7 @@ $$\frac{-A n + B}{n} = -1, \qquad \frac{-A \ell + B}{\ell} = 1 \quad\Longrightar
 
 <div class="callout bestiario" data-id="m3-aspecto" data-titulo="Todo sale estirado (o se estira al redimensionar)">
   <p><strong>Síntoma:</strong> los círculos salen ovalados y los cubos alargados; o todo se ve bien hasta que cambias el tamaño de la ventana, y a partir de ahí la imagen se estira o se aplasta.</p>
-  <p><strong>Causa:</strong> la matriz de proyección usa un aspecto que no coincide con el de la imagen: se olvidó (aspecto 1 en una imagen de 16:9), se calculó con el tamaño CSS en vez del del <em>drawing buffer</em>, o no se recalculó al redimensionar el canvas. En 2D es el mismo error que usar uv sin corregir en lugar de coordenadas centradas (<a href="01-vectores.html">3.1</a>).</p>
+  <p><strong>Causa:</strong> la matriz de proyección usa un aspecto que no coincide con el de la imagen: se olvidó (aspecto 1 en una imagen de 16:9), se calculó con el tamaño CSS en vez de con el del <em>drawing buffer</em>, o no se recalculó al redimensionar el canvas. En 2D es el mismo error que usar uv sin corregir en lugar de coordenadas centradas (<a href="01-vectores.html">3.1</a>).</p>
   <p><strong>Solución:</strong> <code>aspecto = canvas.width / canvas.height</code> (el tamaño real del buffer), y vuelve a construir la matriz de proyección (y a llamar a <code>gl.viewport</code>) cada vez que cambie el tamaño del canvas (<a href="../05-webgl/01-contexto.html">5.1</a>).</p>
 </div>
 
@@ -550,7 +550,7 @@ console.log('near mínimo para 1 cm a 200 m, 16 bits:', nearMinimo(200, 1000, 16
 
 <section class="ejercicio" data-nivel="3">
   <h3>Ejercicio 3.6.4 — Tu propio lookAt, a prueba de cenitales</h3>
-  <p>Implementa <code>lookAt(ojo, objetivo, arriba)</code> (column-major, como <code>mat4.mirarA</code>) y hazlo <strong>robusto</strong>: si la mirada es casi paralela a <code>arriba</code>, elige otro vector de referencia en lugar de devolver ceros o NaN. Las pruebas comparan con <code>mat4.mirarA</code> en casos normales y comprueban que en el caso cenital la matriz sigue siendo una rotación válida (determinante 1).</p>
+  <p>Implementa <code>lookAt(ojo, objetivo, arriba)</code> (column-major, como <code>mat4.mirarA</code>) y hazlo <strong>robusto</strong>: si la mirada es casi paralela a <code>arriba</code>, elige otro vector de referencia en lugar de devolver ceros o NaN. Las pruebas comparan con <code>mat4.mirarA</code> en casos normales y comprueban que en el caso cenital la matriz sigue siendo una rotación válida (determinante 1) que deja el suelo 5 unidades delante de la cámara.</p>
   <div class="js-playground" data-titulo="Ejercicio 3.6.4" data-altura="40" data-fondo="oscuro" data-apilado data-incluir="glkit">
 <script type="text/x-js">
 function lookAt(ojo, objetivo, arriba) {
@@ -565,9 +565,9 @@ for (const [ojo, obj] of [[[0, 2, 6], [0, 0, 0]], [[3, 1, -4], [1, 0, 0]], [[-5,
   console.log((igual(lookAt(ojo, obj, [0, 1, 0]), mat4.mirarA(ojo, obj, [0, 1, 0])) ? '✓' : '✗') + ' igual que mat4.mirarA con ojo ' + JSON.stringify(ojo));
 }
 const cenital = lookAt([0, 5, 0], [0, 0, 0], [0, 1, 0]);
-const ok = cenital.every(Number.isFinite) && Math.abs(det3(cenital) - 1) < 1e-5;
-console.log((ok ? '✓' : '✗') + ' cámara cenital: determinante ' + det3(cenital).toFixed(4) + ' (glkit da ' + det3(mat4.mirarA([0, 5, 0], [0, 0, 0], [0, 1, 0])).toFixed(4) + ')');
 const v = mat4.porVector(cenital, [1, 0, 0, 1]);
+const ok = cenital.every(Number.isFinite) && Math.abs(det3(cenital) - 1) < 1e-5 && Math.abs(v[2] + 5) < 1e-5;
+console.log((ok ? '✓' : '✗') + ' cámara cenital: determinante ' + det3(cenital).toFixed(4) + ' (glkit da ' + det3(mat4.mirarA([0, 5, 0], [0, 0, 0], [0, 1, 0])).toFixed(4) + ')');
 console.log('  el punto (1, 0, 0) visto desde arriba:', v.map((x) => x.toFixed(3)).join(', '), '← z = −5: está a 5 delante');
 </script>
 <script type="text/x-js" data-solucion>
@@ -598,9 +598,9 @@ for (const [ojo, obj] of [[[0, 2, 6], [0, 0, 0]], [[3, 1, -4], [1, 0, 0]], [[-5,
   console.log((igual(lookAt(ojo, obj, [0, 1, 0]), mat4.mirarA(ojo, obj, [0, 1, 0])) ? '✓' : '✗') + ' igual que mat4.mirarA con ojo ' + JSON.stringify(ojo));
 }
 const cenital = lookAt([0, 5, 0], [0, 0, 0], [0, 1, 0]);
-const ok = cenital.every(Number.isFinite) && Math.abs(det3(cenital) - 1) < 1e-5;
-console.log((ok ? '✓' : '✗') + ' cámara cenital: determinante ' + det3(cenital).toFixed(4) + ' (glkit da ' + det3(mat4.mirarA([0, 5, 0], [0, 0, 0], [0, 1, 0])).toFixed(4) + ')');
 const v = mat4.porVector(cenital, [1, 0, 0, 1]);
+const ok = cenital.every(Number.isFinite) && Math.abs(det3(cenital) - 1) < 1e-5 && Math.abs(v[2] + 5) < 1e-5;
+console.log((ok ? '✓' : '✗') + ' cámara cenital: determinante ' + det3(cenital).toFixed(4) + ' (glkit da ' + det3(mat4.mirarA([0, 5, 0], [0, 0, 0], [0, 1, 0])).toFixed(4) + ')');
 console.log('  el punto (1, 0, 0) visto desde arriba:', v.map((x) => x.toFixed(3)).join(', '), '← z = −5: está a 5 delante');
 </script>
   </div>

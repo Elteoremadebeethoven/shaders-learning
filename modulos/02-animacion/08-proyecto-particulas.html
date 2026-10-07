@@ -278,17 +278,17 @@ requestAnimationFrame(frame);
 
 <section class="ejemplo">
   <h3>Ejemplo 2.8.1 — ¿Cuánto gana de verdad el pool?</h3>
-  <p>Conviene medir antes de creerse las recetas. Simulamos la misma física (una fuerza de atracción, rozamiento, envoltura en los bordes) con 100 000 y 400 000 partículas, guardadas como array de objetos y como <code>Float32Array</code>, en Chrome 154 sobre un M1. Tiempo de simulación por frame:</p>
+  <p>Conviene medir antes de creerse las recetas. Simulamos la misma física (una fuerza de atracción, rozamiento, envoltura en los bordes) con 100 000 y 400 000 partículas, guardadas como array de objetos y como <code>Float32Array</code>, en Chrome 154 sobre un M1. Tiempo de simulación por frame (mediana de 100 llamadas seguidas, tras 1 s de calentamiento):</p>
   <table class="m2-medidas">
     <thead><tr><th class="num">Partículas</th><th class="num">Array de objetos</th><th class="num">Float32Array (SoA)</th></tr></thead>
     <tbody>
-      <tr><td class="num">100 000</td><td class="num">1,84 ms</td><td class="num">0,74 ms</td></tr>
-      <tr><td class="num">400 000</td><td class="num">2,56 ms</td><td class="num">2,92 ms</td></tr>
+      <tr><td class="num">100 000</td><td class="num">0,5 ms</td><td class="num">0,6 ms</td></tr>
+      <tr><td class="num">400 000</td><td class="num">2,2–2,3 ms</td><td class="num">2,3 ms</td></tr>
     </tbody>
   </table>
-  <p><strong>Paso 1: la simulación es barata en los dos casos.</strong> Incluso 400 000 partículas se simulan en menos de 3 ms. El motor de JavaScript optimiza muy bien los objetos con la misma forma, así que el SoA no gana siempre en velocidad bruta (con 400 000, las medidas quedaron parejas, dentro del ruido de una prueba así).</p>
+  <p><strong>Paso 1: la simulación es barata en los dos casos.</strong> Incluso 400 000 partículas se simulan en unos 2,3 ms. El motor de JavaScript optimiza muy bien los objetos con la misma forma, así que el SoA no gana en velocidad bruta: las dos versiones tardan prácticamente lo mismo. Una primera versión de esta tabla daba 1,84 ms a los objetos y 0,74 al SoA con 100 000 partículas; la medida de los objetos se había tomado con la CPU recién salida del reposo, la trampa de la caja <a href="../04-gpu/01-cpu-vs-gpu.html#m4-cpu-en-frio">«Una medida corta de JavaScript sale el doble o el triple de lenta»</a> de la 4.1. Con la CPU caliente, la diferencia desaparece.</p>
   <p><strong>Paso 2: lo que el SoA sí garantiza.</strong> Cero asignaciones por frame, y por tanto cero trabajo para el recolector de basura: el coste es predecible, sin pausas. La memoria es contigua y del tamaño exacto (6 números × 4 bytes por partícula). Y, sobre todo, los datos ya están en el formato que la GPU necesita: un <code>Float32Array</code> se sube tal cual a un buffer de vértices con <code>gl.bufferData</code> (<a href="../05-webgl/03-buffers-atributos.html">5.3</a>). La etapa 2 es, sin saberlo, la mitad del camino hacia las partículas en GPU de <a href="../07-integracion/05-particulas-gpu.html">7.5</a>.</p>
-  <p><strong>Paso 3: dónde está el coste de verdad.</strong> En la misma prueba, dibujar las 100 000 partículas con un <code>fillRect</code> cada una costó 17,8 ms: veinte veces más que simularlas. Lo veremos en el banco de pruebas del final.</p>
+  <p><strong>Paso 3: dónde está el coste de verdad.</strong> En la misma prueba, dibujar las 100 000 partículas con un <code>fillRect</code> cada una costó 17,8 ms: más de veinte veces más que simularlas. Lo veremos en el banco de pruebas del final.</p>
 </section>
 
 <div class="quiz">

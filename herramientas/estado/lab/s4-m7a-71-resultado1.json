@@ -1,0 +1,277 @@
+{
+ "version": "Chrome/154.0.8037.98",
+ "A": {
+  "mismo": {
+   "n": 40,
+   "mediana": 0.22,
+   "max": 0.38,
+   "min": 0,
+   "todas": [
+    0.3,
+    0.2,
+    0.2,
+    0.3,
+    0.2,
+    0.3,
+    0.2,
+    0.2,
+    0.2,
+    0.4,
+    0.1,
+    0.2,
+    0.4,
+    0.4,
+    0.4,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0,
+    0.2,
+    0.2,
+    0.2,
+    0.3,
+    0.4,
+    0,
+    0.2,
+    0.2,
+    0.3,
+    0.2,
+    0.4,
+    0.2,
+    0.2,
+    0.1,
+    0.2,
+    0.2
+   ]
+  },
+  "now": {
+   "n": 40,
+   "mediana": 0.94,
+   "max": 1.39,
+   "min": 0.12,
+   "todas": [
+    1.1,
+    1.2,
+    1.3,
+    1,
+    0.9,
+    0.8,
+    0.5,
+    0.8,
+    1.2,
+    1.1,
+    1.2,
+    0.9,
+    0.9,
+    0.9,
+    1.3,
+    1,
+    0.7,
+    0.8,
+    1.1,
+    1.3,
+    0.9,
+    0.9,
+    1.1,
+    1.1,
+    0.9,
+    1.1,
+    1.2,
+    0.9,
+    1.2,
+    0.9,
+    1.2,
+    0.4,
+    1.1,
+    1.4,
+    0.9,
+    0.8,
+    0.1,
+    0.8,
+    0.2,
+    0.8
+   ]
+  },
+  "intervalo": {
+   "n": 40,
+   "mediana": 1.78,
+   "max": 6.42,
+   "min": 0.19,
+   "todas": [
+    0.4,
+    4.4,
+    1.8,
+    6.1,
+    2.7,
+    0.4,
+    4.7,
+    1.6,
+    0.6,
+    1.6,
+    4.9,
+    1.8,
+    0.2,
+    3.3,
+    6.4,
+    2.6,
+    0.3,
+    5.3,
+    1.6,
+    3.3,
+    6.1,
+    0.9,
+    5.7,
+    1.2,
+    3.4,
+    0.9,
+    4.3,
+    1.2,
+    6.4,
+    1.3,
+    4.5,
+    1,
+    1.7,
+    5.2,
+    0.6,
+    6.2,
+    0.4,
+    3.3,
+    1,
+    0.7
+   ]
+  }
+ },
+ "B": [
+  {
+   "N": 10,
+   "lineas": 114,
+   "parallel": true,
+   "bloqueo": {
+    "lanzar": 0.1,
+    "linkStatus": 116.6,
+    "ok": true,
+    "intervaloMax": 117.2
+   },
+   "sondeo": {
+    "lanzar": 0.2,
+    "frames": 7,
+    "ms": 115.6,
+    "maxConsulta": 0.1,
+    "linkStatusTras": 0,
+    "ok": true,
+    "intervaloMax": 17.1,
+    "framesLentos": 0
+   }
+  },
+  {
+   "N": 20,
+   "lineas": 214,
+   "parallel": true,
+   "bloqueo": {
+    "lanzar": 0,
+    "linkStatus": 60.8,
+    "ok": true,
+    "intervaloMax": 61
+   },
+   "sondeo": {
+    "lanzar": 0.3,
+    "frames": 7,
+    "ms": 116.9,
+    "maxConsulta": 0,
+    "linkStatusTras": 0,
+    "ok": true,
+    "intervaloMax": 18,
+    "framesLentos": 0
+   }
+  },
+  {
+   "N": 40,
+   "lineas": 414,
+   "parallel": true,
+   "bloqueo": {
+    "lanzar": 0,
+    "linkStatus": 85.2,
+    "ok": true,
+    "intervaloMax": 85.3
+   },
+   "sondeo": {
+    "lanzar": 0.4,
+    "frames": 9,
+    "ms": 149.9,
+    "maxConsulta": 0,
+    "linkStatusTras": 0,
+    "ok": true,
+    "intervaloMax": 17.9,
+    "framesLentos": 0
+   }
+  },
+  {
+   "N": 10,
+   "lineas": 114,
+   "parallel": true,
+   "bloqueo": {
+    "lanzar": 0,
+    "linkStatus": 48.8,
+    "ok": true,
+    "intervaloMax": 48.9
+   },
+   "sondeo": {
+    "lanzar": 0.1,
+    "frames": 6,
+    "ms": 99.6,
+    "maxConsulta": 0,
+    "linkStatusTras": 0,
+    "ok": true,
+    "intervaloMax": 18,
+    "framesLentos": 0
+   }
+  },
+  {
+   "N": 20,
+   "lineas": 214,
+   "parallel": true,
+   "bloqueo": {
+    "lanzar": 0.2,
+    "linkStatus": 60.4,
+    "ok": true,
+    "intervaloMax": 60.8
+   },
+   "sondeo": {
+    "lanzar": 0.3,
+    "frames": 8,
+    "ms": 132.9,
+    "maxConsulta": 0,
+    "linkStatusTras": 0,
+    "ok": true,
+    "intervaloMax": 18.4,
+    "framesLentos": 0
+   }
+  },
+  {
+   "N": 40,
+   "lineas": 414,
+   "parallel": true,
+   "bloqueo": {
+    "lanzar": 0.1,
+    "linkStatus": 87.3,
+    "ok": true,
+    "intervaloMax": 87.6
+   },
+   "sondeo": {
+    "lanzar": 0.2,
+    "frames": 8,
+    "ms": 133.2,
+    "maxConsulta": 0,
+    "linkStatusTras": 0,
+    "ok": true,
+    "intervaloMax": 18.3,
+    "framesLentos": 0
+   }
+  }
+ ]
+}

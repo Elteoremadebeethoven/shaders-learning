@@ -1,0 +1,49 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#111}canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+#d{position:absolute;left:0;top:0;width:20px;height:20px;background:#00ff00;will-change:transform}</style></head>
+<body><canvas id="c"></canvas><div id="d"></div>
+<script>
+// Círculo rojo (WebGL) y cuadrado verde (DOM) recorren la misma circunferencia a 440 px/s (7 rad/s, R = 440/7 px);
+// el DOM va desplazado 170 px hacia abajo para que no tape al círculo. Modo: window.modo = mismo | now | intervalo.
+const W = 7, R = 440 / 7, CX = 400, CY = 210, DESPL = 170;
+const pos = (ms) => [CX + Math.cos(ms / 1000 * W) * R, CY + Math.sin(ms / 1000 * W) * R];
+const c = document.getElementById('c'), d = document.getElementById('d');
+c.width = c.clientWidth; c.height = c.clientHeight;
+const gl = c.getContext('webgl2', { antialias: false });
+const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); return o; };
+const p = gl.createProgram();
+gl.attachShader(p, sh(gl.VERTEX_SHADER, "#version 300 es\nvoid main(){ vec2 P[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3)); gl_Position=vec4(P[gl_VertexID],0,1);}"));
+gl.attachShader(p, sh(gl.FRAGMENT_SHADER, "#version 300 es\nprecision highp float;\nuniform vec2 u_pos;\nout vec4 o;\nvoid main(){ float k = distance(gl_FragCoord.xy, u_pos) < 10.0 ? 1.0 : 0.0; o = vec4(mix(vec3(0.07), vec3(1,0,0), k), 1); }"));
+gl.linkProgram(p); gl.useProgram(p);
+const uPos = gl.getUniformLocation(p, 'u_pos');
+gl.bindVertexArray(gl.createVertexArray());
+window.modo = 'mismo';
+const moverDOM = (ms) => { const [x, y] = pos(ms); d.style.transform = `translate(${x - 10}px, ${y + DESPL - 10}px)`; };
+let intervalo = 0;
+window.ponerModo = (m) => { window.modo = m; clearInterval(intervalo); if (m === 'intervalo') intervalo = setInterval(() => moverDOM(performance.now()), 16); };
+function frame(ms) {
+  const [x, y] = pos(ms);
+  gl.viewport(0, 0, c.width, c.height);
+  gl.uniform2f(uPos, x, c.height - y);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  if (window.modo === 'mismo') moverDOM(ms);
+  if (window.modo === 'now') moverDOM(performance.now());
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+// Centroides en una captura PNG (base64): rojo = GL, verde = DOM (menos el desplazamiento)
+window.medir = async (b64) => {
+  const img = await createImageBitmap(await (await fetch('data:image/png;base64,' + b64)).blob());
+  const oc = new OffscreenCanvas(img.width, img.height), cx = oc.getContext('2d');
+  cx.drawImage(img, 0, 0);
+  const px = cx.getImageData(0, 0, img.width, img.height).data;
+  let rx = 0, ry = 0, rn = 0, gx = 0, gy = 0, gn = 0;
+  for (let i = 0, n = img.width * img.height; i < n; i++) {
+    const r = px[4 * i], g = px[4 * i + 1], b = px[4 * i + 2], x = i % img.width, y = (i / img.width) | 0;
+    if (r > 200 && g < 60 && b < 60) { rx += x; ry += y; rn++; }
+    else if (g > 200 && r < 60 && b < 60) { gx += x; gy += y; gn++; }
+  }
+  if (!rn || !gn) return null;
+  return Math.hypot(gx / gn - rx / rn, gy / gn - DESPL - ry / rn);
+};
+</script></body></html>

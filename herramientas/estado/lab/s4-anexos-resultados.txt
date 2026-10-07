@@ -1,0 +1,380 @@
+# Resultados del agente anexos (sesión 4, Apple M1, Chrome 154.0.8037.98, ANGLE/Metal, Dawn/Metal)
+
+## s4-anexos-medidas.mjs (s4-anexos-medidas.html): GLSL 1.00, finish(), WebGPU
+browser.version(): Chrome/154.0.8037.98
+{
+ "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+ "glsl100": [
+  "ERR webgl  FS local a[n] (n uniform)       | ERROR: 0:3: 'n' : Index expression can only contain const or loop symbols",
+  "ERR webgl  FS a[i+n] en bucle              | ERROR: 0:3: 'n' : Index expression can only contain const or loop symbols",
+  "ERR webgl  FS a[j] con j local no const    | ERROR: 0:2: 'j' : Index expression can only contain const or loop symbols",
+  "OK  webgl  FS a[i] (índice de bucle)       | ",
+  "ERR webgl  FS uniform u[n]                 | ERROR: 0:4: 'n' : Index expression can only contain const or loop symbols",
+  "ERR webgl  VS local a[n]                   | ERROR: 0:2: 'n' : Index expression can only contain const or loop symbols",
+  "OK  webgl  VS uniform u[n]                 | ",
+  "ERR webgl2 FS local a[n] (n uniform)       | ERROR: 0:3: 'n' : Index expression can only contain const or loop symbols",
+  "ERR webgl2 FS a[i+n] en bucle              | ERROR: 0:3: 'n' : Index expression can only contain const or loop symbols",
+  "ERR webgl2 FS a[j] con j local no const    | ERROR: 0:2: 'j' : Index expression can only contain const or loop symbols",
+  "OK  webgl2 FS a[i] (índice de bucle)       | ",
+  "ERR webgl2 FS uniform u[n]                 | ERROR: 0:4: 'n' : Index expression can only contain const or loop symbols",
+  "ERR webgl2 VS local a[n]                   | ERROR: 0:2: 'n' : Index expression can only contain const or loop symbols",
+  "OK  webgl2 VS uniform u[n]                 | "
+ ],
+ "finish": {
+  "filas": [
+   {
+    "draw": 0,
+    "finish": 0,
+    "readPixels": 15.5
+   },
+   {
+    "draw": 0,
+    "finish": 0,
+    "readPixels": 15.3
+   },
+   {
+    "draw": 0,
+    "finish": 0,
+    "readPixels": 14.7
+   },
+   {
+    "draw": 0,
+    "finish": 0,
+    "readPixels": 14.8
+   },
+   {
+    "draw": 0,
+    "finish": 0,
+    "readPixels": 15.8
+   },
+   {
+    "draw": 0,
+    "finish": 0,
+    "readPixels": 16.1
+   },
+   {
+    "draw": 0,
+    "finish": 0,
+    "readPixels": 15.1
+   }
+  ],
+  "mediana": {
+   "finish": 0,
+   "readPixelsTrasFinish": 15.3,
+   "readPixelsSinFinish": 14.4
+  }
+ },
+ "webgpu": {
+  "gpu": true,
+  "secure": true,
+  "adapter": true,
+  "info": {
+   "vendor": "apple",
+   "architecture": "metal-3",
+   "device": "",
+   "description": "",
+   "isFallbackAdapter": false,
+   "subgroupMinSize": 32,
+   "subgroupMaxSize": 32
+  },
+  "preferido": "bgra8unorm",
+  "features": [
+   "bgra8unorm-storage",
+   "clip-distances",
+   "core-features-and-limits",
+   "depth-clip-control",
+   "depth32float-stencil8",
+   "dual-source-blending",
+   "float32-blendable",
+   "float32-filterable",
+   "indirect-first-instance",
+   "primitive-index",
+   "rg11b10ufloat-renderable",
+   "shader-f16",
+   "subgroup-size-control",
+   "subgroups",
+   "texture-component-swizzle",
+   "texture-compression-astc",
+   "texture-compression-astc-sliced-3d",
+   "texture-compression-bc",
+   "texture-compression-bc-sliced-3d",
+   "texture-compression-etc2",
+   "texture-formats-tier1",
+   "texture-formats-tier2",
+   "timestamp-query"
+  ],
+  "adapterLimits": {
+   "maxComputeInvocationsPerWorkgroup": 1024,
+   "maxStorageBufferBindingSize": 4294967292,
+   "maxBufferSize": 4294967292,
+   "maxBindGroups": 4
+  },
+  "wgslLanguageFeatures": [
+   "buffer_view",
+   "immediate_address_space",
+   "linear_indexing",
+   "packed_4x8_integer_dot_product",
+   "pointer_composite_access",
+   "readonly_and_readwrite_storage_textures",
+   "subgroup_id",
+   "subgroup_uniformity",
+   "swizzle_assignment",
+   "texture_and_sampler_let",
+   "texture_formats_tier1",
+   "uniform_buffer_standard_layout",
+   "unrestricted_pointer_parameters"
+  ],
+  "deviceLimits": {
+   "maxComputeInvocationsPerWorkgroup": 256,
+   "maxStorageBufferBindingSize": 134217728,
+   "maxBindGroups": 4
+  },
+  "swizzle": [],
+  "asyncTextoFijoPrimero": 0.5,
+  "createRenderPipeline_ms": {
+   "valores": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "mediana": 0
+  },
+  "createRenderPipelineAsync_textoNuevo_ms": {
+   "valores": [
+    0.6,
+    0.5,
+    0.4,
+    0.5,
+    0.4,
+    0.5,
+    0.4
+   ],
+   "mediana": 0.5
+  },
+  "createRenderPipelineAsync_mismoModulo_ms": {
+   "valores": [
+    0.4,
+    0.3,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2
+   ],
+   "mediana": 0.2
+  },
+  "getCurrentTexture_mismaTarea": true,
+  "getCurrentTexture_otroFrame_distinta": true
+ }
+}
+
+## s4-anexos-medidas.mjs s4-anexos-pipeline.html (turno exclusivo)
+browser.version(): Chrome/154.0.8037.98
+{
+ "asyncPrimero": 52.3,
+ "asyncNuevos": [
+  9.5,
+  8.9,
+  9.2,
+  8.5,
+  8.7,
+  8.3,
+  8.9,
+  8.6,
+  9.2
+ ],
+ "sync": [
+  {
+   "vuelve": 0,
+   "primerUso": 9.7
+  },
+  {
+   "vuelve": 0,
+   "primerUso": 9.3
+  },
+  {
+   "vuelve": 0,
+   "primerUso": 9.3
+  },
+  {
+   "vuelve": 0.1,
+   "primerUso": 9.8
+  },
+  {
+   "vuelve": 0.1,
+   "primerUso": 9.1
+  },
+  {
+   "vuelve": 0,
+   "primerUso": 9
+  },
+  {
+   "vuelve": 0.1,
+   "primerUso": 8.8
+  },
+  {
+   "vuelve": 0,
+   "primerUso": 8.8
+  },
+  {
+   "vuelve": 0,
+   "primerUso": 8.9
+  }
+ ],
+ "dibujoConPipelineUsado": [
+  8.7,
+  0.4,
+  0.2,
+  0.4,
+  0.2,
+  0.3
+ ],
+ "medianas": {
+  "asyncNuevos": 8.9,
+  "syncVuelve": 0,
+  "syncPrimerUso": 9.1,
+  "dibujoUsado": 0.4
+ }
+}
+
+## s4-anexos-three.mjs (Three.js r186.1)
+[consola error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[consola log] ETAPA cargado
+[consola log] ETAPA pierdo 1
+[consola log] THREE.WebGLRenderer: Context Lost.
+[consola log] ETAPA perdido 1
+[consola log] THREE.WebGLRenderer: Context Restored.
+[consola log] ETAPA recuperado 1
+[consola log] THREE.WebGLRenderer: Context Lost.
+[consola log] ETAPA perdido 2
+[consola log] THREE.WebGLRenderer: Context Restored.
+[consola log] ETAPA recuperado 2
+{
+ "revision": "186",
+ "antes": [
+  255,
+  128,
+  0,
+  255
+ ],
+ "despues": [
+  255,
+  128,
+  0,
+  255
+ ],
+ "onUploadAntes": [
+  0,
+  128,
+  255,
+  255
+ ],
+ "onUploadExc": "TypeError: Cannot read properties of null (reading 'byteLength')",
+ "geomInicio": 0,
+ "geomTrasQuitar": 50,
+ "llamadasTrasQuitar": {
+  "createBuffer": 200,
+  "createVertexArray": 50
+ },
+ "geomTrasDispose": 0,
+ "llamadasTrasDispose": {
+  "createBuffer": 0,
+  "createVertexArray": 0,
+  "deleteBuffer": 200,
+  "deleteVertexArray": 50
+ },
+ "atributosBox": [
+  "position",
+  "normal",
+  "uv",
+  "index"
+ ]
+}
+
+## URL externas (curl -sIL; código, URL final | URL del curso)
+200 https://caniuse.com/webgpu | https://caniuse.com/webgpu
+200 https://codelabs.developers.google.com/your-first-webgpu-app?hl=es | https://codelabs.developers.google.com/your-first-webgpu-app?hl=es
+200 https://developer.chrome.com/docs/devtools/performance | https://developer.chrome.com/docs/devtools/performance
+200 https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices | https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices
+200 https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext | https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext
+200 https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API | https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API
+200 https://developer.mozilla.org/es/docs/Web/API/WebGL_API | https://developer.mozilla.org/es/docs/Web/API/WebGL_API
+200 https://developer.nvidia.com/gpugems/gpugems/foreword | https://developer.nvidia.com/gpugems/gpugems/foreword
+200 https://developer.nvidia.com/gpugems/gpugems3/foreword | https://developer.nvidia.com/gpugems/gpugems3/foreword
+200 https://discourse.threejs.org/ | https://discourse.threejs.org/
+200 https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html | https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
+200 https://easings.net/ | https://easings.net/
+200 https://floating-point-gui.de/ | https://floating-point-gui.de/
+200 https://gafferongames.com/post/fix_your_timestep/ | https://gafferongames.com/post/fix_your_timestep/
+200 https://gafferongames.com/post/integration_basics/ | https://gafferongames.com/post/integration_basics/
+200 https://github.com/BabylonJS/Spector.js | https://github.com/BabylonJS/Spector.js
+200 https://github.com/dfranx/SHADERed | https://github.com/dfranx/SHADERed
+200 https://github.com/greggman/webgl-memory | https://github.com/greggman/webgl-memory
+200 https://github.com/KhronosGroup/glslang | https://github.com/KhronosGroup/glslang
+200 https://github.com/mrdoob/three.js | https://github.com/mrdoob/three.js
+200 https://github.com/mrdoob/three.js/tree/dev/src/renderers/webgl | https://github.com/mrdoob/three.js/tree/dev/src/renderers/webgl
+200 https://github.com/patriciogonzalezvivo/glslViewer | https://github.com/patriciogonzalezvivo/glslViewer
+200 https://github.com/pmndrs/postprocessing | https://github.com/pmndrs/postprocessing
+200 https://google.github.io/filament/Filament.md.html | https://google.github.io/filament/Filament.md.html
+200 https://gpuweb.github.io/gpuweb/explainer/ | https://gpuweb.github.io/gpuweb/explainer/
+200 https://graphics-programming.org/ | https://graphics-programming.org/
+200 https://graphtoy.com/ | https://graphtoy.com/
+200 https://greggman.github.io/webgl-lint/ | https://greggman.github.io/webgl-lint/
+200 https://hexler.net/kodelife | https://hexler.net/kodelife
+200 https://iquilezles.org/articles/ | https://iquilezles.org/articles/
+200 https://iquilezles.org/articles/distfunctions/ | https://iquilezles.org/articles/distfunctions/
+200 https://iquilezles.org/articles/distfunctions2d/ | https://iquilezles.org/articles/distfunctions2d/
+200 https://iquilezles.org/articles/functions/ | https://iquilezles.org/articles/functions/
+200 https://jamie-wong.com/2016/07/15/ray-marching-signed-distance-functions/ | https://jamie-wong.com/2016/07/15/ray-marching-signed-distance-functions/
+200 https://learnopengl.com/ | https://learnopengl.com/
+200 https://learnopengl.com/Advanced-Lighting/Bloom | https://learnopengl.com/Advanced-Lighting/Bloom
+200 https://learnopengl.com/Advanced-Lighting/HDR | https://learnopengl.com/Advanced-Lighting/HDR
+200 https://learnopengl.com/Advanced-Lighting/Normal-Mapping | https://learnopengl.com/Advanced-Lighting/Normal-Mapping
+200 https://learnopengl.com/Advanced-Lighting/Shadows/Shadow-Mapping | https://learnopengl.com/Advanced-Lighting/Shadows/Shadow-Mapping
+200 https://learnopengl.com/Lighting/Basic-Lighting | https://learnopengl.com/Lighting/Basic-Lighting
+200 https://learnopengl.com/PBR/Theory | https://learnopengl.com/PBR/Theory
+404 https://marketplace.visualstudio.com/items?itemName=dtoplak.vscode-glsllint | https://marketplace.visualstudio.com/items?itemName=dtoplak.vscode-glsllint
+404 https://marketplace.visualstudio.com/items?itemName=raczzalan.webgl-glsl-editor | https://marketplace.visualstudio.com/items?itemName=raczzalan.webgl-glsl-editor
+404 https://marketplace.visualstudio.com/items?itemName=slevesque.shader | https://marketplace.visualstudio.com/items?itemName=slevesque.shader
+200 https://natureofcode.com/ | https://natureofcode.com/
+200 https://registry.khronos.org/OpenGL-Refpages/es3.0/ | https://registry.khronos.org/OpenGL-Refpages/es3.0/
+200 https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf | https://registry.khronos.org/OpenGL/specs/es/3.0/es_spec_3.0.pdf
+200 https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf | https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf
+200 https://registry.khronos.org/webgl/extensions/ | https://registry.khronos.org/webgl/extensions/
+200 https://registry.khronos.org/webgl/specs/latest/1.0/ | https://registry.khronos.org/webgl/specs/latest/1.0/
+200 https://registry.khronos.org/webgl/specs/latest/2.0/ | https://registry.khronos.org/webgl/specs/latest/2.0/
+200 https://spector.babylonjs.com/ | https://spector.babylonjs.com/
+200 https://thebookofshaders.com/?lan=es | https://thebookofshaders.com/?lan=es
+200 https://threejs.org/docs/ | https://threejs.org/docs/
+200 https://threejs.org/manual/ | https://threejs.org/manual/
+200 https://web3dsurvey.com/ | https://web3dsurvey.com/
+200 https://webgl2fundamentals.org/ | https://webgl2fundamentals.org/
+200 https://webgl2fundamentals.org/webgl/lessons/resources/webgl-state-diagram.html | https://webgl2fundamentals.org/webgl/lessons/resources/webgl-state-diagram.html
+200 https://webgl2fundamentals.org/webgl/lessons/webgl-anti-patterns.html | https://webgl2fundamentals.org/webgl/lessons/webgl-anti-patterns.html
+200 https://webgl2fundamentals.org/webgl/lessons/webgl-cross-platform-issues.html | https://webgl2fundamentals.org/webgl/lessons/webgl-cross-platform-issues.html
+200 https://webgl2fundamentals.org/webgl/lessons/webgl-shadows.html | https://webgl2fundamentals.org/webgl/lessons/webgl-shadows.html
+200 https://webglreport.com/?v=2 | https://webglreport.com/?v=2
+200 https://webgpu.github.io/webgpu-samples/ | https://webgpu.github.io/webgpu-samples/
+200 https://webgpufundamentals.org/webgpu/lessons/es/ | https://webgpufundamentals.org/webgpu/lessons/es/
+200 https://webgpufundamentals.org/webgpu/lessons/es/webgpu-compute-shaders.html | https://webgpufundamentals.org/webgpu/lessons/es/webgpu-compute-shaders.html
+200 https://www.3blue1brown.com/?topic=linear-algebra | https://www.3blue1brown.com/topics/linear-algebra
+200 https://www.khronos.org/files/webgl20-reference-guide.pdf | https://www.khronos.org/files/webgl20-reference-guide.pdf
+200 https://www.pbr-book.org/ | https://www.pbr-book.org/
+403 https://www.realtimerendering.com/ | https://www.realtimerendering.com/
+200 https://www.reddit.com/r/GraphicsProgramming/ | https://www.reddit.com/r/GraphicsProgramming/
+403 https://www.shadertoy.com/ | https://www.shadertoy.com/
+200 https://www.w3.org/TR/webgpu/ | https://www.w3.org/TR/webgpu/
+200 https://www.w3.org/TR/WGSL/ | https://www.w3.org/TR/WGSL/
+(Marketplace: 404 a HEAD, 200 a GET y la extensión existe; shadertoy y realtimerendering: 403 de Cloudflare «Just a moment…»)
+
+## movil.mjs
+✓ 01-bestiario.html scrollWidth=390 / 390  path →7511, path →508, path →656, path →677, path →695, math →463, semantics →463, mrow →463
+✓ 02-chuleta-glsl.html scrollWidth=390 / 390
+✓ 03-chuleta-webgl.html scrollWidth=390 / 390
+✓ 04-glosario.html scrollWidth=390 / 390  math →459, semantics →459, mrow →459, mo →394, mtext →420, mo →429, msub →459, mi →442
+✓ 05-recursos.html scrollWidth=390 / 390
+✓ 07-siguientes-pasos.html scrollWidth=390 / 390  math →420, semantics →420, mrow →420, mi →395, mo →402, mi →410, mn →420, math →456

@@ -217,7 +217,7 @@ aplicarModo();
   <ul>
     <li>Un <code>premultipliedAlpha: true</code> en el contexto.<div class="explicacion">Ese atributo afecta a cómo se compone el canvas con la página, no a la mezcla entre tus dibujos.</div></li>
     <li data-correcta><code>gl.enable(gl.BLEND)</code>.<div class="explicacion">Correcto: <code>blendFunc</code> configura los factores, pero sin activar el blending no se usan y cada fragmento sustituye al píxel. Es el ejercicio 5.7.1.</div></li>
-    <li>Desactivar el test de profundidad.<div class="explicacion">La profundidad puede impedir que algo se dibuje, pero no convierte en opaco lo que se dibuja. Con blending desactivado, el alfa del shader simplemente no se usa.</div></li>
+    <li>Desactivar el test de profundidad.<div class="explicacion">La profundidad puede impedir que algo se dibuje, pero no convierte en opaco lo que se dibuja. Con blending desactivado, el alfa del shader no se usa.</div></li>
   </ul>
 </div>
 
@@ -329,7 +329,7 @@ gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 </div>
 
 <h3>2. La composición es correcta y asociativa</h3>
-<p>En premultiplicado, pintar una capa sobre otra (el operador <em>over</em> de Porter y Duff) es simplemente <code>src + dst·(1 − αs)</code>, para el color y para el alfa a la vez: es la ecuación del modo premultiplicado. Y es asociativa: puedes componer primero dos capas entre sí y luego el resultado sobre el fondo, y obtienes lo mismo que capa a capa. En directo, componer dos capas semitransparentes entre sí exige dividir por el alfa resultante y la mezcla no es tan simple. Por eso los compositores (el del navegador, los de los sistemas operativos) trabajan en premultiplicado.</p>
+<p>En premultiplicado, pintar una capa sobre otra (el operador <em>over</em> de Porter y Duff) se reduce a <code>src + dst·(1 − αs)</code>, para el color y para el alfa a la vez: es la ecuación del modo premultiplicado. Y es asociativa: puedes componer primero dos capas entre sí y luego el resultado sobre el fondo, y obtienes lo mismo que capa a capa. En directo, componer dos capas semitransparentes entre sí exige dividir por el alfa resultante y la mezcla no es tan simple. Por eso los compositores (el del navegador, los de los sistemas operativos) trabajan en premultiplicado.</p>
 
 <h3>3. Aditivo y alfa con el mismo estado</h3>
 
@@ -510,7 +510,7 @@ vec4 c = texture(u_tex, v_uv);
 if (c.a < 0.5) discard;       // el fragmento no existe: ni color ni profundidad
 color = vec4(c.rgb, 1.0);
 </script>
-<p><code>discard</code> abandona el fragmento: no escribe color ni profundidad. Ventajas: no hace falta ordenar (los píxeles que quedan son opacos y escriben profundidad normalmente) ni activar el blending. Inconvenientes: los bordes son duros y con dientes de sierra (un píxel está o no está), y en muchas GPU un shader con <code>discard</code> impide optimizaciones que descartan fragmentos ocultos <em>antes</em> de ejecutar el fragment shader, así que puede costar rendimiento en objetos que cubren mucha pantalla (en la GPU de pruebas, 32 capas con un <code>discard</code> que nunca se ejecutaba costaron entre 17 y 27 veces lo que una: lo mediste en <a href="../04-gpu/02-pipeline-grafico.html#early-z-probar-la-profundidad-antes-de-sombrear">4.2</a>).</p>
+<p><code>discard</code> abandona el fragmento: no escribe color ni profundidad. Ventajas: no hace falta ordenar (los píxeles que quedan son opacos y escriben profundidad normalmente) ni activar el blending. Inconvenientes: los bordes son duros y con dientes de sierra (un píxel está o no está), y en muchas GPU un shader con <code>discard</code> impide optimizaciones que descartan fragmentos ocultos <em>antes</em> de ejecutar el fragment shader, así que puede costar rendimiento en objetos que cubren mucha pantalla (en la GPU de pruebas, 32 capas con un <code>discard</code> que nunca se ejecutaba costaron unas 30 veces lo que una: lo mediste en <a href="../04-gpu/02-pipeline-grafico.html#early-z-probar-la-profundidad-antes-de-sombrear">4.2</a>).</p>
 
 <div class="callout hack" data-titulo="Alpha to coverage">
   <p>Con un búfer multimuestreado (el canvas con <code>antialias: true</code>, 5.1), <code>gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE)</code> convierte el alfa de cada fragmento en el porcentaje de las muestras MSAA del píxel que cubre: con alfa 0,5 cubre 2 de 4 muestras. Los bordes de los recortes salen suavizados, sin ordenar y sin blending, aprovechando el antialiasing que ya pagas. Es el truco clásico para vegetación. Solo tiene resolución de tantos niveles como muestras (aquí, 4).</p>

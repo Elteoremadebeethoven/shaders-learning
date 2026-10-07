@@ -25,6 +25,7 @@
      data-consola-altura="220"  altura de la consola en px (130 por defecto)
      data-pestaña="css" pestaña abierta al inicio
      data-error-esperado  el código de partida lanza un error a propósito
+                          (="webgpu": solo puede fallar si hay adaptador WebGPU; sin él, el verificador no lo exige)
    Dentro de un <script> escribe <\/script> en lugar de </script>.
    El código se ejecuta con Ctrl/Cmd+Enter o con el botón ▶ Ejecutar.
    ===================================================================== */
@@ -134,7 +135,7 @@
     console.timeEnd = function (n) { n = n || "default"; if (n in relojes) { conSangria("log", [n + ": " + (performance.now() - relojes[n]).toFixed(3) + " ms"]); delete relojes[n]; } else conSangria("warn", ["El reloj '" + n + "' no existe"]); };
     console.count = function (n) { n = n || "default"; cuentas[n] = (cuentas[n] || 0) + 1; conSangria("log", [n + ": " + cuentas[n]]); };
     console.countReset = function (n) { cuentas[n || "default"] = 0; };
-    console.assert = function (cond) { if (!cond) { var r = Array.prototype.slice.call(arguments, 1); conSangria("error", ["Assertion failed" + (r.length ? ": " : "")].concat(r)); } };
+    console.assert = function (cond) { if (!cond) { var r = Array.prototype.slice.call(arguments, 1); conSangria("error", ["Assertion failed" + (r.length ? ":" : "")].concat(r)); } };
     console.trace = function () { var pila = (new Error().stack || "").split("\n").slice(2).map(function (l) { return "    " + l.trim(); }).join("\n"); conSangria("log", ["console.trace " + Array.prototype.join.call(arguments, " ") + "\n" + pila]); };
     console.dir = function (v) { conSangria("log", [v]); };
     window.addEventListener("error", function (e) {
@@ -176,7 +177,7 @@
     const conConsola = el.dataset.consola !== "no";
     const sinEditor = el.hasAttribute("data-sin-editor");
     const claveGuardado = "pgjs:" + location.pathname + ":" + id + ":" + hash(orig.html + orig.css + orig.js);
-    const qa = (Curso.qa.playgrounds[id] = { tipo: "js", titulo: el.dataset.titulo || "", ok: null, error: null, errorEsperado: el.hasAttribute("data-error-esperado"), ejecutado: false });
+    const qa = (Curso.qa.playgrounds[id] = { tipo: "js", titulo: el.dataset.titulo || "", ok: null, error: null, errorEsperado: el.hasAttribute("data-error-esperado"), errorEsperadoSi: el.getAttribute("data-error-esperado") || "", ejecutado: false });
 
     const guardado = U.storage.get(claveGuardado, null);
     const codigo = guardado ? Object.assign({}, orig, guardado) : Object.assign({}, orig);

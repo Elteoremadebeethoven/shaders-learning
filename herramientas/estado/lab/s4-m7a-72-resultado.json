@@ -1,0 +1,166 @@
+[turnos] esperando turno (como mucho 2 procesos pesados a la vez)…
+{
+ "version": "Chrome/154.0.8037.98",
+ "E1": {
+  "eventos.html 250Hz": {
+   "enviados": 40,
+   "msEnvio": 195,
+   "pointermove": 39,
+   "framesConEventos": 12,
+   "porFrame": "3,3,3,4,3,3,3,4,3,4,3,3",
+   "maxPorFrame": 4,
+   "sumaCoalescidos": 40,
+   "rawupdate": 40,
+   "msAntesDelRaf": {
+    "min": 0,
+    "mediana": 3.4,
+    "max": 11.9
+   },
+   "rawMsAntesDelRaf": {
+    "mediana": 8.4,
+    "max": 17.1
+   }
+  },
+  "eventos.html 1000Hz": {
+   "enviados": 120,
+   "msEnvio": 172,
+   "pointermove": 110,
+   "framesConEventos": 12,
+   "porFrame": "4,9,10,12,9,11,11,7,11,12,13,1",
+   "maxPorFrame": 13,
+   "sumaCoalescidos": 120,
+   "rawupdate": 117,
+   "msAntesDelRaf": {
+    "min": 0,
+    "mediana": 6.8,
+    "max": 16.7
+   },
+   "rawMsAntesDelRaf": {
+    "mediana": 8.5,
+    "max": 18.1
+   }
+  },
+  "eventos.html de_golpe": {
+   "enviados": 60,
+   "msEnvio": 18,
+   "pointermove": 29,
+   "framesConEventos": 2,
+   "porFrame": "4,25",
+   "maxPorFrame": 25,
+   "sumaCoalescidos": 60,
+   "rawupdate": 33,
+   "msAntesDelRaf": {
+    "min": 0,
+    "mediana": 14.8,
+    "max": 16.3
+   },
+   "rawMsAntesDelRaf": {
+    "mediana": 14.7,
+    "max": 16.4
+   }
+  },
+  "eventos-sinraw.html 250Hz": {
+   "enviados": 40,
+   "msEnvio": 192,
+   "pointermove": 40,
+   "framesConEventos": 12,
+   "porFrame": "3,3,4,4,3,4,3,4,3,3,4,2",
+   "maxPorFrame": 4,
+   "sumaCoalescidos": 40,
+   "rawupdate": 0,
+   "msAntesDelRaf": {
+    "min": 0,
+    "mediana": 3,
+    "max": 12.3
+   },
+   "rawMsAntesDelRaf": null
+  },
+  "eventos-sinraw.html 1000Hz": {
+   "enviados": 120,
+   "msEnvio": 163,
+   "pointermove": 115,
+   "framesConEventos": 11,
+   "porFrame": "8,12,12,13,10,12,11,11,12,13,1",
+   "maxPorFrame": 13,
+   "sumaCoalescidos": 120,
+   "rawupdate": 0,
+   "msAntesDelRaf": {
+    "min": 0,
+    "mediana": 7,
+    "max": 16.5
+   },
+   "rawMsAntesDelRaf": null
+  },
+  "eventos-sinraw.html de_golpe": {
+   "enviados": 60,
+   "msEnvio": 9,
+   "pointermove": 39,
+   "framesConEventos": 1,
+   "porFrame": "39",
+   "maxPorFrame": 39,
+   "sumaCoalescidos": 60,
+   "rawupdate": 0,
+   "msAntesDelRaf": {
+    "min": 0,
+    "mediana": 6.2,
+    "max": 8.5
+   },
+   "rawMsAntesDelRaf": null
+  }
+ },
+ "E2_discretos_msAntesDelRaf": [
+  "move 0.2 | down 14.5 | up 5.0",
+  "move 7.8 | down 7.6 | up 5.6",
+  "move 5.5 | down 5.3 | up 3.0",
+  "move 0.0 | down 14.2 | up 11.9",
+  "move 10.4 | down 10.2 | up 7.1",
+  "move 3.6 | down 3.4 | up 1.5",
+  "move 10.0 | down 9.8 | up 7.7",
+  "move 0.6 | down 0.5 | up 15.7",
+  "move 11.2 | down 11.2 | up 8.3",
+  "move 0.4 | down 0.4 | up 15.3"
+ ],
+ "E3_scroll": {
+  "n": 12,
+  "msAntesDelRaf": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0.1,
+   0,
+   0.1,
+   0,
+   0.1,
+   0.1,
+   0
+  ],
+  "mismoScrollYqueElRaf": 12,
+  "scrollYfinal": 720
+ },
+ "E4_gbcr": "0.505 µs/llamada",
+ "E5": {
+  "MAX_FRAGMENT_UNIFORM_VECTORS": 1024,
+  "MAX_VERTEX_UNIFORM_VECTORS": 1024,
+  "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
+ },
+ "E6": {
+  "fijo": {
+   "marcos": 124,
+   "pasoScrollMediano": 25.07,
+   "difMediana": -25,
+   "difMin": -27,
+   "difMax": 0,
+   "porMarco": "0/0 0/0 -2/-2 -16/-16 -24/-24 -25/-25 -24/-24 -25/-25 -24/-24 -25/-25 -25/-25/-25 -24/-24/-24 -25/-25/-25 -24/-24/-24 -26/-26/-26 -24/-24 -25/-25 -25/-25 -25/-25 -25/-25 -24/-24/-24 -26/-26/-26 -25/-25/-25 -25/-25/-25 -25/-25 -25/-25 -25/-25 -25/-25 -25/-25 -23/-23/-23 -27/-27/-27 -26/-26/-26 -25/-25/-25 -25/-25 -25/-25 -24/-24 -27/-27 -25/-25 -25/-25/-25 -25/-25/-25 -26/-26/-26 -25/-25/-25 -25/-25 -25/-25 -26/-26 -25/-25 -25/-25 -26/-26/-26 -23/-23/-23 -26/-26/-26 -23/-23/-23 -26/-26/-26 -26/-26 -24/-24 -26/-26 -26/-26 -26/-26/-26 -26/-26/-26 -24/-24/-24 -27/-27/-27 -25/-25/-25 -26/-26 -25/-25 -25/-25 -25/-25 -26/-26/-26 -25/-25/-25 -25/-25/-25 -25/-25/-25 -25/-25/-25 -26/-26 -25/-25 -25/-25 -25/-25 -25/-25/-25 -25/-25/-25 -24/-24/-24 -25/-25/-25 -26/-26/-26 -25/-25 -25/-25 -25/-25 -25/-25 -25/-25 -25/-25/-25 -25/-25/-25 -24/-24/-24 -25/-25/-25 -25/-25 -25/-25 -24/-24 -25/-25 -25/-25 -24/-24/-24 -25/-25/-25 -24/-24/-24 -22/-22/-22 -25/-25 -25/-25 -17/-17 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0"
+  },
+  "abs": {
+   "marcos": 126,
+   "pasoScrollMediano": 25.12,
+   "difMediana": 0,
+   "difMin": 0,
+   "difMax": 0,
+   "porMarco": "0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0 0/0"
+  }
+ }
+}

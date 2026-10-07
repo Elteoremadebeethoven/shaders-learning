@@ -1,0 +1,99 @@
+<!doctype html><meta charset="utf-8"><title>afirmaciones G3</title>
+<body><canvas id="c" width="736" height="360"></canvas>
+<script>
+const R = {};
+const c = document.getElementById('c');
+const gl = c.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+R.renderer = (() => { const e = gl.getExtension('WEBGL_debug_renderer_info'); return e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : '?'; })();
+// 1. desynchronized
+const c2 = document.createElement('canvas');
+const g2 = c2.getContext('webgl2', { desynchronized: true });
+R.desynchronized = g2.getContextAttributes().desynchronized;
+function compilar(tipo, src) { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); return { ok: gl.getShaderParameter(s, gl.COMPILE_STATUS), log: (gl.getShaderInfoLog(s) || '').trim() }; }
+const FSV = (cuerpo) => '#version 300 es\nprecision highp float;\nout vec4 fragColor;\nvoid main() {\n' + cuerpo + '\n}';
+// 2. tres #define tras #version sin #line, error en la línea 5 original
+const base = '#version 300 es\nprecision highp float;\nout vec4 fragColor;\nvoid main() {\n  fragColor = vec4(y);\n}';  // error en la línea 5
+R.errorLinea5_sinDefines = compilar(gl.FRAGMENT_SHADER, base).log.split('\n')[0];
+const i = base.indexOf('\n');
+R.errorLinea5_tresDefines = compilar(gl.FRAGMENT_SHADER, base.slice(0, i + 1) + '#define A 1\n#define B 2\n#define C 3\n' + base.slice(i + 1)).log.split('\n')[0];
+R.errorLinea5_tresDefines_line2 = compilar(gl.FRAGMENT_SHADER, base.slice(0, i + 1) + '#define A 1\n#define B 2\n#define C 3\n#line 2\n' + base.slice(i + 1)).log.split('\n')[0];
+// 3. #line 1 7 y error cuatro líneas más abajo
+R.line17 = compilar(gl.FRAGMENT_SHADER, '#version 300 es\n#line 1 7\nprecision highp float;\nout vec4 fragColor;\nvoid main() {\n  fragColor = vec4(y);\n}').log.split('\n')[0];
+R.line1 = compilar(gl.FRAGMENT_SHADER, '#version 300 es\n#line 1\nprecision highp float;\nout vec4 fragColor;\nvoid main() {\n  fragColor = vec4(y);\n}').log.split('\n')[0];
+// 4. #define delante de #version
+R.defineDelante = compilar(gl.FRAGMENT_SHADER, '#define OCTAVAS 5\n' + FSV('  fragColor = vec4(1.0);')).log.split('\n').slice(0, 3);
+// 5. #define RADIO 2 y RADIO * 0.5
+R.defineEntero = compilar(gl.FRAGMENT_SHADER, '#version 300 es\n#define RADIO 2\nprecision highp float;\nout vec4 fragColor;\nvoid main() {\n  float r = RADIO * 0.5;\n  fragColor = vec4(r);\n}').log.split('\n').slice(0, 3);
+// 6. APIs de 7.3
+R.drawElement = 'drawElement' in CanvasRenderingContext2D.prototype;
+R.drawElementImage = 'drawElementImage' in CanvasRenderingContext2D.prototype;
+R.texElementImage2D = 'texElementImage2D' in WebGL2RenderingContext.prototype;
+R.startViewTransition = typeof document.startViewTransition;
+// 7.2: tabIndex del canvas, límites, uniform3fv con 10 floats
+R.canvasTabIndex = document.createElement('canvas').tabIndex;
+R.maxFragUniformVectors = gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS);
+R.premultipliedAlphaDefecto = gl.getContextAttributes().premultipliedAlpha;
+function programa(fs) {
+  const vs = compilar(gl.VERTEX_SHADER, '#version 300 es\nvoid main(){ vec2 P[3]=vec2[3](vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0)); gl_Position=vec4(P[gl_VertexID],0.0,1.0); }');
+  const s = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(s, fs); gl.compileShader(s);
+  const p = gl.createProgram(); const v = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(v, '#version 300 es\nvoid main(){ vec2 P[3]=vec2[3](vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0)); gl_Position=vec4(P[gl_VertexID],0.0,1.0); }'); gl.compileShader(v);
+  gl.attachShader(p, v); gl.attachShader(p, s); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getShaderInfoLog(s) + gl.getProgramInfoLog(p));
+  return p;
+}
+const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+{
+  const p = programa('#version 300 es\nprecision highp float;\nuniform vec3 u_ondas[8];\nout vec4 f;\nvoid main(){ f = vec4(u_ondas[7], 1.0); }');
+  gl.useProgram(p);
+  while (gl.getError()) {}
+  const loc = gl.getUniformLocation(p, 'u_ondas');
+  gl.uniform3fv(loc, new Float32Array(10));
+  R.uniform3fv_10 = gl.getError() === gl.INVALID_VALUE ? 'INVALID_VALUE' : 'otro';
+}
+// 7. smoothstep(e, e, x) con e uniform: ¿escalón?
+{
+  const p = programa('#version 300 es\nprecision highp float;\nuniform float u_e;\nout vec4 f;\nvoid main(){ float x = gl_FragCoord.x / 736.0; f = vec4(smoothstep(u_e, u_e, x), 0.0, 0.0, 1.0); }');
+  gl.useProgram(p); gl.uniform1f(gl.getUniformLocation(p, 'u_e'), 0.5);
+  gl.viewport(0, 0, 736, 360); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const px = new Uint8Array(736 * 4); gl.readPixels(0, 0, 736, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const vals = new Set(); let primerUno = -1;
+  for (let k = 0; k < 736; k++) { vals.add(px[k * 4]); if (px[k * 4] === 255 && primerUno < 0) primerUno = k; }
+  R.smoothstepIgual = { valores: [...vals], primerPixelA255: primerUno, xDelCentroDeEsePixel: ((primerUno + 0.5) / 736).toFixed(5) };
+}
+// 8. Derivadas dentro de una rama (persianas): textura con un color por nivel de mipmap
+{
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  const colores = [[255,0,0],[0,255,0],[0,0,255],[255,255,0],[0,255,255],[255,0,255],[255,255,255],[128,128,128],[255,128,0],[0,0,0]];
+  for (let lv = 0, s = 512; s >= 1; lv++, s >>= 1) {
+    const d = new Uint8Array(s * s * 4); const col = colores[lv];
+    for (let k = 0; k < s * s; k++) { d[k*4] = col[0]; d[k*4+1] = col[1]; d[k*4+2] = col[2]; d[k*4+3] = 255; }
+    gl.texImage2D(gl.TEXTURE_2D, lv, gl.RGBA8, s, s, 0, gl.RGBA, gl.UNSIGNED_BYTE, d);
+  }
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  // uv del lienzo escalado para que 1 texel ≈ 1 píxel o mayor (nivel 0): uv = fragcoord/512 → magnificación
+  const fs = (rama) => '#version 300 es\nprecision highp float;\nuniform sampler2D u_t;\nuniform float u_q;\nout vec4 f;\nvoid main(){ vec2 uv = gl_FragCoord.xy / 1024.0; float x = gl_FragCoord.x / 736.0;\n' +
+    (rama ? '  vec3 c = fract(x * 8.0) < u_q ? texture(u_t, uv).rgb : vec3(0.0);\n' : '  vec3 a = texture(u_t, uv).rgb; vec3 c = fract(x * 8.0) < u_q ? a : vec3(0.0);\n') + '  f = vec4(c, 1.0); }';
+  for (const rama of [true, false]) {
+    const p = programa(fs(rama)); gl.useProgram(p);
+    gl.uniform1i(gl.getUniformLocation(p, 'u_t'), 0);
+    const resultados = [];
+    for (const q of [0.1, 0.23, 0.37, 0.5, 0.61, 0.77, 0.9]) {
+      gl.uniform1f(gl.getUniformLocation(p, 'u_q'), q);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const px = new Uint8Array(736 * 4); gl.readPixels(0, 100, 736, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let malos = 0, maxDif = 0, cols = [];
+      for (let k = 0; k < 736; k++) {
+        const x = (k + 0.5) / 736; if (!(((x * 8) % 1) < q)) continue;   // solo píxeles de la rama «textura»
+        const d = Math.max(Math.abs(px[k*4] - 255), Math.abs(px[k*4+1]), Math.abs(px[k*4+2]));
+        if (d > 3) { malos++; cols.push(k + ':' + px[k*4] + ',' + px[k*4+1] + ',' + px[k*4+2]); }
+        maxDif = Math.max(maxDif, d);
+      }
+      resultados.push({ q, malos, maxDif, ejemplos: cols.slice(0, 4) });
+    }
+    R[rama ? 'derivadasRama' : 'derivadasLeerAntes'] = resultados;
+  }
+}
+window.RESULTADO = R;
+</script>

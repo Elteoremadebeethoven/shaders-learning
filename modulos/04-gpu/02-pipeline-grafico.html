@@ -298,7 +298,7 @@ $$v = \frac{\lambda_A \frac{v_A}{w_A} + \lambda_B \frac{v_B}{w_B} + \lambda_C \f
 <div class="callout bestiario" data-id="m4-clear-no-borra" data-titulo="gl.clear no borra toda la pantalla (o no borra un canal)">
   <p><strong>Síntoma:</strong> después de dibujar algo con el scissor activado, o con <code>colorMask</code>, <code>gl.clear</code> deja restos del frame anterior: solo se limpia un rectángulo, o el color de fondo sale mal.</p>
   <p><strong>Causa:</strong> <code>gl.clear</code> <em>respeta</em> el scissor y las máscaras de escritura. Lo comprobamos: con el scissor en un cuadrado de 16 × 16, <code>clear</code> solo pinta ese cuadrado; con <code>colorMask(false, true, true, true)</code>, no toca el canal rojo.</p>
-  <p><strong>Solución:</strong> antes de limpiar, deja el estado limpio: <code>gl.disable(gl.SCISSOR_TEST)</code>, <code>gl.colorMask(true, true, true, true)</code> y, si limpias la profundidad, <code>gl.depthMask(true)</code>. Otra vez la máquina de estados.</p>
+  <p><strong>Solución:</strong> antes de limpiar, deja el estado limpio: <code>gl.disable(gl.SCISSOR_TEST)</code>, <code>gl.colorMask(true, true, true, true)</code> y, si limpias la profundidad, <code>gl.depthMask(true)</code>. Otra vez la máquina de estados. Su pariente en 7.5: <a href="../07-integracion/05-particulas-gpu.html#m7-5-rasterizer-discard">«Tras añadir transform feedback, el lienzo se queda vacío (ni siquiera funciona clear)»</a>.</p>
 </div>
 
 <h3>Early-z: probar la profundidad antes de sombrear</h3>
@@ -382,23 +382,23 @@ for (const [nombre, p, orden, prof, mezcla] of casos) {
 </div>
 
 <table class="m4-compacta">
-  <thead><tr><th>32 capas a pantalla completa, 1024 × 1024 (Apple M1, varias ejecuciones)</th><th>Tiempo</th><th>× una capa</th></tr></thead>
+  <thead><tr><th>32 capas a pantalla completa, 1024 × 1024 (Apple M1, Chrome 154)</th><th>Cada escena en su propia pasada (mediana)</th><th>× una capa</th><th>En el playground (3 ejecuciones)</th></tr></thead>
   <tbody>
-    <tr><td>1 capa (referencia)</td><td class="num">2,4–3,5 ms</td><td class="num">1</td></tr>
-    <tr><td>opacas, con profundidad, en cualquier orden</td><td class="num">2,2–2,9 ms</td><td class="num">≈ 1</td></tr>
-    <tr><td>opacas, sin prueba de profundidad</td><td class="num">2,4–2,5 ms</td><td class="num">≈ 1</td></tr>
-    <tr><td>con <code>discard</code>, de delante a atrás</td><td class="num">14–15,5 ms</td><td class="num">4–6</td></tr>
-    <tr><td>con <code>discard</code>, de atrás a delante</td><td class="num">60–66 ms</td><td class="num">17–27</td></tr>
-    <tr><td>escribiendo <code>gl_FragDepth</code> (cualquier orden)</td><td class="num">59–66 ms</td><td class="num">17–27</td></tr>
-    <tr><td>translúcidas con blending</td><td class="num">59–66 ms</td><td class="num">17–27</td></tr>
+    <tr><td>1 capa (referencia)</td><td class="num">1,8 ms</td><td class="num">1</td><td class="num">3,8–4,6 ms</td></tr>
+    <tr><td>opacas, con profundidad, en cualquier orden</td><td class="num">1,8 ms</td><td class="num">1,0</td><td class="num">2,4–3,5 ms</td></tr>
+    <tr><td>opacas, sin prueba de profundidad</td><td class="num">1,8 ms</td><td class="num">1,0</td><td class="num">2,5–2,9 ms</td></tr>
+    <tr><td>con <code>discard</code>, de delante a atrás</td><td class="num">12,9 ms</td><td class="num">7</td><td class="num">(no lo mide)</td></tr>
+    <tr><td>con <code>discard</code>, de atrás a delante</td><td class="num">56,0 ms</td><td class="num">31</td><td class="num">56,7–57,0 ms</td></tr>
+    <tr><td>escribiendo <code>gl_FragDepth</code> (cualquier orden)</td><td class="num">56,2 ms</td><td class="num">31</td><td class="num">57,2–57,5 ms</td></tr>
+    <tr><td>translúcidas con blending</td><td class="num">56,1 ms</td><td class="num">31</td><td class="num">56,8–57,0 ms</td></tr>
   </tbody>
 </table>
-<p>En esta GPU, 32 capas opacas cuestan <strong>lo mismo que una</strong>, da igual el orden: solo se sombrea el fragmento visible de cada píxel. En cuanto el shader contiene un <code>discard</code> (¡aunque nunca se ejecute!), escribe <code>gl_FragDepth</code> o mezcla con blending, se pierde ese atajo y se sombrean las 32 capas. En una GPU de escritorio de «modo inmediato» (la mayoría de NVIDIA y AMD) lo esperable es distinto: el orden de delante a atrás aprovecha el early-z y el de atrás a delante sombrea todo; no lo hemos podido medir en esta máquina, así que ejecuta el playground en la tuya.</p>
-<p>Esto tiene una consecuencia directa para medir cuánto cuesta un shader. Fíjate en cómo mide el playground: cada escena empieza con un <code>clear</code> y termina con un <code>readPixels</code>, así que cada medida es una pasada de render completa y aislada, y el tiempo que sale es el de esa escena. Si, en cambio, dibujaras un mismo shader opaco N veces seguidas sobre el mismo framebuffer y dividieras entre N para saber lo que cuesta un dibujo, la eliminación de superficies ocultas se ahorraría los dibujos que el siguiente tapa por completo, y la cifra saldría muchas veces menor que la real (al revisar el módulo 6 encontramos cifras medidas así entre 3 y 30 veces por debajo). La forma fiable en esta GPU es la del playground: cada dibujo en su propia pasada. El método completo está en la caja «Cómo se mide lo que cuesta un shader (y cómo no)» de <a href="../06-glsl/06-ruido.html#medir-coste-shader">6.6</a>.</p>
+<p>En esta GPU, 32 capas opacas cuestan <strong>lo mismo que una</strong>, da igual el orden: solo se sombrea el fragmento visible de cada píxel. En cuanto el shader contiene un <code>discard</code> (¡aunque nunca se ejecute!), escribe <code>gl_FragDepth</code> o mezcla con blending, se pierde ese atajo y se sombrean las 32 capas: 31 veces el coste de una, justo lo que cuesta pagarlas todas. (Con el <code>discard</code>, eso pasa dibujando de atrás a delante, donde cada capa nueva tapa a las anteriores; de delante a atrás cuesta «solo» 7 veces, porque la prueba de profundidad todavía puede rechazar antes de sombrear parte de lo que queda detrás de una capa ya escrita.) En una GPU de escritorio de «modo inmediato» (la mayoría de NVIDIA y AMD) lo esperable es distinto: el orden de delante a atrás aprovecha el early-z y el de atrás a delante sombrea todo; no lo hemos podido medir en esta máquina, así que ejecuta el playground en la tuya.</p>
+<p>Esto tiene una consecuencia directa para medir cuánto cuesta un shader. Fíjate en cómo mide el playground: cada escena empieza con un <code>clear</code> y termina con un <code>readPixels</code>, así que cada medida es una pasada de render completa y aislada, y el tiempo que sale es el de esa escena. Si, en cambio, dibujaras un mismo shader opaco N veces seguidas sobre el mismo framebuffer y dividieras entre N para saber lo que cuesta un dibujo, la eliminación de superficies ocultas se ahorraría los dibujos que el siguiente tapa por completo, y la cifra saldría muchas veces menor que la real (al revisar el módulo 6 encontramos cifras medidas así entre 3 y 30 veces por debajo). La idea fiable en esta GPU es la del playground: cada dibujo en su propia pasada. Lo que le falta al playground es estabilidad: toma una sola medida por escena (la mediana de 3), y esa medida incluye el coste fijo de la pasada y la espera de <code>readPixels</code> (unos 0,6 ms, lo que tarda una pasada sin dibujar nada). En las escenas cortas eso pesa mucho y cambia de una ejecución a otra, así que su «× una capa» no es estable (de 12 a 15 en las ejecuciones de la tabla; de 17 a 27 en otras anteriores) y hasta puede darte las 32 capas opacas por debajo de una sola. La columna del medio repite cada escena muchas veces, en tandas, y se queda con la mediana de 5 tandas: una capa cuesta 1,8 ms y los cocientes salen limpios. El método completo está en la caja «Cómo se mide lo que cuesta un shader (y cómo no)» de <a href="../06-glsl/06-ruido.html#medir-coste-shader">6.6</a>.</p>
 
 <div class="callout bestiario" data-id="m4-discard-lento" data-titulo="Añadir un discard hace el shader más lento, aunque descarte píxeles">
   <p><strong>Síntoma:</strong> para «ahorrar trabajo» añades <code>if (alfa &lt; 0.5) discard;</code> a un shader, o dejas un <code>discard</code> en una rama que casi nunca se ejecuta, y la escena va más lenta.</p>
-  <p><strong>Causa:</strong> con <code>discard</code> (o con <code>gl_FragDepth</code>) la GPU no puede probar la profundidad antes de sombrear ni eliminar superficies ocultas: tiene que ejecutar el shader de todos los fragmentos para saber cuáles sobreviven. Medido en el M1: 32 capas con un <code>discard</code> que nunca se ejecuta, entre 17 y 27 veces el coste de una (según la ejecución); sin él, el coste de una.</p>
+  <p><strong>Causa:</strong> con <code>discard</code> (o con <code>gl_FragDepth</code>) la GPU no puede probar la profundidad antes de sombrear ni eliminar superficies ocultas: tiene que ejecutar el shader de todos los fragmentos para saber cuáles sobreviven. Medido en el M1: 32 capas con un <code>discard</code> que nunca se ejecuta, 31 veces el coste de una (56 ms frente a 1,8 ms, cada escena en su propia pasada): se sombrean todas; sin él, el coste de una.</p>
   <p><strong>Solución:</strong> usa shaders sin <code>discard</code> para todo lo opaco y reserva los que descartan para lo que de verdad lo necesita (vegetación, rejillas), dibujado aparte. No escribas <code>gl_FragDepth</code> salvo que sea imprescindible.</p>
 </div>
 
@@ -406,7 +406,7 @@ for (const [nombre, p, orden, prof, mezcla] of casos) {
   <p class="pregunta">Un fragment shader opaco termina con <code>if (color.a &lt; 0.01) discard;</code>, y esa condición no se cumple nunca en tu escena. En una GPU con early-z o eliminación de superficies ocultas, ¿qué efecto tiene esa línea?</p>
   <ul>
     <li>Ninguno: si nunca se ejecuta, es como si no estuviera.<div class="explicacion">El hardware decide cómo tratar el shader al compilarlo, no en cada fragmento: basta con que el <code>discard</code> <em>pueda</em> ocurrir para que la prueba de profundidad temprana deje de ser segura.</div></li>
-    <li data-correcta>Puede desactivar la prueba de profundidad temprana y hacer que se sombreen fragmentos ocultos.<div class="explicacion">Exacto: la GPU ya no puede saber, antes de ejecutar el shader, qué fragmentos sobrevivirán. En el M1 medimos que 32 capas pasaban de costar lo mismo que una a costar entre 17 y 27 veces más.</div></li>
+    <li data-correcta>Puede desactivar la prueba de profundidad temprana y hacer que se sombreen fragmentos ocultos.<div class="explicacion">Exacto: la GPU ya no puede saber, antes de ejecutar el shader, qué fragmentos sobrevivirán. En el M1 medimos que 32 capas pasaban de costar lo mismo que una a costar unas 30 veces más.</div></li>
     <li>Hace el shader más rápido, porque descarta trabajo.<div class="explicacion"><code>discard</code> evita la escritura del fragmento, pero el shader ya se ha ejecutado entero hasta llegar a él. Lo que se pierde (las pruebas tempranas) suele costar mucho más de lo que se ahorra.</div></li>
   </ul>
 </div>
@@ -417,11 +417,11 @@ for (const [nombre, p, orden, prof, mezcla] of casos) {
 // x = 2 > w = 1 en los tres vértices: el triángulo queda fuera del recorte
 if (oculto) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 </script>
-  <p>Si los tres vértices de un triángulo quedan fuera del mismo plano de recorte, el triángulo entero se descarta antes de rasterizar: ni un fragmento. (Colapsar los tres vértices en un mismo punto también funciona: área cero, cero fragmentos.) Lo medimos en el M1 con 32 capas a pantalla completa de 1024 × 1024, dibujadas de atrás a delante: con un shader que lleva el <code>discard</code> para poder ocultar, las capas <em>visibles</em> cuestan 46 ms; con la versión del vertex shader, 2 ms, igual que un shader sin ocultación. Y ocultas cuestan 0,5 ms, lo mismo que no dibujar nada, frente a 1,1 ms con el <code>discard</code>, que rasteriza todos los fragmentos para tirarlos después.</p>
+  <p>Si los tres vértices de un triángulo quedan fuera del mismo plano de recorte, el triángulo entero se descarta antes de rasterizar: ni un fragmento. (Colapsar los tres vértices en un mismo punto también funciona: área cero, cero fragmentos.) Lo medimos en el M1 con 32 capas a pantalla completa de 1024 × 1024, dibujadas de atrás a delante, cada escena en su propia pasada (mediana de 5 tandas): con un shader que empieza con <code>if (oculto) discard;</code> para poder ocultar, las capas <em>visibles</em> cuestan 56 ms; con la versión del vertex shader, 1,8 ms, igual que un shader sin ocultación. Y ocultas cuestan 0,1 ms, lo mismo que no dibujar nada, frente a 0,6 ms con el <code>discard</code>, que rasteriza todos los fragmentos para tirarlos después.</p>
 </div>
 
 <div class="callout senior" data-titulo="El driver también conoce trucos">
-  <p>Un detalle que descubrimos midiendo: con blending activado <em>pero</em> un fragment shader que escribe siempre un alfa constante de 1,0, las 32 capas vuelven a costar lo que una (2,6 ms). El compilador ve que, con <code>SRC_ALPHA, ONE_MINUS_SRC_ALPHA</code> y alfa 1, el blending no cambia nada, y trata el dibujo como opaco. Si el alfa se calcula en tiempo de ejecución, aunque siempre valga 1, el truco no funciona (66 ms). No construyas nada sobre esto (es un detalle del driver de Apple que puede cambiar), pero es un buen recordatorio de que el pipeline de la especificación es un modelo: el hardware y el driver hacen todo lo posible por saltárselo cuando el resultado es el mismo.</p>
+  <p>Un detalle que descubrimos midiendo: con blending activado <em>pero</em> un fragment shader que escribe siempre un alfa constante de 1,0, las 32 capas vuelven a costar lo que una (1,8 ms, cada escena en su propia pasada). El compilador ve que, con <code>SRC_ALPHA, ONE_MINUS_SRC_ALPHA</code> y alfa 1, el blending no cambia nada, y trata el dibujo como opaco. Si el alfa se calcula en tiempo de ejecución, aunque siempre valga 1, el truco no funciona (56 ms). No construyas nada sobre esto (es un detalle del driver de Apple que puede cambiar), pero es un buen recordatorio de que el pipeline de la especificación es un modelo: el hardware y el driver hacen todo lo posible por saltárselo cuando el resultado es el mismo.</p>
 </div>
 
 <h2>12. El framebuffer</h2>
@@ -504,7 +504,7 @@ G.mostrar(fb, document.getElementById('c'));
 const esperado = [[16, 12], [60.8, 14.4], [32, 43.2]];
 (vistos[0] || []).forEach((p, i) => {
   const ok = Math.abs(p[0] - esperado[i][0]) < 1e-4 && Math.abs(p[1] - esperado[i][1]) < 1e-4;
-  console.log(`vértice ${i}: (${p[0].toFixed(2)}, ${p[1].toFixed(2)})  esperado (${esperado[i].join(', ')})  ${ok ? '✓' : '✗'}`);
+  console.log(`${ok ? '✓' : '✗'} vértice ${i}: (${p[0].toFixed(2)}, ${p[1].toFixed(2)})  esperado (${esperado[i].join(', ')})`);
 });
 </script>
 <script type="text/x-js" data-solucion>
@@ -543,7 +543,7 @@ G.mostrar(fb, document.getElementById('c'));
 const esperado = [[16, 12], [60.8, 14.4], [32, 43.2]];
 (vistos[0] || []).forEach((p, i) => {
   const ok = Math.abs(p[0] - esperado[i][0]) < 1e-4 && Math.abs(p[1] - esperado[i][1]) < 1e-4;
-  console.log(`vértice ${i}: (${p[0].toFixed(2)}, ${p[1].toFixed(2)})  esperado (${esperado[i].join(', ')})  ${ok ? '✓' : '✗'}`);
+  console.log(`${ok ? '✓' : '✗'} vértice ${i}: (${p[0].toFixed(2)}, ${p[1].toFixed(2)})  esperado (${esperado[i].join(', ')})`);
 });
 </script>
   </div>
@@ -787,7 +787,7 @@ gl.depthMask(true);                      // restaurar el estado (para gl.clear y
     <li>El vertex shader entrega <code>gl_Position</code> en <strong>espacio de clip</strong>, sin dividir. La GPU recorta contra $-w \le x, y, z \le w$ (en la práctica, solo el plano cercano y el lejano de verdad; los lados, con la guard band), divide por $w$ (NDC) y aplica el viewport (píxeles, y hacia arriba, centros en ,5).</li>
     <li>El signo del área en pantalla decide si un triángulo está de frente (CCW por defecto). El culling está desactivado por defecto.</li>
     <li>Un píxel pertenece a un triángulo si <strong>su centro</strong> está dentro de las tres funciones de arista. Los empates se resuelven con una regla (en la GPU que medimos, aristas izquierda e inferior) para que ningún píxel compartido se pinte dos veces.</li>
-    <li>Los varyings se interpolan con baricéntricas corregidas con $1/w$; sin corrección, las texturas se doblan (la PS1). La profundidad se interpola linealmente en pantalla.</li>
+    <li>Los varyings se interpolan con baricéntricas corregidas con $1/w$; sin corrección, las texturas se doblan (le pasaba a la PlayStation original, como verás en <a href="05-uniforms-varyings.html">4.5</a>). La profundidad se interpola linealmente en pantalla.</li>
     <li>Pruebas por fragmento, en orden: scissor, stencil, profundidad, blending, máscaras. <code>gl.clear</code> respeta el scissor y las máscaras.</li>
     <li>Early-z y la eliminación de superficies ocultas (en GPU de teselas como las de Apple) evitan sombrear lo que no se ve… salvo con <code>discard</code>, <code>gl_FragDepth</code> o blending.</li>
   </ul>

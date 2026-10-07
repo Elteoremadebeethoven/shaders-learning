@@ -13,8 +13,9 @@ __pycache__/
 herramientas/.chrome-turno*
 *.log
 
-# Capturas y temporales de verificación
+# Capturas y temporales de verificación (las de los laboratorios se regeneran al ejecutarlos)
 capturas/
+herramientas/estado/lab/capturas-*/
 *.tmp
 
 # Claude Code: configuración local y supervisor de otro proyecto (Manim), no es del curso

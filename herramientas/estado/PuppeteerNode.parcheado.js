@@ -11,47 +11,22 @@ import { PUPPETEER_REVISIONS } from '../revisions.js';
 import { ChromeLauncher } from './ChromeLauncher.js';
 import { FirefoxLauncher } from './FirefoxLauncher.js';
 
-/* ===== PARCHE DEL CURSO: un solo Chrome headless a la vez en toda la máquina =====
-   (pedido del dueño: la temperatura subía con varios agentes renderizando a la vez)
-   Cada launch() espera turno (lock por directorio, con detección de dueños muertos) y
-   cada sesión se cierra sola a los 8 minutos para que nadie bloquee la cola. */
-import __fs from 'node:fs';
-const __LOCK = '/Users/alex/Projects/shaders/herramientas/.chrome-turno';
-const __MAX_MS = 8 * 60 * 1000;
+/* ===== PARCHE DEL CURSO: como mucho 2 procesos pesados a la vez en toda la máquina =====
+   (pedido del dueño: la temperatura sube con varios agentes renderizando a la vez; MacBook Air sin ventilador)
+   Cada launch() pide turno al portero herramientas/turnos.mjs (anota PIDE/CONCEDE/LIBERA en
+   herramientas/.turnos.log) salvo que el proceso ya se lanzara con turnos.mjs (CURSO_TURNO_CONCEDIDO=1).
+   Sin turnos.mjs, cada sesión de Chrome se cierra sola a los 8 min (CURSO_CHROME_MAX_MIN) para no bloquear la cola. */
+const __TURNOS = new URL('../../../../../turnos.mjs', import.meta.url).href;
+const __MAX_MS = Math.min(25, +(process.env.CURSO_CHROME_MAX_MIN || 8)) * 60 * 1000;
 async function __cursoAdquirirTurno() {
-    let avisado = false;
-    for (;;) {
-        try {
-            __fs.mkdirSync(__LOCK);
-            __fs.writeFileSync(__LOCK + '/pid', process.pid + ' ' + Date.now());
-            break;
-        }
-        catch (e) {
-            try {
-                const [pid, t] = __fs.readFileSync(__LOCK + '/pid', 'utf8').split(' ').map(Number);
-                let vivo = true;
-                try { process.kill(pid, 0); } catch { vivo = false; }
-                if (!vivo || Date.now() - t > __MAX_MS + 60000) { __fs.rmSync(__LOCK, { recursive: true, force: true }); continue; }
-            }
-            catch {
-                try { const st = __fs.statSync(__LOCK); if (Date.now() - st.mtimeMs > 30000) __fs.rmSync(__LOCK, { recursive: true, force: true }); } catch { }
-            }
-            if (!avisado) { console.error('[turno-chrome] esperando turno: solo se permite un Chrome headless a la vez…'); avisado = true; }
-            await new Promise(r => setTimeout(r, 1000));
-        }
-    }
-    let liberado = false;
-    const liberar = () => {
-        if (liberado) return;
-        liberado = true;
-        try { const c = __fs.readFileSync(__LOCK + '/pid', 'utf8'); if (c.startsWith(process.pid + ' ')) __fs.rmSync(__LOCK, { recursive: true, force: true }); } catch { }
-    };
-    process.once('exit', liberar);
-    return liberar;
+    if (process.env.CURSO_TURNO_CONCEDIDO === '1') return null;
+    const { adquirir } = await import(__TURNOS);
+    return adquirir({ motivo: 'puppeteer.launch desde ' + process.argv.slice(1).map(a => a.split('/').slice(-2).join('/')).join(' ') });
 }
 function __cursoVigilar(browser, liberar) {
+    if (!liberar) return;
     const t = setTimeout(() => {
-        console.error('[turno-chrome] sesión de más de 8 minutos: se cierra Chrome para liberar el turno');
+        console.error('[turnos] sesión de Chrome de más de ' + (__MAX_MS / 60000) + ' minutos: se cierra para liberar el turno');
         browser.close().catch(() => { });
         liberar();
     }, __MAX_MS);
@@ -177,7 +152,7 @@ export class PuppeteerNode extends Puppeteer {
             __cursoVigilar(__b, __liberar);
             return __b;
         }
-        catch (e) { __liberar(); throw e; }
+        catch (e) { __liberar?.(); throw e; }
     }
     #getLauncher(browser, logger) {
         if (this.#launcher && this.#launcher.browser === browser) {

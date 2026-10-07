@@ -78,7 +78,7 @@
 </div>
 
 <div class="callout bestiario" data-id="m1-ya-declarado" data-titulo="«Identifier 'x' has already been declared» sin haberlo declarado dos veces">
-  <p><strong>Síntoma:</strong> un script entero no se ejecuta y la consola dice <code>SyntaxError: Identifier 'lienzo' has already been declared</code> (o <code>'top'</code>, <code>'status'</code>…), aunque en ese archivo solo hay una declaración.</p>
+  <p><strong>Síntoma:</strong> un script entero no se ejecuta y la consola dice <code>SyntaxError: Identifier 'lienzo' has already been declared</code> (o <code>'top'</code>, <code>'location'</code>…), aunque en ese archivo solo hay una declaración.</p>
   <p><strong>Causa:</strong> otro <code>&lt;script&gt;</code> clásico de la página ya declaró ese nombre con <code>let</code>/<code>const</code>/<code>class</code> en su nivel superior, o el nombre es una propiedad fija de <code>window</code> (<code>top</code>, <code>location</code>…). Todos los scripts clásicos comparten el ámbito global.</p>
   <p><strong>Solución:</strong> envuelve el código de cada script en su propio ámbito, con un bloque <code>{ … }</code> o una función autoejecutada <code>(function () { … })()</code>, o renombra la variable.</p>
 </div>
@@ -194,7 +194,7 @@ const mod = (a, n) => a - n * Math.floor(a / n);   // como el mod() de GLSL
 mod(-1, 5);    // 4
 mod(-7.5, 2);  // 0.5
 </script>
-<p>Esta gráfica está dibujada por un shader, es decir, es lo que calcula de verdad la GPU. La primera curva es <code>mod(x, 1.0)</code> de GLSL: un diente de sierra que se repite igual a ambos lados del cero. La segunda, <code>x - trunc(x)</code>, es lo que hace el <code>%</code> de JavaScript con <code>x % 1</code>: para x negativa, la sierra se da la vuelta y va de 0 a −1. (Con x positiva las dos curvas coinciden, y por eso solo ves la segunda, en azul, dibujada encima de la primera.)</p>
+<p>Esta gráfica está dibujada por un shader, es decir, es lo que calcula de verdad la GPU. La primera curva es <code>mod(x, 1.0)</code> de GLSL: un diente de sierra que se repite igual a ambos lados del cero. La segunda, <code>x - trunc(x)</code>, es lo que hace el <code>%</code> de JavaScript con <code>x % 1</code>: para x negativa, la sierra se da la vuelta y va de 0 a −1. (Con x positiva las dos curvas coinciden, y por eso solo ves la segunda, en cian, dibujada encima de la primera.)</p>
 <div class="graficador" data-x="-2.5,2.5" data-y="-1.3,1.3" data-titulo="mod() de GLSL frente al % de JavaScript">
 <script type="text/x-exprs">
 mod(x, 1.0)

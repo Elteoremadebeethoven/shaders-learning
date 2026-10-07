@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Semántica en el M1 (sesión 4, m0-m6)</title></head>
+<body>
+<p>Página de experimentos para <code>s4-m0-m6-semantica.mjs</code> (no se abre a mano).</p>
+<canvas id="c" width="8" height="8"></canvas>
+<script>
+"use strict";
+/* Experimentos de semántica (no de tiempos) en el M1, sesión 4, agente m0-m6:
+   1. getShaderPrecisionFormat de todos los calificadores.
+   2. fast math e isnan: mod(x, 7) en múltiplos negativos de 7, hash del seno lejos del origen, 0/0, pow con
+      base negativa, atan(0, 0), sqrt/log de negativos, y si isnan(u_nan) detecta un NaN; con y sin isnan,
+      y compilando varias veces el MISMO texto (caché de programas de Chrome).
+   3. PCG con precision highp / mediump / lowp int frente a la referencia de JavaScript (bit a bit).
+   4. texelFetch fuera de rango y con niveles de mipmap inexistentes (el montaje de coh-m6-texelfetch.html).
+   5. El shader del ejemplo 5.10.4 en el punto de la cara oscura que lee la lección. */
+const gl = document.getElementById("c").getContext("webgl2", { antialias: false, alpha: false });
+const hayFloat = !!gl.getExtension("EXT_color_buffer_float");
+const VS = "#version 300 es\nvoid main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }";
+const vao = gl.createVertexArray();
+
+function programa(fs) {
+  const t0 = performance.now();
+  const sh = (tipo, src) => { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const v = sh(gl.VERTEX_SHADER, VS), f = sh(gl.FRAGMENT_SHADER, fs);
+  const p = gl.createProgram(); gl.attachShader(p, v); gl.attachShader(p, f); gl.linkProgram(p);
+  const ok = gl.getProgramParameter(p, gl.LINK_STATUS);
+  const ms = performance.now() - t0;
+  if (!ok) throw new Error(gl.getShaderInfoLog(f) + " / " + gl.getProgramInfoLog(p));
+  gl.deleteShader(v); gl.deleteShader(f);
+  return { p, ms };
+}
+// Dibuja el triángulo de pantalla en N destinos (formato interno, tipo de lectura) y devuelve los datos de cada uno.
+function render(p, w, h, destinos, uniformes) {
+  const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  const texs = destinos.map((d, i) => {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, d.interno, w, h);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0); return t;
+  });
+  gl.drawBuffers(destinos.map((d, i) => gl.COLOR_ATTACHMENT0 + i));
+  gl.viewport(0, 0, w, h); gl.useProgram(p);
+  for (const [k, v] of Object.entries(uniformes || {})) {
+    const loc = gl.getUniformLocation(p, k); if (!loc) continue;
+    if (Array.isArray(v)) gl["uniform" + v.length + "fv"](loc, v); else gl.uniform1f(loc, v);
+  }
+  gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const salida = destinos.map((d, i) => {
+    gl.readBuffer(gl.COLOR_ATTACHMENT0 + i);
+    const buf = d.lectura === "u32" ? new Uint32Array(w * h * 4) : new Float32Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, d.lectura === "u32" ? gl.RGBA_INTEGER : gl.RGBA, d.lectura === "u32" ? gl.UNSIGNED_INT : gl.FLOAT, buf);
+    return buf;
+  });
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb); texs.forEach((t) => gl.deleteTexture(t));
+  return salida;
+}
+const F32 = { interno: gl.RGBA32F, lectura: "f32" };
+const U32 = { interno: gl.RGBA32UI, lectura: "u32" };
+const f = (x) => (Number.isNaN(x) ? "NaN" : x === Infinity ? "+inf" : x === -Infinity ? "-inf" : +x.toPrecision(6));
+
+/* ---------- 1. precisión ---------- */
+window.precision = () => {
+  const r = {};
+  for (const sh of ["VERTEX_SHADER", "FRAGMENT_SHADER"]) for (const t of ["LOW_FLOAT", "MEDIUM_FLOAT", "HIGH_FLOAT", "LOW_INT", "MEDIUM_INT", "HIGH_INT"]) {
+    const p = gl.getShaderPrecisionFormat(gl[sh], gl[t]);
+    r[sh.slice(0, 4) + " " + t] = [p.rangeMin, p.rangeMax, p.precision].join(",");
+  }
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  r.renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  return r;
+};
+
+/* ---------- 2. fast math, isnan y la caché ---------- */
+const FS_FM = (etiqueta, conIsnan) => `#version 300 es
+precision highp float;
+// ${etiqueta}
+uniform float u_cero;
+uniform float u_neg;
+uniform float u_nan;
+layout(location = 0) out vec4 o;
+layout(location = 1) out vec4 o2;
+float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+void main() {
+  vec2 c = floor(gl_FragCoord.xy);
+  float id = c.y * 128.0 + c.x;
+  float x = -(id + 1000.0) * 7.0;
+  o = vec4(mod(x, 7.0), h(c + 20000.0), u_cero / u_cero, pow(u_neg, 1.0 / 2.2));
+  o2 = vec4(atan(u_cero, u_cero), sqrt(u_neg), log(u_neg), -1.0);
+${conIsnan ? "  o2.w = isnan(u_nan) ? 1.0 : 0.0;" : ""}
+}`;
+// Mide un texto (etiqueta = comentario de la 3.ª línea; mismo texto ⇒ misma entrada de la caché).
+window.fastmath = (etiqueta, conIsnan) => {
+  const { p, ms } = programa(FS_FM(etiqueta, conIsnan));
+  const [a, b] = render(p, 128, 128, [F32, F32], { u_cero: 0, u_neg: -0.1346, u_nan: NaN });
+  gl.deleteProgram(p);
+  let fallosMod = 0, detecta = 0; const vals = new Set();
+  for (let i = 0; i < 128 * 128; i++) {
+    const m = a[i * 4]; if (!(m >= 0 && m < 0.5)) fallosMod++;
+    vals.add(a[i * 4 + 1].toFixed(4));
+    if (b[i * 4 + 3] === 1) detecta++;
+  }
+  return { etiqueta, conIsnan, msCompilar: +ms.toFixed(2), fallosMod, de: 16384, hashDistintos: vals.size,
+    ceroEntreCero: f(a[2]), powNeg: f(a[3]), atan00: f(b[0]), sqrtNeg: f(b[1]), logNeg: f(b[2]),
+    isnanDetecta: conIsnan ? detecta : "—" };
+};
+// El experimento de lead-isnan (isnan-cache.html), en WebGL crudo: if (isnan(u_z)) x += 1.0; cuenta mod(x,7) > 3.5.
+const FS_LEAD = (etiqueta) => "#version 300 es\nprecision highp float;\n// " + etiqueta + "\nuniform float u_z;\nout vec4 o;\nvoid main(){\n float id = floor(gl_FragCoord.y)*64.0 + floor(gl_FragCoord.x);\n float x = -(id + 1000.0) * 7.0;\n if (isnan(u_z)) x += 1.0;\n o = vec4(mod(x, 7.0) > 3.5 ? 1.0 : 0.0, 0.0, 0.0, 1.0);\n}\n";
+window.lead = (etiqueta) => {
+  const { p, ms } = programa(FS_LEAD(etiqueta));
+  const [a] = render(p, 64, 64, [F32], { u_z: 0 });
+  gl.deleteProgram(p);
+  let n = 0; for (let i = 0; i < 4096; i++) if (a[i * 4] > 0.5) n++;
+  return { etiqueta, msCompilar: +ms.toFixed(2), fallosMod: n, de: 4096 };
+};
+
+// ¿Detecta isnan los NaN CALCULADOS (no un uniform) en la versión que sale de la caché (con fast math)?
+// Canal r: hash del seno (para saber si esa compilación tiene fast math: ~17 valores con él, ~2 000 sin él).
+const FS_DET = (etiqueta) => `#version 300 es
+precision highp float;
+// ${etiqueta}
+uniform float u_cero;
+uniform float u_neg;
+layout(location = 0) out vec4 o;
+layout(location = 1) out vec4 o2;
+float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+void main() {
+  vec2 c = floor(gl_FragCoord.xy);
+  vec3 lineal = vec3(0.9, 0.5, 0.3) * u_neg + 0.04;           // como el 5.10.4: negativo
+  vec3 fin = pow(lineal, vec3(1.0 / 2.2));
+  o = vec4(h(c + 20000.0), any(isnan(fin)) ? 1.0 : 0.0, isnan(sqrt(u_neg)) ? 1.0 : 0.0, isnan(log(u_neg)) ? 1.0 : 0.0);
+  o2 = vec4(any(isnan(normalize(vec3(u_cero)))) ? 1.0 : 0.0, isnan(u_cero / u_cero) ? 1.0 : 0.0, isinf(1.0 / u_cero) ? 1.0 : 0.0, fin.x);
+}`;
+window.detecta = (etiqueta) => {
+  const { p, ms } = programa(FS_DET(etiqueta));
+  const [a, b] = render(p, 128, 128, [F32, F32], { u_cero: 0, u_neg: -0.1866 });
+  gl.deleteProgram(p);
+  const vals = new Set(); const n = [0, 0, 0, 0, 0, 0];
+  for (let i = 0; i < 16384; i++) {
+    vals.add(a[i * 4].toFixed(4));
+    if (a[i * 4 + 1] === 1) n[0]++; if (a[i * 4 + 2] === 1) n[1]++; if (a[i * 4 + 3] === 1) n[2]++;
+    if (b[i * 4] === 1) n[3]++; if (b[i * 4 + 1] === 1) n[4]++; if (b[i * 4 + 2] === 1) n[5]++;
+  }
+  return { etiqueta, msCompilar: +ms.toFixed(2), hashDistintos: vals.size, de: 16384,
+    isnan_pow: n[0], isnan_sqrt: n[1], isnan_log: n[2], isnan_normalize0: n[3], isnan_0entre0: n[4], isinf_1entre0: n[5], pow_x: f(b[3]) };
+};
+
+/* ---------- 3. PCG y la precisión de los enteros ---------- */
+const FS_PCG = (decl) => `#version 300 es
+precision highp float;
+${decl}
+// pcg ${Math.random()}
+out uvec4 o;
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+void main() {
+  vec2 celda = floor(gl_FragCoord.xy) + vec2(20000.0, -70000.0);
+  uvec2 q = uvec2(ivec2(celda));
+  int i = int(gl_FragCoord.x) * 40000;        // pasa de 2^15 (para ver si un int se recorta)
+  o = uvec4(pcg(q.x + pcg(q.y)), pcg(uint(floor(gl_FragCoord.y) * 256.0 + floor(gl_FragCoord.x))), uint(i), q.y);
+}`;
+function pcgJS(v) {
+  const s = (Math.imul(v >>> 0, 747796405) + 2891336453) >>> 0;
+  const w = Math.imul(((s >>> (((s >>> 28) + 4) >>> 0)) ^ s) >>> 0, 277803737) >>> 0;
+  return ((w >>> 22) ^ w) >>> 0;
+}
+window.pcg = () => {
+  const r = {};
+  for (const [nombre, decl] of [["highp", "precision highp int;"], ["sin declarar (mediump)", ""], ["mediump", "precision mediump int;"], ["lowp", "precision lowp int;"]]) {
+    const { p } = programa(FS_PCG(decl));
+    const [a] = render(p, 256, 256, [U32], {});
+    gl.deleteProgram(p);
+    let mal = 0, mal2 = 0, mal3 = 0, mal4 = 0;
+    for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
+      const i = (y * 256 + x) * 4;
+      const qx = (x + 20000) >>> 0, qy = (y - 70000) >>> 0;
+      if (a[i] !== pcgJS((qx + pcgJS(qy)) >>> 0)) mal++;
+      if (a[i + 1] !== pcgJS(y * 256 + x)) mal2++;
+      if (a[i + 2] !== ((x * 40000) >>> 0)) mal3++;
+      if (a[i + 3] !== qy) mal4++;
+    }
+    r[nombre] = { distintosDeJS_hash2D: mal, distintosDeJS_hash1D: mal2, intMayorQue2a15_mal: mal3, uvecDeIvecNegativo_mal: mal4, de: 65536 };
+  }
+  return r;
+};
+
+/* ---------- 4. texelFetch (montaje de coh-m6-texelfetch.html) ---------- */
+window.texelfetch = () => {
+  const fs = `#version 300 es
+  precision highp float; uniform highp sampler2D t; uniform ivec2 c; uniform int lod; out vec4 o;
+  void main(){ o = texelFetch(t, c, lod); }`;
+  const { p } = programa(fs); gl.useProgram(p);
+  const dst = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, dst); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 1, 1);
+  const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0]); gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  gl.viewport(0, 0, 1, 1);
+  const datos = new Uint8Array([255,128,64,200, 255,128,64,200, 255,128,64,200, 255,128,64,200]);
+  gl.activeTexture(gl.TEXTURE0);
+  const completa = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, completa);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  const incompleta = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, incompleta);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos);
+  const mip = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, mip);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos); gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+  const max0 = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, max0);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, datos);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 0);
+  const grande = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, grande);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 16, 16, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(16 * 16 * 4).fill(200)); gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+  const dos = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, dos);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(16).fill(10));
+  gl.texImage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([90, 90, 90, 90]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+  const locT = gl.getUniformLocation(p, "t"), locC = gl.getUniformLocation(p, "c"), locL = gl.getUniformLocation(p, "lod");
+  gl.uniform1i(locT, 0);
+  const medir = (tex, x, y, lod) => { gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform2i(locC, x, y); gl.uniform1i(locL, lod);
+    gl.clearColor(0.5, 0.5, 0.5, 0.5); gl.clear(gl.COLOR_BUFFER_BIT); gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return Array.from(px).join(","); };
+  const r = {
+    completa_dentro_0_0: medir(completa, 0, 0, 0),
+    completa_fuera_5_5: medir(completa, 5, 5, 0),
+    completa_fuera_neg1_0: medir(completa, -1, 0, 0),
+    completa_sin_mipmaps_nivel1: medir(completa, 0, 0, 1),
+    completa_sin_mipmaps_nivel3: medir(completa, 0, 0, 3),
+    incompleta_dentro_0_0: medir(incompleta, 0, 0, 0),
+    incompleta_fuera_5_5: medir(incompleta, 5, 5, 0),
+    mip_nivel1: medir(mip, 0, 0, 1),
+    mip_nivel3: medir(mip, 0, 0, 3),
+    mip_nivel_neg1: medir(mip, 0, 0, -1),
+    max_level0_nivel1: medir(max0, 0, 0, 1),
+    grande16_nivel4: medir(grande, 0, 0, 4),
+    grande16_nivel5: medir(grande, 0, 0, 5),
+    grande16_nivel7: medir(grande, 0, 0, 7),
+    grande16_nivel2_fuera_4_0: medir(grande, 4, 0, 2),
+    dos_nivel0: medir(dos, 0, 0, 0), dos_nivel1: medir(dos, 0, 0, 1), dos_nivel2: medir(dos, 0, 0, 2), dos_nivel5: medir(dos, 0, 0, 5), dos_nivel_neg1: medir(dos, 0, 0, -1),
+    dos_nivel1_fuera_1_0: medir(dos, 1, 0, 1),
+    error: gl.getError(),
+  };
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fbo); gl.deleteProgram(p);
+  [dst, completa, incompleta, mip, max0, grande, dos].forEach((t) => gl.deleteTexture(t));
+  return r;
+};
+
+/* ---------- 5. el shader del ejemplo 5.10.4, en el punto que lee la lección al arrancar ---------- */
+const FS_5104 = (conIsnan, sufijo) => `#version 300 es
+precision highp float;
+uniform vec2 u_resolucion;
+uniform int u_vista;
+out vec4 color;
+void main() {
+  vec2 p = (2.0 * gl_FragCoord.xy - u_resolucion) / u_resolucion.y;
+  float r2 = dot(p, p) / 0.64;
+  if (r2 > 1.0) { color = vec4(0.08, 0.09, 0.12, 1.0); return; }
+  vec3 n = vec3(p / 0.8, sqrt(1.0 - r2));
+  vec3 l = normalize(vec3(0.6, 0.5, 0.6));
+  float difusa = dot(n, l);
+  vec3 lineal = vec3(0.9, 0.5, 0.3) * difusa + 0.04;
+  vec3 final = pow(lineal, vec3(1.0 / 2.2));
+  if (u_vista == 0) color = vec4(final, 1.0);
+  else if (u_vista == 1) color = vec4(n * 0.5 + 0.5, 1.0);
+  else if (u_vista == 2) color = vec4(max(difusa, 0.0), 0.0, max(-difusa, 0.0), 1.0);
+  ${conIsnan ? "else if (u_vista == 3) color = any(isnan(final)) ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(vec3(dot(final, vec3(0.333))), 1.0);" : ""}
+  else color = vec4(final, difusa);
+}` + sufijo;
+window.ej5104 = (conIsnan, sufijo) => {
+  const { p } = programa(FS_5104(conIsnan, sufijo));
+  gl.useProgram(p); gl.uniform1i(gl.getUniformLocation(p, "u_vista"), 4);
+  // 1 px con gl_FragCoord = (0.5, 0.5): u_resolucion elegida para que p = (−0.45, −0.40), el punto que lee la lección
+  const [a] = render(p, 1, 1, [F32], { u_resolucion: [1.75, 1 / 0.6] });
+  gl.deleteProgram(p);
+  return { conIsnan, sufijo: sufijo.includes("fijo") ? "fijo" : "único", difusa: f(a[3]), final: [f(a[0]), f(a[1]), f(a[2])] };
+};
+</script>
+</body></html>

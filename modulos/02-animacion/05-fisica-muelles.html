@@ -233,7 +233,7 @@ class Muelle1D {
   <div class="demo-controles"></div>
   <div class="demo-info">haz clic en el lienzo para cambiar el destino</div>
 </div>
-<p>Con el muelle, la gráfica de velocidad es continua: sin caídas a cero ni saltos verticales. Es lo que el ojo percibe como «natural»: los objetos reales no cambian de velocidad instantáneamente, porque tienen inercia.</p>
+<p>Con el muelle, la gráfica de velocidad es continua: sin caídas a cero ni saltos verticales. Lo que sí cambia de golpe con cada destino nuevo es la <em>aceleración</em> (la pendiente de la gráfica): la fuerza del muelle depende de la distancia al destino, y esa distancia salta. Con destinos a cientos de píxeles, la velocidad sube en dos o tres frames, muy deprisa pero sin saltar. Es lo que el ojo percibe como «natural»: los objetos reales no cambian de velocidad instantáneamente, porque tienen inercia.</p>
 
 <div class="callout hack">
   <p>Un muelle sirve para animar cualquier número, no solo posiciones: escala, opacidad, el ángulo de una flecha (aplicando la fuerza sobre la diferencia envuelta de <a href="04-interpolacion-easing.html">2.4</a>), el progreso de un <em>uniform</em> en un shader (lo harás en <a href="../07-integracion/03-transiciones-shader.html">7.3</a>) o incluso un color en Oklab (un muelle por componente). Y para animaciones 2D, dos muelles independientes, uno por eje, dan movimientos curvos preciosos cuando el destino cambia en diagonal.</p>
@@ -318,7 +318,7 @@ function muelleCritico(estado, objetivo, omega, dt) {
 </div>
 
 <div class="callout senior" data-titulo="eventos coalescidos y predichos">
-  <p>Recuerda de la lección <a href="../01-web/04-js-dom-eventos.html">1.4</a> que un ratón o un lápiz informan de su posición más veces de las que tu código recibe <code>pointermove</code>: el navegador agrupa (<em>coalesce</em>) las muestras intermedias, y <code>e.getCoalescedEvents()</code> te las devuelve, cada una con su posición y su <code>timeStamp</code>. Para estimar la velocidad de un flick con precisión, mete esas muestras en tu historial en lugar de solo la del evento. Su pareja es <code>e.getPredictedEvents()</code>: posiciones futuras estimadas por el navegador, útiles para reducir la latencia percibida al dibujar un trazo. Lo comprobamos en Chrome enviando 60 movimientos de ratón de golpe: llegaron 31 <code>pointermove</code>, y sus listas de coalescidos sumaban exactamente las 60 posiciones (y los dos métodos existen). Los verás de nuevo en <a href="../07-integracion/02-interaccion.html">7.2</a>.</p>
+  <p>Recuerda de la lección <a href="../01-web/04-js-dom-eventos.html">1.4</a> que un ratón o un lápiz informan de su posición más veces de las que tu código recibe <code>pointermove</code>: el navegador agrupa (<em>coalesce</em>) las muestras intermedias, y <code>e.getCoalescedEvents()</code> te las devuelve, cada una con su posición y su <code>timeStamp</code>. Para estimar la velocidad de un flick con precisión, mete esas muestras en tu historial en lugar de solo la del evento. Su pareja es <code>e.getPredictedEvents()</code>: posiciones futuras estimadas por el navegador, útiles para reducir la latencia percibida al dibujar un trazo. Lo comprobamos en Chrome enviando 60 movimientos de ratón de golpe: llegaron 31 <code>pointermove</code>, y sus listas de coalescidos sumaban exactamente las 60 posiciones (y los dos métodos existen). El 31 no es una constante: en otras pruebas, en otros sistemas, llegaron entre 2 y 39, según el ritmo al que entraban las muestras y lo ocupado que estaba el hilo principal (<a href="../07-integracion/02-interaccion.html#suavizar-el-puntero-y-medir-su-velocidad">7.2</a>); lo único fijo es que los coalescidos las suman todas. Los verás de nuevo en <a href="../07-integracion/02-interaccion.html">7.2</a>.</p>
 </div>
 
 <section class="ejemplo">
@@ -901,7 +901,7 @@ Curso.alListo(() => {
     let modo = "muelle", auto = true, ultimoClic = -10, reloj = 0, tAuto = 0;
     const pos = { x: 120, y: 120 }, vel = { x: 0, y: 0 }, obj = { x: 120, y: 120 };
     let tw = null;
-    const K = 170, C = 20, DUR = 0.9, hist = [];
+    const K = 170, C = 20, DUR = 0.9, hist = [], VMAX = 4500;   // escala de la gráfica: el muelle pasa a menudo de 2000 px/s (hasta ~3800)
     let prev = null;
     const inOut = M2.easings.cubicInOut;
     function destino(x, y) { obj.x = x; obj.y = y; tw = { dx: pos.x, dy: pos.y, hx: x, hy: y, t0: reloj }; }
@@ -927,7 +927,7 @@ Curso.alListo(() => {
         ctx.strokeStyle = c.tenue; ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(obj.x - 8, obj.y); ctx.lineTo(obj.x + 8, obj.y); ctx.moveTo(obj.x, obj.y - 8); ctx.lineTo(obj.x, obj.y + 8); ctx.stroke();
         ctx.fillStyle = modo === "muelle" ? c.verde : c.acento; ctx.beginPath(); ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2); ctx.fill();
-        const gy = e.h - 80, gh = 64, max = 2200;
+        const gy = e.h - 80, gh = 64, max = VMAX;
         ctx.fillStyle = c.superficie; ctx.fillRect(10, gy, e.w - 20, gh + 8);
         ctx.strokeStyle = c.acento2; ctx.lineWidth = 2; ctx.beginPath();
         hist.forEach((v, i) => { const X = 10 + i * (e.w - 20) / 180, Y = gy + gh + 4 - Math.min(v, max) / max * gh; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });

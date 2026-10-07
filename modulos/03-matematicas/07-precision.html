@@ -172,7 +172,7 @@ else {
 <h2>El tiempo que crece: u_time tras horas</h2>
 <p>Ya lo anticipamos en <a href="03-trigonometria.html">3.3</a>. Un shader que usa <code>sin(u_time)</code> sufre dos degradaciones a medida que pasa el tiempo:</p>
 <ol>
-  <li><strong>La resolución del propio tiempo</strong>: el uniform es un float32. Tras un día (86 400 s), <code>u_time</code> solo puede avanzar en pasos de 0.0078 s; entre los 1.5 y los 3 días, de 0.016 s (un frame); pasados los 3 días y 1 hora (2¹⁸ = 262 144 s), de 0.031 s, casi dos frames; pasados los 12 días y medio (2²⁰ = 1 048 576 s), de 0.125 s. La animación va «a golpes» aunque se dibuje a 60 fps.</li>
+  <li><strong>La resolución del propio tiempo</strong>: el uniform es un float32. Tras un día (86 400 s), <code>u_time</code> solo puede avanzar en pasos de 0.0078 s; entre los 1.5 y los 3 días, de 0.016 s (un frame); pasados los 3 días y 49 minutos (2¹⁸ = 262 144 s), de 0.031 s, casi dos frames; pasados los 12 días y 3 horas (2²⁰ = 1 048 576 s), de 0.125 s. La animación va «a golpes» aunque se dibuje a 60 fps.</li>
   <li><strong>La precisión del seno</strong>: la GPU reduce el argumento restándole múltiplos de 2π con precisión limitada. En el M1 medimos errores de 0.00002 con x = 1000, 0.0007 con x = 10 000 y 0.03 con x = 1 000 000; con x = 10 000 000, el seno devolvió 0.707 en lugar de 0.421. Otras GPU son mejores o peores: la especificación no promete nada.</li>
 </ol>
 <p>Este shader simula que la página lleva abierta las horas que elijas: suma ese tiempo a <code>u_time</code> dentro de la GPU, en float32, como lo haría una aplicación ingenua. Mira el péndulo y la onda con 0, 50 y 500 horas.</p>
@@ -211,7 +211,7 @@ void main() {
 
 <div class="callout bestiario" data-id="m3-tiempo-horas" data-titulo="La animación va a saltos tras horas con la página abierta">
   <p><strong>Síntoma:</strong> una animación en shader (o en JavaScript, si pasa el tiempo por <code>Float32Array</code>) funciona perfectamente al cargar la página, pero tras varias horas o días se vuelve entrecortada, tiembla o se deforma. Recargar la página «lo arregla». Típico de pantallas de exposición, fondos animados y salvapantallas.</p>
-  <p><strong>Causa:</strong> el tiempo en segundos crece sin límite y, en float32, pierde resolución (ULP de 0.0078 s a las 24 h, 0.016 s a los 3 días, 0.031 s pasados los 3 días y 1 hora); además, <code>sin</code> y <code>cos</code> de argumentos grandes son imprecisos en la GPU. Con <code>mediump</code> en un móvil pasa en minutos (el bicho <a href="#m3-mediump-movil">«Funciona en el ordenador y falla en el móvil»</a>), y con la hora del sistema, desde el primer frame: <code>Date.now()</code> son milisegundos desde 1970, unos 1,8 billones, y en float32 sus valores representables están separados 2¹⁷ ms, más de dos minutos (lo mides en <a href="../05-webgl/04-uniforms-animacion.html#el-tiempo-en-segundos-y-por-que-pierde-precision">5.4</a>).</p>
+  <p><strong>Causa:</strong> el tiempo en segundos crece sin límite y, en float32, pierde resolución (ULP de 0.0078 s a las 24 h, 0.016 s a los 3 días, 0.031 s pasados los 3 días y 49 minutos); además, <code>sin</code> y <code>cos</code> de argumentos grandes son imprecisos en la GPU. Con <code>mediump</code> en un móvil pasa en minutos (el bicho <a href="#m3-mediump-movil">«Funciona en el ordenador y falla en el móvil»</a>), y con la hora del sistema, desde el primer frame: <code>Date.now()</code> son milisegundos desde 1970, unos 1,8 billones, y en float32 sus valores representables están separados 2¹⁷ ms, más de dos minutos (lo mides en <a href="../05-webgl/04-uniforms-animacion.html#el-tiempo-en-segundos-y-por-que-pierde-precision">5.4</a>).</p>
   <p><strong>Solución:</strong> envuelve el tiempo en JavaScript, donde es un double, antes de enviarlo: <code>gl.uniform1f(loc, (performance.now() / 1000) % PERIODO)</code>, con <code>PERIODO</code> múltiplo de todos los periodos de tu animación (para que el salto al envolver no se note). Si las frecuencias no tienen un múltiplo común razonable, acumula la fase de cada oscilación en JavaScript (<code>fase = (fase + 2π·f·dt) % (2π)</code>) y envía las fases. Es el ejemplo siguiente. Y manda siempre segundos desde el arranque de la animación, nunca <code>Date.now()</code>.</p>
 </div>
 
@@ -275,6 +275,7 @@ float hash(vec2 p) {
 <script type="x-shader/x-fragment">
 #version 300 es
 precision highp float;
+precision highp int;           // PCG necesita enteros de 32 bits de verdad (ver «El límite de 2²⁴»)
 uniform vec2 u_resolution;
 uniform float u_desplazamiento;
 uniform bool u_fp16;
@@ -314,7 +315,7 @@ void main() {
 </script>
 </div>
 
-<p>Con desplazamiento 0, el hash clásico da un ruido aceptable. Sube el desplazamiento: hacia 5 000 aparecen diagonales, hacia 20 000 son rayas evidentes, hacia 60 000 el ruido solo tiene unos pocos niveles de gris y hacia 150 000 es un patrón de rayas. Lo medimos: en un bloque de 64 × 64 celdas, el hash dio 955 valores distintos sin desplazamiento, 351 con 1 000, 65 con 5 000 y solo 17 con 20 000 (sumando el mismo desplazamiento a x y a y, como hace el editor); y a partir de 2 000 ningún valor superó 0.985 (lo verás en el ejercicio 3.7.3). Activa «simular mediump» con desplazamiento 0: la pantalla se queda casi negra. Y el hash de enteros, basado solo en multiplicaciones, desplazamientos y XOR de <code>uint</code> (operaciones exactas en cualquier GPU con GLSL ES 3.00), da el mismo ruido perfecto con cualquier desplazamiento, en cualquier tarjeta.</p>
+<p>Con desplazamiento 0, el hash clásico da un ruido aceptable. Sube el desplazamiento: hacia 5 000 aparecen diagonales, hacia 20 000 son rayas evidentes, hacia 60 000 el ruido solo tiene unos pocos niveles de gris y hacia 150 000 es un patrón de rayas. Lo medimos: en un bloque de 64 × 64 celdas, el hash dio 955 valores distintos sin desplazamiento, 351 con 1 000, 65 con 5 000 y solo 17 con 20 000 (sumando el mismo desplazamiento a x y a y, como hace el editor); y a partir de 2 000 ningún valor superó 0.985 (lo verás en el ejercicio 3.7.3). Activa «simular mediump» con desplazamiento 0: la pantalla se queda casi negra. Y el hash de enteros, basado solo en multiplicaciones, desplazamientos y XOR de <code>uint</code> (operaciones exactas en cualquier GPU con GLSL ES 3.00, si pides enteros de 32 bits con <code>precision highp int</code>, como hace el editor: lo verás más abajo), da el mismo ruido perfecto con cualquier desplazamiento, en cualquier tarjeta.</p>
 
 <p>La simulación de float16 del editor es un buen ejemplo de hack con bits:</p>
 <div class="anotado" data-lang="glsl">
@@ -465,12 +466,12 @@ void main() {
   <li>Índices de píxel en texturas grandes: una textura de 4096 × 4096 tiene exactamente $2^{24}$ píxeles, así que sus índices lineales (<code>y * ancho + x</code>, de 0 a $2^{24} - 1$) caben justos en float32; en una de 8192 × 4096 (2²⁵ píxeles), los índices impares de la segunda mitad de la textura ya no son exactos.</li>
   <li>Identificadores de objeto o de vértice guardados en un atributo float (para el <em>picking</em> por color, por ejemplo): por encima de 16 millones, dos objetos comparten número.</li>
 </ul>
-<p>GLSL ES 3.00 tiene <code>int</code> y <code>uint</code> de 32 bits exactos (y <code>gl_VertexID</code> es un <code>int</code>): úsalos para contar e indexar, y convierte a float solo para calcular.</p>
+<p>GLSL ES 3.00 tiene <code>int</code> y <code>uint</code> de 32 bits exactos (y <code>gl_VertexID</code> es un <code>int</code>): úsalos para contar e indexar, y convierte a float solo para calcular. Con la letra pequeña de la precisión: 32 bits es <code>highp</code>. En el vertex shader los enteros son <code>highp</code> por defecto, pero en el fragment shader son <code>mediump</code>, y para <code>mediump</code> la especificación solo garantiza 16 bits (de −2¹⁵ a 2¹⁵ − 1, o de 0 a 2¹⁶ − 1 sin signo). En el M1 no se nota: <code>getShaderPrecisionFormat</code> da 32 bits para los tres calificadores, y el hash PCG de arriba dio exactamente los mismos bits (comparados uno a uno con JavaScript) con <code>highp</code>, <code>mediump</code> y <code>lowp</code> (Chrome 154). Pero en una GPU que use de verdad 16 bits, PCG daría otro ruido y un contador por encima de 32 767 dejaría de estar garantizado. Por eso los editores de esta lección que usan PCG declaran <code>precision highp int;</code>: GLSL ES 3.00 obliga a que <code>highp</code> exista también en el fragment shader, así que pedirlo es seguro.</p>
 
 <div class="callout bestiario" data-id="m3-contador-congelado" data-titulo="Un contador se queda congelado o avanza de dos en dos">
   <p><strong>Síntoma:</strong> tras mucho tiempo, un contador de frames o de eventos deja de avanzar, o avanza a saltos de 2, 4, 8; los IDs de objetos muy numerosos se repiten.</p>
   <p><strong>Causa:</strong> el contador es un float32 y ha superado $2^{24}$: <code>x + 1</code> se redondea a <code>x</code>.</p>
-  <p><strong>Solución:</strong> cuenta con enteros (<code>int</code>/<code>uint</code> en GLSL, números normales en JavaScript, que son exactos hasta $2^{53}$) y, si el valor llega a la GPU como float, envíalo envuelto (<code>frame % 1000000</code>).</p>
+  <p><strong>Solución:</strong> cuenta con enteros (<code>int</code>/<code>uint</code> en GLSL, números normales en JavaScript, que son exactos hasta $2^{53}$) y, si el valor llega a la GPU como float, envíalo envuelto (<code>frame % 1000000</code>). Su pariente en 7.5: <a href="../07-integracion/05-particulas-gpu.html#m7-5-half-congeladas">«Con RGBA16F, unas partículas se mueven y otras se quedan congeladas (o van más despacio)»</a>.</p>
 </div>
 
 <h2>Ejercicios</h2>
@@ -496,7 +497,8 @@ function ulp(x) {
 // --- pruebas ---
 for (const x of [1, 0.1, 1000, 86400, 1e6, 16777216]) {
   const formula = 2 ** (Math.floor(Math.log2(Math.fround(x))) - 23);
-  console.log(String(x).padStart(9), '→ siguiente', siguienteF32(x), '| ulp', ulp(x), ulp(x) === formula ? '✓' : '✗ fórmula: ' + formula);
+  const ok = ulp(x) === formula;
+  console.log(ok ? '✓' : '✗', String(x).padStart(9), '→ siguiente', siguienteF32(x), '| ulp', ulp(x), ok ? '' : '(fórmula: ' + formula + ')');
 }
 </script>
 <script type="text/x-js" data-solucion>
@@ -516,7 +518,8 @@ function ulp(x) {
 
 for (const x of [1, 0.1, 1000, 86400, 1e6, 16777216]) {
   const formula = 2 ** (Math.floor(Math.log2(Math.fround(x))) - 23);
-  console.log(String(x).padStart(9), '→ siguiente', siguienteF32(x), '| ulp', ulp(x), ulp(x) === formula ? '✓' : '✗ fórmula: ' + formula);
+  const ok = ulp(x) === formula;
+  console.log(ok ? '✓' : '✗', String(x).padStart(9), '→ siguiente', siguienteF32(x), '| ulp', ulp(x), ok ? '' : '(fórmula: ' + formula + ')');
 }
 </script>
   </div>
@@ -613,6 +616,7 @@ void main() {
 <script type="x-shader/x-fragment" data-solucion>
 #version 300 es
 precision highp float;
+precision highp int;           // PCG necesita enteros de 32 bits de verdad
 uniform vec2 u_resolution;
 uniform float u_lejos;
 out vec4 fragColor;

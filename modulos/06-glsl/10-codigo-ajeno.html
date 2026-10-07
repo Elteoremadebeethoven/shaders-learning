@@ -399,7 +399,7 @@ void main() {
     <tr><td>Enteros sin signo</td><td>no hay <code>uint</code> («undeclared identifier»)</td><td><code>uint</code>, <code>uvec2</code>…</td></tr>
     <tr><td>Operadores de bits y <code>%</code></td><td>no («bit-wise operator supported in GLSL ES 3.00 and above only»; con <code>%</code>, «integer modulus operator supported in GLSL ES 3.00 and above only»)</td><td><code>&amp; | ^ ~ &lt;&lt; &gt;&gt; %</code> sobre enteros</td></tr>
     <tr><td>Bucles</td><td>solo <code>for</code> con límite constante y sin modificar el índice en el cuerpo; <code>while</code> da «This type of loop is not allowed»</td><td>cualquier <code>for</code>, <code>while</code>, <code>do-while</code></td></tr>
-    <tr><td>Índices de arrays y vectores</td><td>solo constantes o el índice del bucle («Index expression can only contain const or loop symbols»), también para uniforms</td><td>cualquier expresión entera</td></tr>
+    <tr><td>Índices de arrays y vectores</td><td>solo constantes o el índice del bucle («Index expression can only contain const or loop symbols»), también para los uniforms del fragment shader (en el vertex shader, los arrays <code>uniform</code> admiten cualquier índice)</td><td>cualquier expresión entera</td></tr>
     <tr><td>Arrays con constructor, <code>switch</code></td><td>no</td><td>sí: <code>float a[3] = float[3](…)</code>, <code>switch</code></td></tr>
     <tr><td>Funciones nuevas</td><td>no hay <code>round</code>, <code>trunc</code>, <code>tanh</code>, <code>inverse</code>, <code>floatBitsToUint</code>…</td><td>sí</td></tr>
     <tr><td>Derivadas (<code>dFdx</code>, <code>fwidth</code>)</td><td>solo con la extensión <code>GL_OES_standard_derivatives</code> (mira el bicho)</td><td>siempre disponibles</td></tr>

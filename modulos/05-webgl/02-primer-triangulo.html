@@ -185,8 +185,8 @@ void main() {
 
 <div class="callout bestiario" data-id="m5-version-primera-linea" data-titulo="«#version directive must occur on the first line»">
   <p><strong>Síntoma:</strong> un shader que parece perfecto no compila. El log dice <code>ERROR: 0:2: '\n' : #version directive must occur on the first line of the shader</code>, seguido de errores absurdos como <code>'layout' : syntax error</code>.</p>
-  <p><strong>Causa:</strong> la plantilla empieza con un salto de línea (<code>`</code> y en la línea siguiente <code>#version</code>), o con espacios, o un comentario. La directiva tiene que estar en la primera línea; ni siquiera se permite una línea vacía antes. Los errores siguientes son consecuencia: sin <code>#version</code> válido, el compilador usa GLSL ES 1.00, donde <code>layout</code>, <code>in</code> y <code>out</code> no existen.</p>
-  <p><strong>Solución:</strong> escribe <code>#version 300 es</code> pegado a la comilla invertida, o aplica <code>fuente.trim()</code> antes de pasarla a <code>shaderSource</code>. Si cargas shaders de archivos o de etiquetas <code>&lt;script&gt;</code>, recorta siempre.</p>
+  <p><strong>Causa:</strong> la plantilla empieza con un salto de línea (<code>`</code> y en la línea siguiente <code>#version</code>) o con una línea de comentario. La directiva tiene que estar en la primera línea; ni siquiera se permite una línea vacía antes (delante, en la misma línea, sí pueden ir espacios: <a href="../06-glsl/01-lenguaje.html#la-primera-linea-version-300-es">6.1</a>). Los errores siguientes son consecuencia: sin <code>#version</code> válido, el compilador usa GLSL ES 1.00, donde <code>layout</code>, <code>in</code> y <code>out</code> no existen.</p>
+  <p><strong>Solución:</strong> escribe <code>#version 300 es</code> pegado a la comilla invertida, o aplica <code>fuente.trim()</code> antes de pasarla a <code>shaderSource</code>. Si cargas shaders de archivos o de etiquetas <code>&lt;script&gt;</code>, recorta siempre. Su pariente en 7.7: <a href="../07-integracion/07-siguientes-pasos.html#m7-7-version-duplicada">«El shader que funcionaba en WebGL no compila en un ShaderMaterial («#version directive must occur before anything else»)»</a>.</p>
 </div>
 
 <h2>Paso 2: compilar cada shader</h2>
@@ -268,10 +268,10 @@ gl.deleteShader(fs);
 <p>Dos mensajes de enlace reales: si el fragment shader espera un <code>in vec3 v_color</code> que el vertex shader no produce, <code>FRAGMENT varying v_color does not match any VERTEX varying</code>; si uno de los shaders no compiló, <code>Fragment shader is not compiled.</code> Y un detalle fino sobre el borrado: si llamas a <code>deleteShader</code> con el shader todavía adjunto, solo queda <em>marcado</em> para borrarse (<code>getShaderParameter(s, gl.DELETE_STATUS)</code> pasa a <code>true</code> y <code>isShader</code> sigue siendo <code>true</code>); se borra de verdad al separarlo. Es la regla general de los objetos de OpenGL: un objeto en uso no desaparece, se borra cuando deja de estarlo.</p>
 
 <div class="callout senior" data-titulo="Comprobar cuesta: la compilación en paralelo">
-  <p>Chrome compila y enlaza en otros hilos (la extensión <code>KHR_parallel_shader_compile</code> está disponible). <code>compileShader</code> y <code>linkProgram</code> solo encolan el trabajo; las consultas de estado obligan a esperar el resultado. Medimos 40 programas distintos de dos maneras:</p>
+  <p>Chrome compila y enlaza en otros hilos (la extensión <code>KHR_parallel_shader_compile</code> está disponible). <code>compileShader</code> y <code>linkProgram</code> solo encolan el trabajo; las consultas de estado obligan a esperar el resultado. Medimos 40 programas distintos (shaders mínimos, en un Apple M1 con Chrome 154) de dos maneras:</p>
   <ul>
-    <li>Comprobando <code>COMPILE_STATUS</code> y <code>LINK_STATUS</code> justo después de cada llamada: <strong>unos 530 ms</strong>.</li>
-    <li>Compilando y enlazando todo primero y comprobando solo <code>LINK_STATUS</code> al final: <strong>unos 120 ms</strong> (encolar las 200 llamadas tardó 0,2 ms).</li>
+    <li>Comprobando <code>COMPILE_STATUS</code> y <code>LINK_STATUS</code> justo después de cada llamada: <strong>unos 450 ms</strong>.</li>
+    <li>Compilando y enlazando todo primero y comprobando solo <code>LINK_STATUS</code> al final: <strong>unos 150 ms</strong> (encolar todas las llamadas tardó 0,2 ms).</li>
   </ul>
   <p>La receta profesional: lanza todas las compilaciones y enlaces, y pregunta después. Comprueba solo <code>LINK_STATUS</code> (si un shader no compila, el enlace también falla) y consulta los logs de los shaders solo cuando el enlace ha fallado. Para no bloquear en absoluto, la extensión ofrece <code>COMPLETION_STATUS_KHR</code>, que puedes consultar frame a frame sin esperar. En este curso priorizamos la claridad de los errores y comprobamos en el momento, pero en una aplicación con decenas de shaders la diferencia se nota al arrancar.</p>
 </div>

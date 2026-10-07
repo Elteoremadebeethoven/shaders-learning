@@ -26,10 +26,3 @@ ul.m7-checklist li { padding-left: 1.7em; position: relative; margin: 0.35em 0; 
 ul.m7-checklist li::before {
   content: "☐"; position: absolute; left: 0.2em; top: 0; color: var(--accent); font-weight: 700;
 }
-
-/* Tabla de equivalencias (7.7) */
-table.m7-equivalencias td:nth-child(2), table.m7-equivalencias td:nth-child(3) { font-family: var(--mono); font-size: 13px; }
-
-/* Cifras en vivo bajo una demo de la página */
-.m7-cifras { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 13px/1.5 var(--mono); color: var(--text-2); }
-.m7-cifras b { color: var(--text); font-weight: 600; }

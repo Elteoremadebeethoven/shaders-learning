@@ -186,7 +186,7 @@ console.log('divisor de la location 1:', gl.getVertexAttrib(1, gl.VERTEX_ATTRIB_
 <div class="callout bestiario" data-id="m5-divisor-olvidado" data-titulo="Todas las instancias salen en el mismo sitio (o una sola figura deformada)">
   <p><strong>Síntoma:</strong> en lugar de N copias repartidas, ves una sola figura, a menudo deformada o más grande de lo esperado. No hay ningún error.</p>
   <p><strong>Causa:</strong> falta <code>vertexAttribDivisor(loc, 1)</code> en el atributo por instancia (o se llamó con otro VAO enlazado, porque es estado del VAO). Con divisor 0, cada <em>vértice</em> lee un desplazamiento distinto (el vértice 0 el primero, el 1 el segundo…) y todas las instancias son idénticas: una figura deformada, dibujada N veces en el mismo sitio.</p>
-  <p><strong>Solución:</strong> un <code>vertexAttribDivisor(loc, 1)</code> por cada atributo por instancia, con el VAO correcto enlazado. Para comprobarlo: <code>gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_DIVISOR)</code>.</p>
+  <p><strong>Solución:</strong> un <code>vertexAttribDivisor(loc, 1)</code> por cada atributo por instancia, con el VAO correcto enlazado. Para comprobarlo: <code>gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_DIVISOR)</code>. Su pariente en 7.5: <a href="../07-integracion/05-particulas-gpu.html#m7-5-divisor-colapso">«Tras el primer frame, todas las partículas saltan al mismo sitio»</a>.</p>
 </div>
 
 <h2>gl_InstanceID: el número de la instancia</h2>
@@ -402,28 +402,32 @@ GLKit.bucle((t, dt) => {
 });
 </script>
   </div>
-  <p>El buffer se reserva una vez con el máximo (100 000) y el control solo cambia cuántas instancias se simulan, se suben y se dibujan. En la máquina de pruebas, la mayor parte del tiempo de JavaScript se va en el bucle de simulación, no en WebGL: medimos que subir 1 000 000 de instancias de 8 bytes (8 MB) en cada frame costaba unos 0,64 ms de JavaScript por frame, sin bajar de 60 fps. Si la simulación fuera demasiado cara para la CPU, el siguiente paso es moverla a la GPU: el ping-pong de 5.8 o el transform feedback del final de esta lección.</p>
+  <p>El buffer se reserva una vez con el máximo (100 000) y el control solo cambia cuántas instancias se simulan, se suben y se dibujan. En la máquina de pruebas, la mayor parte del tiempo de JavaScript se va en el bucle de simulación, no en WebGL: medimos que subir 1 000 000 de instancias de 8 bytes (8 MB) en cada frame costaba entre 0,8 y 1,1 ms de JavaScript por frame (la llamada a <code>bufferSubData</code>), sin bajar de 60 fps. Si la simulación fuera demasiado cara para la CPU, el siguiente paso es moverla a la GPU: el ping-pong de 5.8 o el transform feedback del final de esta lección.</p>
 </section>
 
 <div class="callout hack" data-titulo="Quitar una instancia sin reconstruir nada">
-  <p>Si una partícula muere o un objeto desaparece, no hace falta rehacer el buffer ni desplazar todo lo que va detrás: copia los datos de la <em>última</em> instancia en el hueco, sube solo esos bytes (<code>bufferSubData(gl.ARRAY_BUFFER, k * STRIDE, f32, k * 5, 5)</code>) y dibuja una instancia menos. Como el número de instancias de la llamada puede ser menor que la capacidad del buffer, las instancias vivas quedan siempre juntas al principio y las muertas simplemente no se dibujan. El orden cambia, pero para partículas no importa. Se conoce como <em>swap and pop</em>, «intercambiar y quitar la última».</p>
+  <p>Si una partícula muere o un objeto desaparece, no hace falta rehacer el buffer ni desplazar todo lo que va detrás: copia los datos de la <em>última</em> instancia en el hueco, sube solo esos bytes (<code>bufferSubData(gl.ARRAY_BUFFER, k * STRIDE, f32, k * 5, 5)</code>) y dibuja una instancia menos. Como el número de instancias de la llamada puede ser menor que la capacidad del buffer, las instancias vivas quedan siempre juntas al principio y las muertas no se dibujan. El orden cambia, pero para partículas no importa. Se conoce como <em>swap and pop</em>, «intercambiar y quitar la última».</p>
 </div>
 
 <h2>¿Cuánto se ahorra?</h2>
-<p>Medimos la misma escena (cuadraditos de colores en posiciones aleatorias) dibujada de dos formas en el portátil de pruebas (Apple M1, Chrome con ANGLE sobre Metal): un <code>uniform2f</code> y un <code>drawArrays</code> por objeto, o todos en una llamada instanciada.</p>
+<p>Medimos la misma escena (cuadraditos de colores en posiciones aleatorias) dibujada de dos formas en el portátil de pruebas (Apple M1, Chrome 154 con ANGLE sobre Metal): un <code>uniform2f</code> y un <code>drawArrays</code> por objeto, o todos en una llamada instanciada. Es la demo de abajo, en una ventana de 1440 × 900 (el lienzo mide 736 × 267 px CSS, 1472 × 534 píxeles reales con DPR 2); para las dos últimas filas subimos <code>MAX</code> a 4 000 000.</p>
 <table>
   <thead><tr><th>Prueba</th><th>fps</th><th>JavaScript por frame</th></tr></thead>
   <tbody>
-    <tr><td>20 000 llamadas de dibujo</td><td>60</td><td>0,85 ms</td></tr>
-    <tr><td>50 000 llamadas</td><td>60</td><td>entre 3,4 y 7,7 ms, según la ejecución</td></tr>
-    <tr><td>100 000 llamadas</td><td>57</td><td>17 ms</td></tr>
-    <tr><td>200 000 llamadas</td><td>29</td><td>35 ms</td></tr>
-    <tr><td>100 000 llamadas con una <code>mat4</code> y un color por objeto</td><td>50</td><td>20 ms</td></tr>
-    <tr><td>1 000 000 de instancias, una llamada</td><td>60</td><td>0,02 ms</td></tr>
-    <tr><td>4 000 000 de instancias, una llamada</td><td>19</td><td>0,02 ms</td></tr>
+    <tr><td>20 000 llamadas de dibujo</td><td>60</td><td>1,7–1,8 ms</td></tr>
+    <tr><td>50 000 llamadas</td><td>58–60</td><td>de 7 a 17 ms (sube en unos segundos)</td></tr>
+    <tr><td>100 000 llamadas</td><td>32–33</td><td>31 ms</td></tr>
+    <tr><td>200 000 llamadas</td><td>17–18</td><td>55 ms</td></tr>
+    <tr><td>100 000 llamadas con una <code>mat4</code> en vez del <code>vec2</code></td><td>32–34</td><td>30 ms</td></tr>
+    <tr><td>1 000 000 de instancias, una llamada</td><td>48–52</td><td>0,07 ms</td></tr>
+    <tr><td>4 000 000 de instancias, una llamada</td><td>13–14</td><td>0,04–0,07 ms</td></tr>
   </tbody>
 </table>
-<p>Tres lecturas. La primera: esta máquina es rápida, y en Chrome cada llamada cuesta poco en el hilo de JavaScript (unos 40 nanosegundos con 20 000), porque solo se escribe en la cola de órdenes hacia el proceso de la GPU. El trabajo de verdad lo hace ese otro proceso, y cuando no da abasto, la cola se llena y el JavaScript también tiene que esperar: con 200 000 llamadas, cada una costó unos 170 nanosegundos, cuatro veces más. La segunda: con instancing, la CPU no hace prácticamente nada, y el límite pasa a ser la GPU, que con 4 millones de cuadrados (24 millones de vértices) ya no llega a 60 fps. La tercera: en un móvil o un portátil modesto, todas estas cifras serán bastante peores. No te fíes de nuestras tablas: mide en tus dispositivos con la demo siguiente.</p>
+<p>Tres lecturas. La primera: en Chrome cada llamada cuesta poco en el hilo de JavaScript (unos 90 nanosegundos con 20 000), porque solo se escribe en la cola de órdenes hacia el proceso de la GPU. El trabajo de verdad lo hace ese otro proceso, y cuando no da abasto, la cola se llena y el JavaScript también tiene que esperar: con 50 000 llamadas, el tiempo de JavaScript por frame fue subiendo de 7 a 17 ms mientras la cola se llenaba, y con 200 000 cada llamada costó unos 275 nanosegundos, tres veces más. Lo que viaja en cada llamada importa poco: una <code>mat4</code> (64 bytes) cuesta lo mismo que un <code>vec2</code> (8); lo caro es la llamada. La segunda: con instancing, la CPU no hace prácticamente nada, y el límite pasa a ser la GPU, que ya con 1 millón de cuadrados (6 millones de vértices) baja a unos 50 fps, y con 4 millones (24 millones de vértices), a 14. La tercera: en un móvil o un portátil modesto, todas estas cifras serán bastante peores. No te fíes de nuestras tablas: mide en tus dispositivos con la demo siguiente (para pasar de 150 000 objetos, sube <code>MAX</code> y el <code>max</code> del deslizador).</p>
+
+<div class="callout senior" data-titulo="Los fps de una prueba automática pueden mentir">
+  <p>Antes de medir en un Chrome con ventana probamos con el Chrome sin ventana (<em>headless</em>) de nuestras pruebas automáticas, y la demo de abajo, dentro de esta lección, marcaba 60 fps con 4 millones de instancias y 0,05 ms de JavaScript: el bucle no esperaba a la GPU, que iba muy por detrás. Añadiendo un <code>readPixels</code> de un píxel al final de cada frame, que obliga a esperar a que la GPU termine, el frame pasaba a 73 ms, los 14 fps de la tabla. Ni siquiera es una regla fija: el mismo documento de la demo, solo en una página vacía, sí bajaba a 12 fps en ese Chrome sin ventana; lo que cambiaba era el resto de la lección a su alrededor (en el Chrome con ventana, dentro de la lección, daba los 13–14 fps de la tabla). Moraleja: cuando una cifra de fps parece demasiado buena, compruébala con una espera explícita o en un navegador con ventana.</p>
+</div>
 
 <section class="ejemplo">
   <h3>Ejemplo 5.9.4 — N llamadas contra una</h3>

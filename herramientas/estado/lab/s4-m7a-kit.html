@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0}#c{position:absolute;left:30px;top:40px;width:390px;height:300px;display:block}</style></head>
+<body><canvas id="c"></canvas>
+<script src="/private/tmp/claude-501/-Users-alex-Projects-shaders/cb453cd9-477f-4de6-992a-174439234b23/scratchpad/agentes/m7a/exp/../m7kit.orig.js"></script>
+<script>window.M7viejo = window.M7;</script>
+<script src="/Users/alex/Projects/shaders/modulos/07-integracion/recursos/m7kit.js"></script>
+<script src="/Users/alex/Projects/shaders/assets/js/glkit.js"></script>
+<script>
+window.errores = []; window.avisos = [];
+const ce = console.error, cw = console.warn;
+console.error = (...a) => { window.errores.push(String(a[0] && a[0].message || a[0])); ce(...a); };
+console.warn = (...a) => { window.avisos.push(String(a[0])); cw(...a); };
+window.VS = "#version 300 es\nvoid main(){ vec2 P[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3)); gl_Position=vec4(P[gl_VertexID],0,1);}";
+window.FS = "#version 300 es\nprecision highp float;\nout vec4 o;\nvoid main(){ o = vec4(1,0,0,1); }";
+window.nuevoCanvas = (css) => { const c = document.createElement('canvas'); c.style.cssText = 'position:absolute;left:30px;top:40px;width:390px;height:300px;display:block;' + (css || ''); document.body.appendChild(c); return c; };
+</script></body></html>

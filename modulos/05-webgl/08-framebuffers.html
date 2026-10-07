@@ -282,7 +282,7 @@ requestAnimationFrame(frame);
 <div class="callout bestiario" data-id="m5-bucle-realimentacion" data-titulo="«Feedback loop formed between Framebuffer and active Texture»">
   <p><strong>Síntoma:</strong> un efecto que lee una textura y escribe en un framebuffer no hace nada, y la consola dice <code>INVALID_OPERATION: … Feedback loop formed between Framebuffer and active Texture</code>.</p>
   <p><strong>Causa:</strong> la textura que el shader muestrea está adjunta al framebuffer enlazado como destino. Leer y escribir la misma memoria en un mismo dibujo es indefinido, y WebGL lo bloquea.</p>
-  <p><strong>Solución:</strong> dos texturas y dos FBO: se lee de una y se escribe en la otra, y en el paso siguiente se intercambian. Es la técnica del ping-pong, justo lo que viene ahora.</p>
+  <p><strong>Solución:</strong> dos texturas y dos FBO: se lee de una y se escribe en la otra, y en el paso siguiente se intercambian. Es la técnica del ping-pong, justo lo que viene ahora. Su pariente en 7.5: <a href="../07-integracion/05-particulas-gpu.html#m7-5-no-avanza">«La simulación en la GPU avanza un paso y se congela (o no hace nada y avisa de un «feedback loop»)»</a>.</p>
 </div>
 
 <div class="quiz">
@@ -730,7 +730,7 @@ requestAnimationFrame(frame);
 <p><code>gl.readPixels(x, y, ancho, alto, formato, tipo, arrayDestino)</code> copia píxeles del framebuffer de lectura enlazado a un array de JavaScript. Tres cosas que hay que tener claras:</p>
 <ul>
   <li><strong>Las coordenadas son las de GL</strong>: en píxeles del búfer, con el origen abajo a la izquierda. Para leer bajo el ratón hay que convertir: <code>x = (clientX − rect.left) × width / rect.width</code> y <code>y = (rect.bottom − clientY) × height / rect.height</code>.</li>
-  <li><strong>Es síncrona</strong>: tiene que esperar a que la GPU termine todo lo encolado antes de devolverte los datos (el viaje de ida y vuelta del diagrama de 5.1). Lo medimos: sin nada pendiente, una lectura de un píxel costó 0,03 ms; justo después de un dibujo trivial, 0,4 ms (el dibujo solo, 0,004 ms); después de un dibujo pesado, lo que la GPU tarde en terminarlo, 14 ms en nuestra prueba. Una lectura al hacer clic no se nota. Una por frame obliga a la CPU a esperar a la GPU en cada frame, y así ya no pueden trabajar en paralelo (5.10).</li>
+  <li><strong>Es síncrona</strong>: tiene que esperar a que la GPU termine todo lo encolado antes de devolverte los datos (el viaje de ida y vuelta del diagrama de 5.1). Lo medimos (Apple M1, Chrome 154, promediando cientos de lecturas): sin nada pendiente, una lectura de un píxel costó unos 0,06 ms; justo después de un dibujo trivial, entre 0,3 y 0,6 ms (el dibujo solo, 0,003 ms); después de un dibujo pesado, lo que la GPU tarde en terminarlo: 12 ms en nuestra prueba, un fragment shader de 600 senos por píxel en un búfer de 1024 × 1024. Una lectura al hacer clic no se nota. Una por frame obliga a la CPU a esperar a la GPU en cada frame, y así ya no pueden trabajar en paralelo (5.10).</li>
   <li><strong>Del canvas, solo en el mismo task</strong> en que dibujaste: tras la presentación, el búfer está borrado (5.1). Leer de un FBO propio no tiene ese problema. Y de un FBO multimuestreado no se puede leer directamente (<code>Invalid operation on multisampled framebuffer</code>): hay que resolverlo antes con un <em>blit</em>.</li>
 </ul>
 <p>El <strong>picking por color</strong> aprovecha el pipeline para responder «¿qué objeto hay en este píxel?»: se dibuja la escena con un shader que pinta cada objeto con un color que codifica su número, sin luz ni texturas, y se lee el píxel bajo el ratón. La GPU ya resuelve la profundidad por nosotros: el color leído es el del objeto más cercano.</p>
@@ -867,11 +867,11 @@ requestAnimationFrame(frame);
 </section>
 
 <div class="callout hack" data-titulo="Picking de un solo píxel">
-  <p>Para saber qué hay bajo el ratón no hace falta dibujar la escena de identificadores entera: con <code>gl.enable(gl.SCISSOR_TEST)</code> y <code>gl.scissor(x, y, 1, 1)</code>, todos los fragmentos fuera de ese píxel se descartan antes de ejecutar el fragment shader. Lo medimos con un fragment shader deliberadamente pesado en un búfer de 1024 × 1024: el dibujo completo tardó 14 ms, y con el scissor de un píxel, 0,6 ms. Los vértices se siguen procesando todos, pero en una escena normal el coste está en los fragmentos. No olvides desactivar el scissor después: también limita el <code>clear</code>.</p>
+  <p>Para saber qué hay bajo el ratón no hace falta dibujar la escena de identificadores entera: con <code>gl.enable(gl.SCISSOR_TEST)</code> y <code>gl.scissor(x, y, 1, 1)</code>, todos los fragmentos fuera de ese píxel se descartan antes de ejecutar el fragment shader. Lo medimos con el mismo fragment shader pesado de antes (600 senos por píxel, 1024 × 1024), cada dibujo entre dos <code>readPixels</code>: el dibujo completo tardó 12 ms, y con el scissor de un píxel, 0,6 ms, lo mismo que una pasada sin dibujar nada (ese medio milisegundo es el coste fijo de la pasada y de la espera de <code>readPixels</code>). Los vértices se siguen procesando todos, pero en una escena normal el coste está en los fragmentos. No olvides desactivar el scissor después: también limita el <code>clear</code>.</p>
 </div>
 
 <div class="callout senior" data-titulo="Leer sin esperar: PIXEL_PACK_BUFFER y fenceSync">
-  <p>WebGL2 permite que <code>readPixels</code> escriba en un buffer de la GPU (enlazado a <code>PIXEL_PACK_BUFFER</code>, y con un desplazamiento en bytes como último argumento en lugar de un array). Así la llamada no espera: la copia se encola (el reloj marcó 0 ms, por debajo de su resolución, frente a los 14 ms de la versión síncrona tras el mismo dibujo pesado). Luego insertas una valla con <code>const valla = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)</code> y, en los frames siguientes, consultas <code>gl.getSyncParameter(valla, gl.SYNC_STATUS)</code>. Cuando vale <code>gl.SIGNALED</code>, lees el buffer con <code>gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, destino)</code> sin bloquear. En nuestra prueba, con trabajo pesado por delante, la valla se señalizó tres frames después y los datos eran correctos. Llegar unos frames tarde suele ser aceptable para picking o para leer resultados de una simulación, y es la forma profesional de leer de la GPU sin romper el ritmo del frame.</p>
+  <p>WebGL2 permite que <code>readPixels</code> escriba en un buffer de la GPU (enlazado a <code>PIXEL_PACK_BUFFER</code>, y con un desplazamiento en bytes como último argumento en lugar de un array). Así la llamada no espera: la copia se encola (el reloj marcó 0 ms, por debajo de su resolución, frente a los 12 ms de la versión síncrona tras el mismo dibujo pesado). Luego insertas una valla con <code>const valla = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)</code> y, en los frames siguientes, consultas <code>gl.getSyncParameter(valla, gl.SYNC_STATUS)</code>. Cuando vale <code>gl.SIGNALED</code>, lees el buffer con <code>gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, destino)</code> sin bloquear. En nuestra prueba, con tres de esos dibujos pesados por delante, la valla se señalizó dos o tres frames después y los datos eran correctos. Llegar unos frames tarde suele ser aceptable para picking o para leer resultados de una simulación, y es la forma profesional de leer de la GPU sin romper el ritmo del frame.</p>
 </div>
 
 <div class="quiz">
@@ -1246,7 +1246,7 @@ canvas { flex: 1; min-height: 0; width: 100%; display: block; cursor: pointer; }
 </script>
 <script type="text/x-js">
 const canvas = document.getElementById('c');
-const gl = canvas.getContext('webgl2', { alpha: false });
+const gl = canvas.getContext('webgl2', { alpha: false, antialias: false });   // sin MSAA: un id de borde no se mezcla con el del fondo
 const progIds = GLKit.crearPrograma(gl, `#version 300 es
 uniform vec2 u_centro;
 uniform float u_aspecto;
@@ -1292,7 +1292,7 @@ dibujar(false);
 </script>
 <script type="text/x-js" data-solucion>
 const canvas = document.getElementById('c');
-const gl = canvas.getContext('webgl2', { alpha: false });
+const gl = canvas.getContext('webgl2', { alpha: false, antialias: false });   // sin MSAA: un id de borde no se mezcla con el del fondo
 const progIds = GLKit.crearPrograma(gl, `#version 300 es
 uniform vec2 u_centro;
 uniform float u_aspecto;
@@ -1341,7 +1341,7 @@ dibujar(false);
   <details class="pista"><summary>Pista 1</summary><p>¿Dónde está el origen de <code>offsetY</code>? ¿Y el de <code>readPixels</code>?</p></details>
   <details class="pista"><summary>Pista 2</summary><p>Si el DPR fuera 2, ¿cuántos píxeles del búfer habría por cada píxel CSS? Usa <code>canvas.width / rect.width</code> para que funcione con cualquier DPR.</p></details>
   <details class="solucion"><summary>Solución explicada</summary>
-    <p><code>offsetX/offsetY</code> están en píxeles CSS con el origen arriba a la izquierda; <code>readPixels</code> espera píxeles del búfer con el origen abajo a la izquierda. Con los cuadrados en diagonal, no invertir la y hace que un clic en uno lea el píxel simétrico respecto a la línea horizontal central, que es fondo. Lo comprobamos simulando clics en los cinco: con DPR 1 solo acertaba el central (el único simétrico); con DPR 2 ni siquiera ese, y un clic en el cuarto elegía el primero. La conversión correcta escala por <code>canvas.width / rect.width</code> (el DPR, y cualquier escalado CSS) e invierte la y con <code>rect.bottom − clientY</code>; con ella acertaron los cinco clics con los dos DPR. Aquí el picking se hace directamente en el canvas y dentro del manejador del clic: funciona porque dibujamos y leemos en el mismo task (5.1), y redibujamos la escena visible justo después. Con un FBO propio, como en el ejemplo, no habría que redibujar la escena visible.</p>
+    <p><code>offsetX/offsetY</code> están en píxeles CSS con el origen arriba a la izquierda; <code>readPixels</code> espera píxeles del búfer con el origen abajo a la izquierda. Con los cuadrados en diagonal, no invertir la y hace que un clic en uno lea el píxel simétrico respecto a la línea horizontal central, que es fondo. Lo comprobamos simulando clics en los cinco: con DPR 1 solo acertaba el central (el único simétrico); con DPR 2 ni siquiera ese, y un clic en el cuarto elegía el primero. La conversión correcta escala por <code>canvas.width / rect.width</code> (el DPR, y cualquier escalado CSS) e invierte la y con <code>rect.bottom − clientY</code>; con ella acertaron los cinco clics con los dos DPR. Aquí el picking se hace directamente en el canvas y dentro del manejador del clic: funciona porque dibujamos y leemos en el mismo task (5.1), y redibujamos la escena visible justo después. Con un FBO propio, como en el ejemplo, no habría que redibujar la escena visible. Fíjate también en <code>antialias: false</code>: con el MSAA por defecto, los píxeles del borde de un cuadrado promedian su identificador con el del fondo (en una prueba, un cuadrado de id 5 dejaba también píxeles con valor 3, el id de otro cuadrado), y un clic justo en el borde elegiría un cuadrado que no es. Los identificadores no se pueden promediar.</p>
   </details>
 </section>
 

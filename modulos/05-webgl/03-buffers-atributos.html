@@ -1323,7 +1323,7 @@ requestAnimationFrame(frame);
 <div class="callout resumen">
   <ul>
     <li>Varios atributos: un buffer por atributo o todos entrelazados. El vértice <em>i</em> de un atributo empieza en el byte <code>offset + i × stride</code>; con datos entrelazados, el stride es el tamaño del vértice completo y nunca 0.</li>
-    <li>Tipos: bytes normalizados para colores (<code>UNSIGNED_BYTE</code>, <code>true</code> → valor/255), bytes o shorts con signo para normales (valor/127, mínimo −1), half floats para ahorrar. Los componentes que faltan se rellenan con (0, 0, 1). Stride y offset múltiplos del tipo; stride ≤ 255. Enteros de verdad: <code>vertexAttribIPointer</code>.</li>
+    <li>Tipos: bytes normalizados para colores (<code>UNSIGNED_BYTE</code>, <code>true</code> → valor/255), bytes o shorts con signo para normales (valor/127, mínimo −1), half floats para ahorrar. Los componentes que faltan se rellenan con 0 (los de y y z) y con 1 (el de w). Stride y offset múltiplos del tipo; stride ≤ 255. Enteros de verdad: <code>vertexAttribIPointer</code>.</li>
     <li>Ranura desactivada = valor constante de <code>vertexAttrib*</code>, que es estado global, no del VAO.</li>
     <li>Índices: <code>ELEMENT_ARRAY_BUFFER</code> (su enlace sí se guarda en el VAO), <code>drawElements(modo, cuenta, tipo, offsetEnBytes)</code>. <code>Uint16</code> llega hasta el vértice 65 534 porque 65 535 es el índice de reinicio, siempre activo en WebGL2; más allá, <code>Uint32</code>.</li>
     <li>Modos: puntos (<code>gl_PointSize</code>, máximo 511 aquí, recorte por el centro según plataforma), líneas (siempre de 1 píxel: <code>lineWidth</code> no hace nada), triángulos, tiras y abanicos.</li>

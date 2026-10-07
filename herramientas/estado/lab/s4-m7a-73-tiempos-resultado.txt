@@ -1,0 +1,22 @@
+GPU: ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version) · Chrome/154.0.8037.98 · 1440×900
+modo  transición            fiable (mediana, min–max)   engañoso (mismo FBO)
+-     referencia (trivial)      0.17 ms (0.16–0.19)      null ms
+0     fundido sRGB              0.34 ms (0.29–0.37)      0.11 ms
+1     fundido en luz            0.41 ms (0.29–0.43)       0.1 ms
+2     por negro                 0.22 ms (0.2–0.22)      0.09 ms
+3     cortinilla                0.25 ms (0.23–0.27)      0.09 ms
+4     radial                    0.29 ms (0.24–0.51)      0.09 ms
+5     disolución                0.58 ms (0.55–0.97)      0.12 ms
+6     desplazamiento            0.36 ms (0.35–0.37)       0.1 ms
+7     persianas                  0.2 ms (0.19–0.22)      0.08 ms
+GPU: ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version) · Chrome/154.0.8037.98 · 1440×900
+modo  transición            fiable (mediana, min–max)   engañoso (mismo FBO)
+-     referencia (trivial)      0.17 ms (0.16–0.19)      null ms
+0     fundido sRGB              0.36 ms (0.31–0.37)      0.12 ms
+1     fundido en luz             0.4 ms (0.3–0.72)      0.12 ms
+2     por negro                 0.23 ms (0.21–0.26)      0.09 ms
+3     cortinilla                0.26 ms (0.22–0.29)       0.1 ms
+4     radial                    0.29 ms (0.25–0.29)       0.1 ms
+5     disolución                0.58 ms (0.57–0.89)      0.12 ms
+6     desplazamiento            0.38 ms (0.37–0.41)      0.11 ms
+7     persianas                 0.23 ms (0.22–0.26)       0.1 ms

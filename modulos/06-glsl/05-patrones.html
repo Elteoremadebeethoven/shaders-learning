@@ -577,7 +577,7 @@ void main() {
 
 <div class="callout bestiario" data-id="m6a-muare-procedural" data-titulo="El patrón hierve, forma ondas o parpadea cuando se hace pequeño o se aleja">
   <p><strong>Síntoma:</strong> un patrón procedural (rayas, damero, puntos, rejilla) se ve bien de cerca pero, al reducirlo, alejarlo o verlo en perspectiva, aparecen curvas, ondas y manchas que no existen, que además se mueven o parpadean con la animación.</p>
-  <p><strong>Causa:</strong> el patrón oscila más deprisa de lo que muestrean los píxeles (menos de dos píxeles por periodo, el límite de Nyquist). Cada píxel toma una sola muestra en su centro, que cae en un punto casi arbitrario del periodo. Los mipmaps que salvan a las texturas no existen para una función.</p>
+  <p><strong>Causa:</strong> el patrón oscila más deprisa de lo que muestrean los píxeles (menos de dos píxeles por periodo, el límite de Nyquist). Cada píxel toma una sola muestra en su centro, que cae en un punto casi arbitrario del periodo. Los mipmaps que salvan a las texturas no existen para una función. En una malla que se deforma pasa lo mismo con la geometría: <a href="../07-integracion/04-vertex-animacion.html#m7-4-aliasing-malla">«Con olas cortas, la malla dibuja otra ola: más larga, torcida o que avanza hacia atrás»</a> (7.4).</p>
   <p><strong>Solución:</strong> mide con <code>fwidth</code> cuántos periodos cruza el píxel y, cuando pase de unos 0.5, sustituye el patrón por su valor medio (desvanecer) o, mejor, usa una versión filtrada analíticamente (el promedio exacto sobre el píxel, como <code>dameroFiltrado</code>). Como último recurso, supermuestreo: evaluar el patrón en varios puntos del píxel y promediar (cuesta tantas veces como muestras).</p>
 </div>
 

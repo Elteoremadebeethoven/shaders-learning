@@ -1,0 +1,83 @@
+<!doctype html><meta charset="utf-8"><canvas id="c" width="64" height="64"></canvas>
+<script>
+// 7.4 columna JS + subir; 7.5 readPixels RGBA32F y límites de transform feedback. CPU caliente.
+const DIR = [[1, 0], [0.6, 0.8], [-0.71, 0.71]], K = [1.7, 2.9, 4.3], A = [0.14, 0.07, 0.035], Wv = [1.4, 2.0, 2.7];
+const D0x=1,D0z=0,D1x=0.6,D1z=0.8,D2x=-0.71,D2z=0.71;
+function vHypot(N, datos, t) { const lado = N + 1;
+  for (let j = 0, k = 0; j < lado; j++) for (let i = 0; i < lado; i++, k += 6) {
+    const x = (i / N - 0.5) * 6, z = (0.5 - j / N) * 6; let h = 0, hx = 0, hz = 0;
+    for (let q = 0; q < 3; q++) { const f = K[q] * (DIR[q][0] * x + DIR[q][1] * z) - Wv[q] * t, c = A[q] * K[q] * Math.cos(f); h += A[q] * Math.sin(f); hx += c * DIR[q][0]; hz += c * DIR[q][1]; }
+    const l = Math.hypot(hx, 1, hz);
+    datos[k] = x; datos[k + 1] = h; datos[k + 2] = z; datos[k + 3] = -hx / l; datos[k + 4] = 1 / l; datos[k + 5] = -hz / l; } }
+function vSqrt(N, datos, t) { const lado = N + 1;
+  for (let j = 0, k = 0; j < lado; j++) for (let i = 0; i < lado; i++, k += 6) {
+    const x = (i / N - 0.5) * 6, z = (0.5 - j / N) * 6; let h = 0, hx = 0, hz = 0;
+    for (let q = 0; q < 3; q++) { const f = K[q] * (DIR[q][0] * x + DIR[q][1] * z) - Wv[q] * t, c = A[q] * K[q] * Math.cos(f); h += A[q] * Math.sin(f); hx += c * DIR[q][0]; hz += c * DIR[q][1]; }
+    const l = Math.sqrt(hx * hx + 1 + hz * hz);
+    datos[k] = x; datos[k + 1] = h; datos[k + 2] = z; datos[k + 3] = -hx / l; datos[k + 4] = 1 / l; datos[k + 5] = -hz / l; } }
+function vEscalar(N, datos, t) { const lado = N + 1;
+  for (let j = 0, k = 0; j < lado; j++) for (let i = 0; i < lado; i++, k += 6) {
+    const x = (i / N - 0.5) * 6, z = (0.5 - j / N) * 6;
+    const f0 = 1.7 * (D0x * x + D0z * z) - 1.4 * t, f1 = 2.9 * (D1x * x + D1z * z) - 2.0 * t, f2 = 4.3 * (D2x * x + D2z * z) - 2.7 * t;
+    const c0 = 0.14 * 1.7 * Math.cos(f0), c1 = 0.07 * 2.9 * Math.cos(f1), c2 = 0.035 * 4.3 * Math.cos(f2);
+    const h = 0.14 * Math.sin(f0) + 0.07 * Math.sin(f1) + 0.035 * Math.sin(f2);
+    const hx = c0 * D0x + c1 * D1x + c2 * D2x, hz = c0 * D0z + c1 * D1z + c2 * D2z;
+    const l = Math.sqrt(hx * hx + 1 + hz * hz);
+    datos[k] = x; datos[k + 1] = h; datos[k + 2] = z; datos[k + 3] = -hx / l; datos[k + 4] = 1 / l; datos[k + 5] = -hz / l; } }
+const med = (a) => { const b = [...a].sort((x, y) => x - y); return b[b.length >> 1]; };
+const now = () => performance.now();
+window.__correr = async () => {
+  const R = {};
+  // resolución del reloj
+  { let a = now(), b; do { b = now(); } while (b === a); R.resolucionMs = +(b - a).toFixed(4); }
+  for (const [nombre, fn] of [["hypot", vHypot], ["sqrt", vSqrt], ["escalar", vEscalar]]) {
+    R[nombre] = {};
+    for (const N of [256, 512, 1024]) {
+      const datos = new Float32Array((N + 1) * (N + 1) * 6);
+      let t0 = now(), r = 0; while (now() - t0 < 300) fn(N, datos, 1.7 + 0.016 * r++);
+      const ms = []; for (let rep = 0; rep < 11; rep++) { const a = now(); fn(N, datos, 2 + 0.016 * rep); ms.push(now() - a); }
+      R[nombre][N] = +med(ms).toFixed(2);
+    }
+  }
+  // frío: 1,5 s de reposo y una medida (hypot N = 512)
+  await new Promise((r) => setTimeout(r, 1500));
+  { const d = new Float32Array(513 * 513 * 6); const a = now(); vSqrt(512, d, 3); R.frioSqrt512 = +(now() - a).toFixed(2); }
+  const gl = document.getElementById("c").getContext("webgl2");
+  R.gpu = gl.getParameter(gl.getExtension("WEBGL_debug_renderer_info").UNMASKED_RENDERER_WEBGL);
+  // subir con bufferSubData (10 subidas seguidas, buffer que no usa ningún dibujo)
+  R.subir = {};
+  for (const N of [256, 512, 1024]) {
+    const datos = new Float32Array((N + 1) * (N + 1) * 6);
+    const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, datos.byteLength, gl.DYNAMIC_DRAW);
+    let t0 = now(); while (now() - t0 < 200) gl.bufferSubData(gl.ARRAY_BUFFER, 0, datos);
+    const ms = []; for (let rep = 0; rep < 9; rep++) { const a = now(); for (let i = 0; i < 10; i++) gl.bufferSubData(gl.ARRAY_BUFFER, 0, datos); ms.push((now() - a) / 10); }
+    R.subir[N] = { MB: +(datos.byteLength / 1e6).toFixed(2), ms: +med(ms).toFixed(3) };
+    gl.deleteBuffer(b);
+  }
+  // límites
+  R.limites = { MAX_TF_INTERLEAVED: gl.getParameter(gl.MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS), MAX_TF_SEPARATE_ATTRIBS: gl.getParameter(gl.MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS),
+    MAX_TF_SEPARATE_COMPONENTS: gl.getParameter(gl.MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS), POINT: [...gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)],
+    MAX_VERTEX_TEXTURE_IMAGE_UNITS: gl.getParameter(gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS), MAX_ELEMENT_INDEX: gl.getParameter(gl.MAX_ELEMENT_INDEX) };
+  // readPixels de RGBA32F
+  R.ext = !!gl.getExtension("EXT_color_buffer_float");
+  R.readPixels = {};
+  for (const L of [512, 1024]) {
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, L, L);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const datos = new Float32Array(L * L * 4); for (let i = 0; i < datos.length; i++) datos[i] = Math.random();
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, L, L, gl.RGBA, gl.FLOAT, datos);
+    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const out = new Float32Array(L * L * 4), px = new Float32Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, px);
+    let t0 = now(); while (now() - t0 < 300) gl.readPixels(0, 0, L, L, gl.RGBA, gl.FLOAT, out);   // calentar
+    const ms = []; for (let rep = 0; rep < 11; rep++) { gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, px); const a = now(); gl.readPixels(0, 0, L, L, gl.RGBA, gl.FLOAT, out); ms.push(now() - a); }
+    // en frío: reposo 1,5 s, una lectura
+    await new Promise((r) => setTimeout(r, 1500));
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, px); const a = now(); gl.readPixels(0, 0, L, L, gl.RGBA, gl.FLOAT, out); const frio = now() - a;
+    R.readPixels[L] = { MB: L * L * 16 / 1e6, mediana: +med(ms).toFixed(2), min: +Math.min(...ms).toFixed(2), max: +Math.max(...ms).toFixed(2), frio: +frio.toFixed(2), ok: out[5] === datos[5], err: gl.getError() };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb); gl.deleteTexture(tex);
+  }
+  return R;
+};
+</script>

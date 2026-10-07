@@ -250,10 +250,35 @@ void main() { … }
   (en memoria y en disco, entre pestañas y visitas) compilado CON fast math (revisiones de 6.2–6.10, medido en
   el M1). Los playgrounds GLSL y el graficador añaden un comentario único a los shaders con isnan/isinf para
   que el experimento sea repetible; en WebGL crudo (playgrounds JS, GLKit) el efecto de caché sí aparece.
+  La detección en sí no falla en la versión de la caché (medido en el M1, Chrome 154, sesión 4: `isnan` marca los
+  NaN de `pow`/`sqrt`/`log` de negativos y de `normalize(vec3(0))`, también tras recargar, en otra pestaña y tras
+  relanzar Chrome), así que una vista «NaN en magenta» sigue sirviendo; lo que cambia son los resultados de las
+  operaciones indefinidas (`0.0/0.0` da 1 con fast math; `atan(0,0)`, NaN; `mod` de múltiplos negativos falla).
+  Ojo al probar el efecto: `mod(-(id+1000.0)*7.0, 7.0)` sin nada en medio no falla nunca, porque el fast math lo
+  simplifica algebraicamente; con un uniform de por medio (`if (isnan(u_z)) x += 1.0;`) sí se ve.
 - Medir tiempos de GPU: en la GPU de teselas del M1, dibujar N veces seguidas sobre el mismo framebuffer y
   dividir NO mide el trabajo (el controlador se ahorra lo que el siguiente dibujo tapa). Método fiable: cada
-  dibujo en su propia pasada (dos FBO alternos con clear al empezar), readPixels al final, mediana de varias
-  tandas (ver la caja senior «Cómo se mide lo que cuesta un shader» de 6.6).
+  dibujo en su propia pasada (dos FBO alternos con clear al empezar), readPixels al final DEL FRAMEBUFFER DE LA
+  ÚLTIMA PASADA (leer del canvas no espera a lo que solo se escribió en un FBO o en transform feedback), mediana
+  de varias tandas (ver la caja senior «Cómo se mide lo que cuesta un shader» de 6.6). Medido en el M1 (Chrome
+  154): 32 capas con `discard` dibujadas seguidas, 56 ms; una capa por pasada, 1,8 ms (31×). Dos trampas más:
+  con un solo dibujo entre dos `readPixels` pesan el coste fijo de la pasada y la espera (~0,6 ms), y el método
+  «de capacidad» (N dibujos por frame hasta que no caben en 16,7 ms) da costes un 40 % bajos si «cabe» se decide
+  con la mediana de los intervalos: con 20–22 ms de GPU por frame, 2 de cada 3 frames siguen llegando a 16,7 ms
+  (mediana 16,7, media 22). Hay que mirar la media.
+- Medir tiempos de CPU (y de llamadas síncronas como `getError`): la CPU sale de reposo con el reloj bajo. En el
+  M1 (Node, sin navegador, bucle ya compilado) bastan 0,2 s de reposo para que los primeros ~100 ms de cálculo vayan
+  2–3× más lentos (rampa, no salto). Una medida de pocos ms tomada al pulsar «Ejecutar» lo recoge entero: el
+  playground de 4.1 daba 1,7–3 s en vez de 0,9–1,2, y 1000 `getError` 60–78 ms en vez de 37. Calienta ≥ 0,15 s con
+  trabajo de verdad y mide ventanas de decenas de ms (caja `m4-cpu-en-frio` de 4.1; labs `estado/lab/s4-lead-cpu-*`).
+  No era cosa de headless: con la CPU caliente, headless, una pestaña e iframes sandbox dan lo mismo que Node.
+  Dos más: (1) con el calentamiento bien hecho salen DOS valores (0,90 / 1,20 s en 4.1): el bucle medido con el
+  código de TurboFan o aún con el de Maglev (`--js-flags=--no-maglev` → siempre 0,90; `--no-turbofan` → siempre
+  1,20; lab `s4-lead-cpu-bimodal.mjs`). (2) Una pestaña OCULTA corre el JS 2,5–6× más lento (ventana minimizada
+  2,4–3,0 s; el Chrome del dueño con la ventana detrás, 5,2 s; lab `s5-lead-oculta.mjs`): mide con la pestaña visible.
+- fps en headless: la demo de 5.9 dentro de la lección marcaba 60 fps con 4 M de instancias (73 ms de GPU por frame);
+  el mismo documento en una página vacía, 12 fps; con ventana, 13–14. Lo limitado por la GPU se mide con una espera
+  explícita (`readPixels` al final del frame) o en un Chrome con ventana (`VENTANA=1`, labs `s4-lead-instancing.mjs`).
 
 ### 5.7 Playground JS (HTML + CSS + JS en iframe)
 ```html
@@ -332,7 +357,8 @@ Curso.alListo(() => {
 - `Curso.colores()` devuelve la paleta actual; escucha `document.addEventListener("curso:tema", …)`
   para redibujar al cambiar el tema (plano y lienzo2d ya lo hacen).
 - Para demos WebGL a medida en la página (fuera de playgrounds) puedes usar `GLKit`/`mat4` globales, pero
-  recuerda el límite de ~16 contextos WebGL por página: crea como mucho 2–3 contextos propios por lección
+  recuerda el límite de ~16 contextos WebGL vivos por proceso (la página y sus iframes juntos; al pasarlo, Chrome
+  pierde el que lleva más tiempo sin usarse, medido en 5.1): crea como mucho 2–3 contextos propios por lección
   y, si puedes, usa un playground o `Curso.glCompartido`.
 
 ## 6. Estructura mínima de cada lección
@@ -352,16 +378,24 @@ Curso.alListo(() => {
 
 Herramienta: Chrome headless con GPU real (Apple M1 vía Metal).
 
-**UN SOLO CHROME A LA VEZ (pedido del dueño: el MacBook Air no tiene ventilador y se calienta).**
-El `puppeteer-core` de `herramientas/node_modules` (y el de `<SCRATCHPAD>/qa/node_modules`) está parcheado:
-cada `launch()` espera turno en una cola global (`herramientas/.chrome-turno`) y cada sesión se cierra
-sola a los 8 minutos. Varios agentes comparten la cola: si ves «esperando turno», es normal; espera.
+**COMO MUCHO DOS PROCESOS PESADOS A LA VEZ, Y CON PERMISO (pedido del dueño: el MacBook Air no tiene
+ventilador y se calienta).** Pesado = todo Chrome headless (verificar.mjs, movil.mjs, scripts con puppeteer),
+los laboratorios de tiempos de GPU, Python que dibuja con OpenGL, o una CPU al 100 % más de ~1 min.
+- El permiso se pide al portero `herramientas/turnos.mjs`, que concede como mucho 2 turnos a la vez y anota cada
+  petición (PIDE → CONCEDE → LIBERA) en `herramientas/.turnos.log`:
+  `node herramientas/turnos.mjs --agente <id> --motivo "verificar 5.2" -- node verificar.mjs …`.
+  Las medidas de tiempos de GPU, con `--exclusivo` (los dos turnos: nadie más usa la GPU mientras se mide).
+  El comando se corta a los 12 min (`--max-min` hasta 25). `node herramientas/turnos.mjs --estado` dice quién los tiene.
+- El `puppeteer-core` de `herramientas/node_modules` está parcheado (`estado/PuppeteerNode.parcheado.js`):
+  cada `launch()` pasa por el mismo portero (dentro de un comando lanzado con turnos.mjs no vuelve a pedir turno)
+  y, sin turnos.mjs, cada sesión de Chrome se cierra sola a los 8 minutos. «esperando turno» es normal: espera.
 - Lanza Chrome SOLO a través de ese puppeteer-core (verificar.mjs, movil.mjs o scripts tuyos que lo
   importen). Nunca ejecutes el binario de Chrome directamente, ni instales otro puppeteer/playwright,
   ni uses las herramientas de navegador de la extensión (son el Chrome personal del dueño).
-- Un vigilante termina cualquier segundo Chrome headless que aparezca fuera de la cola.
+- Un vigilante (`herramientas/vigilante.sh`) termina cualquier Chrome headless de más (más de 2).
 - Cierra siempre el navegador (`await browser.close()`) y no dejes procesos en segundo plano.
-- Agrupa: verifica varias cosas en una misma ejecución en vez de lanzar muchas seguidas.
+- Agrupa: verifica varias cosas en una misma ejecución en vez de lanzar muchas seguidas (3–4 lecciones por
+  llamada a verificar.mjs como mucho).
 
 ```bash
 Q=/Users/alex/Projects/shaders/herramientas
@@ -376,7 +410,15 @@ node $Q/verificar.mjs /Users/alex/Projects/shaders/modulos/05-webgl/02-primer-tr
   texto dice que se ve (colores, orientación, animación visible, nada cortado, legible en el tema).
 - Prueba también con `--tema light` al menos una vez por lección con demos a medida.
 - `--soluciones` pulsa «Ver solución» en cada playground que la tenga y comprueba que compila / se
-  ejecuta sin error (úsalo siempre antes de dar una lección por terminada).
+  ejecuta sin error (úsalo siempre antes de dar una lección por terminada). Si la solución imprime pruebas
+  (líneas que empiezan por ✓/✗), espera a que terminen (máx. `--espera-sol 12000` ms) y cuenta como problema
+  cualquier «✗ …»: las pruebas de los ejercicios deben imprimir ✓/✗ al principio de la línea. Para saber
+  cuándo han terminado, cuenta en el código de la solución un mínimo de líneas ✓/✗ (cada línea de código que
+  las imprime; si es una función auxiliar como `function prueba(nombre, ok) { … '✓' … }`, cada llamada) y,
+  alcanzado ese mínimo, espera 1,5 s sin líneas nuevas. Una prueba que tarda más de 12 s en imprimir no se ve.
+- Las capturas son de la parte visible del componente (`page.screenshot` con `clip`, sin
+  `captureBeyondViewport`, que dormía los playgrounds JS y daba capturas negras); uno más alto que la
+  ventana sale recortado. `data-error-esperado="webgpu"`: el error solo se exige si hay adaptador WebGPU.
 - OJO con medir iframes: en Chrome de escritorio real los iframes sandbox (el resultado de los playgrounds
   JS) corren en OTRO proceso (un bucle ocupado dentro no bloquea la página; comprobado en el Chrome del
   dueño). Puppeteer, por defecto, los mete en el mismo proceso que la página. Para medir tiempos o bloqueos
@@ -388,8 +430,9 @@ node $Q/verificar.mjs /Users/alex/Projects/shaders/modulos/05-webgl/02-primer-tr
   mientras se escriben en paralelo. Revisa que los tuyos (dentro de tu módulo) estén bien.
 - Para comprobar afirmaciones técnicas, escribe páginas de experimento en tu carpeta del scratchpad
   (`.../scratchpad/experimentos/mN/`) y ábrelas con `verificar.mjs` o con un script de puppeteer propio
-  (guarda el script en `<SCRATCHPAD>/qa/` o en `herramientas/` para que `import puppeteer from "puppeteer-core"`
-  resuelva el puppeteer parcheado, con
+  (impórtalo con ruta absoluta:
+  `import puppeteer from "/Users/alex/Projects/shaders/herramientas/node_modules/puppeteer-core/lib/puppeteer/puppeteer-core.js"`,
+  y lánzalo con turnos.mjs; con
   `executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`,
   `args: ["--use-angle=metal","--enable-gpu","--ignore-gpu-blocklist"]`, `headless: "new"`).
 - La lección está terminada cuando `verificar.mjs` no da problemas (salvo enlaces a módulos futuros) y
